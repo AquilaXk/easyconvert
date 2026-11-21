@@ -435,6 +435,7 @@ Security
 384. [A crash of the converter UI in the browser is reported to this site's own endpoint, sanitised, and written as one server log line](#384-a-crash-of-the-converter-ui-in-the-browser-is-reported-to-this-sites-own-endpoint-sanitised-and-written-as-one-server-log-line)
 385. [The font caches of the worker image are written for the user the worker runs as](#385-the-font-caches-of-the-worker-image-are-written-for-the-user-the-worker-runs-as)
 386. [The office rows of the benchmark run nightly inside the worker image, against a baseline and gap file of their own](#386-the-office-rows-of-the-benchmark-run-nightly-inside-the-worker-image-against-a-baseline-and-gap-file-of-their-own)
+387. [The profile of a pool slot is copied from its template with `cpSync`](#387-the-profile-of-a-pool-slot-is-copied-from-its-template-with-cpsync)
 
 ---
 
@@ -11508,3 +11509,32 @@ Security
   - **Re-recording `bench/baseline.json` from the image:** the pull request job and the other shards would then fail every office row on 24.2.
 - **Verified by**: `tests/bench-in-worker-image.test.ts` (the container flags, the mounts, the arguments, the environment that is passed on, the pinned oracles; the job on the arm runner with its families, baseline and gap files, `continue-on-error`), `tests/ci-workflows.test.ts` (the runner of the job), `tests/ci-parity-families.test.ts` (the two files belong to the rows' families), and a run of the script on the arm64 testbed with rootless Podman (`--family data --quick`, exit 0, 0 regressions against the empty files), with the full runs of the table above.
 - **Revisit when**: the first reports of the job exist (record the baseline and the gaps, remove `continue-on-error`), the runner's LibreOffice moves to 26.x, or the worker image is built for amd64 as well.
+
+## 387. The profile of a pool slot is copied from its template with `cpSync`
+
+- **Date**: 2026-11-22
+- **Status**: Implemented (QA request 2026-11-22: cut the pool's own work around the suite for small office conversions). No default changes; the profile a job starts from is the same. Nothing is deployed.
+- **Decision**: **`LibreOfficePoolManager.resetProfile` copies the template into the profile of the slot with `fs.cpSync`** (`recursive`, `dereference: false`, `verbatimSymlinks: true`, as the call it replaces) **and not `fs.promises.cp`.** The reset keeps every step of the isolation it exists for: the profile is removed whole, copied again from the template the readiness probe left, and the fixed settings are written over it.
+- **Why**:
+  - **Where the time went** (one-sheet workbook to PDF through the pool, 25 runs with a mark at each step, the worker image of `sha-064880f7` with the font caches of entry 385, arm64 Linux testbed, rootless Podman, uid 10001, the container flags of `docker-compose.yml`): 189 ms in all, 155 ms of it the suite, 26.0 ms the copy of the template, 1.6 ms the removal of the old profile, 4.0 ms until the suite started (`unshare`, `pid-init`, `prlimit`), 0.7 ms the removal of the job directory, 0.2 ms the copy of the result, the rest under 0.1 ms. A bare executor with no sandbox through the same pool code took the same time (177 ms against 182 ms), and `soffice --convert-to` with the profile copy, the filter options or the flags of the pool took the same as without them (146 to 150 ms): the sandbox, the options and the copied profile cost nothing, the copy does.
+  - **The copy was a round trip to the thread pool for each file.** The template is 98 entries and 0.18 MB. On it, `fs.promises.cp` takes 19.8 ms (median of 40), `fs.cpSync` 0.64 ms, a copy of a snapshot held in memory with synchronous writes 0.40 ms, `cp -a` in a child process 1.6 ms. `cpSync` blocks the event loop for 0.6 ms, which is less than the callbacks of a busy worker wait for anyway.
+  - **A suite that starts twice as fast** (entry 383) made this visible: the pool's overhead of about 35 ms was 10 % of a conversion on 24.2 and 25 % on 26.8.
+- **Measured** (the pool through `LibreOfficePoolManager.convert`, the worker image of `sha-9714aed8`, same testbed; 40 interleaved rounds of base, head and the reference `soffice --convert-to` with a warm profile, the order rotating through the six permutations; speed ratio = reference time / our time, median and the 95 % sign-test interval of `bench/speed-parity.ts`; the host was loaded by other work, load 7 to 18, which the interleaving shares between the three):
+
+  | File to PDF | Reference ms | Base ms | Head ms | Base ratio | Head ratio |
+  |---|---|---|---|---|---|
+  | `workbook.xlsx` | 150.7 | 177.1 | 156.3 | 0.843 [0.828, 0.866] | 0.950 [0.938, 0.975] |
+  | `drawingml-shapes-presentation.pptx` | 145.4 | 177.8 | 152.4 | 0.818 [0.813, 0.827] | 0.953 [0.944, 0.969] |
+  | `report.docx` | 171.2 | 203.5 | 178.8 | 0.814 [0.796, 0.844] | 0.943 [0.912, 0.963] |
+  | `rich-structure.docx` | 180.5 | 212.4 | 186.0 | 0.854 [0.847, 0.865] | 0.967 [0.946, 0.982] |
+
+  The same four rows in an earlier batch under a load of 19 to 39 read 0.812, 0.778, 0.797, 0.861 on the base and 0.942, 0.930, 0.948, 0.965 on the head. Every head interval has its lower bound above 0.9 except the earlier PPTX row, [0.890, 0.967].
+- **Trade-offs**:
+  - **The event loop is blocked for the copy** (0.6 ms on tmpfs; on an APFS disk the reset takes 20 ms where `fs.promises.cp` takes 40, so a developer's machine gains less).
+  - **The test pins the call, not the time.** A comparison with `fs.promises.cp` on the disk of the machine did not hold on a Mac (it passed twice and failed once in three runs); `tests/libreoffice-pool-profile-copy.test.ts` checks that every file, directory and link of the template is restored, that what the last job left is gone, and that `fs.promises.cp` is not called.
+- **Alternatives rejected**:
+  - **Keeping one `soffice` process and its profile for all jobs** (the keep-alive listener of unoserver, the long-lived supervised process of Gotenberg, the process manager of JODConverter, which copies its template profile once for each process it starts, as this pool does for each job): the documents of different accounts would meet in one process and one profile, which the decision of 2026-10-19 (a sandbox of its own for each job) and the reset of this pool exist to prevent.
+  - **Resetting the profile after the job, off the path of its answer:** the next job of a busy slot waits for the reset all the same, and a slot is reused at once in a run of conversions one after another, which is the case measured here.
+  - **A snapshot of the template in memory:** 0.2 ms less than `cpSync`, and a second copy of the profile that must follow the template's replacement (`discardProfileTemplate`).
+- **Verified by**: `tests/libreoffice-pool-profile-copy.test.ts` (the tree restored with its link, the leftover gone, the fixed settings written, `fs.promises.cp` not called; red on the call it replaces), `tests/libreoffice-pool-profile-reset.test.ts` and `tests/libreoffice-pool-manager.test.ts` (the reset semantics, unchanged), and the measurements above.
+- **Revisit when**: the template grows past about 1,000 files (the event loop would wait for the copy), or the suite's profile becomes unnecessary for a conversion.

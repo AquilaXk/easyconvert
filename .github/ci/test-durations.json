@@ -653,6 +653,7 @@
   "tests/libreoffice-fixed-profile.test.ts": 0,
   "tests/libreoffice-pool-loopback-less-namespace.test.ts": 5.4,
   "tests/libreoffice-pool-manager.test.ts": 4.3,
+  "tests/libreoffice-pool-profile-copy.test.ts": 0.1,
   "tests/libreoffice-pool-profile-reset.test.ts": 0,
   "tests/libreoffice-pool-staged-output.test.ts": 0,
   "tests/linear-tag-scans.test.ts": 1.2,
