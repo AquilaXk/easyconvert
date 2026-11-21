@@ -1,5 +1,6 @@
 import { glyphNameToText, isDingbatsFontName } from './pdf-glyph-names';
 import { SPECIAL_PRIVATE_USE_SYMBOLS } from './pdf-glyph-list-pdfjs';
+import { piGlyphNameToText } from './pdf-pi-glyph-names';
 import { PdfTextGeometryError } from './pdf-text-types';
 import { isSymbolFontName, mapCorporatePuaSymbol, mapSymbolFontCharacter } from './symbol-font-map';
 
@@ -11,6 +12,8 @@ import { isSymbolFontName, mapCorporatePuaSymbol, mapSymbolFontCharacter } from 
  *  - the name the font's encoding gives the code (the base encoding and its /Differences), through the Adobe Glyph List
  *    rules of pdf-glyph-names.ts: pdfjs maps `fi`, but not the `s_s` and `e_t_t` that a layout program writes for the
  *    ligatures of a typeface;
+ *  - for the pi fonts of Adobe (MathematicalPi, Universal-Greek-with-Math-Pi), the catalogue names the glyph list lacks
+ *    (`H11001`, `H9262`, pdf-pi-glyph-names.ts);
  *  - for the Symbol, Wingdings and Webdings families, the symbol-font tables of the office readers (symbol-font-map.ts)
  *    for the private-use character U+F000 + code that their fonts keep their glyphs at;
  *  - for the characters of the Adobe private-use area that stand for a symbol with a character of its own (the pieces of the
@@ -107,7 +110,7 @@ function readNamedGlyph(code: number, font: RecoverableFont): string | null {
   if (isNotdefCode(code, font)) return '';
   const name = glyphNameAt(code, font);
   if (name === null) return null;
-  const listed = glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) });
+  const listed = glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) }) ?? piGlyphNameToText(name, fontNameOf(font));
   const text = listed === null ? null : withSpecialPrivateUse(listed);
   return text !== null && !hasUnmappedGlyphs(text) ? text : null;
 }
