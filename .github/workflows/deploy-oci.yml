@@ -119,6 +119,7 @@ jobs:
           build-args: |
             WORKER_IMAGE=${{ env.WORKER_REPO }}@${{ steps.worker.outputs.digest }}
             APP_ORIGIN=https://convert.aquilaxk.site
+            RELEASE_SHA=${{ github.sha }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
           tags: |

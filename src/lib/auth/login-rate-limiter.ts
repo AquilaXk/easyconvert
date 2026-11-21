@@ -570,3 +570,26 @@ export async function consumeVerifyMailDailyCap(email: string): Promise<LoginRat
     },
   ]);
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// Crash reports of the browser (entry 384 of docs/policy-decisions.md)
+// ---------------------------------------------------------------------------------------------------------
+
+export const CLIENT_ERROR_WINDOW_SECONDS = 60;
+/** Reports one client may send in a minute: a page load sends at most 5, so this covers a few tabs open at once. */
+export const CLIENT_ERROR_MAX_PER_IP = 10;
+/** Reports all clients that cannot be attributed share in a minute. */
+export const CLIENT_ERROR_GLOBAL_MAX = 200;
+
+/** Counts one crash report against the limit of its client (`ip` null: a client that cannot be attributed shares one coarse counter). */
+export async function consumeClientErrorRateLimit(ip: string | null): Promise<LoginRateLimitCheckResult> {
+  const normIp = normalizeLoginIp(ip);
+  const limits: MailLimit[] = [];
+  if (normIp) {
+    limits.push({ key: `client_error:ip:${normIp}`, max: CLIENT_ERROR_MAX_PER_IP, windowSeconds: CLIENT_ERROR_WINDOW_SECONDS, reason: 'ip' });
+  }
+  if (usesGlobalCounter(ip)) {
+    limits.push({ key: 'client_error:global', max: CLIENT_ERROR_GLOBAL_MAX, windowSeconds: CLIENT_ERROR_WINDOW_SECONDS, reason: 'global' });
+  }
+  return consumeLimits(limits);
+}

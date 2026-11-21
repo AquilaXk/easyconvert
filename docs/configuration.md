@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 190 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 191 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -29,6 +29,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `KUBERNETES_SERVICE_HOST` | text | none | no | web, worker |
 | `CONTAINER_SANDBOX` | text | none | no | web, worker |
 | `MALLOC_ARENA_MAX` | integer, 1 to 2147483647 | none | no | web, worker |
+| `NEXT_PUBLIC_RELEASE_SHA` | text | none | no | web |
 
 - `NODE_ENV`: Runtime mode. Only the value `production` switches on production start-up validation and production-only behaviour; any other value is treated as development.
 - `NEXT_PHASE`: Set by Next.js. During `next build` (`phase-production-build`) production requirements are not enforced.
@@ -37,6 +38,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `KUBERNETES_SERVICE_HOST`: Set by Kubernetes. Any non-empty value marks the process as already container-isolated.
 - `CONTAINER_SANDBOX`: Any non-empty value declares that the process already runs inside a container sandbox.
 - `MALLOC_ARENA_MAX`: glibc allocator arena limit per process. When set (for example to `2` in the worker container), the image pipeline may lease up to 8 threads instead of the unbounded-heap cap of 2.
+- `NEXT_PUBLIC_RELEASE_SHA`: Commit the build was made from, which a crash report of a page names (docs/policy-decisions.md, entry 384). Next.js writes it into the scripts of the page when it builds, so it is set at build time (the `RELEASE_SHA` build argument of `Dockerfile.web`); a value set on the running server changes nothing. Without it a report names no release.
 
 ### Network and public URLs
 

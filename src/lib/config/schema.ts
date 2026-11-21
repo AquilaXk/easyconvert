@@ -659,6 +659,16 @@ const SCHEMA_ENTRIES = [
     roles: WEB,
   },
   {
+    name: 'NEXT_PUBLIC_RELEASE_SHA',
+    area: 'runtime',
+    description:
+      'Commit the build was made from, which a crash report of a page names (docs/policy-decisions.md, entry 384). Next.js writes it into the scripts of the page when it builds, so it is set at build time (the `RELEASE_SHA` build argument of `Dockerfile.web`); a value set on the running server changes nothing. Without it a report names no release.',
+    kind: { type: 'string', maxLength: 64 },
+    requiredInProduction: false,
+    secret: false,
+    roles: WEB,
+  },
+  {
     name: 'TRUSTED_PROXIES',
     area: 'security',
     description:

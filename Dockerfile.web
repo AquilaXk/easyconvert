@@ -46,6 +46,11 @@ ARG APP_ORIGIN
 ENV APP_ORIGIN=${APP_ORIGIN}
 RUN test -n "$APP_ORIGIN" || { echo 'APP_ORIGIN must be set: pass --build-arg APP_ORIGIN=https://<public host>' >&2; exit 1; }
 
+# The commit the build is made from: a crash report of a page names it (policy entry 384). The build writes it into the scripts of the
+# page, so it is no secret; a build without it (a local one) leaves it out of the report.
+ARG RELEASE_SHA=
+ENV NEXT_PUBLIC_RELEASE_SHA=${RELEASE_SHA}
+
 # `next build` has no runtime environment: the production requirements of the configuration are enforced at start-up, not here
 # (NEXT_PHASE=phase-production-build).
 RUN ./node_modules/.bin/next build

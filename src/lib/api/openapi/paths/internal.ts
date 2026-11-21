@@ -35,6 +35,7 @@ import { MAX_EXTRACTED_BYTES, MAX_EXTRACTED_ENTRIES, MAX_TOOL_FILES, MAX_TOOL_OP
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import type { ConversionRefusalCode, UrlImportErrorCode } from '@/lib/refusal-codes';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
+import { CLIENT_ERROR_KINDS, CLIENT_ERROR_MAX_BODY_BYTES, MAX_MESSAGE_CHARS, MAX_NAME_CHARS, MAX_PATH_CHARS, MAX_STACK_CHARS } from '@/lib/client-errors/report';
 
 /**
  * The codes `POST /api/convert` answers with, by status: the request's own, and the `refusalCode` of the error a conversion
@@ -862,6 +863,48 @@ export const internalPaths = {
         '499': createProblemResponse('The client closed the connection first (problem type `' + PROBLEM_TYPE_BASE + 'client-closed-request`). The shared conversion goes on for the other callers. No client is left to read this answer.'),
         '500': createErrorResponse('The conversion failed on the server (fixed `error`, no `code`).'),
         '504': createProblemResponse('The conversion did not finish within 30 seconds. It is stopped, and callers get this answer until it has ended.'),
+      },
+    },
+  },
+  '/api/client-errors': {
+    post: {
+      ...INTERNAL,
+      summary: 'Report a Browser Crash',
+      description:
+        'Takes the report of an error that a page of this site threw, rejected or caught in an error boundary, and writes one server log line of the fields it keeps (the error name, the message and at most 8 stack frames of the build\'s scripts with file names, addresses, links and tokens cut out, the page path without its query string, the release and the browser family). The line holds no client address and no cookie. ' +
+        'Only a request from a page of this site is taken (`Sec-Fetch-Site: same-origin`, or an `Origin` of the host). The body is at most ' + CLIENT_ERROR_MAX_BODY_BYTES + ' bytes, and a client may send 10 reports a minute.',
+      operationId: 'reportClientError',
+      security: PUBLIC_ACCESS,
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['kind', 'message', 'path'],
+              properties: {
+                kind: { type: 'string', enum: [...CLIENT_ERROR_KINDS] },
+                name: { type: 'string', maxLength: MAX_NAME_CHARS },
+                message: { type: 'string', maxLength: MAX_MESSAGE_CHARS },
+                stack: { type: 'string', maxLength: MAX_STACK_CHARS },
+                digest: { type: 'string', maxLength: 32 },
+                path: { type: 'string', maxLength: MAX_PATH_CHARS, description: 'The path of the page, which the server cuts at a query string or fragment.' },
+                release: { type: 'string', description: 'The commit the build was made from.' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '204': { description: 'The report was taken. The answer has no body.' },
+        '400': createProblemResponse('The body is not a crash report, or its Content-Length is not a whole number of bytes.'),
+        '403': createProblemResponse('The request is not from a page of this site.'),
+        '413': createProblemResponse('The body is over the limit.'),
+        '429': {
+          ...createProblemResponse('Too many reports from this client; see `Retry-After`.'),
+          headers: { 'Retry-After': { schema: { type: 'integer' } } },
+        },
+        '503': createProblemResponse('The client-IP trust configuration of the server is missing or invalid, or the store that counts the reports is unavailable; see `Retry-After`.'),
       },
     },
   },

@@ -1,6 +1,7 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
+import { useReportBoundaryError } from '@/lib/client-errors/use-report-boundary-error';
 import { GLOBAL_ERROR_COPY } from '@/lib/global-error-copy';
 import './globals.css';
 
@@ -8,8 +9,9 @@ const HOME_HREF = { en: '/', ko: '/ko' } as const;
 
 const ACTION_CLASS = 'inline-flex items-center justify-center h-8 [@media(pointer:coarse)]:h-11 px-4 rounded-xs text-sm font-medium transition-colors';
 
-/** The error boundary of the root layout itself, which replaces it: no provider is there, so the page carries its own markup and copy, in the language of the path, with the site's stylesheet and tokens. */
-export default function GlobalError({ reset }: Readonly<{ reset: () => void }>) {
+/** The error boundary of the root layout itself, which replaces it: no provider is there, so the page carries its own markup and copy, in the language of the path, with the site's stylesheet and tokens. The error is reported to this site (entry 384). */
+export default function GlobalError({ error, reset }: Readonly<{ error: Error & { digest?: string }; reset: () => void }>) {
+  useReportBoundaryError(error);
   const locale = usePathname()?.split('/')[1] === 'ko' ? 'ko' : 'en';
   const copy = GLOBAL_ERROR_COPY[locale];
 
