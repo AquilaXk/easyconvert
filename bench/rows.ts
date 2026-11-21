@@ -22,6 +22,7 @@ export const SPEC = {
   bitrate: { metric: 'bitrate', unit: 'kbit/s', direction: 'lower', kind: 'size', tolerance: tol(0, 0.03) },
   bdRatePsnr: { metric: 'bd_rate_psnr', unit: '%', direction: 'lower', kind: 'bdrate', tolerance: tol(1.5, 0) },
   bdRateSsim: { metric: 'bd_rate_ssim', unit: '%', direction: 'lower', kind: 'bdrate', tolerance: tol(1.5, 0) },
+  bdRateSsimulacra2: { metric: 'bd_rate_ssimulacra2', unit: '%', direction: 'lower', kind: 'bdrate', tolerance: tol(1.5, 0) },
   bdRateSnr: { metric: 'bd_rate_snr', unit: '%', direction: 'lower', kind: 'bdrate', tolerance: tol(1.5, 0) },
   snr: { metric: 'snr', unit: 'dB', direction: 'higher', kind: 'quality', tolerance: tol(0.5, 0) },
   loudnessShift: { metric: 'loudness_shift', unit: 'LU', direction: 'lower', kind: 'quality', tolerance: tol(0.3, 0) },
