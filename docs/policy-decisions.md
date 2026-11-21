@@ -433,6 +433,7 @@ Security
 382. [A style rule whose selector holds an escape for a symbol is left out of an HTML page bound for LibreOffice, and the page converts](#382-a-style-rule-whose-selector-holds-an-escape-for-a-symbol-is-left-out-of-an-html-page-bound-for-libreoffice-and-the-page-converts)
 383. [The worker image installs LibreOffice 26.8 from trixie-backports at a pinned version](#383-the-worker-image-installs-libreoffice-268-from-trixie-backports-at-a-pinned-version)
 384. [A crash of the converter UI in the browser is reported to this site's own endpoint, sanitised, and written as one server log line](#384-a-crash-of-the-converter-ui-in-the-browser-is-reported-to-this-sites-own-endpoint-sanitised-and-written-as-one-server-log-line)
+385. [The font caches of the worker image are written for the user the worker runs as](#385-the-font-caches-of-the-worker-image-are-written-for-the-user-the-worker-runs-as)
 
 ---
 
@@ -11447,3 +11448,25 @@ Security
   - **`navigator.sendBeacon`:** it also outlives the page, but it always sends the cookies of the site, which a report does not need; `fetch` with `keepalive` does the same without them.
 - **Verified by**: `tests/client-error-sanitise.test.ts` (the fields, the path, the message patterns, the stack frames of Chrome and Firefox, the browser family), `tests/client-errors-route.test.ts` (POST only, 204 without a body, the line without address, cookie or user agent, the origin check, the declared and the counted size, invalid bodies never repeated, the query string and the address cut from the line, the rate limit), `tests/client-error-rate-limit.test.ts`, `tests/client-error-reporter.test.ts` (dedupe, the cap of 5, the ignored errors, the handlers and the request), `tests/client-error-boundary.test.ts` (the hook and both boundaries), and `tests/oci-deploy.test.ts` for the Dockerfile and the workflow.
 - **Revisit when**: a crash appears in the log that these fields cannot place (then add the component name of the boundary, not page content), the privacy policy is rewritten (the table of section 2 then names this line), or a page needs more than 5 reports a load.
+
+## 385. The font caches of the worker image are written for the user the worker runs as
+
+- **Date**: 2026-11-22
+- **Status**: Implemented (QA request 2026-11-22: measure the office families against LibreOffice 26.8; the measurement found this). Nothing is deployed; the CI container job is the first build with the change.
+- **Decision**: **`Dockerfile.worker` sets every font directory to a whole second and writes the font caches (`fc-cache -f -s`) in the step that installs the fonts**, and `scripts/verify-worker-container.sh` (check 13, run by the CI container job) fails when `fc-list` run as the image user with an empty home writes a cache file there.
+- **Why**:
+  - **The caches of the image were refused for every user but root.** A fontconfig cache records the modification time of its directory to the nanosecond. The layers of an image keep whole seconds (`stat` in the pulled image shows `.000000000` on every font directory), so the caches that the package triggers wrote during the build no longer match their directories. `fc-cache -v` still reports them valid, root reads them, and any other user rebuilds all 25 caches in its own home. Each of the 25 caches and its rebuilt copy differ in four bytes (100 in all), at offset 56, the nanosecond field.
+  - **Every office conversion pays for it.** The worker gives each job a new home (`HOME` is the job directory), so each run of the suite starts with an empty font cache and writes 26 files (918,688 bytes) before it converts: 0.17 s for the first `fc-list` of the image user on the Linux testbed, and 0.14 s of every `soffice --convert-to` of a one-sheet workbook (0.27 s with a new home, 0.14 s with a home that holds the caches). LibreOffice 24.2 on Ubuntu showed none of it (the runner's caches are read by every user); LibreOffice 26.8 in the image starts about twice as fast, so the same 0.14 s is half of a small conversion and, next to the reference's warm home, took the speed ratio of two rows below 0.5.
+- **Measured** (the worker image of `sha-064880f7` from the registry, rootless podman on the arm64 Linux testbed, the flags of `docker-compose.yml`):
+  - `fc-list` as uid 10001 with an empty home: 26 cache files, 0.167 s. As root: none. After the change, committed as a layer and run as uid 10001: none, 0.011 s. The change is these two commands run as root in the image, so the result is what the Dockerfile builds.
+  - `soffice --convert-to pdf` of `bench/corpus/office/workbook.xlsx` with a new home each run: 0.27 s before, 0.14 s after (a home that already holds the caches: 0.14 s). Through the pool (`convertWithProject`): 0.31 s before, 0.21 s after.
+  - Speed ratio of our conversion to the reference's (`bench:quality --parity`, one run each, both sides on 26.8): `drawingml-shapes-presentation.pptx` to PDF 0.50 to 0.76, `workbook.xlsx` to PDF 0.50 to 0.73, to PNG pages 0.85 to 1.16 (the PPTX 0.92 to 1.29). The two PDF rows stay below 0.9: the pool's own work around the suite (sandbox start, profile reset, result copy; not split further) takes 0.06 s next to the suite's 0.14 s.
+- **Trade-offs**:
+  - **Font directories get a modification time up to a second older.** Nothing reads it but fontconfig.
+  - **A font added by a later step is not cached.** `tests/worker-font-cache.test.ts` fails when a step after the install names a font package or directory; such a step must run the two commands again.
+- **Alternatives rejected**:
+  - **`XDG_CACHE_HOME` for the suite in a directory every job shares:** a job whose document made the suite write there would hand the next job a cache that fontconfig maps without checking its contents.
+  - **The cache inside the profile template that every job copies:** it covers `soffice` only; `pdftoppm`, `gs`, `rsvg-convert` and ImageMagick run with a new home as well and rebuilt the same 26 caches.
+  - **A fixed home for the sandbox:** the jobs of different accounts would share it (the isolation of the profile reset, `libreoffice-pool.ts`, exists to prevent that).
+- **Verified by**: `tests/worker-font-cache.test.ts` (the order of the commands in the font install step, no later font step, the container check), `scripts/verify-worker-container.sh` check 13 in the CI container job, and the measurements above.
+- **Revisit when**: fontconfig stops comparing the nanoseconds, or the layers of an image keep them.

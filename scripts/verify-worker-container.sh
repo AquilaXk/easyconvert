@@ -23,6 +23,9 @@
 #  12. pid-init --confine --require runs a program that can read, write, truncate and remove files only below the directory of its job: it cannot read, overwrite, truncate,
 #      remove or list the files of another job's directory or the stored files under /shared/storage, and it still runs the system's programs and reads their libraries
 #
+#  13. fontconfig reads the font caches of the image as the image user: `fc-list` with an empty home writes no cache file there (a cache whose
+#      directory time differs from the one it records is refused, and every office conversion then rebuilds 26 caches in its own new home)
+#
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
 #
@@ -593,6 +596,18 @@ PROBE
   else
     fail "the ONNX OCR helper did not read a page in a sandbox: $(printf '%s' "$onnx_output" | tr '\n' ' ' | head -c 500)"
   fi
+fi
+
+# --- 13. font caches ----------------------------------------------------------------------------------
+# The caches of /var/cache/fontconfig record the time of their directory to the nanosecond, and a layer of an image keeps whole seconds: caches
+# built before the export are refused by every process that is not root, which then writes its own into the home (26 files, 0.12 s for each
+# office conversion). Dockerfile.worker sets the directories to whole seconds before it writes them.
+font_home="$work_dir/font-home"
+mkdir -p "$font_home"
+if HOME="$font_home" fc-list >"$work_dir/fc-list.out" 2>&1 && [ -s "$work_dir/fc-list.out" ] && [ -z "$(ls -A "$font_home/.cache/fontconfig" 2>/dev/null)" ]; then
+  pass "the font caches of the image are read by the image user: fc-list wrote no cache file into an empty home"
+else
+  fail "fc-list wrote font caches into an empty home ($(ls "$font_home/.cache/fontconfig" 2>/dev/null | wc -l) files): the caches of the image are stale for the image user"
 fi
 
 if [ "$failures" -eq 0 ]; then

@@ -381,6 +381,10 @@ ENV NODE_ENV=production
 ARG LIBREOFFICE_VERSION=4:26.8.2.2-2~bpo13+1
 ARG LIBORCUS_VERSION=0.21.0-4~bpo13+1
 
+# The caches of the font directories (`fc-cache -f -s`, the last step of this install) are written after each directory is set to a whole second:
+# a cache records the modification time of its directory to the nanosecond, the layers of an image keep whole seconds, and fontconfig refuses
+# the cache of a directory whose time differs for every process but root, so each office conversion (a new home each time) rebuilt 26
+# caches, 0.12 s of every run (docs/policy-decisions.md, entry 385). No later step may add a font.
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip and FFmpeg come from the pinned stages, FFmpeg with the runtime libraries of the codecs it was built against; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks; xz-utils is the .xz encoder and decoder, which the node base image installs only to unpack Node and then purges), and CJK Font Packages
 # The Open CASCADE libraries (STEP and IGES, see the cadconvert stage) are packaged with occt-misc, whose 55 MB of sample models and images
 # and 5 MB of resource files the program never reads (it converts all four targets of the 11 real samples with the directory removed, and
@@ -470,6 +474,8 @@ RUN sed -i 's/Components: main/Components: main contrib non-free/g' /etc/apt/sou
         calibre \
         qt6-image-formats-plugins \
         qt6-svg-plugins \
+    && find /usr/share/fonts /usr/local/share/fonts -type d -exec sh -c 'for d; do touch -d "@$(stat -c %Y "$d")" "$d"; done' sh {} + \
+    && fc-cache -f -s \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r -f video && groupadd -r -f render \
