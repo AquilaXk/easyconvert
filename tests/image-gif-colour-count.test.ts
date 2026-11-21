@@ -235,6 +235,44 @@ describe.skipIf(SKIP_WITHOUT_MAGICK)('an animated GIF of N colours', () => {
   });
 });
 
+describe.skipIf(SKIP_WITHOUT_MAGICK)('an animated GIF of 256 colours', () => {
+  /**
+   * Entry 376 of docs/policy-decisions.md: ImageMagick 7.1.2, the reference engine, writes every frame after the first with a table of its own (256 entries,
+   * about 250 colours used), so its frames compose to more than 256 colours on a photographic pan. The image library does the same and is left as it is: one
+   * palette of 255 colours over the frames (the route of entry 368 at 256) scored lower on SSIM, PSNR and CIEDE2000 on both pans measured.
+   */
+  const meanDeltaE = (gif: Buffer): number => {
+    const frames = decodeCoalescedFrames(gif, 'gif');
+    expect(frames).toHaveLength(FRAMES);
+    return frames.reduce((sum, frame, index) => sum + meanDeltaE2000(frame.data, gradient(index * 6)) / FRAMES, 0);
+  };
+
+  it('is written by the image library: within 256 colours a frame, with the delays and the loop count of the source', async () => {
+    const gif = await toGif(await animatedWebp(), 'webp', 256);
+    expect(Math.max(...tableSizes(gif))).toBeLessThanOrEqual(256);
+    expect(Math.max(...colourCounts(gif, false))).toBeLessThanOrEqual(256);
+    expect(frameDelaysMs(gif, 'gif')).toEqual(Array(FRAMES).fill(FRAME_DELAY_MS));
+    expect(readGifLoopCount(gif)).toBe(LOOP_FIELD);
+  });
+
+  it('is closer to its source, by CIEDE2000, than the same frames reduced to one palette of 255 colours', async () => {
+    const stack = Buffer.concat(Array.from({ length: FRAMES }, (_, frame) => gradient(frame * 6)));
+    const shared = await quantizeGifFrames(stack, WIDTH, HEIGHT, FRAMES, { colours: 256, dither: true, differenced: true });
+    const sharedGif = await sharp(shared, { raw: { width: WIDTH, height: HEIGHT * FRAMES, channels: RGBA, pageHeight: HEIGHT } })
+      .gif({ dither: 0, delay: Array(FRAMES).fill(FRAME_DELAY_MS), loop: LOOP })
+      .toBuffer();
+    const library = await toGif(await animatedWebp(), 'webp', 256);
+    expect(meanDeltaE(library)).toBeLessThan(meanDeltaE(sharedGif));
+  });
+
+  it('is the file of the default request: no colour count asked for writes the same bytes as 256', async () => {
+    const source = await animatedWebp();
+    const asked = await toGif(source, 'webp', 256);
+    const fallback = (await convertFile(source, 'webp', 'gif', {}, 'input.webp')).buffer;
+    expect(fallback.equals(asked)).toBe(true);
+  });
+});
+
 describe('the colour counts the image library writes', () => {
   it('are the bit depths 1, 2, 4 and 8', () => {
     for (let colors = 2; colors <= 256; colors += 1) expect(libraryWritesColours(colors), String(colors)).toBe(LIBRARY_COUNTS.includes(colors));
