@@ -3,6 +3,7 @@ import { InflateBudget } from './bounded-inflate';
 import { parseCff } from './font-cff';
 import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase, SimpleFontDictionary } from './pdf-document';
 import { type PdfObjectDefinition, withIncrementalUpdate } from './pdf-incremental-update';
+import { glyphNumberTexts } from './pdf-glyph-number-fonts';
 import { numericGlyphNameTexts } from './pdf-numeric-glyph-names';
 import { PDF_CONTENT_MAX_FONTS } from './pdf-text-types';
 import { readToUnicodeCoverage, type ToUnicodeCoverage } from './pdf-tounicode-coverage';
@@ -30,6 +31,9 @@ import { type UnicodeCmap, readGlyphCount, readUnicodeCmap, sfntTableTags } from
  *
  * A simple font without a /ToUnicode map whose /Differences glyph names are numbers gets a map of one-byte codes the same
  * way, with the characters Poppler reads those names as (pdf-numeric-glyph-names.ts).
+ *
+ * A simple font of the CG Times faces whose glyphs are named by their numbers in the TrueType font the driver converted
+ * (`G54`) gets a map of its codes the same way, with the characters those numbers stand for (pdf-glyph-number-fonts.ts).
  *
  * A composite font whose /ToUnicode map lists some of its codes is read through the map alone by Poppler, and a code the map
  * lacks has no text (`poppler/GfxFont.cc` 26.09, `GfxCIDFont::getNextChar` lines 1939 to 1948, `CharCodeToUnicode::mapToUnicode`
@@ -333,7 +337,7 @@ function fontMaps(fonts: CompositeFontDictionary[], simpleFonts: SimpleFontDicti
   };
   for (const font of fonts) add(font, font.hasToUnicode ? mapCompletingOwn(font, known) : mapFromProgram(font, known), 2);
   const numericTexts = numericGlyphNameTexts(simpleFonts);
-  simpleFonts.forEach((font, index) => add(font, font.hasToUnicode ? null : { entries: numericTexts[index], gaps: [], own: null }, 1));
+  simpleFonts.forEach((font, index) => add(font, font.hasToUnicode ? null : { entries: numericTexts[index].length > 0 ? numericTexts[index] : glyphNumberTexts(font), gaps: [], own: null }, 1));
   return maps;
 }
 

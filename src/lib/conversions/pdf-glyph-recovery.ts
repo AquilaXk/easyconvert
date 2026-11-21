@@ -125,7 +125,11 @@ function isNamedByCharacters(font: RecoverableFont): boolean {
   let named = characterNamedFonts.get(font);
   if (named === undefined) {
     const names = new Set<string>();
-    for (const name of font.differences ?? []) if (typeof name === 'string' && characterName(name) !== null) names.add(name);
+    const differences = font.differences ?? [];
+    for (let code = 0; code < differences.length; code++) {
+      const name = differences[code];
+      if (typeof name === 'string' && characterName(name) !== null) names.add(name);
+    }
     named = font.type === TYPE3_FONT && names.size >= MIN_CHARACTER_NAMES;
     characterNamedFonts.set(font, named);
   }

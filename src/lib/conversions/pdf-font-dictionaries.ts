@@ -41,4 +41,8 @@ export interface SimpleFontDictionary {
   baseFont: string | null;
   /** The items of the /Differences array of an /Encoding dictionary (section 9.6.5.1): integer codes and glyph names, null for any other item; null when there is no array. */
   differences: ReadonlyArray<number | string | null> | null;
+  /** /FirstChar, or null when absent or not an integer. */
+  firstChar: number | null;
+  /** The first 256 items of /Widths, a number for each width and null for any other item; null when there is no array. */
+  widths: ReadonlyArray<number | null> | null;
 }

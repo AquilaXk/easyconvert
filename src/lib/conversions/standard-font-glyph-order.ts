@@ -38,7 +38,7 @@ import { readAdvanceWidths, readUnicodeCmap } from './truetype-cmap';
  */
 
 /** The standard fonts pdfjs reads Arial and Times New Roman as (`getStdFontMap`). */
-type StandardFont =
+export type StandardFont =
   | 'Helvetica'
   | 'Helvetica-Bold'
   | 'Helvetica-Oblique'
@@ -150,6 +150,14 @@ const TIMES_PAST_WIDTHS: Record<Extract<StandardFont, `Times-${string}`>, readon
   'Times-Italic': [556, 556, 333, 333, 611, 333, 722, 722, 333, 556, 278, 500, 389, 556, 389, 556, 444, 444, 667, 444, 611, 611],
   'Times-BoldItalic': [500, 500, 333, 333, 667, 389, 722, 722, 333, 611, 278, 556, 389, 611, 389, 611, 444, 444, 667, 444, 667, 667],
 };
+
+/** The characters U+0020 to U+007E, the first of the glyphs the Macintosh order lists (space is glyph id 3). */
+const ASCII_PRINTABLE_COUNT = 0x7f - 0x20;
+
+/** The widths pdfjs keeps for a Times font at U+0020 to U+007E, in that order, in glyph space units. */
+export function timesAsciiWidths(font: Extract<StandardFont, `Times-${string}`>): readonly number[] {
+  return TIMES_WIDTHS[font].slice(0, ASCII_PRINTABLE_COUNT);
+}
 
 /** The Liberation Sans file of pdfjs-dist's `standard_fonts` that pdfjs draws each Helvetica font with. */
 const LIBERATION_FILES: Record<Extract<StandardFont, `Helvetica${string}`>, string> = {

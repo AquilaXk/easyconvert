@@ -184,6 +184,8 @@ interface PageNode {
 
 
 const SIMPLE_FONT_SUBTYPES = new Set(['Type1', 'MMType1', 'TrueType', 'Type3']);
+/** The codes of a simple font: one byte (section 9.6.5). */
+const SIMPLE_FONT_CODES = 256;
 
 
 /** The offset after the file's last `startxref` keyword. */
@@ -1379,12 +1381,21 @@ export class PdfDocument {
     if (!entry || entry.stream || !dict || !isName(subtype) || !SIMPLE_FONT_SUBTYPES.has(subtype.value)) return null;
     const differences = this.resolve(this.resolveDict(dict.entries.get('Encoding'))?.entries.get('Differences'));
     const baseFont = this.resolve(dict.entries.get('BaseFont'));
+    const firstChar = this.resolve(dict.entries.get('FirstChar'));
+    const widths = this.resolve(dict.entries.get('Widths'));
     return {
       objectNumber: num,
       generation: entry.gen,
       text: entry.source.slice(entry.start, entry.end),
       hasToUnicode: dict.entries.has('ToUnicode'),
       baseFont: isName(baseFont) ? baseFont.value : null,
+      firstChar: typeof firstChar === 'number' && Number.isInteger(firstChar) ? firstChar : null,
+      widths: isArray(widths)
+        ? widths.items.slice(0, SIMPLE_FONT_CODES).map((item) => {
+            const value = this.resolve(item);
+            return typeof value === 'number' ? value : null;
+          })
+        : null,
       differences: isArray(differences)
         ? differences.items.map((item) => {
             const value = this.resolve(item);
