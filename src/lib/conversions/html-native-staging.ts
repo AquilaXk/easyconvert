@@ -200,6 +200,7 @@ function refusal(reference: string): ConversionFailedError {
 function checkedCss(css: string, holder: string, omitted: OmittedContent, images: Set<string>): string | null {
   const embedded = new Set<string>();
   const scan = scanCss(css, (url) => isAllowedCssUrl(url, embedded));
+  omitted.styleRules(scan.omittedRules);
   if (scan.reference !== null) {
     if (DATA_URI_PREFIX.test(normalizeUrl(scan.reference))) throw refusal(scan.reference);
     omitted.reference(holder, scan.reference);

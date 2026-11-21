@@ -58,6 +58,7 @@ export class OmittedExternalImages {
 export class OmittedContent {
   private readonly elements = new Map<string, number>();
   private readonly references = new Map<string, string>();
+  private rules = 0;
 
   element(tag: string): void {
     this.elements.set(tag, (this.elements.get(tag) ?? 0) + 1);
@@ -68,9 +69,19 @@ export class OmittedContent {
     this.references.set(`${holder}\u0000${reference}`, `"${quoted(reference)}" (${holder})`);
   }
 
-  /** The warning for the elements, then the one for the references; none for what was not met. */
+  /** Style rules that were left out because their selector holds an escape for a symbol. */
+  styleRules(count: number): void {
+    this.rules += count;
+  }
+
+  /** The warning for the elements, the one for the references, then the one for the style rules; none for what was not met. */
   warnings(): string[] {
-    return [this.elementsWarning(), this.referencesWarning()].filter((line): line is string => line !== null);
+    return [this.elementsWarning(), this.referencesWarning(), this.styleRulesWarning()].filter((line): line is string => line !== null);
+  }
+
+  private styleRulesWarning(): string | null {
+    if (this.rules === 0) return null;
+    return `Left out ${this.rules} style ${this.rules === 1 ? 'rule' : 'rules'} whose selector holds an escape for a symbol, which no reader of the staged page can match.`;
   }
 
   private elementsWarning(): string | null {

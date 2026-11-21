@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import postcss from 'postcss';
 import sharp from 'sharp';
+import tailwindcss from 'tailwindcss';
 import { convertFile } from '../src/lib/conversions/index';
 import { stageHtmlForNativeEngine } from '../src/lib/conversions/html-native-staging';
 import { markdownToSafeHtml } from '../src/lib/conversions/markdown-pdf';
@@ -315,6 +317,75 @@ describe('CSS checks before LibreOffice', () => {
       });
     });
   }
+
+  // A rule whose selector needs an escape for a symbol (`.sm\:flex`, `.w-1\/2`: every page Tailwind CSS styled) cannot be passed on as written
+  // or as decoded, and LibreOffice cannot match it either; the rule is left out and reported, and the rest of the style sheet stays.
+  describe('a rule whose selector holds an escape for a symbol', () => {
+    const page = (style: string, body = '<p>t</p>'): string => `<html><head><meta charset="utf-8">${style}</head><body>${body}</body></html>`;
+    const rules = (count: number): string =>
+      `Left out ${count} style ${count === 1 ? 'rule' : 'rules'} whose selector holds an escape for a symbol, which no reader of the staged page can match.`;
+
+    it('is left out and counted, with its neighbours and the @media around it kept', async () => {
+      const staged = await stageHtmlForNativeEngine(
+        '<style>h1 { color: blue } .sm\\:flex { display: flex } p { color: red } @media (min-width: 640px) { .md\\:w-1\\/2 { width: 50% } h2 { color: green } }</style><p>t</p>'
+      );
+      expect(staged.html).toBe(page('<style>h1 { color: blue } p { color: red } @media (min-width: 640px) { h2 { color: green } }</style>'));
+      expect(staged.warnings).toEqual([rules(2)]);
+    });
+
+    it('is cut at its own closing brace, whatever strings, comments and escaped braces its selector and block hold', async () => {
+      const staged = await stageHtmlForNativeEngine(
+        '<style>.a\\:b[title="}"] { content: "}" /* } */ } .c\\7d d { color: red } p { color: blue }</style><p>t</p>'
+      );
+      expect(staged.html).toBe(page('<style> p { color: blue }</style>'));
+      expect(staged.warnings).toEqual([rules(2)]);
+    });
+
+    it('takes the references of its block out of the page with it', async () => {
+      const staged = await stageHtmlForNativeEngine('<style>.x\\:y { background: url(file:///etc/hosts) } p { color: red }</style><p>t</p>');
+      expect(staged.html).toBe(page('<style> p { color: red }</style>'));
+      expect(staged.warnings).toEqual([rules(1)]);
+    });
+
+    it('does not spare an escaped declaration of a rule that is kept', async () => {
+      const { error } = await settle(stageHtmlForNativeEngine('<style>p { font-family: foo\\3a bar } .sm\\:flex { display: flex }</style><p>t</p>'));
+      expect(errorOutcome(error)).toEqual({
+        name: 'ConversionFailedError',
+        message: 'HTML CSS has an escape for U+3A, which cannot be written without the escape outside a quoted string',
+      });
+    });
+
+    it('still finds the url() that a kept rule holds, and leaves the style sheet out with it', async () => {
+      const staged = await stageHtmlForNativeEngine('<style>.sm\\:flex { color: red } p { background: url(file:///etc/hosts) }</style><p>t</p>');
+      expect(staged.html).toBe(page(''));
+      expect(staged.warnings).toEqual(['Left out references that are not loaded or followed (1): "file:///etc/hosts" (style sheet).', rules(1)]);
+    });
+
+    it('leaves a style sheet with a selector written without escapes as it was', async () => {
+      const staged = await stageHtmlForNativeEngine('<style>.\\31 0 { color: red } p { color: blue }</style><p>t</p>');
+      expect(staged.html).toBe(page('<style>.10 { color: red } p { color: blue }</style>'));
+      expect(staged.warnings).toEqual([]);
+    });
+
+    // The style sheet is what Tailwind CSS 3.4 (MIT) writes for the classes of the page, as a site that uses it serves it.
+    oracleTest(
+      'a page styled by Tailwind CSS converts to a PDF that holds its text',
+      LIBREOFFICE_TOOLS,
+      async () => {
+        const body = '<h1 class="text-red-500 md:w-[200px]">Utility classes</h1><div class="sm:flex w-1/2 hover:bg-blue-500"><p>Text of a flex box.</p></div>';
+        const tailwind = tailwindcss({ content: [{ raw: body }], corePlugins: { preflight: false } });
+        const { css } = await postcss([tailwind]).process('@tailwind utilities;', { from: undefined });
+        expect(css).toMatch(/\.sm\\:flex/);
+        const { value, error } = await convertHtml(`<!DOCTYPE html><html><head><title>Utilities</title><style>${css}</style></head><body>${body}</body></html>`);
+        expect(error).toBeUndefined();
+        expect({ engine: NATIVE_ENGINE.test(value!.engineUsed), text: normalizedText(value!.buffer) }).toEqual({
+          engine: true,
+          text: 'Utility classes Text of a flex box.',
+        });
+      },
+      LIBREOFFICE_TIMEOUT_MS
+    );
+  });
 
   // CSS Syntax Level 3, 4.3.7: the staged text has the characters the escapes stand for, so LibreOffice reads no escape at all.
   const decoded: Array<[string, string, string]> = [

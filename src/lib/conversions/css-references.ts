@@ -9,7 +9,8 @@ import { ConversionFailedError } from '../types';
  * removed first, line breaks become spaces, every escape outside a comment is decoded as CSS Syntax
  * Level 3 section 4.3.7 says and the text goes on with the decoded characters (an escape that decodes
  * to a character which cannot stand plainly where it is, and a backslash with nothing to escape, are
- * refused; inside a comment a backslash is no escape, and the comment is replaced by a space), and an
+ * refused, except in the selector of a rule, which is left out with its block and counted; inside a
+ * comment a backslash is no escape, and the comment is replaced by a space), and an
  * unterminated string or non-ASCII character outside a quoted string (some readers skip default-ignorable
  * and separator characters, so `u<U+200B>rl(` still reads as url( to them) is refused;
  * comments and `<!--`/`-->` markers become spaces in the returned text, so what LibreOffice reads
@@ -149,11 +150,98 @@ function decodeEscapes(css: string): string {
   return parts.join('') + css.slice(copiedTo);
 }
 
+/** The closing brace of the block whose opening brace is at `open`, skipping strings, comments and escapes; the length of `css` when there is none. */
+function blockEnd(css: string, open: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = open; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === BACKSLASH) {
+      i = (readEscape(css, i)?.end ?? css.length) - 1;
+    } else if (quote !== null) {
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (css.startsWith(COMMENT_OPEN, i)) {
+      const close = css.indexOf(COMMENT_CLOSE, i + COMMENT_OPEN.length);
+      i = close < 0 ? css.length : close + COMMENT_CLOSE.length - 1;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}' && --depth === 0) {
+      return i;
+    }
+  }
+  return css.length;
+}
+
+/**
+ * Leaves out every rule whose selector (the text before its block, outside strings, comments and groups) holds an escape for a character
+ * that cannot stand plainly outside a string, block included, and counts them. Such a rule (`.sm\:flex`, `.w-1\/2`) cannot be written as it
+ * is (LibreOffice would read the text the scan did not) or as decoded (the selector would be another one), and LibreOffice cannot match it
+ * either. Rules inside a block that is kept are found too, so a rule in an `@media` goes alone. The text that stays is scanned as any other,
+ * so nothing in it is vouched for by this step; an escape in a declaration is still refused by `decodeEscapes`. One pass over the text.
+ */
+function omitEscapedSelectors(css: string): { css: string; omitted: number } {
+  if (!css.includes(BACKSLASH)) return { css, omitted: 0 };
+  const parts: string[] = [];
+  let copiedTo = 0;
+  let omitted = 0;
+  let itemStart = 0;
+  let escapedSymbol = false;
+  let groups = 0;
+  let quote: string | null = null;
+  let i = 0;
+  const nextItem = (at: number): void => {
+    itemStart = at;
+    escapedSymbol = false;
+    groups = 0;
+  };
+  while (i < css.length) {
+    const ch = css[i];
+    if (ch === BACKSLASH) {
+      const escape = readEscape(css, i);
+      if (escape === null) break;
+      if (quote === null && !PLAIN_NAME_CHARACTER.test(escape.character)) escapedSymbol = true;
+      i = escape.end;
+    } else if (quote !== null) {
+      if (ch === quote) quote = null;
+      i++;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      i++;
+    } else if (css.startsWith(COMMENT_OPEN, i)) {
+      const close = css.indexOf(COMMENT_CLOSE, i + COMMENT_OPEN.length);
+      i = close < 0 ? css.length : close + COMMENT_CLOSE.length;
+    } else if (ch === '(' || ch === '[') {
+      groups++;
+      i++;
+    } else if (ch === ')' || ch === ']') {
+      groups = Math.max(0, groups - 1);
+      i++;
+    } else if (ch === '{' && groups === 0 && escapedSymbol) {
+      const end = Math.min(blockEnd(css, i) + 1, css.length);
+      parts.push(css.slice(copiedTo, itemStart));
+      copiedTo = end;
+      omitted++;
+      i = end;
+      nextItem(i);
+    } else if (groups === 0 && (ch === '{' || ch === '}' || ch === ';')) {
+      i++;
+      nextItem(i);
+    } else {
+      i++;
+    }
+  }
+  return { css: parts.join('') + css.slice(copiedTo), omitted };
+}
+
 export interface CssScan {
   /** The CSS without control characters, with comments and CDO/CDC markers as spaces: the text checked. */
   readonly css: string;
   /** The first URL the CSS would load that is not allowed (anything an `@import` names), or null. */
   readonly reference: string | null;
+  /** How many rules were left out for an escaped symbol in their selector. */
+  readonly omittedRules: number;
 }
 
 function isWhitespace(ch: string | undefined): boolean {
@@ -331,12 +419,14 @@ class CssScanner {
 }
 
 /**
- * Scans CSS for the resources it would load. Throws ConversionFailedError for an escape that cannot be written plainly, a
+ * Scans CSS for the resources it would load, after leaving out the rules with an escaped symbol in the selector. Throws ConversionFailedError for an escape that cannot be written plainly, a
  * backslash with nothing to escape, a stray "<" or a malformed url(); returns the checked text and the first URL `isAllowedUrl`
  * rejects (an `@import` is always reported, whatever it names).
  */
 export function scanCss(source: string, isAllowedUrl: (url: string) => boolean): CssScan {
-  const css = decodeEscapes(source.replace(CONTROL_CHARACTERS, '').replace(LINE_BREAKS, ' '));
+  const kept = omitEscapedSelectors(source.replace(CONTROL_CHARACTERS, '').replace(LINE_BREAKS, ' '));
+  const omittedRules = kept.omitted;
+  const css = decodeEscapes(kept.css);
   const scanner = new CssScanner(css);
   /** Closing characters of the open groups and functions, and whether each is a URL function. */
   const groups: Array<{ closer: string; url: boolean }> = [];
@@ -346,10 +436,10 @@ export function scanCss(source: string, isAllowedUrl: (url: string) => boolean):
     const token = scanner.next();
     const isUrl = token.kind === 'url' || (token.kind === 'string' && (urlGroups > 0 || importPending));
     if (isUrl && (importPending || !isAllowedUrl(token.value.trim()))) {
-      return { css, reference: token.value.trim() || (importPending ? IMPORT_REFERENCE : EMPTY_URL_REFERENCE) };
+      return { css, reference: token.value.trim() || (importPending ? IMPORT_REFERENCE : EMPTY_URL_REFERENCE), omittedRules };
     }
     if (importPending && !(token.kind === 'function' && token.value === URL_FUNCTION)) {
-      return { css, reference: IMPORT_REFERENCE };
+      return { css, reference: IMPORT_REFERENCE, omittedRules };
     }
     if (token.kind === 'function' || token.kind === 'open') {
       const url = token.kind === 'function' && URL_STRING_FUNCTIONS.has(token.value);
@@ -360,6 +450,6 @@ export function scanCss(source: string, isAllowedUrl: (url: string) => boolean):
     }
     importPending = token.kind === 'at' ? token.value === IMPORT_RULE : importPending;
   }
-  if (importPending) return { css, reference: IMPORT_REFERENCE };
-  return { css: scanner.text(), reference: null };
+  if (importPending) return { css, reference: IMPORT_REFERENCE, omittedRules };
+  return { css: scanner.text(), reference: null, omittedRules };
 }
