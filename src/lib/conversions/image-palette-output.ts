@@ -1,10 +1,11 @@
-import type { Sharp } from 'sharp';
+import sharp, { type Sharp } from 'sharp';
 import { ConversionOptions, UnsupportedOptionError } from '../types';
 import { encodeBmp8 } from './bmp';
 import { applyOklabQuantizationAndDitherAsync, quantizeImageAsync, type DitherKind } from './color-quantizer';
 import { encodeGif, GIF_MAX_COLORS } from './gif-writer';
 import { encodeColourLimitedAnimation, encodeExactColourGif, libraryWritesColours } from './image-gif-colours';
 import { quantizedBmp8 } from './bmp-palette-quantizer';
+import { quantizedIconPng } from './ico-palette-quantizer';
 import { quantizesInScript, type ContentClass } from './image-content';
 import { GIF_PHOTO_PIXEL_BUDGET, HDR_FLOAT_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget, type PixelBudget } from './image-input-limits';
 import { rgbaRaster, withinQuantizerBudget, writtenSizeOf } from './image-rgba-raster';
@@ -101,4 +102,22 @@ export async function encodeBmp8Output(pipeline: Sharp, options: ConversionOptio
   assertPixelBudget(info.width, info.height, QUANTIZER_PIXEL_BUDGET);
   const res = await oklabPaletteRaster(data, info.width, info.height, colours, options);
   return encodeBmp8(res.indexed, res.palette, info.width, info.height);
+}
+
+/**
+ * The indexed PNG of an 8-bit ICO, its size taken from the pipeline (the icon resize is already in it). A dithered icon of 64 x 64 pixels or more has its
+ * palette chosen by quantizr-pixels, alpha included (entry 376); any other icon (the Oklab, Riemersma and blue-noise requests, no dithering, a smaller
+ * icon, and where the program is missing or fails) takes the Oklab quantizer's palette, written by the image library from the raster that already holds it.
+ */
+export async function encodeIconPng(pipeline: Sharp, options: ConversionOptions): Promise<{ png: Buffer; width: number; height: number }> {
+  const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const colours = Math.min(256, Math.max(2, options.colors || 256));
+  const quantized = quantizesInScript(options) || options.dither === false ? null : await quantizedIconPng(data, info.width, info.height, { colours, signal: options.signal });
+  if (quantized !== null) return { png: quantized, width: info.width, height: info.height };
+  const { rgba } = await oklabPaletteRaster(data, info.width, info.height, colours, options);
+  // The raster already holds only the palette's colours: the encoder must not dither or re-quantize it.
+  const png = await sharp(rgba, { raw: { width: info.width, height: info.height, channels: 4 } })
+    .png({ palette: true, colours, dither: 0, compressionLevel: 8 })
+    .toBuffer();
+  return { png, width: info.width, height: info.height };
 }

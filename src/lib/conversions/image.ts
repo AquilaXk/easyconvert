@@ -63,7 +63,7 @@ import { hasSrgbPrimaries, isSrgbProfile, srgb16LutsFromProfile } from './icc-sr
 import { EIGHT_BIT_ONLY_TARGETS, reducesAtEncode, roundedToEightBits, SHARP_SIXTEEN_BIT_DEPTH } from './image-depth';
 import { applyDevelopmentCurve } from './image-development-curve';
 import { pinBaseImageThreads, withPipelineThreads } from './image-threads';
-import { assertAnimatableOptions, assertPixelBudgetBeforeDecode, encodeBmp8Output, encodeGifOutput, oklabPaletteRaster } from './image-palette-output';
+import { assertAnimatableOptions, assertPixelBudgetBeforeDecode, encodeBmp8Output, encodeGifOutput, encodeIconPng, oklabPaletteRaster } from './image-palette-output';
 import { writePalettePng } from './png-palette-quantizer';
 import { encodeAvif, PQ_AVIF_CICP } from './image-avif-pipeline';
 import { FIRST_QUARTER_TURN_ORIENTATION } from './image-orientation';
@@ -2049,25 +2049,9 @@ async function convertImage(
           background: { r: 0, g: 0, b: 0, alpha: 0 },
         });
 
-        if (
-          options.colorDepth === 8 ||
-          options.palette ||
-          options.quantizer === 'oklab' ||
-          options.ditherMethod === 'riemersma' ||
-          options.ditherMethod === 'blue-noise'
-        ) {
-          const { data, info } = await icoPipeline
-            .ensureAlpha()
-            .raw()
-            .toBuffer({ resolveWithObject: true });
-          const colours = Math.min(256, Math.max(2, options.colors || 256));
-          const rgbaBuffer = (await oklabPaletteRaster(data, info.width, info.height, colours, options)).rgba;
-          const pngBuf = await sharp(rgbaBuffer, {
-            raw: { width: info.width, height: info.height, channels: 4 },
-          })
-            .png({ palette: true, colours, dither: 0, compressionLevel: 8 })
-            .toBuffer();
-          outputBuffer = encodeIco(pngBuf, info.width, info.height);
+        if (options.colorDepth === 8 || options.palette || quantizesInScript(options)) {
+          const { png, width, height } = await encodeIconPng(icoPipeline, options);
+          outputBuffer = encodeIco(png, width, height);
         } else {
           const { data: pngBuf, info } = await icoPipeline.png().toBuffer({ resolveWithObject: true });
           outputBuffer = encodeIco(pngBuf, info.width, info.height);
