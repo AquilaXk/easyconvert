@@ -24,6 +24,7 @@ import {
   UnsupportedTargetError,
 } from '../types';
 import { generateOdsFromData, officeSheetWorkbook } from './office';
+import { pageSelectionOf } from './page-range';
 import { sheetLimitError } from './office/sheet-bounds';
 import { gridLimitError, gridOf, isSpreadsheetGrid, type Grid } from './table-grid';
 import { sheetCellOfValue, writeXlsx, type SheetCell } from './xlsx-writer';
@@ -800,7 +801,7 @@ export async function writeTransientWorkbook(inputBuffer: Buffer, src: string, o
 
 /** `writeTransientWorkbook` on the calling thread; the pool thread runs this. */
 export async function writeTransientWorkbookInline(inputBuffer: Buffer, src: string, options: ConversionOptions): Promise<Buffer> {
-  if (!STRUCTURED_SHEET_SOURCES.has(src)) return officeSheetWorkbook(inputBuffer, src, options, 'STORE');
+  if (!STRUCTURED_SHEET_SOURCES.has(src)) return officeSheetWorkbook(inputBuffer, src, options, 'STORE', pageSelectionOf(options));
   assertDataOptions(options);
   const write = async (): Promise<Buffer> => {
     const source = readStructuredSource(inputBuffer, src, 'xlsx', options);

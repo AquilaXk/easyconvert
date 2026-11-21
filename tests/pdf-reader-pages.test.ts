@@ -10,6 +10,8 @@ import { pdfTextFailure, pdfTextFailureKindOf } from '../src/lib/conversions/pdf
 import { readPdfDocument } from '../src/lib/conversions/pdf-text-document';
 import { analyzePdfPagesInProcess } from '../src/lib/conversions/pdf-text-geometry';
 import { PDF_TEXT_MAX_PAGES } from '../src/lib/conversions/pdf-text-types';
+import { extractTextFromDoc, extractTextFromRtf } from '../src/lib/conversions/office';
+import { readCfbfWorkbookSheets } from '../src/lib/conversions/office/xls-parse';
 import { InvalidPageRangeError } from '../src/lib/types';
 import { captureError } from './helpers/capture-error';
 import { AES_256, plainPdf, qpdfEncrypt, withTempDir } from './helpers/encrypted-pdf-fixtures';
@@ -19,7 +21,7 @@ import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 import { hasTesseractLanguage } from './helpers/tessdata';
 
 /**
- * `pages` for PDF to TXT, DOCX, HTML and XLSX: the readers take the pages a request selects, with the syntax, the limits and the
+ * `pages` for PDF to TXT, DOCX, HTML, XLSX, XLS, PPTX, RTF and DOC: the readers take the pages a request selects, with the syntax, the limits and the
  * refusals of the page-image chains. The expected text of a selection is what Poppler's `pdftotext -f first -l last` reads from the
  * same file (an independent reader, run once for each run of selected pages); the pages of an output are told by a word that each
  * page of the document holds once, and by the sheets of a workbook.
@@ -74,6 +76,13 @@ async function docxText(buffer: Buffer): Promise<string> {
 async function sheetNames(buffer: Buffer): Promise<string[]> {
   const xml = await (await parts(buffer)).file('xl/workbook.xml')!.async('string');
   return [...xml.matchAll(/<sheet [^>]*name="([^"]*)"/g)].map((match) => match[1]);
+}
+
+/** The slides of a presentation, each as its text, in order. */
+async function slideTexts(buffer: Buffer): Promise<string[]> {
+  const zip = await parts(buffer);
+  const names = Object.keys(zip.files).filter((name) => /^ppt\/slides\/slide\d+\.xml$/.test(name)).sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]));
+  return Promise.all(names.map(async (name) => (await zip.file(name)!.async('string')).replace(/<[^>]+>/g, ' ')));
 }
 
 function htmlText(buffer: Buffer): string {
@@ -201,9 +210,7 @@ describe.skipIf(SKIP)('pages of a PDF converted to text, HTML, DOCX and XLSX', (
     const pdf = await sixPages();
     const md = await dispatchConversion(pdf, 'pdf', 'md', { pages: '2' }, 'doc.pdf');
     expect(wordsIn(md.buffer.toString('utf-8'))).toEqual([...WORDS]);
-    const xls = await dispatchConversion(pdf, 'pdf', 'xls', { pages: '2' }, 'doc.pdf');
-    expect(xls.buffer.length).toBeGreaterThan(0);
-  }, ENGINE_TEST_TIMEOUT_MS);
+  });
 
   describe('a PDF with a password and owner restrictions', () => {
     const locked = async (): Promise<Buffer> =>
@@ -249,6 +256,73 @@ describe.skipIf(SKIP)('pages of a PDF converted to text, HTML, DOCX and XLSX', (
       });
     }, 60_000);
   });
+});
+
+/** The pages of a six-page document that a conversion to `target` holds, told by the word each page has, or by the sheets of a workbook. */
+async function pagesHeld(target: string, buffer: Buffer): Promise<string[]> {
+  switch (target) {
+    case 'xls':
+      return readCfbfWorkbookSheets(buffer).map((sheet) => sheet.name ?? '');
+    case 'pptx':
+      return (await slideTexts(buffer)).map((text) => wordsIn(text).join(' '));
+    case 'rtf':
+      return wordsIn(extractTextFromRtf(buffer));
+    default:
+      return wordsIn(extractTextFromDoc(buffer));
+  }
+}
+
+describe.skipIf(SKIP)('pages of a PDF converted to XLS, PPTX, RTF and DOC', () => {
+  const heldBy = (target: string, selected: number[]): string[] =>
+    target === 'xls' ? selected.map((page) => `Page ${page}`) : selected.map((page) => WORDS[page - 1]);
+
+  describe.each(['xls', 'pptx', 'rtf', 'doc'])('to %s', (target) => {
+    it.each(SELECTIONS)('pages %j holds those pages and no other', async (spec, selected) => {
+      const result = await dispatchConversion(await sixPages(), 'pdf', target, { pages: spec }, 'doc.pdf');
+      expect(await pagesHeld(target, result.buffer)).toEqual(heldBy(target, selected));
+    }, ENGINE_TEST_TIMEOUT_MS);
+
+    it('refuses a selection the document cannot satisfy, as the other targets do', async () => {
+      const pdf = await sixPages();
+      for (const [pages, message] of [['7', /Page number 7 exceeds document page count of 6\./], ['4-2', /cannot exceed range end/], ['1;2', /Invalid character in page range token/]] as const) {
+        const error = await captureError(() => dispatchConversion(pdf, 'pdf', target, { pages }, 'doc.pdf'));
+        expect(error).toBeInstanceOf(InvalidPageRangeError);
+        expect(error.message).toMatch(message);
+        expect((error as InvalidPageRangeError).refusalCode).toBe('invalid_pages');
+      }
+      const past = await captureError(() => dispatchConversion(pdf, 'pdf', target, { page: 9 }, 'doc.pdf'));
+      expect(past).toBeInstanceOf(InvalidPageRangeError);
+    }, ENGINE_TEST_TIMEOUT_MS);
+
+    it('holds every page when the selection is absent', async () => {
+      const result = await dispatchConversion(await sixPages(), 'pdf', target, {}, 'doc.pdf');
+      expect(await pagesHeld(target, result.buffer)).toEqual(heldBy(target, [1, 2, 3, 4, 5, 6]));
+    }, ENGINE_TEST_TIMEOUT_MS);
+  });
+
+  it('writes one slide for each selected page of a real multi-page PDF', async () => {
+    const pptx = await dispatchConversion(MULTIPAGE, 'pdf', 'pptx', { pages: '2-3' }, 'm.pdf');
+    expect(await slideTexts(pptx.buffer)).toHaveLength(2);
+    const all = await dispatchConversion(MULTIPAGE, 'pdf', 'pptx', {}, 'm.pdf');
+    expect(await slideTexts(all.buffer)).toHaveLength((await PDFDocument.load(MULTIPAGE)).getPageCount());
+  });
+
+  it('writes the selected pages only as PowerPoint 97-2003', async () => {
+    const ppt = await dispatchConversion(await sixPages(), 'pdf', 'ppt', { pages: '2,5' }, 'doc.pdf');
+    const text = (await dispatchConversion(ppt.buffer, 'ppt', 'txt', {}, 'doc.ppt')).buffer.toString('utf-8');
+    expect(wordsIn(text)).toEqual(['BANANA', 'ELDERBERRY']);
+  }, ENGINE_TEST_TIMEOUT_MS);
+
+  it('names the sheets of a real multi-page PDF written as XLS after the selected pages', async () => {
+    const xls = await dispatchConversion(MULTIPAGE, 'pdf', 'xls', { pages: '2-3' }, 'm.pdf');
+    expect(readCfbfWorkbookSheets(xls.buffer).map((sheet) => sheet.name)).toEqual(['Page 2', 'Page 3']);
+  }, ENGINE_TEST_TIMEOUT_MS);
+
+  it.each(['rtf', 'doc'])('holds the words pdftotext reads for the pages of a real PDF written as %s', async (target) => {
+    const result = await dispatchConversion(MULTIPAGE, 'pdf', target, { pages: '2-3' }, 'm.pdf');
+    const text = target === 'rtf' ? extractTextFromRtf(result.buffer) : extractTextFromDoc(result.buffer);
+    expect(tokens(text)).toEqual(tokens(pdftotextOf(MULTIPAGE, [2, 3])));
+  }, ENGINE_TEST_TIMEOUT_MS);
 });
 
 const OCR_WORDS = ['HARBOR', 'MEADOW', 'ORCHID'] as const;

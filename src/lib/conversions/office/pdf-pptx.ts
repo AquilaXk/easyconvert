@@ -4,6 +4,7 @@ import { escapeXmlText } from '../document-model/xml-text';
 import { layoutPdfPages, type PageBlock } from '../pdf-layout';
 import type { DetectedTable, LayoutLine, Paragraph, StyledRun, TableCell } from '../pdf-layout/types';
 import { dominantRuleInk, ruleInside, UNIFORM_RULE_SHARE } from '../pdf-layout/ink';
+import { pageSelectionOf } from '../page-range';
 import { readPdfContentForOffice } from '../pdf-office';
 import type { PdfContentFont, PdfContentImage, PdfContentRule, PdfContentShape } from '../pdf-text-types';
 import { shapeProperties } from '../document-model/shape-xml';
@@ -650,7 +651,7 @@ export async function writePackage(
  */
 export async function pdfToPptx(source: Buffer, options: ConversionOptions, title: string): Promise<Buffer> {
   const legacyPptBridge = (options as Record<symbol, unknown>)[PPTX_LEGACY_PPT_BRIDGE] === true;
-  const content = await readPdfContentForOffice(source, options, { images: true, colour: true });
+  const content = await readPdfContentForOffice(source, options, { images: true, colour: true, select: pageSelectionOf(options) });
   const fonts = new Map<string, PdfContentFont>();
   const noteFonts = (list: readonly PdfContentFont[]): void => list.forEach((font) => fonts.set(font.name, font));
   if (content.kind === 'layout') {
