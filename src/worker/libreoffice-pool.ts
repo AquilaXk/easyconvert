@@ -76,6 +76,18 @@ export const LIBREOFFICE_MEMORY_LIMIT_MB = 3328;
 /** Wide virtual address space cap so LibreOffice UNO/JVM arenas do not abort while the RSS monitor enforces `LIBREOFFICE_MEMORY_LIMIT_MB`. */
 export const LIBREOFFICE_ADDRESS_SPACE_BYTES = 16 * 1024 * 1024 * 1024;
 export const LIBREOFFICE_MAX_FILE_SIZE = ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE;
+/** What the suite writes next to the document and the output: lock files, thumbnails, the settings it writes back. */
+const LIBREOFFICE_DISK_SLACK_BYTES = 64 * 1024 * 1024;
+/**
+ * What one run of LibreOffice may hold in its job directory at any moment (entry 377 of `docs/policy-decisions.md`). A filter does not write
+ * its output to the output path directly: it builds the document in a temporary stream file under `TMPDIR` (`lu*.tmp`) and copies it to the
+ * output path at the end, so the temporary file and the growing output are both there. Each is bounded by `LIBREOFFICE_MAX_FILE_SIZE`
+ * (RLIMIT_FSIZE), so the directory holds the input and two files of that size at most. `gd-374166.doc` to RTF writes 363,085,505 bytes
+ * of output and peaked at 717,662,526 bytes in the directory on the Linux test VM, past the 592,144,896 bytes that one file allowed.
+ */
+export function libreOfficeDiskBudgetBytes(inputBytes: number): number {
+  return inputBytes + 2 * LIBREOFFICE_MAX_FILE_SIZE + LIBREOFFICE_DISK_SLACK_BYTES;
+}
 export const LIBREOFFICE_IDLE_SHUTDOWN_TIMEOUT_MS = 5 * 60_000;
 
 export function defaultLibreOfficeMaxWorkers(
@@ -885,7 +897,7 @@ export class LibreOfficePoolManager {
         inputPath,
       ];
 
-      const diskBudgetBytes = officeInputBytes(inputPath) + LIBREOFFICE_MAX_FILE_SIZE + 64 * 1024 * 1024;
+      const diskBudgetBytes = libreOfficeDiskBudgetBytes(officeInputBytes(inputPath));
       await runWithDirectoryGrowthWatch(
         { root: jobSubdir, limits: { maxBytes: diskBudgetBytes, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'LibreOffice', callerSignal: options.signal },
         (watchSignal) =>

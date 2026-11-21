@@ -111,7 +111,7 @@ import {
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
 import { runWithDirectoryGrowthWatch } from './directory-growth-watch';
-import { LIBREOFFICE_ADDRESS_SPACE_BYTES, LIBREOFFICE_MAX_FILE_SIZE, LIBREOFFICE_MEMORY_LIMIT_MB, LibreOfficePoolManager, LibreOfficePoolTimeoutError, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
+import { LIBREOFFICE_ADDRESS_SPACE_BYTES, LIBREOFFICE_MAX_FILE_SIZE, LIBREOFFICE_MEMORY_LIMIT_MB, LibreOfficePoolManager, LibreOfficePoolTimeoutError, libreOfficeDiskBudgetBytes, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
 import { BUILT_IN_ENGINE, engineAllowsRoute, type EngineId } from '../lib/conversions/engine-ids';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError, safeOutputStem };
@@ -325,7 +325,7 @@ async function runHeadlessOffice(
       const { inputPath } = resolveOfficeInputContext(input, src, tempDir);
       const timeout = sizedStageTimeoutMs(options, officeInputBytes(inputPath), OFFICE_STAGE);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
-      const diskLimit = officeInputBytes(inputPath) + LIBREOFFICE_MAX_FILE_SIZE + 64 * 1024 * 1024;
+      const diskLimit = libreOfficeDiskBudgetBytes(officeInputBytes(inputPath));
       await runWithDirectoryGrowthWatch(
         { root: tempDir, limits: { maxBytes: diskLimit, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'LibreOffice', callerSignal: options.signal },
         (watchSignal) =>
