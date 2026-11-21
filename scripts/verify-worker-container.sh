@@ -607,7 +607,9 @@ mkdir -p "$font_home"
 if HOME="$font_home" fc-list >"$work_dir/fc-list.out" 2>&1 && [ -s "$work_dir/fc-list.out" ] && [ -z "$(ls -A "$font_home/.cache/fontconfig" 2>/dev/null)" ]; then
   pass "the font caches of the image are read by the image user: fc-list wrote no cache file into an empty home"
 else
-  fail "fc-list wrote font caches into an empty home ($(ls "$font_home/.cache/fontconfig" 2>/dev/null | wc -l) files): the caches of the image are stale for the image user"
+  # The directory a cache belongs to is the first path written in the file, which names the directories whose caches are stale.
+  stale_dirs="$(for cache in "$font_home"/.cache/fontconfig/*.cache-*; do [ -f "$cache" ] && grep -ao '/usr/[[:graph:]]*' "$cache" | head -n 1; done 2>/dev/null | tr '\n' ' ')"
+  fail "fc-list wrote font caches into an empty home ($(ls "$font_home/.cache/fontconfig" 2>/dev/null | wc -l) files): the caches of the image are stale for the image user (${stale_dirs:-no directory named})"
 fi
 
 if [ "$failures" -eq 0 ]; then
