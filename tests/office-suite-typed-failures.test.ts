@@ -157,7 +157,7 @@ function wordsOf(text: string): Set<string> {
 
 /**
  * The word report of the regression corpus whose text layout aborted LibreOffice 24.2 (Ubuntu 24.04) and converts with the 25.2 and the 26.8 of the worker
- * image (Debian 13; 26.8 since entry 382). Whether the suite of a machine reads it is found from the installed suite itself: a separate `soffice` run prints the file, and the
+ * image (Debian 13; 26.8 since entry 383). Whether the suite of a machine reads it is found from the installed suite itself: a separate `soffice` run prints the file, and the
  * conversion has to give what that run gives.
  */
 describe.skipIf(layoutCrashToolsMissing)('a Word report whose text layout stopped LibreOffice 24.2', () => {
