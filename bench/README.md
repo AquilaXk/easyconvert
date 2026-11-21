@@ -195,6 +195,30 @@ AVIF rows of photographs also depend on the libvips under sharp: the npm package
 
 The patched package library still does not judge the speed of a photograph AVIF row: the npm package builds its aom for size (`-Os`), the worker's stage builds it at `-O3` (entries 121 and 130), so on the VM `photo-b.png`, `kodim23.png` and `clic-paul-itkin-46101.png` read 0.78 to 0.84 of the reference's speed where the x86-64 nightlies read 0.95 to 1.0 (eight runs, 2026-11-14 to 2026-11-20). With the reference's aom built the same way as the package's (the pinned `avifenc` with `-DCMAKE_BUILD_TYPE=MinSizeRel`, `-Os`, libaom 3.12.1) the same three rows read 1.02, 1.02 and 1.02 and the two encoders take 98.3 ms (reference) and 97.7 ms (ours) for `clic-paul-itkin-46101.png`; `-Os` against `-O3` on the reference alone is 1.28 times on 4 threads and 1.33 on one (arm64 VM, 25 interleaved rounds). Judge those three rows on the CI runner, and the VM's reading of them only against a reference built like the library.
 
+## Office rows in the worker image
+
+The shards of the nightly run and the pull request job install the runner's LibreOffice (Ubuntu 24.04, 24.2). The worker image carries 26.8 from
+`trixie-backports` (entry 383 of `docs/policy-decisions.md`), whose Debian packages cannot be installed on an Ubuntu runner, so the nightly job
+`bench-parity-office-image` runs the families that use the suite (`document`, `data`, `cad`) inside the image that `main` names, with
+`scripts/bench-in-worker-image.sh` (entry 386). Both sides of every row meet 26.8 and the image's fonts, and the worker's sandbox runs in the
+container with the flags of `docker-compose.yml`. `vector` is not in that run: its reference side writes AVIF and ICO with the host's ImageMagick,
+which the image's policy and libheif do not allow.
+
+The job has its own `bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json` (`--baseline` and `--gaps`), because the rows
+differ from the runner's: the suite's DXF reader is another one (the reference now draws nothing for several of the plates it drew in part, and
+converts the others to SVG), and it starts about twice as fast, which moves every speed ratio of a row whose reference is the suite. Both files
+start empty and the job cannot fail the run (`continue-on-error`) until they are filled. To fill them, download the report of a night's run
+(`bench-office-image-results`) and run, on the checkout of the commit that night measured:
+
+```
+npm run bench:quality -- --baseline-from-report <report.json> --baseline bench/baseline-office-image.json
+```
+
+then record the speed rows that the run puts below 0.9 in the gap file, and remove `continue-on-error` from the job. The report names the commit,
+the branch and the event of the run, which the command requires. To run it by hand on a Linux host with Docker or rootless Podman:
+`bash scripts/bench-in-worker-image.sh <image> --parity --family document,data,cad --baseline bench/baseline-office-image.json --gaps bench/parity-gaps-office-image.json`
+(on rootless Podman set `CONTAINER_ENGINE=podman BENCH_IMAGE_RUN_FLAGS=--userns=keep-id`).
+
 ## Reference parity
 
 A conversion change merges only when it is at or above the reference tool in both quality and speed. `--parity` runs

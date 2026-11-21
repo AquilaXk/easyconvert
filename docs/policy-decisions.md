@@ -434,6 +434,7 @@ Security
 383. [The worker image installs LibreOffice 26.8 from trixie-backports at a pinned version](#383-the-worker-image-installs-libreoffice-268-from-trixie-backports-at-a-pinned-version)
 384. [A crash of the converter UI in the browser is reported to this site's own endpoint, sanitised, and written as one server log line](#384-a-crash-of-the-converter-ui-in-the-browser-is-reported-to-this-sites-own-endpoint-sanitised-and-written-as-one-server-log-line)
 385. [The font caches of the worker image are written for the user the worker runs as](#385-the-font-caches-of-the-worker-image-are-written-for-the-user-the-worker-runs-as)
+386. [The office rows of the benchmark run nightly inside the worker image, against a baseline and gap file of their own](#386-the-office-rows-of-the-benchmark-run-nightly-inside-the-worker-image-against-a-baseline-and-gap-file-of-their-own)
 
 ---
 
@@ -11470,3 +11471,38 @@ Security
   - **A fixed home for the sandbox:** the jobs of different accounts would share it (the isolation of the profile reset, `libreoffice-pool.ts`, exists to prevent that).
 - **Verified by**: `tests/worker-font-cache.test.ts` (the order of the commands in the font install step, no later font step, the container check), `scripts/verify-worker-container.sh` check 13 in the CI container job, and the measurements above.
 - **Revisit when**: fontconfig stops comparing the nanoseconds, or the layers of an image keep them.
+
+## 386. The office rows of the benchmark run nightly inside the worker image, against a baseline and gap file of their own
+
+- **Date**: 2026-11-22
+- **Status**: Implemented (QA request 2026-11-22: measure the office families against the LibreOffice of the worker image, and make the measurement repeatable). It carries out the TODO line of entry 383. The nightly job cannot fail the run until its baseline is recorded from its first reports; nothing is deployed.
+- **Decision**:
+  - **`.github/workflows/nightly.yml` gets the job `bench-parity-office-image`.** It pulls the worker image that `main` names (public, arm64 only, so it runs on `ubuntu-24.04-arm`; no image is built) and runs `bench:quality --parity` for `document`, `data` and `cad` inside it with `scripts/bench-in-worker-image.sh`, under `ORACLE_STRICT_MODE=1`. The container has the flags of the worker service (no capabilities, no new privileges, `docker/seccomp-worker.json`, a tmpfs `/tmp`), the checkout and its `node_modules` are mounted, the image's own node runs the benchmark, and the Python oracles of the families are unpacked from the pinned wheels (`pip-packages.txt`, the image's Python 3.13) over the image's `dist-packages`. EPUBCheck is the runner's pinned install, run by the image's Java.
+  - **The job has `bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json`** (both empty files, passed with `--baseline` and `--gaps`). `bench/baseline.json` stays the runner's: its rows are recorded on LibreOffice 24.2 and the pull request job and the other nightly shards still run on it. The two files are filled from the job's report with `--baseline-from-report` (`bench/README.md`, "Office rows in the worker image"), and `continue-on-error` comes off then.
+  - **`vector` is not in the job.** Its reference side writes AVIF and ICO with the host's ImageMagick; the image's policy allows only the decoders the worker calls and its libheif has no encoder (`magick ... avif` fails with `WriteBlob Failed`).
+- **Why**:
+  - **The suite changes the rows.** 24.2 on the runner against 26.8 in the image (same corpus, same commit; `document`, `data`, `cad`, quality and speed together, arm64 Linux testbed, ours and the reference in one run each):
+
+    | Family | Quality rows | Reference moved | Ours moved | Ours behind the reference now, not before | Speed rows | Ratio fell below 0.9 |
+    |---|---|---|---|---|---|---|
+    | document | 336 | 21 (13 better, 8 worse) | 4, all worse by 0.0001 to 0.0012 | 2 (below) | 13 | 2 (below) |
+    | data | 151 | 12 (the reference's XLSX is 0.1 % larger) | 0 | 0 | 11 | 0 |
+    | cad | 396 | 69 (19 better, 50 worse) | 6 (3 worse, 3 better, at most 0.0004) | 0 | 26 | 2 (below) |
+
+    - **The reference's DXF reader is another one.** For the hand-made plates the reference now draws nothing in the PDF and PNG for six of them (ink recall and precision 0, extent error 1; 24.2 drew 55 to 83 % of the strokes), draws `cad-lines` as completely as ours, and converts nine to SVG that 24.2 converted in part or not at all (`converts` 0 or 0.5 to 1). The rows our delta to the reference falls on (19 of them, all in `cad`) are the baseline gate's regressions against `bench/baseline.json`: ours did not move, the reference did. No quality row of ours is below the reference.
+    - **Two document rows moved against ours.** `pdf-colour->docx coloured_word_recall`: ours 0.9556, the reference 0.9667 (24.2: 0.9111, within the allowance of 0.03). `doc-gov-001709.html->pdf word_recall`: ours 0.9894, the reference 0.9906 (24.2: equal; allowance 0.02). Both pass the parity rule.
+    - **The suite starts about twice as fast** (`soffice --convert-to pdf` of the one-sheet workbook: 0.32 s on 24.2, 0.14 s on 26.8 in the image), so every ratio of ours to a reference that is the suite drops where ours is native code (`report.docx` to PDF 18.1 to 10.3, `plate-full.dxf` to PDF 20.5 to 7.3, `table.xlsx` to CSV 3.4 to 1.9) and passes, and falls below 0.9 where ours is the suite itself or waits for it: `drawingml-shapes-presentation.pptx` to PDF 0.90 to 0.76 and `workbook.xlsx` to PDF 0.92 to 0.73 (0.50 and 0.50 before entry 385), and DWG to PDF `dwg-example-2004` 1.85 to 0.78 and `dwg-example-2013` 1.80 to 0.81. The ratio of the DWG rows is ours (the reader, then our drawing) against the reader and the suite; our time is the same on both suites.
+    - **No row of ours was refused or hung on 26.8**: every `converts` row of ours is 1 in all three families.
+  - **The arm64 runner is the same measurement for these rows.** The 24.2 run on the arm64 testbed passes `bench/baseline.json` (recorded on x86-64) with no row beyond its tolerance: its only regressions are rows whose tool the testbed lacks (the DWG reader, EPUBCheck). The speed ratios are relative to the reference measured in the same run.
+  - **A runner cannot take the suite itself.** The Debian packages need the libraries of Debian 13 and a newer libc than Ubuntu 24.04. A `soffice` wrapper that chroots into a Debian root was not tried: the worker's sandbox applies a Landlock ruleset (`pid-init --confine`), which refuses the mount calls such a wrapper needs to reach the job's directories. A build from another source was not measured, so it would not be the suite production runs.
+- **Trade-offs**:
+  - **The pull request job still measures 24.2.** A change to the conversion code meets 26.8 in the next night's run, not before the merge. Every job that installs the runner's LibreOffice (the test shards, the pull request parity job, the other nightly shards) has the same limit, and the container job converts one text file with 26.8.
+  - **Two baselines for three families.** A change to a row's code is recorded in both until the runner's LibreOffice moves to 26.x (entry 383, "Revisit when"), when `bench/baseline-office-image.json` replaces the rows of `bench/baseline.json` and the job is folded into the shards.
+  - **The image is the last promoted `main`, not the commit under test.** A change to `Dockerfile.worker` (the pin of the suite, the fonts) shows in the job one deploy later.
+  - **The measurement depends on the registry.** A pull that fails fails the job, which cannot fail the run yet.
+- **Alternatives rejected**:
+  - **A build of the image in the job:** about 3.5 GB of layers from the registry cache, and the libvips build of the cache key is amd64 only, for rows (`document`, `data`, `cad`) that the libvips of the image does not decide.
+  - **A newer LibreOffice from a third party's Ubuntu packages on the runner:** its patch release differs from the image's, so a row that moves would not say whether the cause is the suite of production.
+  - **Re-recording `bench/baseline.json` from the image:** the pull request job and the other shards would then fail every office row on 24.2.
+- **Verified by**: `tests/bench-in-worker-image.test.ts` (the container flags, the mounts, the arguments, the environment that is passed on, the pinned oracles; the job on the arm runner with its families, baseline and gap files, `continue-on-error`), `tests/ci-workflows.test.ts` (the runner of the job), `tests/ci-parity-families.test.ts` (the two files belong to the rows' families), and a run of the script on the arm64 testbed with rootless Podman (`--family data --quick`, exit 0, 0 regressions against the empty files), with the full runs of the table above.
+- **Revisit when**: the first reports of the job exist (record the baseline and the gaps, remove `continue-on-error`), the runner's LibreOffice moves to 26.x, or the worker image is built for amd64 as well.

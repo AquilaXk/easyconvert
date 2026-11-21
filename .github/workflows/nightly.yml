@@ -257,6 +257,98 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  # The office rows against the suite the worker image ships. The shards above install the runner's LibreOffice (Ubuntu 24.04, 24.2); the image
+  # carries 26.8 from trixie-backports (docs/policy-decisions.md, entry 383), and the Debian packages cannot be installed on an Ubuntu runner, so
+  # this job runs the families that use the suite inside the image that production runs: the build deploy-oci.yml promoted to `main`, pulled as
+  # is (it is public and arm64 only, hence the arm runner; no image is built here). Both sides of every row meet that suite and its fonts, and the
+  # worker's sandbox runs in the container with the flags of docker-compose.yml. The numbers are the family's own, quality and speed together,
+  # against their own baseline and gap file: the rows differ from the runner's (the reference's DXF reader is another one, and the suite starts
+  # about twice as fast), so they do not share bench/baseline.json. `vector` stays on the runner: its reference side needs the host's ImageMagick
+  # to write AVIF and ICO. The two files start empty and are filled from this job's report with `--baseline-from-report` (bench/README.md,
+  # "Office rows in the worker image"); until then the job cannot fail the run.
+  bench-parity-office-image:
+    if: inputs.ab_base_ref == ''
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    continue-on-error: true
+    env:
+      OFFICE_IMAGE_FAMILIES: document,data,cad
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # The sandbox of the worker (`unshare -r -n`) runs inside the container and needs unprivileged user namespaces on the host.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      # The same pinned release the other jobs install; the image's Java runs it (scripts/bench-in-worker-image.sh mounts it).
+      - name: Install EPUBCheck
+        env:
+          RELEASE_DOWNLOADS: ${{ runner.temp }}/release-downloads
+        run: |
+          source .github/actions/ci-setup/install-tools.sh
+          task_epubcheck
+
+      - name: Restore the public samples
+        uses: ./.github/actions/bench-corpora
+        with:
+          families: ${{ env.OFFICE_IMAGE_FAMILIES }}
+
+      - name: Pull the worker image of main
+        id: image
+        run: |
+          # The registry name must be lower case; the repository name may not be.
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-worker:main"
+          docker pull --quiet "$image"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "### Worker image" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$image\` ($(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image"), $(docker run --rm --entrypoint soffice "$image" --version))" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run the parity benchmark in the worker image
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          ORACLE_STRICT_MODE: "1"
+          # The heap bound the service runs with (docker-compose.yml).
+          MALLOC_ARENA_MAX: "2"
+        run: >-
+          bash scripts/bench-in-worker-image.sh "$IMAGE" --parity --family "$OFFICE_IMAGE_FAMILIES"
+          --baseline bench/baseline-office-image.json --gaps bench/parity-gaps-office-image.json
+
+      - name: Save the public samples
+        if: always()
+        uses: ./.github/actions/bench-corpora-save
+        with:
+          families: ${{ env.OFFICE_IMAGE_FAMILIES }}
+
+      - name: Publish the parity table
+        if: always()
+        run: |
+          if [ -f bench-results/parity-verdict.md ]; then
+            { echo '### Reference parity: office rows in the worker image'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the benchmark report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bench-office-image-results
+          path: bench-results/
+          if-no-files-found: ignore
+          retention-days: 30
+
   bench-parity-speed:
     if: inputs.ab_base_ref == ''
     needs: sharp-libvips

@@ -30,12 +30,12 @@
     {
       "families": ["*"],
       "rows": "baseline",
-      "match": "^bench/baseline\\.json$"
+      "match": "^bench/baseline(-office-image)?\\.json$"
     },
     {
       "families": ["*"],
       "rows": "gaps",
-      "match": "^bench/parity-gaps\\.json$"
+      "match": "^bench/parity-gaps(-office-image)?\\.json$"
     },
     {
       "families": ["image"],

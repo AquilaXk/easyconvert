@@ -368,9 +368,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 28 on a runner and 2 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(30);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(28);
+  it('reads every job of every workflow file: 29 on a runner and 2 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(31);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(29);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(2);
   });
 
@@ -403,17 +403,20 @@ describe('the runner image of every workflow job', () => {
 
   /**
    * The two jobs of the deploy workflow: the arm64 image build, and the deploy on the runner that is installed on the OCI host. That
-   * runner is registered with no default label, so its one label is the only way a job can reach it.
+   * runner is registered with no default label, so its one label is the only way a job can reach it. The third is the nightly run of the
+   * office rows in the worker image of main (docs/policy-decisions.md, entry 386): the image is arm64 only, so the job runs on the arm
+   * runner of the same pinned version instead of building an image of the other architecture.
    */
-  const DEPLOY_RUNNERS: Record<string, unknown> = {
+  const OTHER_RUNNERS: Record<string, unknown> = {
     'deploy-oci.yml build': 'ubuntu-24.04-arm',
     'deploy-oci.yml deploy': ['easyconvert-production'],
+    'nightly.yml bench-parity-office-image': 'ubuntu-24.04-arm',
   };
 
-  it(`runs every job that names a runner on ${RUNNER_IMAGE}, except the two jobs of the deploy workflow, so that no gate moves with the hosted latest image`, () => {
+  it(`runs every job that names a runner on ${RUNNER_IMAGE}, except the three jobs named above, so that no gate moves with the hosted latest image`, () => {
     const onOtherImage = jobs
       .filter(({ job }) => job['runs-on'] !== undefined)
-      .filter(({ where, job }) => JSON.stringify(job['runs-on']) !== JSON.stringify(DEPLOY_RUNNERS[where] ?? RUNNER_IMAGE))
+      .filter(({ where, job }) => JSON.stringify(job['runs-on']) !== JSON.stringify(OTHER_RUNNERS[where] ?? RUNNER_IMAGE))
       .map(({ where, job }) => `${where}: ${JSON.stringify(job['runs-on'])}`);
     expect(onOtherImage).toEqual([]);
   });

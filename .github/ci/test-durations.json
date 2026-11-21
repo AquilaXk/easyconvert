@@ -120,6 +120,7 @@
   "tests/bench-ebook-corpus.test.ts": 0.1,
   "tests/bench-gate.test.ts": 0,
   "tests/bench-image-jpeg-high.test.ts": 0,
+  "tests/bench-in-worker-image.test.ts": 0.1,
   "tests/bench-metafile-check.test.ts": 0,
   "tests/bench-parity.test.ts": 0.2,
   "tests/bench-pdf-ink.test.ts": 0.2,
