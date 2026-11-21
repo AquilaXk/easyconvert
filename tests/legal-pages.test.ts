@@ -106,7 +106,7 @@ describe('the terms state the free allowance and the paid plans', () => {
         ? ['1. Allowed usage', '2. Packages', '3. Subscriptions', '4. Availability of service', '5. Limitation of liability', '6. Termination', '7. Privacy policy', '8. Copyright policy']
         : ['1. 허용되는 이용', '2. 크레딧 충전', '3. 구독', '4. 서비스 가용성', '5. 책임의 제한', '6. 이용 종료', '7. 개인정보 처리방침', '8. 저작권 정책'];
     expect(titles).toEqual(sections);
-    expect(select(page, 'h3').map((heading) => visibleText(heading))).toEqual(locale === 'en' ? ['Refunds', 'Exclusions'] : ['환불', '제외 사항']);
+    expect(select(page, 'h3').map((heading) => visibleText(heading))).toEqual(locale === 'en' ? ['Event credits', 'Refunds', 'Exclusions'] : ['이벤트 크레딧', '환불', '제외 사항']);
     const text = visibleText(page);
     expect(text).toContain(locale === 'en' ? 'operated by Dongin Jeong, Republic of Korea' : '정동인(대한민국, 이하');
     expect(text).toContain('Paddle.com');

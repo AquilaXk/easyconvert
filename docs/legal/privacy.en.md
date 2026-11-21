@@ -11,10 +11,11 @@ We process personal data only for these purposes:
 - **To convert your files.** We receive your file or the link you give us, convert it, and deliver the result.
 - **To run accounts and API keys.** We create and secure your account, sign you in, and let you manage API keys and webhooks.
 - **To sell and manage paid plans.** We pass the email address of your account to the checkout, record your subscription and its status, and apply the limits of your plan.
+- **Granting and managing event credits.** We record the use and expiry of credits given for an event, stop an account from receiving the same event twice, and take back credits obtained improperly.
 - **To apply the allowance of your plan and protect the service.** We count conversions per day on the free plan and per month on a paid plan, limit request bursts, and find and stop abuse.
 - **To answer your requests.** We answer questions, reports and requests to exercise your rights.
 
-Under the GDPR, the legal basis for the first three purposes is the performance of our contract with you (Art. 6(1)(b)). The basis for the fourth is our legitimate interest in keeping a free service available and secure (Art. 6(1)(f)). Answering a request from an authority is a legal obligation (Art. 6(1)(c)). We do not process personal data for advertising or profiling.
+Under the GDPR, the legal basis for the first four purposes is the performance of our contract with you (Art. 6(1)(b)). The basis for the fifth is our legitimate interest in keeping a free service available and secure (Art. 6(1)(f)). Answering a request from an authority is a legal obligation (Art. 6(1)(c)). We do not process personal data for advertising or profiling.
 
 No law requires you to give us personal data. A conversion on our servers needs the file. An account needs an email address and a password, or a sign-in with Google, because the contract for an account cannot be made without them. A paid plan also needs the payment data that you give to Paddle (section 6). Without an account you can still use EasyConvert within the free allowance.
 
@@ -32,6 +33,7 @@ A conversion that your browser supports runs on your device: its file is not upl
 | Sign in with Google | Name, email address and profile picture, received from Google | Only if you sign in with Google |
 | API keys | Key name, key prefix and hash, scopes, allowed IP addresses, webhook URL and encrypted signing secret, the accepted version of the terms, expiry, time of last use, usage | When you create an API key |
 | Subscription | Paddle's customer id and subscription id, the plan, the status, the end of the paid period, and the date a cancellation takes effect. No card number, address or amount | When you subscribe, and each time Paddle reports a change |
+| Event credits | The event ID, the credits granted and the credits left, the time of the grant, the end date, the time and the amount of a take-back, the reason for the grant (a short text the operator writes) and the name of the tool that granted it. For each event: the total credits granted, the number of accounts and the list of their account IDs | When event credits are granted, and when they are used or taken back |
 | Payment data held by Paddle | Name, email address, billing country and address, payment method, tax data, transaction history, IP address. Paddle collects them at checkout, and we do not receive them | When you pay for a paid plan |
 | Failed webhook deliveries | Target URL, event, the message (job id, file name, result link, failure), the encrypted signing secret, status and error, times | When a delivery to your webhook fails |
 | Contact | Your email address and what you write to us | When you write to support@aquilaxk.site |
@@ -54,6 +56,7 @@ We do not ask for sensitive data or unique identification numbers. We do not sel
 | Daily allowance counters | Until the end of the day (UTC). |
 | Monthly allowance counters of a paid plan | Until the end of the month of the subscription, so for at most a month after the first conversion in it. |
 | Subscription record | Until you ask us to delete your account. Paddle keeps the payment data under its own privacy notice. |
+| Event credit record | Until you ask us to delete your account. Deleting the account also removes its entry from the account list of each event. The totals of an event (credits granted, number of accounts) hold no personal data and stay. A backup can still hold the record until that backup is deleted, at most 7 days after it was made |
 | Request burst counters | 1 hour after the last request. |
 | Upload allowance records | 2 days. |
 | Sign-in attempt limits | 5 minutes. |
@@ -68,7 +71,7 @@ These periods are the settings in force on the date at the top of this page. Whe
 
 When a retention period ends, the system deletes the file or the record automatically, and it cannot be restored from the system. The one exception is a copy in a backup of the records (section 3), which stays until that backup is deleted, at most 7 days after it was made. We make no backups of uploaded files or results, and we use a backup only to restore the service after a failure.
 
-When you ask us to delete your account, the operator checks that the request comes from the account's email address. The operator then deletes the account, its API keys and their signing secrets, its conversion jobs and their files, its failed webhook deliveries, its subscription record and its usage records with a tool that removes each of these records, and tells you when it is done. The operator does this within 2 days of the verified request. Copies of the account in backups are deleted within the following 7 days and 6 hours, so everything is gone within 10 days of your request. When the service is restored from a backup, the operator deletes again every account that was deleted after that backup was made. Deleting an account does not cancel a subscription. Cancel it first from your dashboard, or tell us, so that Paddle does not charge you again. The payment data held by Paddle is deleted by Paddle, as its privacy notice describes. The system deletes an account whose email address is not confirmed within 30 days of its creation the same way, without a request. An account that holds a purchase is not deleted.
+When you ask us to delete your account, the operator checks that the request comes from the account's email address. The operator then deletes the account, its API keys and their signing secrets, its conversion jobs and their files, its failed webhook deliveries, its subscription record, its event credit records and its usage records with a tool that removes each of these records, and tells you when it is done. The operator does this within 2 days of the verified request. Copies of the account in backups are deleted within the following 7 days and 6 hours, so everything is gone within 10 days of your request. When the service is restored from a backup, the operator deletes again every account that was deleted after that backup was made. Deleting an account does not cancel a subscription. Cancel it first from your dashboard, or tell us, so that Paddle does not charge you again. The payment data held by Paddle is deleted by Paddle, as its privacy notice describes. The system deletes an account whose email address is not confirmed within 30 days of its creation the same way, without a request. An account that holds a purchase is not deleted.
 
 ## 5. Provision to third parties
 
@@ -152,4 +155,4 @@ If you need help with a privacy problem, you can also contact these Korean bodie
 
 ## 15. Changes to this policy
 
-The date at the top of this page is the version of this policy. We announce changes on this website before they take effect, and we keep earlier versions available. This version adds Paddle as the payment provider of the paid plans.
+The date at the top of this page is the version of this policy. We announce changes on this website before they take effect, and we keep earlier versions available. This version adds Paddle as the payment provider of the paid plans. It also adds the records of event credits (event ID, grants and use) to the data we process.

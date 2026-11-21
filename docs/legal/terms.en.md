@@ -15,11 +15,21 @@ By using the EasyConvert website or API, you accept these terms. EasyConvert is 
 - The credits are added to your account once the payment is received. They do not expire as long as your account exists. While you have package credits, your account has the limits of a paid plan that the pricing page shows.
 - Payments for packages are non-refundable, except as section 4 describes.
 
+### Event credits
+
+- Event credits are conversion credits that we add to an account at no charge, for an event or an announcement. They are not purchased credits and have no cash value.
+- You cannot transfer, gift or sell event credits, and you cannot get them back as cash or as a payment. They are not refundable.
+- An event can set an end date for its credits. Credits past their end date cannot be used. Credits without an end date stay while your account exists. An end date given as a day lasts until the end of that day in Korean time (UTC+9). The end date is shown with the event announcement and on the usage page of your dashboard.
+- Credits are used in this order: the daily credits of the free plan or the credits of a subscription first, then event credits, then package credits last. When you have several event credits, the ones that end first are used first, and those without an end date after them. Credits with the same end date are used in the order you received them.
+- Event credits do not change your plan. With event credits, the limits of the free plan still apply. The limits of a paid plan apply only while you have a subscription or package credits.
+- An account can receive the credits of an event once, and only an account with a confirmed email address receives them. An account with a payment hold, a suspension or a deletion in progress does not receive them. We can take back event credits that were obtained in a way that is not allowed, for example by creating several accounts. When we take them back, the credits left are removed and credits already used are not reversed. Credits taken back cannot be received again from the same event.
+- When your account is deleted, its remaining event credits end with it.
+
 ## 3. Subscriptions
 
 - A subscription gives a number of conversion credits every month at a lower price per credit than a package. You choose the number of credits. The [pricing page](/pricing) shows the price of each subscription and the limits of the paid plans, which packages and subscriptions share.
 - A subscription renews automatically every month, and we charge its price each time, until you cancel it. The price shown at checkout includes taxes or adds them, as the checkout shows.
-- A subscription adds its credits every month, from the day your subscription renews. Credits you do not use in a period do not carry over. Subscription credits are used before package credits. The free plan counts credits per day.
+- A subscription adds its credits every month, from the day your subscription renews. Credits you do not use in a period do not carry over. Subscription credits are used before event credits and package credits. The free plan counts credits per day.
 - You can cancel a subscription at any time from your dashboard. The cancellation takes effect at the end of the period you have paid for. Until then you keep its credits and limits. After that your account returns to the free plan, or keeps the paid limits while it has package credits, and we charge you no more.
 - You can switch to another subscription at any time. The new one applies at once, and the credits left in the current period do not carry over.
 - We can change the price of a package or a subscription. We announce the new price on the pricing page and tell you by email at least 30 days before it applies to your next renewal or purchase. If you do not accept it, cancel before that renewal.
@@ -34,6 +44,7 @@ By using the EasyConvert website or API, you accept these terms. EasyConvert is 
 
 - Payments for packages and subscriptions are non-refundable, except where the law requires otherwise, for example a statutory right of withdrawal.
 - Canceling a subscription does not refund the rest of the paid period.
+- Event credits are given free of charge and are not refunded.
 - Refund requests go through Paddle, which handles them within the time and under the rules of its [refund policy](https://www.paddle.com/legal/refund-policy).
 
 ### Exclusions
@@ -50,7 +61,7 @@ By using the EasyConvert website or API, you accept these terms. EasyConvert is 
 
 ## 6. Termination
 
-- You can stop using EasyConvert at any time. To delete your account, send a request through the [contact page](/contact). We delete it within 10 days, as section 4 of the [Privacy Policy](/privacy) describes. Deleting the account does not cancel a charge already made, and its unused package credits end with it.
+- You can stop using EasyConvert at any time. To delete your account, send a request through the [contact page](/contact). We delete it within 10 days, as section 4 of the [Privacy Policy](/privacy) describes. Deleting the account does not cancel a charge already made, and its unused package credits and event credits end with it.
 - We can suspend or end your access when you break these terms or the Acceptable Use Policy, or when a law or an authority requires it. Unless the law or the urgency of the case prevents it, we tell you the reason first.
 
 ## 7. Privacy policy
