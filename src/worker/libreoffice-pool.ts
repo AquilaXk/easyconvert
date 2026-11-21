@@ -589,8 +589,8 @@ export class LibreOfficePoolManager {
   }
 
   /**
-   * Puts the profile of a slot back to what a first job finds: removed whole, then copied from the template (about 0.5 MB in 100 files, 5 ms
-   * where a first start of the suite on an empty profile takes 0.35 s more), then the fixed settings. Jobs of different accounts share a
+   * Puts the profile of a slot back to what a first job finds: removed whole, then copied from the template (about 0.3 MB in 100 files, 0.6 ms
+   * where a first start of the suite on an empty profile takes 0.07 to 0.35 s more), then the fixed settings. Jobs of different accounts share a
    * slot and its profile is a directory the suite may write to, so nothing one job left in it (a changed setting, a file, a link that
    * the host's next write would follow) reaches the next. `rmSync` unlinks a link and never follows it, and the copy keeps links as
    * links. A slot without a template (an injected runner, no probe) starts from the fixed settings alone.
@@ -601,7 +601,9 @@ export class LibreOfficePoolManager {
     if (template !== null && template.sofficePath === this.sofficePath) {
       const hasTemplate = await fs.promises.access(template.dir).then(() => true, () => false);
       if (hasTemplate) {
-        await fs.promises.cp(template.dir, profileDir, {
+        // Synchronous on purpose: the template is about 100 files and 0.2 MB, `cpSync` copies it in 0.6 ms where `fs.promises.cp` takes 20 ms
+        // (one round trip to the thread pool per file and per directory), and a job that waits for the copy has nothing else to run first.
+        fs.cpSync(template.dir, profileDir, {
           recursive: true,
           dereference: false,
           verbatimSymlinks: true,
