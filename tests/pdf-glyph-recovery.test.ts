@@ -74,3 +74,25 @@ describe('private-use characters', () => {
     expect(recoverUnmappedGlyphs('\u0001\u0002\u0003', font)).toEqual({ text: '⎛©', unmapped: 1 });
   });
 });
+
+describe('a Type 3 font whose glyphs are named by the characters they draw', () => {
+  // The bitmap fonts of govdocs1-004647.pdf (dvips through Ghostscript): `/.`, `/,`, `/2`, `/(` beside `/a` to `/z`.
+  const text: RecoverableFont = { name: 'Type3', type: 'Type3', differences: names({ 1: '.', 2: ',', 3: '(', 4: '2', 5: ')', 97: 'a', 98: 'b' }) };
+
+  it('reads each name as its character', () => {
+    expect(recoverUnmappedGlyphs('\u0001\u0002\u0003\u0004\u0005', text)).toEqual({ text: '.,(2)', unmapped: 0 });
+  });
+
+  it('reads no name as a character in a font that names few glyphs so (a figure draws one glyph over and over)', () => {
+    const figure: RecoverableFont = { name: 'Type3', type: 'Type3', differences: names({ 0: ',' }) };
+    expect(recoverUnmappedGlyphs('\u0000\u0000', figure)).toEqual({ text: '', unmapped: 2 });
+    const few: RecoverableFont = { name: 'Type3', type: 'Type3', differences: names({ 1: '.', 2: ',', 3: '(' }) };
+    expect(recoverUnmappedGlyphs('\u0001', few)).toEqual({ text: '', unmapped: 1 });
+  });
+
+  it('reads no name as a character in a font that is not Type 3, and leaves out names of several characters and control characters', () => {
+    expect(recoverUnmappedGlyphs('\u0001', { ...text, type: 'Type1' })).toEqual({ text: '', unmapped: 1 });
+    const odd: RecoverableFont = { ...text, differences: names({ 1: 'leaderdot', 2: '\f', 3: '\u000b', 4: '.', 5: ',', 6: '(', 7: ')' }) };
+    expect(recoverUnmappedGlyphs('\u0001\u0002\u0003\u0004', odd)).toEqual({ text: '.', unmapped: 3 });
+  });
+});

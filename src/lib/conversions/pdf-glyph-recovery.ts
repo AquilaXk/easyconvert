@@ -12,6 +12,8 @@ import { isSymbolFontName, mapCorporatePuaSymbol, mapSymbolFontCharacter } from 
  *  - the name the font's encoding gives the code (the base encoding and its /Differences), through the Adobe Glyph List
  *    rules of pdf-glyph-names.ts: pdfjs maps `fi`, but not the `s_s` and `e_t_t` that a layout program writes for the
  *    ligatures of a typeface;
+ *  - for a Type 3 font that names its glyphs by the characters they draw (a bitmap font that dvips or Ghostscript wrote: `/.`,
+ *    `/,`, `/(`, `/2`), the character the name is, which the glyph list does not know;
  *  - for the pi fonts of Adobe (MathematicalPi, Universal-Greek-with-Math-Pi), the catalogue names the glyph list lacks
  *    (`H11001`, `H9262`, pdf-pi-glyph-names.ts);
  *  - for the Symbol, Wingdings and Webdings families, the symbol-font tables of the office readers (symbol-font-map.ts)
@@ -39,6 +41,10 @@ const PRIVATE_USE_BMP_END = 0xf8ff;
 const SINGLE_BYTE_CODES = 0x100;
 const SUBSET_TAG = /^[A-Z]{6}\+/;
 const NOTDEF_CODE = 0;
+/** The fewest glyphs named by one character that make a Type 3 font a font of text: a figure's font names one or two. */
+const MIN_CHARACTER_NAMES = 4;
+const SPACE = 0x20;
+const DELETE = 0x7f;
 const NOTDEF_NAME = '.notdef';
 const TYPE3_FONT = 'Type3';
 
@@ -106,11 +112,34 @@ function isNotdefCode(code: number, font: RecoverableFont): boolean {
   return name === null || name === NOTDEF_NAME;
 }
 
+/** The character a glyph name is, when it is one printable character (`.`, `(`, `2`): dvips and Ghostscript name the glyphs of a bitmap font so. */
+function characterName(name: string): string | null {
+  const codePoint = name.codePointAt(0);
+  return codePoint !== undefined && name.length === String.fromCodePoint(codePoint).length && codePoint > SPACE && codePoint !== DELETE ? name : null;
+}
+
+const characterNamedFonts = new WeakMap<RecoverableFont, boolean>();
+
+/** Whether the glyphs of a Type 3 font are named by the characters they draw: at least MIN_CHARACTER_NAMES of its codes have a one-character name. */
+function isNamedByCharacters(font: RecoverableFont): boolean {
+  let named = characterNamedFonts.get(font);
+  if (named === undefined) {
+    const names = new Set<string>();
+    for (const name of font.differences ?? []) if (typeof name === 'string' && characterName(name) !== null) names.add(name);
+    named = font.type === TYPE3_FONT && names.size >= MIN_CHARACTER_NAMES;
+    characterNamedFonts.set(font, named);
+  }
+  return named;
+}
+
 function readNamedGlyph(code: number, font: RecoverableFont): string | null {
   if (isNotdefCode(code, font)) return '';
   const name = glyphNameAt(code, font);
   if (name === null) return null;
-  const listed = glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) }) ?? piGlyphNameToText(name, fontNameOf(font));
+  const listed =
+    glyphNameToText(name, { dingbats: isDingbatsFontName(fontNameOf(font)) }) ??
+    piGlyphNameToText(name, fontNameOf(font)) ??
+    (isNamedByCharacters(font) ? characterName(name) : null);
   const text = listed === null ? null : withSpecialPrivateUse(listed);
   return text !== null && !hasUnmappedGlyphs(text) ? text : null;
 }
