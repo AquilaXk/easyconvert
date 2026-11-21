@@ -20,7 +20,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 - Close the gaps the 2026-11-20 comparison with self-hosted open-source converters found (results in the session scratch `compare/tables.md`): PDF to DOCX keeps too few pages (10-page PDF gives 6 pages, page SSIM 0.68 vs 0.87); HTML to PDF waits ~30 s on unreachable external hosts; MP3 from low-rate sources is written at ~160 kbps (16 kHz mono); small MP4 to WebM grows 1.33x; PDF compress leaves small files at 0.99; skewed Korean scans lose reading order; LibreOffice is 25.2 (others ship 26.x).
 - PDF to DOCX: wire the pdf2docx layout translation kept on branch `feat/pdf-docx-pdf2docx` (MIT, matched the Python on 34 files) once the writer can set a paragraph beside a table or the reader gives per-glyph advances (entry 362); remaining gaps are wrap drift on justified text (000353, 000572) and extra pages (000018, 000572, 000618, 001135).
-- Fix the remaining live-sweep refusals of 2026-11-20: SVG `<text>` to EMF/WMF/CGM, CB7/CBT to PDF, SHW to PDF, CHM to EPUB (calibre `lstrip` on None), HTML with a CSS backslash escape to PDF, ICNS without PNG/JPEG members, HWP 3.0, TOML with an empty key to XML, PSB headers, RAR method 0x33 in the extract tool, and RM/WTV same-format output quality.
 - Refuse the legacy workbook whose directory is cut short and whose FAT entry for it is lost (entry 381: `gd-122861.xls` to PDF prints 1,218 pages of binary); follow the directory chain to its end marker only where it does not refuse `gd-200188.xls`.
 
 ## Speed

@@ -14,6 +14,7 @@ import {
 } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
+import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * XML data conversion against independent oracles: Python's minidom (expat) builds the
@@ -351,6 +352,19 @@ describe('JSON to XML', () => {
     const err = await rejection(jsonToXml({ '': 1, _: 2 }));
     expect(err).toBeInstanceOf(DataRepresentationError);
     expect(err.message).toBe('JSON keys "" and "_" would both become the XML element <_>.');
+  });
+
+  // The sweep of 2026-11-20 answered this file with "An empty JSON key cannot become an XML element name" (`"" = "src"` of `package-dir`).
+  oracleTest('converts the pyproject.toml of rarfile, whose package-dir table has an empty key', ['xmllint', 'python3'], async (ctx) => {
+    const sample = await requireRealworldSample(ctx, 'rarfile-pyproject.toml');
+    const xml = (await convertFile(sample.bytes, 'toml', 'xml', {}, 'pyproject.toml')).buffer;
+    assertWellFormedXml(xml);
+    const tomlValue = (keys: string): string =>
+      runOracle('python3', ['-c', `import sys, tomllib; d = tomllib.load(open(sys.argv[1], "rb")); print(d${keys}, end="")`, sample.path]);
+    const xmlValue = (xpath: string): string => withTempFile(xml, '.xml', (file) => runOracle('xmllint', ['--xpath', `string(${xpath})`, file])).replace(/\n$/, '');
+    expect(tomlValue('["tool"]["setuptools"]["package-dir"][""]')).toBe('src');
+    expect(xmlValue('/*/tool/setuptools/package-dir/_')).toBe('src');
+    expect(xmlValue('/*/project/name')).toBe(tomlValue('["project"]["name"]'));
   });
 
   oracleTest('writes a JsonML-shaped array without the envelope through the generic mapping', ['xmllint'], async () => {

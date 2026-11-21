@@ -1,6 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import sharp from 'sharp';
 import { afterAll, describe, expect, it } from 'vitest';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { MAX_INPUT_PIXELS_ENV } from '../src/lib/conversions/image-input-limit-config';
@@ -111,6 +113,27 @@ describe.skipIf(needsMagick)('legacy raster formats with known pixels', () => {
     const decoded = await decodeRgba(await toPng(psb, 'psb'));
     expect([decoded.width, decoded.height]).toEqual([2, 2]);
     expect(decoded.data).toEqual(rgbaBytes(FOUR_COLOURS));
+  });
+
+  // Photoshop writes run-length PSB (4-byte row counts); ImageMagick's psb coder is the writer here, the pixels are the test's own.
+  it('decodes a run-length Photoshop Large Document that ImageMagick wrote from known pixels', async () => {
+    const width = 40;
+    const height = 12;
+    const pixels: RgbaPixel[] = Array.from({ length: width * height }, (_, i) => ({ r: (i * 7) % 256, g: i < 200 ? 30 : 220, b: Math.floor(i / width) * 20, a: 255 }));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'psb-rle-'));
+    try {
+      const source = path.join(dir, 'source.png');
+      const psb = path.join(dir, 'large.psb');
+      await sharp(rgbaBytes(pixels), { raw: { width, height, channels: 4 } }).png().toFile(source);
+      execFileSync(findMagick() as string, [source, '-compress', 'RLE', `psb:${psb}`]);
+      const bytes = fs.readFileSync(psb);
+      expect([bytes.toString('latin1', 0, 4), bytes.readUInt16BE(4)]).toEqual(['8BPS', 2]);
+      const decoded = await decodeRgba(await toPng(bytes, 'psb'));
+      expect([decoded.width, decoded.height]).toEqual([width, height]);
+      expect(decoded.data).toEqual(rgbaBytes(pixels));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('decodes an uncompressed A8R8G8B8 DDS surface', async () => {

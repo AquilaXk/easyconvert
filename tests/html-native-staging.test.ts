@@ -13,6 +13,7 @@ import { executeWorkerConversion, libreOfficePool } from '../src/worker/engines'
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool, type ExternalOracleTool } from './helpers/differential-oracle';
 import { pdfLinkTargets as linkTargets } from './helpers/html-pdf-oracle';
+import { requireRealworldSample } from './helpers/realworld-sample';
 
 /**
  * HTML bound for LibreOffice is rebuilt from the parsed tree instead of being passed on as raw
@@ -317,6 +318,21 @@ describe('CSS checks before LibreOffice', () => {
       });
     });
   }
+
+  // Word's HTML output writes the Windows font names of East Asian text as escapes in a string; the sweep of 2026-11-20 refused this page for it.
+  oracleTest(
+    'converts opf-lorem-ipsum.htm, whose style sheet writes font names as CSS escapes, to a PDF with its text',
+    LIBREOFFICE_TOOLS,
+    async (ctx) => {
+      const sample = await requireRealworldSample(ctx, 'opf-lorem-ipsum.htm');
+      const staged = await stageHtmlForNativeEngine(sample.bytes.toString('utf-8'));
+      expect(staged.html).not.toContain('\\');
+      const { value, error } = await convertHtml(sample.bytes.toString('utf-8'));
+      expect(error).toBeUndefined();
+      expect({ engine: NATIVE_ENGINE.test(value!.engineUsed), text: normalizedText(value!.buffer).slice(0, 15) }).toEqual({ engine: true, text: 'Variatio Ipsius' });
+    },
+    LIBREOFFICE_TIMEOUT_MS
+  );
 
   // A rule whose selector needs an escape for a symbol (`.sm\:flex`, `.w-1\/2`: every page Tailwind CSS styled) cannot be passed on as written
   // or as decoded, and LibreOffice cannot match it either; the rule is left out and reported, and the rest of the style sheet stays.
