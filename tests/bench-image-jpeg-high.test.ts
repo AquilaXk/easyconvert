@@ -43,9 +43,7 @@ describe('JPEG rows over 88 to 96', () => {
 
   it('leaves out SSIMULACRA 2 when the tool is not installed', () => {
     const metrics = rowsOf(1, false).map((row) => row.metric);
-    expect(metrics).not.toContain('ssimulacra2');
-    expect(metrics).not.toContain('bd_rate_ssimulacra2');
-    expect(metrics).toContain('bd_rate_psnr');
+    expect(metrics.sort()).toEqual(['bd_rate_psnr', 'bd_rate_ssim', 'bytes', 'psnr', 'ssim']);
   });
 
   it('pools the BD-rates of PSNR and SSIM into a class row', () => {
