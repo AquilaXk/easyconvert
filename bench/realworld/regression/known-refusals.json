@@ -19,5 +19,12 @@
     "detail": "^CompoundFileStructureError: Corrupt CFBF container: the sector chain starting at sector \\d+ reaches sector \\d+, which the file does not hold\\.$",
     "reason": "The file is a copy cut off at 598,016 bytes (1,167 sectors) of a larger one: its header lists 260 FAT sectors, the first directory sector is sector 33,225 and the DIFAT starts at sector 32,963, none of them in the file. xlrd refuses it ('MSAT extension: accessing sector 32963 but only 1167 in file') and the suite cannot open it as a storage, so its type detection imported the container bytes as text (364 pages of binary), which was the 'ok' of the baseline; the pre-check of entry 381 ends that.",
     "issue": 783
+  },
+  {
+    "file": "gd-122861.xls",
+    "source": "xls",
+    "detail": "^CompoundFileStructureError: Corrupt CFBF container: the .xls file has a malformed OLE2 directory or allocation table\\.$",
+    "reason": "The file is a copy cut off at 1,198,582 bytes (2,339 whole sectors and 502 bytes of the next) of a larger one: its header names sector 2,339 as the first directory sector, and that sector is the cut tail of a stream (its first 128-byte slot is a stream entry named 'Entry', not the root storage), so the FAT entry that ended its chain is in the cut part. Apache POI refuses a property table whose first entry is not the root (PropertyTable.getRoot) and the suite cannot open it as a storage, so its type detection imported the container bytes as text (1,218 pages of binary to PDF), which was the 'ok' of the baseline; the pre-check of entry 381 ends that.",
+    "issue": 783
   }
 ]

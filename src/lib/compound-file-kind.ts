@@ -156,7 +156,12 @@ export type CompoundFileRoot =
    * The directory lies past the bytes given: no first directory sector in them, or no whole sector of it. `directorySector` is set when
    * the bytes hold no byte at all of the first directory sector: a reader that was given the whole file reports it as a sector the
    * file does not hold. A first sector that the file cuts short is not set: the parser that reads the file in full takes the bytes
-   * that are there (olefile `nb_sect`, the last sector possibly cut short), as `gd-200188.xls` of 25,087 bytes needs.
+   * that are there (olefile `nb_sect`, the last sector possibly cut short), as `gd-200188.xls` of 25,087 bytes needs. Its first entry
+   * must still be the root storage when the cut sector holds a whole slot: Apache POI `PropertyTable.getRoot` (poifs/property/PropertyTable.java
+   * lines 145-153, apache/poi trunk c94ee8ad of 2026-11-21) refuses a table whose first property is not a root, and
+   * `PropertyTable` lines 99-102 read a short block as far as it goes. `gd-122861.xls` ends in a sector of 502 bytes that holds
+   * the tail of a stream, and its first slot is a stream entry. olefile logs 'incorrect OLE root entry' (olefile.py line 804,
+   * decalage2/olefile c35fb427) as a defect it does not raise by default.
    */
   | { status: 'unreadable'; directorySector?: number }
   /** The bytes cannot be a compound file's directory: a header no reader accepts, a first entry that is not the root, or a chain or tree that returns to itself. */
@@ -273,7 +278,11 @@ function* readDirectoryChain(
     if (read.has(sector)) throw new MalformedDirectory();
     read.add(sector);
     const bytes = yield { offset: (sector + 1) * sectorBytes, length: sectorBytes };
-    if (bytes.length < sectorBytes) return { entries, classId, chainEnded: false, firstSectorAbsent: sector === firstSector && bytes.length === 0 };
+    if (bytes.length < sectorBytes) {
+      // A first sector cut short still holds its first entry when it holds one whole slot, and that entry must be the root storage.
+      if (sector === firstSector && bytes.length >= CFBF_DIRECTORY_ENTRY_BYTES && bytes[ENTRY_TYPE_OFFSET] !== ROOT_STORAGE) throw new MalformedDirectory();
+      return { entries, classId, chainEnded: false, firstSectorAbsent: sector === firstSector && bytes.length === 0 };
+    }
     const view = new DataView(bytes.buffer, bytes.byteOffset, sectorBytes);
     if (sector === firstSector) classId = guidText(bytes.subarray(CLASS_ID_OFFSET, CLASS_ID_OFFSET + CLASS_ID_BYTES));
     for (let at = 0; at < sectorBytes; at += CFBF_DIRECTORY_ENTRY_BYTES) {
