@@ -18,6 +18,8 @@ export interface StyledRun {
   color?: string;
   /** The fill behind a run of light text, as six hex digits; the run keeps its light colour only with it. */
   fill?: string;
+  /** How wide the writer sets the glyphs against its own face, in percent, where the page's face is narrower or wider than the writer's. */
+  widthPercent?: number;
 }
 
 /** One line of text, or one cell-wide piece of a row, in logical (reading) order. */

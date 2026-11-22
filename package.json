@@ -55,6 +55,7 @@
     "@formulajs/formulajs": "^4.6.1",
     "@paddle/paddle-js": "^1.6.6",
     "@paddle/paddle-node-sdk": "^3.11.1",
+    "@pdf-lib/standard-fonts": "^1.0.0",
     "@prometheus-io/client": "^0.16.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

@@ -19,7 +19,9 @@ import { LayoutBudget } from './limits';
 import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { hangShapes, type BlockOrigin, type BodyBlocks } from './figures';
-import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections } from './page-flow';
+import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections, type PageSetup } from './page-flow';
+import { faceWidthPercents, setFaceWidths } from './face-width';
+import { WrapMetrics } from './wrap-fit';
 import { hexOf, PageInk, readableRuns } from './ink';
 import { assembleLists, bodySizeOf, headingLevels, inlineRuns } from './structure';
 import { detectLatticeTables, detectStreamTables, tableSegment } from './tables';
@@ -307,13 +309,14 @@ interface RowGrowth {
 
 function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk, flow?: PageFlow, growth?: RowGrowth): TableBlock {
   const columnEdges = columnEdgesOf(table);
+  const scale = flow?.tableScale(table.box.x1 - table.box.x0) ?? 1;
   const rows: TableCellBlock[][] = table.rows.map((row, rowIndex) => {
     let column = 0;
     let needed = 0;
     const cells = row.map((cell) => {
       const box = ink?.active ? cellTextBox(cell) : null;
       const fill = box ? ink?.fillBehind(table.pageNumber, box) : undefined;
-      const inCell = flow?.cell({ y0: table.rowEdges?.[rowIndex], y1: table.rowEdges?.[rowIndex + 1], x0: columnEdges[column], x1: columnEdges[column + cell.colSpan] });
+      const inCell = flow?.cell({ y0: table.rowEdges?.[rowIndex], y1: table.rowEdges?.[rowIndex + 1], x0: columnEdges[column], x1: columnEdges[column] + (columnEdges[column + cell.colSpan] - columnEdges[column]) * scale });
       column += cell.colSpan;
       const paragraphs = cell.paragraphs.map((paragraph) =>
         formatted(paragraphBlockOf(paragraph, bodySize, cell.header, ink, ink?.active ? fill !== undefined : undefined), inCell?.paragraph(paragraph, 1))
@@ -341,6 +344,14 @@ function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk, flo
     bordered: table.kind === 'lattice',
     ...(rules ? { border: { color: hexOf(rules.color), widthPt: rules.width } } : {}),
   };
+}
+
+/** Every paragraph the blocks hold, those of table cells too. */
+function paragraphsIn(blocks: readonly PageBlock[]): Paragraph[] {
+  return blocks.flatMap((block) => {
+    if (block.kind === 'paragraph') return [block.paragraph];
+    return block.kind === 'table' ? block.table.rows.flat().flatMap((cell) => cell.paragraphs) : [];
+  });
 }
 
 /** The boxes of the tables each page draws as grids: its ruled tables but those that box labels in several colours. */
@@ -440,11 +451,11 @@ interface PageKeeping {
   margins: DocumentMargins;
 }
 
-function pageKeepingOf(blocks: PageBlock[], furniture: PageFurniture, measured: DocumentMargins, pageWidth: number): PageKeeping {
+function pageKeepingOf(blocks: PageBlock[], furniture: PageFurniture, measured: DocumentMargins, pageWidth: number, wrap?: PageSetup['wrap']): PageKeeping {
   const tops = pageTopsOf(blocks, furniture.header, furniture.headerPages);
   const margins = pageMarginsOf(measured, tops);
   const columned = blocks.map((block) => ({ pageNumber: pageOfBlock(block), columns: block.columns, boxes: block.kind === 'paragraph' ? block.paragraph.lines.map((line) => line.box) : [blockBox(block)] }));
-  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts }), framed: irregularColumnPages(columned), tops, margins };
+  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts, wrap }), framed: irregularColumnPages(columned), tops, margins };
 }
 
 /** The margins of a document that keeps its pages: the page's own at the top, and none at the bottom, so a page whose lines come out a hair taller does not start another page. */
@@ -757,7 +768,11 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[], opti
     bodySize
   );
 
-  const keeping = options.pages ? pageKeepingOf(blocks, furniture, marginsOf(layouts), pages[0]?.width ?? 0) : undefined;
+  const bodyFont = dominantFont(paragraphs, fonts);
+  // A document that keeps its pages sets each paragraph to wrap where the page's lines did, in the face the writer sets the text in.
+  const wrap = options.pages ? { metrics: new WrapMetrics(bodyFont), bodySize } : undefined;
+  if (wrap) setFaceWidths(paragraphsIn(blocks), faceWidthPercents(pages, fonts, wrap.metrics));
+  const keeping = options.pages ? pageKeepingOf(blocks, furniture, marginsOf(layouts), pages[0]?.width ?? 0, wrap) : undefined;
   const margins = keeping?.margins ?? marginsOf(layouts);
   const body = bodyOf(blocks, { bodySize, levels, ink, flow: keeping?.flow, framed: keeping?.framed });
   if (ink.active) hangShapes(body, pages, ink, gridBoxesOf(layouts, ink));
@@ -771,7 +786,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[], opti
     pageHeightPt: first?.height ?? 0,
     margins,
     bodySize,
-    bodyFont: dominantFont(paragraphs, fonts),
+    bodyFont,
     headingSizes: headingSizesOf(levels),
     pageCount: pages.length,
     ...(options.pages ? { pageFlow: true as const, ...furnitureDistances(furniture, first?.height ?? 0) } : {}),

@@ -65,6 +65,8 @@ export interface Inline {
   color?: string;
   /** Background of the run as six hex digits (white text on a coloured badge). */
   shading?: string;
+  /** Horizontal scale of the glyphs in percent (a PDF page set in a face narrower or wider than the one the document is written in). */
+  widthPercent?: number;
   image?: InlineImage;
   note?: NoteReference;
   /** A named position other parts of the document link to. */

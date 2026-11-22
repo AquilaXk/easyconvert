@@ -1,5 +1,6 @@
 import type { Block, DocumentMargins, ParagraphFormat, Section, TableBlock } from '../document-model/model';
 import type { Box, DetectedTable, LayoutLine, Paragraph } from './types';
+import { type WrapMetrics, wrappingIndent } from './wrap-fit';
 
 /**
  * The spacing, indents and page starts of a PDF's pages, for a writer of a flowing document that keeps the look of the pages: a
@@ -98,6 +99,8 @@ export interface PageSetup {
   margins: DocumentMargins;
   pageWidth: number;
   pageTops: ReadonlyMap<number, number>;
+  /** The face the writer sets the text in and the size it sets a paragraph of the body's size in, so that a paragraph is made to wrap where the page's lines did. */
+  wrap?: { metrics: WrapMetrics; bodySize: number };
 }
 
 /** What the writer of a paragraph needs of one page of a document, and where the flow stands after the last thing written. */
@@ -138,6 +141,12 @@ export class PageFlow {
     this.currentPage = pageNumber;
     this.bottom = this.inCell ? this.cellBox?.y0 : this.topOf(pageNumber);
     this.baseline = undefined;
+  }
+
+  /** The share of its width a table of `width` points keeps: a table wider than the text area is narrowed by the writer to fit it. */
+  tableScale(width: number): number {
+    const area = this.pageWidth - this.margins.left - this.margins.right;
+    return width > area && area > 0 ? area / width : 1;
   }
 
   /** The flow of one table cell: `box` is the cell's place on the page, where it is known (its row's `y0` and `y1`, its `x0` and `x1`). */
@@ -244,7 +253,17 @@ export class PageFlow {
     const rightPt = paragraph.lines.length > 1 ? Math.max(0, area.right - x1 - slack) : -slack;
     if (marker) return { ...this.markerIndents(paragraph, area), rightPt, align };
     const leftPt = Math.max(0, paragraph.leftX - area.left);
-    return { leftPt, firstLinePt: paragraph.firstLineX - paragraph.leftX, rightPt, align };
+    const firstLinePt = paragraph.firstLineX - paragraph.leftX;
+    return { leftPt, firstLinePt, rightPt: this.wrappingRight(paragraph, area, leftPt, firstLinePt, align, rightPt), align };
+  }
+
+  /** The right indent that makes the writer break the paragraph's lines where the page did, nearest the page's right edge; `fallback` where the face cannot tell. */
+  private wrappingRight(paragraph: Paragraph, area: TextArea, leftPt: number, firstLinePt: number, align: NonNullable<ParagraphFormat['align']>, fallback: number): number {
+    const { wrap } = this.page;
+    if (!wrap || paragraph.lines.length < 2) return fallback;
+    const size = Math.abs(paragraph.size - wrap.bodySize) > 0.5 ? paragraph.size : wrap.bodySize;
+    const edge = align === 'justify' ? area.right - Math.max(...paragraph.lines.map((line) => line.box.x1)) : fallback;
+    return wrappingIndent(paragraph, size, wrap.metrics, (index) => area.right - area.left - leftPt - (index === 0 ? firstLinePt : 0), edge) ?? fallback;
   }
 
   /** The area text is set in: between the page's margins, or the cell's edges where they are known. */

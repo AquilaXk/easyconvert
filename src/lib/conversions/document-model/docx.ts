@@ -276,6 +276,7 @@ class PartWriter {
     if (run.italic) props.push('<w:i/><w:iCs/>');
     if (run.strike) props.push('<w:strike/>');
     if (run.color) props.push(`<w:color w:val="${run.color}"/>`);
+    if (run.widthPercent !== undefined) props.push(`<w:w w:val="${Math.round(run.widthPercent)}"/>`);
     const points = run.sizePt ?? size;
     if (points !== undefined) props.push(`<w:sz w:val="${Math.round(points * HALF_POINTS)}"/><w:szCs w:val="${Math.round(points * HALF_POINTS)}"/>`);
     if (run.underline) props.push('<w:u w:val="single"/>');

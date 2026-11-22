@@ -17,6 +17,14 @@ import { requireRealworldSample } from './helpers/realworld-sample';
  * words against what `pdftotext` reads from the PDF itself.
  */
 
+/** Files whose paragraphs wrap by the page's lines, and the share of the PDF's line ends (last two words) the render has at least (LibreOffice 24.2 reads 0.98, 0.88 and 0.88; the files read 0.75, 0.41 and 0.64 when each paragraph wraps at the page's right edge with a few points of slack). */
+const WRAPPED = [
+  { id: 'govdocs1-000022.pdf', min: 0.9 },
+  { id: 'govdocs1-003947.pdf', min: 0.8 },
+  { id: 'govdocs1-000562.pdf', min: 0.8 },
+];
+const LINE_END_PAGES = 4;
+
 const SAMPLES = ['govdocs1-000010.pdf', 'govdocs1-000568.pdf', 'govdocs1-000569.pdf', 'govdocs1-001946.pdf', 'govdocs1-004472.pdf'];
 const TWIPS_PER_POINT = 20;
 const SOFFICE_TIMEOUT_MS = 180_000;
@@ -63,6 +71,17 @@ function firstLineTops(file: string, pages: number): number[] {
     tops.push(ys.length > 0 ? Math.min(...ys) : Number.NaN);
   }
   return tops;
+}
+
+/** The last two words of every line of the first pages that has three words or more, as a multiset, by Poppler's line boxes. */
+function lineEnds(file: string): Map<string, number> {
+  const boxes = execFileSync(requireOracleTool('pdftotext'), ['-q', '-f', '1', '-l', String(LINE_END_PAGES), '-bbox-layout', file, '-'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const ends = new Map<string, number>();
+  for (const line of boxes.matchAll(/<line [^>]*>(.*?)<\/line>/gs)) {
+    const lineWords = [...line[1].matchAll(/<word [^>]*>([^<]*)<\/word>/g)].map((match) => match[1].toLowerCase().replace(/\W/g, '')).filter((word) => word !== '');
+    if (lineWords.length >= 3) ends.set(lineWords.slice(-2).join(' '), (ends.get(lineWords.slice(-2).join(' ')) ?? 0) + 1);
+  }
+  return ends;
 }
 
 function words(text: string): string[] {
@@ -129,6 +148,54 @@ describe('LibreOffice lays the DOCX out on the pages of the PDF', () => {
       TEST_TIMEOUT_MS
     );
   }
+});
+
+describe('LibreOffice breaks the lines where the PDF did', () => {
+  for (const { id, min } of WRAPPED) {
+    oracleTest(
+      `${id}: at least ${min} of the line ends of the PDF are line ends of the render`,
+      ['soffice', 'pdftotext'],
+      async (ctx) => {
+        const { source, docx } = await convertedSample(ctx, id);
+        withFiles({ 'in.pdf': source, 'out.docx': docx }, (dir) => {
+          execFileSync(requireOracleTool('soffice'), ['--headless', `-env:UserInstallation=file://${path.join(dir, 'profile')}`, '--convert-to', 'pdf', '--outdir', path.join(dir, 'render'), path.join(dir, 'out.docx')], {
+            timeout: SOFFICE_TIMEOUT_MS,
+            stdio: 'ignore',
+          });
+          const wanted = lineEnds(path.join(dir, 'in.pdf'));
+          const got = lineEnds(path.join(dir, 'render', 'out.pdf'));
+          let total = 0;
+          let shared = 0;
+          for (const [end, count] of wanted) {
+            total += count;
+            shared += Math.min(count, got.get(end) ?? 0);
+          }
+          expect(shared / total).toBeGreaterThanOrEqual(min);
+        });
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
+});
+
+describe('a page set in a narrower face than the writer\'s', () => {
+  // The newsletter's runs are 0.96 of the width the writer's face gives the same text at their low quantile (the PDF sets its pairs tighter): at the writer's own widths its columns run onto a ninth page.
+  oracleTest(
+    'govdocs1-000135.pdf: the glyphs are set at their share of the writer\'s width, and the render has the pages of the PDF',
+    ['soffice', 'pdfinfo'],
+    async (ctx) => {
+      const { source, docx } = await convertedSample(ctx, 'govdocs1-000135.pdf');
+      expect(await documentXml(docx)).toMatch(/<w:w w:val="\d+"\/>/);
+      withFiles({ 'in.pdf': source, 'out.docx': docx }, (dir) => {
+        execFileSync(requireOracleTool('soffice'), ['--headless', `-env:UserInstallation=file://${path.join(dir, 'profile')}`, '--convert-to', 'pdf', '--outdir', path.join(dir, 'render'), path.join(dir, 'out.docx')], {
+          timeout: SOFFICE_TIMEOUT_MS,
+          stdio: 'ignore',
+        });
+        expect(pdfInfo(path.join(dir, 'render', 'out.pdf')).pages).toBe(pdfInfo(path.join(dir, 'in.pdf')).pages);
+      });
+    },
+    TEST_TIMEOUT_MS
+  );
 });
 
 describe('the words stay', () => {
