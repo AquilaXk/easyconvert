@@ -158,7 +158,7 @@ async function rewriteWithGhostscript(pdf: Buffer, preset: string, clock: Compre
 
 async function rewriteLossless(pdf: Buffer, signal: AbortSignal | undefined, timeoutMs: number): Promise<Buffer> {
   return withQpdfInputFile(pdf, (workspace) =>
-    runQpdfToBuffer(workspace, { args: [...LOSSLESS_QPDF_ARGS, workspace.inputPath, '-'], action: 'Compression', signal, timeoutMs })
+    runQpdfToBuffer(workspace, { args: (output) => [...LOSSLESS_QPDF_ARGS, workspace.inputPath, output], action: 'Compression', signal, timeoutMs })
   );
 }
 

@@ -17,7 +17,7 @@ import { openPdfForEditing, type PdfAccess, type PdfEditOperation } from '../pdf
 import { readSandboxOutput } from '../../security/sandbox-output';
 import { sanitizeLeafStem, validatePageRangeSyntax } from '../page-range';
 import { withMendedPageTree } from './mend-page-tree';
-import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfInputFile, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
+import { QPDF_COMPACT_OUTPUT_ARGS, runQpdf, runQpdfToBuffer, withQpdfDocument, withQpdfWorkspace, type QpdfWorkspace } from './qpdf-run';
 
 /**
  * Structural PDF operations, each one qpdf run on the document (qpdf copies pages as objects, so bookmarks, links,
@@ -109,8 +109,8 @@ export async function extractPdfPages(pdf: Buffer, spec: string, access: PdfAcce
   const range = toQpdfRange(spec, 'pages');
   const plain = await editablePdf(pdf, 'extract', access);
   return withMendedPageTree(plain, (pdf) =>
-    withQpdfInputFile(pdf, (workspace) =>
-      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action: 'Extracting the pages' })
+    withQpdfDocument(pdf, (workspace) =>
+      runQpdfToBuffer(workspace, { args: (output) => [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), output], action: 'Extracting the pages' })
     )
   );
 }
@@ -178,10 +178,10 @@ function namesFirstPage(tokens: readonly string[]): boolean {
 }
 
 async function deleteSelection(pdf: Buffer, tokens: readonly string[], selection: readonly string[]): Promise<Buffer> {
-  return withQpdfInputFile(pdf, async (workspace) => {
+  return withQpdfDocument(pdf, async (workspace) => {
     const action = 'Deleting the pages';
     if (!namesFirstPage(tokens)) {
-      return runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, '-'], action });
+      return runQpdfToBuffer(workspace, { args: (output) => [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, output], action });
     }
     // Whichever run fails stops the other, which would otherwise read a file the failed job removes, for up to the run limit.
     const stop = new AbortController();
@@ -191,7 +191,7 @@ async function deleteSelection(pdf: Buffer, tokens: readonly string[], selection
         throw error;
       });
     const [result, pages] = await Promise.all([
-      stopOnFailure(runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, '-'], action, signal: stop.signal })),
+      stopOnFailure(runQpdfToBuffer(workspace, { args: (output) => [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...selection, output], action, signal: stop.signal })),
       stopOnFailure(pageCountOf(workspace, action, stop.signal)),
     ]);
     if (coversEveryPage(tokens, pages)) {
@@ -226,8 +226,8 @@ export async function reorderPdfPages(pdf: Buffer, options: PdfReorderOptions, a
   const range = [...qpdfTokens, '1-z', ...qpdfTokens.map((token) => `x${token}`)].join(',');
   const plain = await editablePdf(pdf, 'reorder', access);
   return withMendedPageTree(plain, (pdf) =>
-    withQpdfInputFile(pdf, (workspace) =>
-      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action: 'Reordering the pages' })
+    withQpdfDocument(pdf, (workspace) =>
+      runQpdfToBuffer(workspace, { args: (output) => [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), output], action: 'Reordering the pages' })
     )
   );
 }
@@ -313,8 +313,8 @@ export async function rotatePdfPages(pdf: Buffer, options: PdfRotateOptions, acc
   const args = rotationArgsOf(rotationGroups(options));
   const plain = await editablePdf(pdf, 'rotate', access);
   return withMendedPageTree(plain, (pdf) =>
-    withQpdfInputFile(pdf, (workspace) =>
-      runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, ...args, workspace.inputPath, '-'], action: 'Rotating the pages', signal })
+    withQpdfDocument(pdf, (workspace) =>
+      runQpdfToBuffer(workspace, { args: (output) => [...QPDF_COMPACT_OUTPUT_ARGS, ...args, workspace.inputPath, output], action: 'Rotating the pages', signal })
     )
   );
 }
@@ -390,7 +390,7 @@ async function splitFiles(workspace: QpdfWorkspace, options: PdfSplitOptions, bu
       const batch = await Promise.all( // NOSONAR S9382 sequential
         ranges
           .slice(from, from + SPLIT_CONCURRENCY)
-          .map((range) => runQpdfToBuffer(workspace, { args: [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), '-'], action, signal }))
+          .map((range) => runQpdfToBuffer(workspace, { args: (output) => [...QPDF_COMPACT_OUTPUT_ARGS, workspace.inputPath, ...pagesSelection(range), output], action, signal }))
       );
       for (const part of batch) total += part.length;
       if (total > budget) throw new PdfPostprocessError(`${action} failed: the parts exceed the allowed size; split into fewer pages.`);

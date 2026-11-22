@@ -118,7 +118,7 @@ export async function protectPdf(
   const modifyPerm = perms.modify ?? 'none';
   const extractPerm = perms.extract ? 'y' : 'n';
 
-  const encryptArguments = (inputPath: string): string =>
+  const encryptArguments = (inputPath: string, output: string): string =>
     [
       '--encrypt',
       userPassword,
@@ -131,15 +131,15 @@ export async function protectPdf(
       `--extract=${extractPerm}`,
       '--',
       inputPath,
-      '-',
+      output,
     ].join('\n');
 
   const encrypt = async (workspace: QpdfWorkspace, signal?: AbortSignal): Promise<Buffer> => {
     try {
       // The argument file holds the passwords, so it goes to qpdf on standard input and never touches the disk.
       return await runQpdfToBuffer(workspace, {
-        args: ['@-'],
-        stdin: Buffer.from(encryptArguments(workspace.inputPath), 'utf8'),
+        args: () => ['@-'],
+        stdin: (output) => Buffer.from(encryptArguments(workspace.inputPath, output), 'utf8'),
         action: 'PDF protection',
         signal,
       });

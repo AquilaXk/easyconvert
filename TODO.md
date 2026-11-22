@@ -24,7 +24,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - PDF to DOCX extra pages left after entry 390: `govdocs1-000018` 11 for 9, `govdocs1-000353` 12 for 10 (footnote marks written at full size), `govdocs1-000572` 11 for 8, `govdocs1-000618` 12 for 8 (the frames of a newsletter overlap), `govdocs1-001135` 11 for 10 (the spacer under the last table), `govdocs1-000341`, `govdocs1-000145` 7 for 6 and `govdocs1-000370` 9 for 8; the pdf2docx translation on branch `feat/pdf-docx-pdf2docx` stays unwired (entry 390), to look at again when the writer sets a paragraph beside a table or the reader gives glyph advances.
 
 ## Speed
-- Investigate `pdf-ops` speed parity on `pdf-gov-000142.pdf` on the Linux arm64 VM (protect 0.80 to 0.82, delete 0.905 to 0.91, extract/reorder/rotate 0.91 to 0.93 after entry 292 brought split to 0.95 to 0.96; zero-copy `pdf-text-worker` transfer landed in entry 315, and the Ubuntu 24.04 arm64 `native/qpdf-runner` 105/105 decline was resolved in entry 322): decide whether `--compression-level=1` (-0.6 ms of 7.3 ms for +0.3% bytes) is wanted.
 - Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads, decide whether multi-segment parallel LZW (~200 ms saved on `3fr`, <0.01% byte change) is acceptable, and profile `dcraw_emu` on `3fr` (0.9 s).
 
 ## Operations and security

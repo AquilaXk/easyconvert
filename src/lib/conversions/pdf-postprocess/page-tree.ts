@@ -162,6 +162,6 @@ export async function repairPageTree(pdf: Buffer, options: QpdfRunLimits & { max
     const update = { version: JSON_VERSION, qpdf: [exported[0], Object.fromEntries([...mended].map(([key, value]) => [key, { value }]))] };
     const updatePath = path.join(workspace.dir, UPDATE_FILE);
     fs.writeFileSync(updatePath, JSON.stringify(update), { mode: 0o600 });
-    return runQpdfToBuffer(workspace, { args: [`--update-from-json=${updatePath}`, workspace.inputPath, '-'], action, ...limits });
+    return runQpdfToBuffer(workspace, { args: (output) => [`--update-from-json=${updatePath}`, workspace.inputPath, output], action, ...limits });
   });
 }

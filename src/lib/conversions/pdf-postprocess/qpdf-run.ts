@@ -35,6 +35,14 @@ const QPDF_STDERR_SLACK_BYTES = 1024 * 1024;
 /** qpdf's message for a page number past the end: `... number 9 out of range`. */
 const OUT_OF_RANGE_PATTERN = /number (\d+) out of range/;
 
+/**
+ * A document of this size or more is written by qpdf to a file of the workspace directory, and read back from it, instead of being printed on standard
+ * output. qpdf prints to standard output without a buffer (one `write` per token, 2,511 of them for a 445 KB result), and each write into a pipe wakes
+ * the reader: 2.2 ms of a 445 KB result on the benchmark VM against 0.4 ms for a file, which qpdf writes in blocks of 4 KB. Below this size the few
+ * writes cost less than the directory and the file (entry 391).
+ */
+export const QPDF_OUTPUT_FILE_MIN_BYTES = 64 * 1024;
+
 /** How qpdf writes the PDFs a user keeps: streams deflated and the objects packed into object streams, its smallest ordinary output. */
 export const QPDF_COMPACT_OUTPUT_ARGS: readonly string[] = ['--object-streams=generate', '--compress-streams=y'];
 
@@ -138,6 +146,16 @@ export interface QpdfInvocation extends QpdfRunLimits {
   cwd?: string;
   /** About how many bytes qpdf prints: nothing for a run that writes files, about the document for one that prints it. */
   expectedOutputBytes?: number;
+  /** The most bytes qpdf may write to a file of its own (RLIMIT_FSIZE); none when omitted. */
+  maxFileSize?: number;
+}
+
+/** An invocation whose document `runQpdfToBuffer` collects: the arguments and the argument file are given the place the document goes to. */
+export interface QpdfBufferInvocation extends Omit<QpdfInvocation, 'args' | 'stdin' | 'expectedOutputBytes' | 'maxFileSize'> {
+  /** The arguments of the run, with `output` where qpdf is told where to write (`-` for standard output, or the path of a file). */
+  args: (output: string) => string[];
+  /** Standard input of qpdf, when it holds the output too (an argument file). */
+  stdin?: (output: string) => Buffer;
 }
 
 /** Runs qpdf in the workspace and returns what it prints; `--warning-exit-0` is added, as a recovered document is a result. */
@@ -153,17 +171,43 @@ export async function runQpdf(workspace: QpdfWorkspace, invocation: QpdfInvocati
       stdin: invocation.stdin,
       signal: invocation.signal,
       expectedOutputBytes: invocation.expectedOutputBytes ?? 0,
+      maxFileSize: invocation.maxFileSize,
     });
   } catch (error) {
     throw toQpdfError(error, invocation.action);
   }
 }
 
-/** Runs qpdf and returns the PDF it wrote to standard output; an empty result is a failure, never a document. */
-export async function runQpdfToBuffer(workspace: QpdfWorkspace, invocation: QpdfInvocation): Promise<Buffer> {
-  const { stdout } = await runQpdf(workspace, { ...invocation, expectedOutputBytes: workspace.inputBytes });
-  if (stdout.length === 0) {
-    throw new PdfPostprocessError(`${invocation.action} failed: qpdf produced no output.`);
+/**
+ * `withQpdfWorkspace` for a document that qpdf writes to a file (see QPDF_OUTPUT_FILE_MIN_BYTES), `withQpdfInputFile` for a smaller one, which is
+ * printed on standard output and needs no directory.
+ */
+export function withQpdfDocument<T>(pdf: Buffer, operation: (workspace: QpdfWorkspace) => Promise<T>): Promise<T> {
+  return pdf.length >= QPDF_OUTPUT_FILE_MIN_BYTES ? withQpdfWorkspace(pdf, operation) : withQpdfInputFile(pdf, operation);
+}
+
+const QPDF_STDOUT = '-';
+
+let outputCounter = 0;
+
+/**
+ * Runs qpdf and returns the PDF it wrote; an empty result is a failure, never a document. The invocation is given where the document goes: standard
+ * output, or a file of the workspace directory when the document is large (the file is removed again, whatever the outcome). The size of the
+ * file is limited like the output on standard output.
+ */
+export async function runQpdfToBuffer(workspace: QpdfWorkspace, invocation: QpdfBufferInvocation): Promise<Buffer> {
+  if (workspace.files.workDir === null || workspace.inputBytes < QPDF_OUTPUT_FILE_MIN_BYTES) {
+    const { stdout } = await runQpdf(workspace, { ...invocation, args: invocation.args(QPDF_STDOUT), stdin: invocation.stdin?.(QPDF_STDOUT), expectedOutputBytes: workspace.inputBytes });
+    if (stdout.length === 0) throw new PdfPostprocessError(`${invocation.action} failed: qpdf produced no output.`);
+    return stdout;
   }
-  return stdout;
+  const outputPath = path.join(workspace.dir, `output-${outputCounter++}.pdf`);
+  try {
+    await runQpdf(workspace, { ...invocation, args: invocation.args(outputPath), stdin: invocation.stdin?.(outputPath), maxFileSize: workspace.maxOutputBytes });
+    const document = fs.readFileSync(outputPath);
+    if (document.length === 0) throw new PdfPostprocessError(`${invocation.action} failed: qpdf produced no output.`);
+    return document;
+  } finally {
+    fs.rmSync(outputPath, { force: true });
+  }
 }
