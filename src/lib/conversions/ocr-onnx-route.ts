@@ -6,11 +6,39 @@ import type { OcrEngineFallback } from './ocr-pdf-combiner';
  * Which pages the ONNX engine reads, and how a page it did not read is reported. By default it reads a request that names Korean and
  * at most English beside it with the Korean PP-OCRv5 recognizer (Hangul, Latin letters, digits and punctuation); a request that names
  * another language (`kor+jpn`, `kor+deu`) needs that language's own data and stays with Tesseract, as every page of a language without
- * Korean does. English alone is read by Tesseract first and gets the English recognizer only as the second reading of a page that
- * Tesseract read poorly (policy decision 302).
+ * Korean does. English alone is read by Tesseract first and gets the English recognizer as the second reading of a page that Tesseract
+ * read poorly (policy decision 302), or directly for the remaining pages once a contiguous window of text-bearing pages scores below 0.6
+ * in Tesseract (policy decision 395).
  */
 
 const ONNX_LANGUAGES: ReadonlySet<string> = new Set(['kor', 'eng']);
+
+/** Contiguous text-bearing pages scored by Tesseract before switching the rest of an English scan to the ONNX recognizer. */
+export const OCR_DOCUMENT_ONNX_SWITCH_PAGES = 4;
+/** Mean raw Tesseract score below which `OCR_DOCUMENT_ONNX_SWITCH_PAGES` contiguous text-bearing pages switch the document to ONNX. */
+export const OCR_DOCUMENT_ONNX_SWITCH_QUALITY = 0.6;
+
+/**
+ * Whether `scores` (indexed in document page order: `0..1` for a page with text, `null` for a blank or non-text page, `undefined` for
+ * a page still in flight) contains `OCR_DOCUMENT_ONNX_SWITCH_PAGES` contiguous text-bearing pages in a finished prefix whose mean
+ * Tesseract score is strictly below `OCR_DOCUMENT_ONNX_SWITCH_QUALITY`. Stopping at the first `undefined` makes the verdict
+ * independent of which concurrent page finishes first.
+ */
+export function shouldSwitchDocumentToOnnx(scores: ReadonlyArray<number | null | undefined>): boolean {
+  const window: number[] = [];
+  for (const score of scores) {
+    if (score === undefined) break;
+    if (score === null) continue;
+    window.push(score);
+    if (window.length > OCR_DOCUMENT_ONNX_SWITCH_PAGES) window.shift();
+    if (window.length === OCR_DOCUMENT_ONNX_SWITCH_PAGES) {
+      let sum = 0;
+      for (const value of window) sum += value;
+      if (sum / OCR_DOCUMENT_ONNX_SWITCH_PAGES < OCR_DOCUMENT_ONNX_SWITCH_QUALITY) return true;
+    }
+  }
+  return false;
+}
 
 /** Whether a request's traineddata names (`kor`, `kor+eng`, `eng+kor`) are all ones the ONNX recognizer reads, with Korean among them. */
 export function koreanOnnxLanguages(traineddata: readonly string[]): boolean {

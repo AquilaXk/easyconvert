@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
 
 const helper = vi.hoisted(() => ({ recognize: vi.fn() }));
@@ -10,11 +11,17 @@ vi.mock('../src/lib/conversions/ocr-onnx-helper', async (importOriginal) => ({
   recognizePageWithOnnxHelper: helper.recognize,
 }));
 
-import { performOcr, recognizePage } from '../src/lib/conversions/ocr';
+import { performOcr, recognizePage, recognizeRenderedPdfPages, shutdownOcrWorkerPool } from '../src/lib/conversions/ocr';
 import { OnnxOcrFailedError, OnnxOcrUnavailableError } from '../src/lib/conversions/ocr-onnx-helper';
 import { calibrationTableFor } from '../src/lib/conversions/ocr-calibration';
+import { locateLanguageData } from '../src/lib/conversions/ocr-language-data';
 import { OcrEngineUnavailableError } from '../src/lib/types';
-import { chainEngineFallbacks } from '../src/lib/conversions/ocr-onnx-route';
+import {
+  chainEngineFallbacks,
+  OCR_DOCUMENT_ONNX_SWITCH_PAGES,
+  shouldSwitchDocumentToOnnx,
+} from '../src/lib/conversions/ocr-onnx-route';
+import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
 
 /**
  * Which engine reads a page. The helper is replaced by a stand-in here, so these tests check the routing (the languages, the explicit
@@ -215,4 +222,156 @@ describe('the fallbacks a result reports', () => {
     expect(chainEngineFallbacks(undefined, wasm)).toEqual(wasm);
     expect(chainEngineFallbacks(undefined, undefined)).toBeUndefined();
   });
+});
+
+const RENDERED_PDF_MISSING =
+  skipWithoutTools('pdftoppm', 'pdfinfo') ||
+  skipUnless('eng.traineddata (Tesseract English data)', locateLanguageData('eng') !== null);
+
+/** Builds an image-only PDF with `pageCount` copies of `png` at 300 dpi dimensions. */
+async function pdfWithPages(png: Buffer, pageCount: number): Promise<Buffer> {
+  const doc = await PDFDocument.create();
+  const embedded = await doc.embedPng(png);
+  const widthPt = (embedded.width * 72) / 300;
+  const heightPt = (embedded.height * 72) / 300;
+  for (let i = 0; i < pageCount; i++) {
+    const p = doc.addPage([widthPt, heightPt]);
+    p.drawImage(embedded, { x: 0, y: 0, width: widthPt, height: heightPt });
+  }
+  return Buffer.from(await doc.save());
+}
+
+/** A 320x180 PNG holding a 3-row, 2-column ruled grid with ink inside a cell so Tesseract reads poor/no words while content is present. */
+async function ruledGridPage(): Promise<Buffer> {
+  const ruleH = (top: number) => ({ input: { create: { width: 220, height: 3, channels: 3 as const, background: '#000' } }, left: 50, top });
+  const ruleV = (left: number) => ({ input: { create: { width: 3, height: 100, channels: 3 as const, background: '#000' } }, left, top: 40 });
+  const cellMark = (left: number, top: number) => ({
+    input: { create: { width: 16, height: 12, channels: 3 as const, background: '#000' } },
+    left,
+    top,
+  });
+  return sharp({ create: { width: 320, height: 180, channels: 3, background: '#fff' } })
+    .composite([
+      ruleH(40),
+      ruleH(90),
+      ruleH(137),
+      ruleV(50),
+      ruleV(160),
+      ruleV(267),
+      cellMark(70, 58),
+      cellMark(180, 108),
+    ])
+    .png()
+    .toBuffer();
+}
+
+describe('choosing the ONNX recognizer for the rest of an English document', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  afterAll(async () => {
+    await shutdownOcrWorkerPool();
+  });
+
+  it('requires four finished contiguous text-bearing pages averaging below 0.6 and skips blank pages', () => {
+    expect(OCR_DOCUMENT_ONNX_SWITCH_PAGES).toBe(4);
+    expect(shouldSwitchDocumentToOnnx([0.3, 0.3, 0.3])).toBe(false);
+    expect(shouldSwitchDocumentToOnnx([0.6, 0.6, 0.6, 0.6])).toBe(false);
+    expect(shouldSwitchDocumentToOnnx([0.95, null, 0.96, null, 0.94, 0.95])).toBe(false);
+    expect(shouldSwitchDocumentToOnnx([0.92, undefined, 0.4, 0.4, 0.4, 0.4])).toBe(false);
+
+    expect(shouldSwitchDocumentToOnnx([0.52, 0.48, 0.55, 0.50])).toBe(true);
+    expect(shouldSwitchDocumentToOnnx([0.92, 0.94, 0.95, 0.94, 0.66, 0.55, 0.61, 0.55])).toBe(true);
+    expect(shouldSwitchDocumentToOnnx([0.5, null, 0.55, null, 0.58, 0.5])).toBe(true);
+  });
+
+  it('preserves Tesseract score before an ONNX second reading and treats blank pages as null content', async () => {
+    helper.recognize.mockResolvedValue(ENGLISH_READING);
+    const allowing = { run: async <T,>(task: () => Promise<T>): Promise<T | null> => task() };
+
+    const blank = await sharp({ create: { width: 200, height: 200, channels: 3, background: '#fff' } }).png().toBuffer();
+    const blankRead = await recognizePage(blank, 'eng', { detectOrientation: false, rescue: allowing });
+    expect(blankRead.enginePath).not.toBe('onnx');
+    expect(blankRead.tesseractQuality).toBeNull();
+
+    const grid = await ruledGridPage();
+    const gridRescued = await recognizePage(grid, 'eng', { detectOrientation: false, rescue: allowing });
+    expect(gridRescued.enginePath).toBe('onnx');
+    expect(gridRescued.tesseractQuality).not.toBeNull();
+    expect(gridRescued.tesseractQuality).toBeLessThan(0.6);
+  });
+
+  it('reads directly with ONNX when preferOnnx is set, and falls back quietly once without a duplicate rescue call', async () => {
+    helper.recognize.mockResolvedValue(ENGLISH_READING);
+    const grid = await ruledGridPage();
+    const direct = await recognizePage(grid, 'eng', { detectOrientation: false, preferOnnx: true });
+    expect(direct.enginePath).toBe('onnx');
+    expect(direct.tesseractQuality).toBeUndefined();
+    expect(direct.onnxDeclined).toBeUndefined();
+    expect(helper.recognize).toHaveBeenCalledTimes(1);
+
+    helper.recognize.mockReset();
+    helper.recognize.mockRejectedValue(new OnnxOcrUnavailableError('models-missing', 'no models'));
+    const declined = await recognizePage(grid, 'eng', { detectOrientation: false, preferOnnx: true });
+    expect(declined.enginePath).not.toBe('onnx');
+    expect(declined.onnxDeclined).toBe(true);
+    expect(declined.result.engineFallback).toBeUndefined();
+    expect(declined.tesseractQuality).toBeLessThan(0.6);
+    expect(helper.recognize).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(RENDERED_PDF_MISSING)(
+    'switches pages 5 and 6 to ONNX directly on a low-scoring 6-page PDF and leaves a clean 6-page PDF on Tesseract',
+    async () => {
+      const cleanPng = fs.readFileSync(path.join(__dirname, 'fixtures/ocr/en_a__clean300.png'));
+      const cleanPdf = await pdfWithPages(cleanPng, 6);
+      helper.recognize.mockRejectedValue(new Error('clean PDF must not call ONNX'));
+      const cleanResults = await recognizeRenderedPdfPages(cleanPdf, undefined, {
+        language: 'eng',
+        detectOrientation: false,
+      });
+      expect(cleanResults.size).toBe(6);
+      expect(helper.recognize).not.toHaveBeenCalled();
+      expect(cleanResults.get(6)?.text).toContain('quarterly report');
+
+      vi.stubEnv('EASYCONVERT_OCR_PAGE_CONCURRENCY', '1');
+      const statsSpy = vi.spyOn(sharp.prototype, 'stats');
+      helper.recognize.mockReset();
+      helper.recognize.mockResolvedValue(ENGLISH_READING);
+      const gridPdf = await pdfWithPages(await ruledGridPage(), 6);
+      const gridResults = await recognizeRenderedPdfPages(gridPdf, undefined, {
+        language: 'eng',
+        detectOrientation: false,
+      });
+      expect(gridResults.size).toBe(6);
+      // Opening pages (1..4) use the rescue gate (`imageHasInk` -> sharp.stats); switched pages (5..6) skip Tesseract and `imageHasInk`.
+      const statsCalls = statsSpy.mock.calls.length;
+      const helperCalls = helper.recognize.mock.calls.length;
+      expect(statsCalls).toBeGreaterThanOrEqual(1);
+      expect(statsCalls).toBeLessThanOrEqual(4);
+      expect(helperCalls - statsCalls).toBe(2);
+      expect(gridResults.get(5)?.text).toBe('Quarterly report');
+      expect(gridResults.get(6)?.text).toBe('Quarterly report');
+
+      // Once a switched page hits an ONNX helper failure, `canSwitchDocument` turns off and later pages stay on Tesseract.
+      statsSpy.mockClear();
+      helper.recognize.mockReset();
+      helper.recognize.mockImplementation(async () => {
+        if (helper.recognize.mock.calls.length > statsSpy.mock.calls.length) {
+          throw new OnnxOcrUnavailableError('models-missing', 'no models');
+        }
+        return ENGLISH_READING;
+      });
+      const fallbackResults = await recognizeRenderedPdfPages(gridPdf, undefined, {
+        language: 'eng',
+        detectOrientation: false,
+      });
+      expect(fallbackResults.size).toBe(6);
+      // Only page 5 tries preferOnnx (+1 beyond statsCalls); page 6 drops back to Tesseract + rescue gate (+1 statsCall, +1 helperCall).
+      expect(helper.recognize.mock.calls.length - statsSpy.mock.calls.length).toBe(1);
+      statsSpy.mockRestore();
+    },
+    120_000
+  );
 });
