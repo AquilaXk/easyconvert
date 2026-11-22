@@ -215,6 +215,46 @@ describe('a ZIP entry with mirror addresses of its archive', () => {
       expect(origin.mirrors).toEqual(['https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip']);
     }
   });
+
+  it('lists a commit-pinned single-entry archive of every Silesia entry after the archive and its mirror', () => {
+    for (const sample of readRemoteManifest().samples.filter((candidate) => candidate.set === 'silesia')) {
+      const origin = sample.origin as Extract<PinnedFile['origin'], { kind: 'zip' }>;
+      expect(origin.entryArchives, sample.id).toHaveLength(1);
+      expect(origin.entryArchives?.[0].url).toBe(`https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/${origin.entry}.zip`);
+      expect(origin.entryArchives?.[0].compressedSize).toBeGreaterThan(0);
+    }
+  });
+
+  it(
+    'reads the entry from an archive that holds it alone, at offset 0 with its own compressed size, when the archive and its mirror fail',
+    async () => {
+      mirrorHits = 0;
+      resetVerifiedSamples();
+      const alone = await new JSZip().file('entry.txt', body, { compression: 'DEFLATE' }).generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+      const single = http.createServer((request, response) => {
+        const range = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? '');
+        const start = Number(range?.[1] ?? 0);
+        const slice = alone.subarray(start, range ? Number(range[2]) + 1 : undefined);
+        response.writeHead(range ? 206 : 200, { 'content-length': slice.length, 'content-range': `bytes ${start}-${start + slice.length - 1}/${alone.length}` }).end(slice);
+      });
+      await new Promise<void>((resolve) => single.listen(0, '127.0.0.1', resolve));
+      try {
+        const base = `http://127.0.0.1:${(single.address() as AddressInfo).port}`;
+        const sample = entry();
+        const zip = sample.origin as Extract<PinnedFile['origin'], { kind: 'zip' }>;
+        zip.mirrors = ['http://127.0.0.1:1/mirror.zip'];
+        // Offset 0 and the deflated size of the single archive differ from the pins of the shared archive (offset 0 only by chance).
+        zip.offset = 5000;
+        zip.compressedSize = 1;
+        zip.method = 8;
+        zip.entryArchives = [{ url: `${base}/entry.zip`, compressedSize: alone.readUInt32LE(18) }];
+        expect((await downloadSample(sample)).toString()).toBe(body);
+      } finally {
+        await new Promise<void>((resolve) => single.close(() => resolve()));
+      }
+    },
+    MIRROR_FALLBACK_HANG_GUARD_MS * 2
+  );
 });
 
 describe('the manifest entry of a mirrored file', () => {
@@ -247,6 +287,32 @@ describe('the manifest entry of a mirrored file', () => {
     const origin = first?.origin as { url: string; mirrors: string[] };
     origin.mirrors = [origin.url];
     expect(() => validateRemoteManifest(copy)).toThrow(/mirrors repeats an address/);
+  });
+});
+
+describe('the manifest entry of a ZIP archive with single-entry archives', () => {
+  const withSingles = (entryArchives: unknown): RemoteManifest => {
+    const copy = JSON.parse(JSON.stringify(readRemoteManifest())) as RemoteManifest;
+    const first = copy.samples.find((sample) => sample.origin.kind === 'zip');
+    (first?.origin as { entryArchives?: unknown }).entryArchives = entryArchives;
+    return copy;
+  };
+  const single = { url: 'https://mirror.example/entry.zip', compressedSize: 12 };
+
+  it('accepts one to three https archives with a size', () => {
+    const accepted = validateRemoteManifest(withSingles([single]));
+    expect(accepted.samples.find((sample) => sample.origin.kind === 'zip')?.origin).toMatchObject({ entryArchives: [single] });
+  });
+
+  it.each([
+    ['an empty list', []],
+    ['more than three archives', [1, 2, 3, 4].map((n) => ({ ...single, url: `https://mirror.example/${n}.zip` }))],
+    ['a plain http address', [{ ...single, url: 'http://mirror.example/entry.zip' }]],
+    ['a negative size', [{ ...single, compressedSize: -1 }]],
+    ['a repeated address', [single, single]],
+    ['the address of the archive', [{ ...single, url: (readRemoteManifest().samples.find((sample) => sample.origin.kind === 'zip')?.origin as { archive: string }).archive }]],
+  ])('refuses %s', (_name, entryArchives) => {
+    expect(() => validateRemoteManifest(withSingles(entryArchives))).toThrow(/entryArchives/);
   });
 });
 

@@ -169,8 +169,14 @@ describe('the public benchmark samples in the workflows', () => {
       expect(String(step.with?.key)).toContain("hashFiles('bench/corpus/remote-manifest.json')");
       expect(String(step.with?.['restore-keys'])).toContain("hashFiles('bench/corpus/remote-manifest.json')");
       // A manifest edit changes the digest; the family prefix falls back to the newest older cache (files are content-addressed).
-      const [byDigest, byFamily] = String(step.with?.['restore-keys']).trim().split('\n').map((line) => line.trim());
+      const restoreKeys = String(step.with?.['restore-keys']).trim().split('\n').map((line) => line.trim());
+      expect(restoreKeys).toHaveLength(2);
+      const [byDigest, byFamily] = restoreKeys;
       expect(byFamily).toBe(byDigest.replace("${{ hashFiles('bench/corpus/remote-manifest.json') }}", ''));
+      // The restore takes the newest match, so every key names the kind of job: the speed jobs save a smaller cache later than the quality jobs,
+      // and without the scope their cache shadowed the one that holds the Silesia files.
+      expect(byFamily).toMatch(/^bench-corpora-[a-z-]+-\$\{\{ inputs\.scope \}\}-$/);
+      expect(String(step.with?.key)).toContain('-${{ inputs.scope }}-');
       expect(step.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
     }
     expect(action.runs.steps.map((step) => step.if)).toEqual(SAMPLE_FAMILIES.map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
@@ -195,6 +201,23 @@ describe('the public benchmark samples in the workflows', () => {
       expect(saved?.if).toBe('always()');
       expect(saved?.with?.families).toBe(families);
       expect(job.steps.indexOf(saved as Step)).toBeGreaterThan(job.steps.findIndex((step) => step.uses === './.github/actions/bench-corpora'));
+    }
+  });
+
+  it('names the kind of job in every restore and save, and a job restores the scope it saves', () => {
+    const scopeOf = (job: { steps: Step[] }, uses: string): unknown => job.steps.find((step) => step.uses === uses)?.with?.scope;
+    for (const [job, scope] of [
+      [quality, 'parity-quality'],
+      [nightlyQuality, 'parity-quality'],
+      [nightlySpeed, 'parity-speed'],
+      [nightly.jobs['bench-parity-office-image'], 'office-image'],
+    ] as const) {
+      expect(scopeOf(job, './.github/actions/bench-corpora'), scope).toBe(scope);
+      if (job !== quality) expect(scopeOf(job, './.github/actions/bench-corpora-save'), scope).toBe(scope);
+    }
+    for (const file of ['bench-corpora', 'bench-corpora-save']) {
+      const inputs = (parse(read('.github', 'actions', file, 'action.yml')) as { inputs: Record<string, { required?: boolean }> }).inputs;
+      expect(inputs.scope?.required).toBe(true);
     }
   });
 

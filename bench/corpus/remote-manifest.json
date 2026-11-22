@@ -1926,6 +1926,12 @@
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
         ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/dickens.zip",
+            "compressedSize": 3684936
+          }
+        ],
         "entry": "dickens",
         "offset": 0,
         "compressedSize": 3871628,
@@ -1949,6 +1955,12 @@
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/webster.zip",
+            "compressedSize": 11653438
+          }
         ],
         "entry": "webster",
         "offset": 49234145,
@@ -1974,6 +1986,12 @@
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
         ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/xml.zip",
+            "compressedSize": 666954
+          }
+        ],
         "entry": "xml",
         "offset": 61448123,
         "compressedSize": 688808,
@@ -1997,6 +2015,12 @@
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/samba.zip",
+            "compressedSize": 5192867
+          }
         ],
         "entry": "samba",
         "offset": 38456085,
@@ -2022,6 +2046,12 @@
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
         ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/mozilla.zip",
+            "compressedSize": 18560385
+          }
+        ],
         "entry": "mozilla",
         "offset": 3871665,
         "compressedSize": 19016809,
@@ -2045,6 +2075,12 @@
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/ooffice.zip",
+            "compressedSize": 3010089
+          }
         ],
         "entry": "ooffice",
         "offset": 29760353,
@@ -2070,6 +2106,12 @@
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
         ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/osdb.zip",
+            "compressedSize": 3628847
+          }
+        ],
         "entry": "osdb",
         "offset": 32856407,
         "compressedSize": 3739532,
@@ -2093,6 +2135,12 @@
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/nci.zip",
+            "compressedSize": 3038861
+          }
         ],
         "entry": "nci",
         "offset": 26560138,
@@ -2118,6 +2166,12 @@
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
         ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/sao.zip",
+            "compressedSize": 5244587
+          }
+        ],
         "entry": "sao",
         "offset": 43902319,
         "compressedSize": 5331793,
@@ -2141,6 +2195,12 @@
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/mr.zip",
+            "compressedSize": 3485757
+          }
         ],
         "entry": "mr",
         "offset": 22888511,
@@ -2166,6 +2226,12 @@
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
         ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/x-ray.zip",
+            "compressedSize": 5762888
+          }
+        ],
         "entry": "x-ray",
         "offset": 62136964,
         "compressedSize": 6045111,
@@ -2189,6 +2255,12 @@
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
         "mirrors": [
           "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
+        "entryArchives": [
+          {
+            "url": "https://raw.githubusercontent.com/MiloszKrajewski/SilesiaCorpus/3f3fa2cdbbb3795c903b74e774acb309e1360337/reymont.zip",
+            "compressedSize": 1704981
+          }
         ],
         "entry": "reymont",
         "offset": 36595973,

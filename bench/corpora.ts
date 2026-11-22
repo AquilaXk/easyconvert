@@ -78,6 +78,14 @@ export interface ZipOrigin {
   method: number;
   /** Other addresses of the same archive, tried in order when `archive` cannot be reached; each is read with the same range requests and its entry is held to the pinned size and SHA-256. */
   mirrors?: string[];
+  /** Archives that hold this entry alone (offset 0, their own compressed size), tried after the archive and its mirrors; the entry is held to the pinned size and SHA-256 whichever address answers. */
+  entryArchives?: EntryArchive[];
+}
+
+/** An archive of one entry: where it is and how long that entry's compressed data is in it. */
+export interface EntryArchive {
+  url: string;
+  compressedSize: number;
 }
 
 /** The first bytes of a larger file (a few frames of an uncompressed video, read with one range request). */
@@ -170,6 +178,17 @@ function checkMirrors(origin: FileOrigin | ZipOrigin, address: string, where: st
   if (new Set([address, ...origin.mirrors]).size !== origin.mirrors.length + 1) throw new CorpusError(`${where}.mirrors repeats an address`);
 }
 
+function checkEntryArchives(origin: ZipOrigin, where: string): void {
+  if (origin.entryArchives === undefined) return;
+  if (!Array.isArray(origin.entryArchives) || origin.entryArchives.length === 0 || origin.entryArchives.length > MAX_MIRRORS) throw new CorpusError(`${where}.entryArchives must list 1 to ${MAX_MIRRORS} archives`);
+  origin.entryArchives.forEach((single, index) => {
+    requireHttps(single.url, `${where}.entryArchives[${index}].url`);
+    requireCount(single.compressedSize, `${where}.entryArchives[${index}].compressedSize`);
+  });
+  const addresses = [origin.archive, ...(origin.mirrors ?? []), ...origin.entryArchives.map((single) => single.url)];
+  if (new Set(addresses).size !== addresses.length) throw new CorpusError(`${where}.entryArchives repeats an address`);
+}
+
 function checkOrigin(id: string, origin: RemoteOrigin): void {
   const where = `${id}.origin`;
   if (origin.kind === 'file') {
@@ -182,6 +201,7 @@ function checkOrigin(id: string, origin: RemoteOrigin): void {
     requireCount(origin.compressedSize, `${where}.compressedSize`);
     if (origin.method !== 0 && origin.method !== 8) throw new CorpusError(`${where}.method must be 0 (stored) or 8 (deflated)`);
     checkMirrors(origin, origin.archive, where);
+    checkEntryArchives(origin, where);
   } else if (origin.kind === 'range') {
     requireHttps(origin.url, `${where}.url`);
     requireCount(origin.start, `${where}.start`);
@@ -380,7 +400,7 @@ function redirectHostsOf(sample: Pick<RemoteSample, 'set'>): readonly string[] {
 }
 
 /** What the first address of `addresses` that answers returns from `read`; the caller checks the digest of whichever bytes come. */
-async function firstAnswer(addresses: readonly string[], read: (address: string) => Promise<Buffer>): Promise<Buffer> {
+async function firstAnswer<T>(addresses: readonly T[], read: (address: T) => Promise<Buffer>): Promise<Buffer> {
   const failures: string[] = [];
   for (const address of addresses) {
     try {
@@ -413,8 +433,13 @@ export async function downloadSample(sample: PinnedFile): Promise<Buffer> {
   const hosts = redirectHostsOf(sample);
   if (origin.kind === 'file') return fileBytes(origin, sample.bytes, hosts);
   if (origin.kind === 'range') return httpBytes(origin.url, [origin.start, origin.end], sample.bytes, hosts);
-  if (origin.mirrors === undefined) return zipEntryBytes(origin, origin.archive, sample.bytes, hosts);
-  return firstAnswer([origin.archive, ...origin.mirrors], (archive) => zipEntryBytes(origin, archive, sample.bytes, hosts, MIRRORED_RETRIES));
+  const singles = origin.entryArchives ?? [];
+  if (origin.mirrors === undefined && singles.length === 0) return zipEntryBytes(origin, origin.archive, sample.bytes, hosts);
+  const places = [
+    ...[origin.archive, ...(origin.mirrors ?? [])].map((archive) => ({ archive, entry: origin })),
+    ...singles.map((single) => ({ archive: single.url, entry: { ...origin, offset: 0, compressedSize: single.compressedSize } })),
+  ];
+  return firstAnswer(places, (place) => zipEntryBytes(place.entry, place.archive, sample.bytes, hosts, MIRRORED_RETRIES));
 }
 
 export interface EnsureOptions {

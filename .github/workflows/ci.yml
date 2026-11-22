@@ -690,6 +690,7 @@ jobs:
         uses: ./.github/actions/bench-corpora
         with:
           families: ${{ env.BENCH_FAMILIES }}
+          scope: parity-quality
 
       # A quality entry the change adds or edits in bench/parity-gaps.json is backed by the baseline of the base: it may not
       # record a value worse than the baseline held the row to. The base is the first parent of the merge commit this job

@@ -207,6 +207,7 @@ jobs:
         uses: ./.github/actions/bench-corpora
         with:
           families: ${{ matrix.families }}
+          scope: parity-quality
 
       - name: Fingerprint the reference tools
         id: tools
@@ -238,6 +239,7 @@ jobs:
         uses: ./.github/actions/bench-corpora-save
         with:
           families: ${{ matrix.families }}
+          scope: parity-quality
 
       # Saved even when the benchmark fails, since a failing night is exactly when the pull requests need the cache.
       # The key carries the run id: a cache entry is immutable, and entries are keyed inside the cache anyway.
@@ -311,6 +313,7 @@ jobs:
         uses: ./.github/actions/bench-corpora
         with:
           families: ${{ env.OFFICE_IMAGE_FAMILIES }}
+          scope: office-image
 
       - name: Log in to the container registry
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
@@ -344,6 +347,7 @@ jobs:
         uses: ./.github/actions/bench-corpora-save
         with:
           families: ${{ env.OFFICE_IMAGE_FAMILIES }}
+          scope: office-image
 
       - name: Publish the parity table
         if: always()
@@ -409,6 +413,7 @@ jobs:
         uses: ./.github/actions/bench-corpora
         with:
           families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
+          scope: parity-speed
 
       # The service runs the PDF text thread from the bundle `npm run build` makes (Dockerfile.worker); time what is deployed, not
       # the TypeScript source through tsx.
@@ -430,6 +435,7 @@ jobs:
         uses: ./.github/actions/bench-corpora-save
         with:
           families: image,video,audio,compression,document,pdf-ops,ebook,font,cad,raw,vector,data
+          scope: parity-speed
 
       # The ratios this run measured on the runner are what bench/baseline.json and bench/parity-gaps.json record. This
       # step lists what refreshing them from this run would change; the refresh itself is a reviewed commit:
