@@ -58,13 +58,15 @@ describe('the ocronnx stage of the worker image', () => {
 });
 
 describe('the install script of the ONNX OCR models', () => {
-  it('pins every model file and every licence file by SHA-256, and the licence texts by the commit of a tag', () => {
-    for (const name of ['DET_SHA256', 'REC_SHA256', 'DICT_SHA256', 'EN_REC_SHA256', 'EN_DICT_SHA256', 'ORT_LICENSE_SHA256', 'ORT_NOTICES_SHA256', 'PADDLEOCR_LICENSE_SHA256', 'RAPIDOCR_LICENSE_SHA256']) {
+  it('pins every model file and every licence file by SHA-256, and the licence texts by the commit of a tag or by the PyPI wheel', () => {
+    for (const name of ['DET_SHA256', 'REC_SHA256', 'DICT_SHA256', 'EN_REC_SHA256', 'EN_DICT_SHA256', 'ORT_WHEEL_SHA256', 'ORT_LICENSE_SHA256', 'ORT_NOTICES_SHA256', 'PADDLEOCR_LICENSE_SHA256', 'RAPIDOCR_LICENSE_SHA256']) {
       expect(pin(name), name).toMatch(SHA256);
     }
-    for (const name of ['ORT_COMMIT', 'PADDLEOCR_COMMIT', 'RAPIDOCR_COMMIT']) expect(pin(name), name).toMatch(COMMIT);
-    expect(INSTALL).toContain('raw.githubusercontent.com/microsoft/onnxruntime/${ORT_COMMIT}/LICENSE');
-    expect(INSTALL).toContain('raw.githubusercontent.com/microsoft/onnxruntime/${ORT_COMMIT}/ThirdPartyNotices.txt');
+    for (const name of ['PADDLEOCR_COMMIT', 'RAPIDOCR_COMMIT']) expect(pin(name), name).toMatch(COMMIT);
+    expect(pin('ORT_WHEEL_URL')).toMatch(new RegExp(`^https://files\\.pythonhosted\\.org/packages/[0-9a-f/]+/onnxruntime-${pin('ORT_VERSION').replaceAll('.', '\\.')}-[^/]+\\.whl$`));
+    expect(INSTALL).toContain('install_from_wheel onnxruntime/LICENSE "$ORT_LICENSE_SHA256" licenses/onnxruntime.LICENSE');
+    expect(INSTALL).toContain('install_from_wheel onnxruntime/ThirdPartyNotices.txt "$ORT_NOTICES_SHA256" licenses/onnxruntime.ThirdPartyNotices.txt');
+    expect(INSTALL).not.toContain('microsoft/onnxruntime');
     expect(INSTALL).toContain('raw.githubusercontent.com/PaddlePaddle/PaddleOCR/${PADDLEOCR_COMMIT}/LICENSE');
     expect(INSTALL).toContain('raw.githubusercontent.com/RapidAI/RapidOCR/${RAPIDOCR_COMMIT}/LICENSE');
   });

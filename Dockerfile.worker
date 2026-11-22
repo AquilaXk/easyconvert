@@ -167,7 +167,7 @@ RUN /tmp/install-quantizr-pixels.sh /opt/quantizr-pixels
 FROM ${NODE_IMAGE} AS oxipng
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-oxipng.sh /tmp/install-oxipng.sh
 COPY scripts/oxipng-notices/THIRD-PARTY-NOTICES /tmp/oxipng-notices/THIRD-PARTY-NOTICES
@@ -186,7 +186,7 @@ RUN /tmp/install-oxipng.sh /opt/oxipng
 FROM ${NODE_IMAGE} AS pandoc
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-pandoc.sh /tmp/install-pandoc.sh
 COPY scripts/pandoc-notices/THIRD-PARTY-NOTICES /tmp/pandoc-notices/THIRD-PARTY-NOTICES
@@ -338,7 +338,7 @@ RUN /src/tmpfile-redirect/build.sh /usr/local/lib/libeasyconvert-tmpfile.so
 FROM ${NODE_IMAGE} AS ocronnx
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-onnx-ocr-models.sh /tmp/install-onnx-ocr-models.sh
 RUN /tmp/install-onnx-ocr-models.sh /opt/ocr-onnx

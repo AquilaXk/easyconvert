@@ -6,17 +6,19 @@
 # dict.txt for Korean, rec-eng.onnx and dict-eng.txt for English) beside a NOTICE that says where they come from and under which licence.
 #
 # The licence texts that travel with the models and the runtime are installed beside them under <install-dir>/licenses, each checked against a
-# fixed SHA-256 and taken from a tagged commit, not a branch: the MIT text of onnxruntime and its ThirdPartyNotices.txt (the notices of the libraries
-# its native library is built from: protobuf, abseil, Eigen, onnx, re2, flatbuffers, cpuinfo and others; the npm package ships neither file), and the
-# Apache-2.0 texts of PaddleOCR (the weights) and RapidOCR (the conversion). Neither of those two projects has a NOTICE file; the NOTICE written here
+# fixed SHA-256. The MIT text of onnxruntime and its ThirdPartyNotices.txt (the notices of the libraries its native library is built from: protobuf,
+# abseil, Eigen, onnx, re2, flatbuffers, cpuinfo and others; the npm package ships neither file) are read as data from the onnxruntime wheel of the
+# same version on PyPI, which carries both, and the wheel is pinned by its published SHA-256. The Apache-2.0 texts of PaddleOCR (the weights) and
+# RapidOCR (the conversion) are taken from a tagged commit, not a branch. Neither of those two projects has a NOTICE file; the NOTICE written here
 # says where the models come from. Dockerfile.worker copies them to /licenses.
 #
 # Bump ONNX_OCR_RELEASE and the five digests together, and run tests/ocr-onnx-real.test.ts with the new files before moving the pin. Bump
-# ORT_COMMIT (the commit of the tag of the onnxruntime-node version in package.json) and its two digests with that package.
+# ORT_WHEEL_URL and the three ORT_ digests with the onnxruntime-node version in package.json (the wheel of the same version, from the PyPI JSON API
+# of that release: https://pypi.org/pypi/onnxruntime/<version>/json), and check that both members still hash to the pinned digests.
 #
-# Usage: install-onnx-ocr-models.sh [install-dir]   (default /opt/ocr-onnx; needs curl and sha256sum)
+# Usage: install-onnx-ocr-models.sh [install-dir]   (default /opt/ocr-onnx; needs curl, sha256sum and unzip)
 # With ONNX_OCR_DOWNLOADS set (CI), a download kept there from an earlier run is used when its digest still matches, and a fresh one is
-# kept there for the next run; the digest is checked on every use either way. The files are about 26 MB in all.
+# kept there for the next run; the digest is checked on every use either way. The files are about 50 MB in all (the onnxruntime wheel is 24 MB).
 set -euo pipefail
 
 ONNX_OCR_RELEASE="v3.10.0"
@@ -32,7 +34,8 @@ EN_REC_SHA256="c3461add59bb4323ecba96a492ab75e06dda42467c9e3d0c18db5d1d21924be8"
 EN_DICT_PATH="paddle/PP-OCRv5/rec/en_PP-OCRv5_rec_mobile/ppocrv5_en_dict.txt"
 EN_DICT_SHA256="e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6"
 ORT_VERSION="1.31.1"
-ORT_COMMIT="6af1a932e2286d5c58166085d24c68783033edee"
+ORT_WHEEL_URL="https://files.pythonhosted.org/packages/eb/27/c6a823bac55b2977bea2027c3ec9393a2c1002cb9a09eb40354563e02730/onnxruntime-1.31.1-cp312-cp312-manylinux_2_28_x86_64.whl"
+ORT_WHEEL_SHA256="1f3dea47f2f0e5117c2404cea7d21fd253ae7836a3bf167a501cdfbb2600d536"
 ORT_LICENSE_SHA256="2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
 ORT_NOTICES_SHA256="143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3"
 PADDLEOCR_TAG="v3.7.0"
@@ -40,7 +43,7 @@ PADDLEOCR_COMMIT="b03f46425e8ff4442b268ce449e3eef758146cd4"
 PADDLEOCR_LICENSE_SHA256="3840c5c0c61c294264d2dd77b8777be6ddd90121ef4e0e64abcd22edea581d6e"
 RAPIDOCR_COMMIT="bd941dae09da793e76c6ba15c7aaf40f8424232a"
 RAPIDOCR_LICENSE_SHA256="3e0af25fdd06aa9586ae97adb00ea927ebe5a3805ac77d2d3a81ce5f55693333"
-# The largest file is 13.5 MB (the ThirdPartyNotices.txt is 0.34 MB). curl refuses a download announced as larger, and the read stops one byte past the bound.
+# The largest file is the 23.8 MB onnxruntime wheel (the largest model is 13.5 MB, the ThirdPartyNotices.txt 0.34 MB). curl refuses a download announced as larger, and the read stops one byte past the bound.
 MAX_DOWNLOAD_BYTES=$((32 * 1024 * 1024))
 INSTALL_DIR="${1:-/opt/ocr-onnx}"
 
@@ -61,10 +64,10 @@ fetch() {
   fi
 }
 
-# Downloads one file (or takes it from the download cache), checks its digest and copies it to the install directory under `target`.
+# Downloads one file (or takes it from the download cache) into $work and checks its digest; the path is left in $downloaded.
 # The cache keeps it under the digest's first sixteen characters and its own name, so two files called LICENSE do not meet there.
-install_from() {
-  local url="$1" sum="$2" target="$3" cached
+download_checked() {
+  local url="$1" sum="$2" cached
   cached="${sum:0:16}-$(basename "$url")"
   if [ -n "${ONNX_OCR_DOWNLOADS:-}" ] && echo "${sum}  ${ONNX_OCR_DOWNLOADS}/${cached}" | sha256sum --check --strict --status - 2>/dev/null; then
     cp "${ONNX_OCR_DOWNLOADS}/${cached}" "$work/${cached}"
@@ -76,8 +79,26 @@ install_from() {
     mkdir -p "$ONNX_OCR_DOWNLOADS"
     cp "$work/${cached}" "${ONNX_OCR_DOWNLOADS}/${cached}"
   fi
-  mkdir -p "$(dirname "${INSTALL_DIR}/${target}")"
-  install -m 0644 "$work/${cached}" "${INSTALL_DIR}/${target}"
+  downloaded="$work/${cached}"
+}
+
+# Copies a checked file to the install directory under `target`.
+place() {
+  mkdir -p "$(dirname "${INSTALL_DIR}/$2")"
+  install -m 0644 "$1" "${INSTALL_DIR}/$2"
+}
+
+install_from() {
+  download_checked "$1" "$2"
+  place "$downloaded" "$3"
+}
+
+# Reads one member of the downloaded onnxruntime wheel as data (nothing is extracted to a path of its own), checks its digest and installs it.
+install_from_wheel() {
+  local member="$1" sum="$2" target="$3" file="$work/wheel-member-$(basename "$1")"
+  unzip -p "$ort_wheel" "$member" | head -c "$((MAX_DOWNLOAD_BYTES + 1))" > "$file"
+  echo "${sum}  ${file}" | sha256sum --check --strict -
+  place "$file" "$target"
 }
 
 install_file() {
@@ -90,8 +111,10 @@ install_file "$DICT_PATH" "$DICT_SHA256" dict.txt
 install_file "$EN_REC_PATH" "$EN_REC_SHA256" rec-eng.onnx
 install_file "$EN_DICT_PATH" "$EN_DICT_SHA256" dict-eng.txt
 
-install_from "https://raw.githubusercontent.com/microsoft/onnxruntime/${ORT_COMMIT}/LICENSE" "$ORT_LICENSE_SHA256" licenses/onnxruntime.LICENSE
-install_from "https://raw.githubusercontent.com/microsoft/onnxruntime/${ORT_COMMIT}/ThirdPartyNotices.txt" "$ORT_NOTICES_SHA256" licenses/onnxruntime.ThirdPartyNotices.txt
+download_checked "$ORT_WHEEL_URL" "$ORT_WHEEL_SHA256"
+ort_wheel="$downloaded"
+install_from_wheel onnxruntime/LICENSE "$ORT_LICENSE_SHA256" licenses/onnxruntime.LICENSE
+install_from_wheel onnxruntime/ThirdPartyNotices.txt "$ORT_NOTICES_SHA256" licenses/onnxruntime.ThirdPartyNotices.txt
 install_from "https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/${PADDLEOCR_COMMIT}/LICENSE" "$PADDLEOCR_LICENSE_SHA256" licenses/paddleocr.LICENSE
 install_from "https://raw.githubusercontent.com/RapidAI/RapidOCR/${RAPIDOCR_COMMIT}/LICENSE" "$RAPIDOCR_LICENSE_SHA256" licenses/rapidocr.LICENSE
 
@@ -117,8 +140,8 @@ have notices of their own.
 Licence texts, in the directory licenses/ beside this file:
   paddleocr.LICENSE                  Apache License 2.0 of PaddleOCR (tag ${PADDLEOCR_TAG}, commit ${PADDLEOCR_COMMIT})
   rapidocr.LICENSE                   Apache License 2.0 of RapidOCR (release ${ONNX_OCR_RELEASE}, commit ${RAPIDOCR_COMMIT})
-  onnxruntime.LICENSE                MIT licence of onnxruntime (commit ${ORT_COMMIT}, tag v${ORT_VERSION})
-  onnxruntime.ThirdPartyNotices.txt  notices of the libraries built into the onnxruntime library (same commit)
+  onnxruntime.LICENSE                MIT licence of onnxruntime (member onnxruntime/LICENSE of the PyPI wheel, wheel sha256 ${ORT_WHEEL_SHA256})
+  onnxruntime.ThirdPartyNotices.txt  notices of the libraries built into the onnxruntime library (same wheel, same version ${ORT_VERSION})
 Neither PaddleOCR nor RapidOCR publishes a NOTICE file, so there is none to carry. The worker image copies these files to /licenses with the
 prefix onnx-ocr. .
 NOTICE
