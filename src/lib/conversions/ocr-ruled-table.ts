@@ -14,7 +14,7 @@ import type { OcrLineBlock } from './ocr-pdf-combiner';
  *    least 25% of the non-rule character ink inside the grid lies outside Tesseract's word boxes, or
  *    one cell of the grid has most of its own ink outside them (a table whose last column or one
  *    cell is dropped keeps a high confidence on the words that remain and loses little ink overall,
- *    policy decision 392).
+ *    policy decision 394).
  */
 
 const MAX_HEADER_SCAN_BYTES = 128;

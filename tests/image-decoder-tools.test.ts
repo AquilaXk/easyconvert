@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { findDecoderTool, loggableDiagnostic } from '../src/lib/conversions/image-decoder-tools';
+import { spawnSync } from 'node:child_process';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { findDecoderTool, loggableDiagnostic, readDecodedFile } from '../src/lib/conversions/image-decoder-tools';
 
 /**
  * How the command-line decoders are found: an environment variable is authoritative and must name an absolute path of an
@@ -54,5 +55,43 @@ describe('loggableDiagnostic', () => {
 
   it('keeps letters of every script', () => {
     expect(loggableDiagnostic('이미지 画像 изображение')).toBe('이미지 画像 изображение');
+  });
+});
+
+describe('readDecodedFile', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'decoded-file-'));
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('reads a regular file within the limit', async () => {
+    const file = path.join(dir, 'regular.png');
+    fs.writeFileSync(file, 'PNG');
+
+    expect((await readDecodedFile(file, 10, 'JXL')).toString()).toBe('PNG');
+  });
+
+  // A pipe is judged by the open descriptor: the name may have been a file when it was looked at and a pipe when it was opened.
+  it('refuses a named pipe instead of reading it as an empty buffer', async () => {
+    const pipe = path.join(dir, 'pipe.png');
+    expect(spawnSync('mkfifo', [pipe]).status).toBe(0);
+
+    await expect(readDecodedFile(pipe, 10, 'JXL')).rejects.toThrow('Invalid image: the JXL picture could not be decoded');
+  });
+
+  it('refuses a named pipe that took the place of the file after its name was looked at', async () => {
+    const pipe = path.join(dir, 'swapped.png');
+    expect(spawnSync('mkfifo', [pipe]).status).toBe(0);
+    const spy = vi.spyOn(fs.promises, 'lstat').mockResolvedValue(fs.statSync(path.join(dir, 'regular.png')));
+    try {
+      await expect(readDecodedFile(pipe, 10, 'JXL')).rejects.toThrow('Invalid image: the JXL picture could not be decoded');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refuses a link', async () => {
+    const link = path.join(dir, 'link.png');
+    fs.symlinkSync(path.join(dir, 'regular.png'), link);
+
+    await expect(readDecodedFile(link, 10, 'JXL')).rejects.toThrow('could not be decoded');
   });
 });

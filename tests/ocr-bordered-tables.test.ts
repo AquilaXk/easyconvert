@@ -11,7 +11,7 @@ import { skipUnless } from './helpers/strict-skip';
  * The bordered tables of tests/fixtures/ocr-tables (tests/fixtures/ocr-tables/generate_bordered_tables.py), drawn from known text, 16 pages in
  * typefaces, sizes, resolutions, rule widths, shading and degradations that differ. Tesseract reads a ruled grid as a few confident words and
  * leaves out the other cells, scoring 0.9 and more on the words that remain, so the score does not see the loss; the second reading by the ONNX
- * engine does, and the detector of ocr-ruled-table.ts is what asks for it (policy decisions 317 and 392).
+ * engine does, and the detector of ocr-ruled-table.ts is what asks for it (policy decisions 317 and 394).
  */
 const TABLES = path.join(__dirname, 'fixtures', 'ocr-tables');
 const TIMEOUT_MS = 180_000;

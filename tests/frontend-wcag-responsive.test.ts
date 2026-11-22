@@ -15,7 +15,7 @@ vi.mock('next/navigation', async (importOriginal) => ({
   usePathname: () => '/',
 }));
 
-import { CATEGORIES, getAllFormats } from '../src/lib/registry';
+import { CATEGORIES, FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 import { CATEGORY_ORDER, REGISTRY_STATS } from '../src/lib/registry-stats';
 import HomePage from '../src/components/pages/HomePageView';
 import ConverterPageView from '../src/components/pages/ConverterPageView';
@@ -210,8 +210,9 @@ describe('Frontend Registry Truth, Domain Workbench & WCAG 2.1 AA Verification',
     expect(computeVisibleSections('docx', 'pdf').canConfigureLayout).toBe(false);
     expect(computeVisibleSections('md', 'pdf').canConfigureLayout).toBe(true);
     expect(computeVisibleSections('png', 'pdf').canConfigureLayout).toBe(true);
-    for (const target of ['txt', 'html', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'rtf', 'doc', 'png', 'svg']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(true);
-    for (const target of ['md', 'epub', 'hocr']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(false);
+    for (const target of ['txt', 'html', 'md', 'pdf', 'docx', 'xlsx', 'xls', 'pptx', 'ppt', 'rtf', 'doc', 'png', 'svg']) expect(computeVisibleSections('pdf', target).canSelectPages).toBe(true);
+    // Every target a PDF converts to takes the selection (policy entries 373, 392 and 393): the field is never missing where it works.
+    expect(FORMAT_REGISTRY.pdf.targetFormats.filter((target) => !computeVisibleSections('pdf', target).canSelectPages)).toEqual([]);
     expect(computeVisibleSections('docx', 'txt').canSelectPages).toBe(false);
     expect(resolvePasswordMode('rar', 'zip')).toBe('archive-reencrypt');
     expect(resolvePasswordMode('pdf', 'zip')).toBe('archive-encrypt');

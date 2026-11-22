@@ -8,6 +8,7 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
+import { OUTPUT_READ_FLAGS } from '../security/sandbox-output';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../types';
 
 /**
@@ -120,18 +121,19 @@ export async function withDecoderJob<T>(input: Buffer, inputName: string, task: 
 }
 
 /**
- * Reads the file a decoder wrote: a regular file (not a link) within `maxBytes`, opened without following a link. Where the
- * sandbox enforces its file-size limit a larger file was never written; where it does not (a developer's machine), this stops it.
+ * Reads the file a decoder wrote: a regular file (not a link or a pipe) within `maxBytes`, judged on the descriptor it was opened as, so
+ * no swap of the name after the open changes what is read. Where the sandbox enforces its file-size limit a larger file was never
+ * written; where it does not (a developer's machine), this stops it.
  */
 export async function readDecodedFile(filePath: string, maxBytes: number, label: string): Promise<Buffer> {
   const missing = new ConversionFailedError(`Invalid image: the ${label} picture could not be decoded`);
-  const linkStat = await fs.promises.lstat(filePath).catch(() => null);
-  if (linkStat === null || !linkStat.isFile()) throw missing;
-  if (linkStat.size > maxBytes) throw new PayloadLimitError(`Cannot decode the ${label} picture: it needs more memory than decoding allows`);
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW).catch(() => {
+  const handle = await fs.promises.open(filePath, OUTPUT_READ_FLAGS).catch(() => {
     throw missing;
   });
   try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw missing;
+    if (stat.size > maxBytes) throw new PayloadLimitError(`Cannot decode the ${label} picture: it needs more memory than decoding allows`);
     return await handle.readFile();
   } finally {
     await handle.close();

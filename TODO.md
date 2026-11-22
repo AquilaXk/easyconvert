@@ -8,6 +8,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Turn billing on (the thirteen `PADDLE_` variables) on or after 2026-12-13, when the terms published on 2026-11-13 take effect; until then the pricing page shows the package and the subscription as coming soon.
 
 ## Conversions and quality
+- Decide whether ALTO `PHYSICAL_IMG_NR` should count from 0 as Tesseract writes it (ours counts from 1; entry 393 numbers selected pages by position).
 - Drop `scripts/install-libraw-he.sh` and the `librawhe` stage when the distribution's LibRaw (0.23 or later) reads Nikon HE/HE* NEF (entry 195).
 - PDF text still leaves out 0.079% of the glyphs of the real-world corpus (entry 379, 45,799 of 57.9M): 89% in Type 3 fonts (bitmap fonts whose glyphs are named `a<n>` and `i<n>`, 53% in `govdocs1-001494.pdf` alone; the table leaders `leaderdot` and `thindash`), and the rest in subset composite fonts with no `cmap` or `post` (entry 104), the private-use characters of `OpenSymbol` (1,343, `govdocs1-002166.pdf`), `Wingdings` and `cmex`, the `C<n>` names of `AdvP4C4E` and 61 glyphs of the pi fonts that the table lacks (`H33527`, `H20848`, `H11509`). Open: the TeX ligature names (U+000B to U+000F) of the dvips Type 3 fonts (54 glyphs of `govdocs1-004647.pdf`), and the glyphs at codes 10, 11 and 13 of those fonts that pdf.js drops before the reader sees them.
 - Compress PNG rows run at 1.20 (photographs) to 2.47 of the reference's speed since entry 276 (and Heckbert `PaletteInverseCmap` + lazy `32x32x32` `KdTree3` grid in entry 315), at 19.1% below its bytes and 1.1% above oxipng's; evaluate oxipng `-o1 -f 6 --zc 12` (0.6% byte gain) if `wm-deep-dart.png` and `clic-schicka-307.png` move above 0.9.
@@ -15,8 +16,8 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Carry the remaining PDF vector features left after entries 289 and 315 into slides and Word documents: clipping paths, gradients and patterns, soft masks and shadows, diagram labels inside shapes, shapes in running headers/footers, per-page backgrounds in Word, and false table grids over magazine photo columns.
 - Review the 82 withdrawn pairs against the reference (`tests/parity-audit.test.ts`, besides the 37 to `rar`, after entries 309 and 310): SNB books (9 pairs; calibre 8.5.0 reads no SNB, fixed upstream in 9.10), targets EMF and WMF (28, entries 42 and 99), XPS (8), SWF (7), and GIF/WebP to audio (14, no audio stream).
 - Offer `input_markdown_syntax` if wanted (entry 310).
-- Choose the OCR engine by document (entry 392): after the first pages of a scan that Tesseract scores below 0.6 read the rest with the ONNX engine alone (`gd-074905.pdf` 156 s against 187 s, where Tesseract reads the numeric tables at about 0.5 and the ONNX engine at 0.95, `cc-7600350.pdf` 70 s against 76 s; a text scan such as `gd-217600.pdf` is twice as slow, 246 s against 109 s); needs QA's decision since it moves the first reader of entry 302.
-- Add a corpus of real bordered tables with human transcriptions (entry 392 measured the cell rule on 16 drawn tables and three real scans only).
+- Choose the OCR engine by document (entry 394): after the first pages of a scan that Tesseract scores below 0.6 read the rest with the ONNX engine alone (`gd-074905.pdf` 156 s against 187 s, where Tesseract reads the numeric tables at about 0.5 and the ONNX engine at 0.95, `cc-7600350.pdf` 70 s against 76 s; a text scan such as `gd-217600.pdf` is twice as slow, 246 s against 109 s); needs QA's decision since it moves the first reader of entry 302.
+- Add a corpus of real bordered tables with human transcriptions (entry 394 measured the cell rule on 16 drawn tables and three real scans only).
 - Install `epubcheck` in the Linux VM so `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity --family document` does not stop at `rich-structure.docx->html` with `MissingToolError`.
 
 - Fill `bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json` from the first reports of the nightly job `bench-parity-office-image` (`npm run bench:quality -- --baseline-from-report <report.json> --baseline bench/baseline-office-image.json`, bench/README.md, "Office rows in the worker image"), record the speed rows it puts below 0.9, then remove `continue-on-error` from the job (entry 386).
@@ -28,7 +29,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads, decide whether multi-segment parallel LZW (~200 ms saved on `3fr`, <0.01% byte change) is acceptable, and profile `dcraw_emu` on `3fr` (0.9 s).
 
 ## Operations and security
-- Read sandboxed program results (qpdf output files of entry 391, Ghostscript results) with `O_NOFOLLOW|O_NONBLOCK` and an `fstat` regular-file check so a compromised program cannot leave a FIFO that blocks the worker, map a missing output after exit 0 to a typed error, and add oversize/abnormal-exit cleanup tests for the qpdf output-file path.
+- Revoke the GitHub token that the production host's `ubuntu` user had stored for ghcr.io (removed from `~/.docker/config.json` on 2026-11-22; the deploy runner logs in per job since entry 389), if it is a long-lived personal token.
 - Before each deploy, check the LibreOffice version in trixie-backports and the LibreOffice security advisories, and raise the three pins of `Dockerfile.worker` together (entry 383: no `trixie-security` stream; backports keeps one version, so a newer 26.8.x stops the image build); add a nightly `apt-cache policy` check that warns before that happens.
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
@@ -36,6 +37,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
 ## Tests, CI and code health
+- Refresh the shared Lima VM install `~/w` (its `node_modules` was built for Node 20 and lacks the formula engine packages, so current sources fail there); agents install their own copy until then.
 - Re-measure the `book-pg84.epub` quality rows against its rebuilt bytes (entry 224; `book-pg2701.epub` re-pinned in entry 328).
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
 

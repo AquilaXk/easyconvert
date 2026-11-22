@@ -1,6 +1,6 @@
 // First import on purpose: the flag must be set before any WebAssembly instance exists (docs/policy-decisions.md, entry 115).
 import './wasm-import-wrappers';
-import { ConversionOptions, ConversionResult, ConversionFailedError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidPageRangeError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
 import { assertNotSubtitlePair } from './subtitle';
 import { isArchiveRoutePair, isMediaRoutePair } from './route-formats';
 import { FORMAT_REGISTRY, sniffMimeTypeFromMagicBytes, isFormatCompatibleWithMagicBytes } from '../registry';
@@ -57,9 +57,11 @@ import {
   applyPdfWatermark,
   compressPdf,
   convertToPdfA,
+  extractPdfPages,
   PDF_OPTIMIZE_PROFILES,
   protectPdf,
 } from './pdf-postprocess';
+import { pageSelectionOf, validatePageRangeSyntax } from './page-range';
 import { validatePdfProtectOptions } from './pdf-postprocess/protect';
 import { remainingJobMs } from './job-time';
 import {
@@ -389,6 +391,31 @@ function isDirectPdfPostProcessOnly(src: string, tgt: string, options: Conversio
   );
 }
 
+/**
+ * The pages a PDF to PDF request keeps, as a page specification (policy entry 392), or undefined when it names none. `page`
+ * is the one page of the `pages` grammar; both options must name the same text. The syntax is checked before any work.
+ */
+function pdfToPdfPagesSpec(src: string, tgt: string, options: ConversionOptions): string | undefined {
+  if (src !== 'pdf' || tgt !== 'pdf') return undefined;
+  const selection = pageSelectionOf(options);
+  if (selection === undefined) return undefined;
+  const pages = typeof selection.pages === 'string' ? selection.pages.trim() : '';
+  const page = selection.page === null || selection.page === undefined ? '' : String(selection.page).trim();
+  if (pages !== '' && page !== '' && pages !== page) {
+    throw new InvalidPageRangeError(`The "page" option (${page}) and the "pages" option ("${pages}") select different pages`);
+  }
+  const spec = pages !== '' ? pages : page;
+  validatePageRangeSyntax(spec, 'Option "pages"');
+  return spec;
+}
+
+/** Cuts the PDF result to the pages of `spec` (the edit of `pdfToPdfPagesSpec`); a request without a selection leaves it as it is. */
+async function keepPdfPages(result: ConversionResult, spec: string | undefined, options: ConversionOptions): Promise<void> {
+  if (spec === undefined) return;
+  result.buffer = await extractPdfPages(result.buffer, spec, { password: options.password, confirmEditRights: options.confirmEditRights });
+  result.size = result.buffer.length;
+}
+
 async function convertDocumentOrDirectPdf(
   inputBuffer: Buffer,
   src: string,
@@ -436,6 +463,8 @@ async function convertFileInScope(
       )}`
     );
   }
+
+  const pdfPagesSpec = pdfToPdfPagesSpec(src, tgt, options);
 
   // Fail-closed verification against spoofed file extensions using initial-byte MIME magic sniffing
   if (options.validateMagicBytes) {
@@ -567,6 +596,8 @@ async function convertFileInScope(
         break;
     }
   }
+
+  await keepPdfPages(res, pdfPagesSpec, options);
 
   // 8. PDF Post-Processing: Watermark, Compression, PDF/A, and Protection
   if (tgt === 'pdf' || res.filename?.endsWith('.pdf')) {

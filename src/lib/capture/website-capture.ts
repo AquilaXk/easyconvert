@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { startCaptureGate, type CaptureGateOptions } from '../security/capture-gate';
+import { OUTPUT_READ_FLAGS } from '../security/sandbox-output';
 import { assertPublicOutboundUrl, OutboundRequestBlockedError } from '../security/safe-fetch';
 import {
   rethrowSandboxUnavailable,
@@ -205,7 +206,7 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
 function readCapturedFile(file: string): Buffer {
   let descriptor: number;
   try {
-    descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    descriptor = fs.openSync(file, OUTPUT_READ_FLAGS);
   } catch {
     throw new CaptureFailedError('The browser wrote no file.');
   }

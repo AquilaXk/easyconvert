@@ -5,7 +5,7 @@ import { plainTextModel } from './document-model/plain';
 import { remainingJobMs } from './job-time';
 import { evaluatePageOcrDecisions, recognizeRenderedPdfPages } from './ocr';
 import type { OcrResult } from './ocr-pdf-combiner';
-import type { PageSelectionOptions } from './page-range';
+import { pageSelectionOf, type PageSelectionOptions } from './page-range';
 import { openPdfForReading } from './pdf-access';
 import { readPdfDocument, type ExtractedPdfDocument } from './pdf-text-document';
 import { PdfTextGeometryError } from './pdf-text-types';
@@ -116,8 +116,9 @@ export async function readPdfForOffice(source: Buffer, options: ConversionOption
 
 /**
  * An EPUB from a PDF, written from the block model its reader built, as it is for a DOCX: the text never passes through Markdown,
- * whose rules read a row of numbers as nested lists and whose limits are those of a user's document.
+ * whose rules read a row of numbers as nested lists and whose limits are those of a user's document. Only the pages the request selects
+ * are read (policy entry 393); the calibre e-book targets are written from this EPUB.
  */
 export async function pdfToEpub(source: Buffer, options: ConversionOptions, title: string): Promise<Buffer> {
-  return documentToEpub(await readPdfForOffice(source, options), { title, language: options.language });
+  return documentToEpub(await readPdfForOffice(source, options, { select: pageSelectionOf(options) }), { title, language: options.language });
 }
