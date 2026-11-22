@@ -886,6 +886,7 @@
   "tests/pdf-content-colour.test.ts": 0.4,
   "tests/pdf-content-shapes-classes.test.ts": 0,
   "tests/pdf-damaged-with-password.test.ts": 1,
+  "tests/pdf-decrypt-output-cleanup.test.ts": 0.1,
   "tests/pdf-delete-count-abort.test.ts": 0.2,
   "tests/pdf-empty-password-open.test.ts": 3.6,
   "tests/pdf-encryption-inspect.test.ts": 0.5,

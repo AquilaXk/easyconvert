@@ -127,7 +127,8 @@ export function isPasswordHandlingUnavailable(err: unknown, password: string | u
 
 async function removeQuietly(filePath: string): Promise<void> {
   try {
-    await fs.promises.rm(filePath, { force: true });
+    // Recursive: a program may leave a directory where its file belongs.
+    await fs.promises.rm(filePath, { force: true, recursive: true });
   } catch {
     // The job sandbox directory is removed by its owner as well; never mask the real outcome.
   }
