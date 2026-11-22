@@ -160,7 +160,9 @@ export function readCabal(entry: { readonly name: string; readonly version: stri
 export function readPackageLicence(entry: { readonly name: string; readonly version: string }, archive: Buffer): PackageLicence {
   const prefix = `${entry.name}-${entry.version}/`;
   const bundled = (BUNDLED_TEXTS[entry.name] ?? []).map((file) => `${prefix}${file}`);
-  const members = listMembers(archive, 'z', [prefix.slice(0, -1), ...bundled]);
+  // The bundled texts sit under the root of the archive, so listing the root names them; naming them again makes GNU tar report the
+  // second name as not found, since the root already matched those members.
+  const members = listMembers(archive, 'z', [prefix.slice(0, -1)]);
   const cabal = readCabal(entry, archive);
   const license = /^license[ \t]*:[ \t]*(\S.*?)[ \t]*$/im.exec(cabal)?.[1];
   if (license === undefined) throw new Error(`${prefix}${cabalOf(entry.name)} has no license field`);
