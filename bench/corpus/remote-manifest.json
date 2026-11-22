@@ -1923,6 +1923,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "dickens",
         "offset": 0,
         "compressedSize": 3871628,
@@ -1944,6 +1947,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "webster",
         "offset": 49234145,
         "compressedSize": 12213941,
@@ -1965,6 +1971,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "xml",
         "offset": 61448123,
         "compressedSize": 688808,
@@ -1986,6 +1995,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "samba",
         "offset": 38456085,
         "compressedSize": 5446199,
@@ -2007,6 +2019,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "mozilla",
         "offset": 3871665,
         "compressedSize": 19016809,
@@ -2028,6 +2043,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "ooffice",
         "offset": 29760353,
         "compressedSize": 3096017,
@@ -2049,6 +2067,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "osdb",
         "offset": 32856407,
         "compressedSize": 3739532,
@@ -2070,6 +2091,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "nci",
         "offset": 26560138,
         "compressedSize": 3200182,
@@ -2091,6 +2115,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "sao",
         "offset": 43902319,
         "compressedSize": 5331793,
@@ -2112,6 +2139,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "mr",
         "offset": 22888511,
         "compressedSize": 3671595,
@@ -2133,6 +2163,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "x-ray",
         "offset": 62136964,
         "compressedSize": 6045111,
@@ -2154,6 +2187,9 @@
       "origin": {
         "kind": "zip",
         "archive": "https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip",
+        "mirrors": [
+          "https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip"
+        ],
         "entry": "reymont",
         "offset": 36595973,
         "compressedSize": 1860075,

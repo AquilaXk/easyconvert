@@ -378,6 +378,8 @@ The Project Gutenberg files are regenerated in place by their host, so every one
 
 The web archive is not reachable from every runner (the connection to it timed out on GitHub-hosted runners for three nights), so all eleven of these files also list the original Project Gutenberg address under `origin.mirrors` (`book-pg2701.epub` re-pinned to its 2026-11-09 capture in entry 328). It is tried only after the archive failed, and its bytes are held to the same size and SHA-256 as the archive's: a rebuilt file is refused, never measured (entry 224).
 
+The Silesia host (`sun.aei.polsl.pl`) was unreachable from the GitHub-hosted runners on 2026-11-22 (`EHOSTUNREACH` and connect timeouts, two failed parity runs), so all twelve `silesia-*` entries list the raw capture of the same archive under `origin.mirrors`: `https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip`. The original address stays first. The capture is 68,182,744 bytes, answers range requests with `206` and `Accept-Ranges: bytes`, and was checked on 2026-11-22: it is a valid ZIP of the 12 entries, and each entry's SHA-256, size, local header offset, compressed size and method equal the manifest's pins (the benchmark holds the bytes of a mirror to the same pins, so a rebuilt archive is refused, never measured). SHA-256 of the whole capture: `0626e25f45c0ffb5dc801f13b7c82a3b75743ba07e3a71835a41e3d9f63c77af`.
+
 | Sample | Class | Source and licence |
 |---|---|---|
 | `book-pg11.epub` | illustrated | Alice's Adventures in Wonderland, EPUB with images; `gutenberg`; `LicenseRef-Project-Gutenberg` |

@@ -168,6 +168,9 @@ describe('the public benchmark samples in the workflows', () => {
     for (const step of action.runs.steps) {
       expect(String(step.with?.key)).toContain("hashFiles('bench/corpus/remote-manifest.json')");
       expect(String(step.with?.['restore-keys'])).toContain("hashFiles('bench/corpus/remote-manifest.json')");
+      // A manifest edit changes the digest; the family prefix falls back to the newest older cache (files are content-addressed).
+      const [byDigest, byFamily] = String(step.with?.['restore-keys']).trim().split('\n').map((line) => line.trim());
+      expect(byFamily).toBe(byDigest.replace("${{ hashFiles('bench/corpus/remote-manifest.json') }}", ''));
       expect(step.uses).toMatch(/^actions\/cache\/restore@[0-9a-f]{40}$/);
     }
     expect(action.runs.steps.map((step) => step.if)).toEqual(SAMPLE_FAMILIES.map((family) => `contains(format(',{0},', inputs.families), ',${family},')`));
@@ -176,7 +179,7 @@ describe('the public benchmark samples in the workflows', () => {
   it('is saved by the nightly parity jobs even when they fail, under a key of its own for each run, attempt and job', () => {
     const save = parse(read('.github', 'actions', 'bench-corpora-save', 'action.yml')) as { runs: { steps: Step[] } };
     expect(save.runs.steps.map((step) => step.with?.path)).toEqual(SAMPLE_FAMILIES.map((family) => `.bench-corpora/${family}`));
-    const restorePrefix = (family: string): string => String(action.runs.steps.find((step) => step.with?.path === `.bench-corpora/${family}`)?.with?.['restore-keys']).trim();
+    const restorePrefix = (family: string): string => String(action.runs.steps.find((step) => step.with?.path === `.bench-corpora/${family}`)?.with?.['restore-keys']).trim().split('\n')[0].trim();
     for (const [index, step] of save.runs.steps.entries()) {
       expect(step.uses).toMatch(/^actions\/cache\/save@[0-9a-f]{40}$/);
       // The restore reads by prefix, so the extra tokens of the save key must come after the family and the manifest digest.

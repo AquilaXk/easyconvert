@@ -3,6 +3,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import JSZip from 'jszip';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CorpusDigestError,
@@ -143,6 +144,79 @@ describe('a corpus file with mirror addresses', () => {
   );
 });
 
+describe('a ZIP entry with mirror addresses of its archive', () => {
+  const body = 'the entry of a mirrored archive '.repeat(8);
+  let archive: Buffer;
+  let rebuilt: Buffer;
+  let mirror: http.Server;
+  let mirrorBase: string;
+  let mirrorHits = 0;
+  let wrongBytes = false;
+
+  beforeAll(async () => {
+    const zipOf = (text: string): Promise<Buffer> => new JSZip().file('entry.txt', text, { compression: 'STORE' }).generateAsync({ type: 'nodebuffer' });
+    archive = await zipOf(body);
+    rebuilt = await zipOf('X'.repeat(body.length));
+    mirror = http.createServer((request, response) => {
+      mirrorHits++;
+      const range = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range ?? '');
+      const served = wrongBytes ? rebuilt : archive;
+      const start = Number(range?.[1] ?? 0);
+      const slice = served.subarray(start, range ? Number(range[2]) + 1 : undefined);
+      response.writeHead(range ? 206 : 200, { 'content-length': slice.length, 'content-range': `bytes ${start}-${start + slice.length - 1}/${served.length}` }).end(slice);
+    });
+    await new Promise<void>((resolve) => mirror.listen(0, '127.0.0.1', resolve));
+    mirrorBase = `http://127.0.0.1:${(mirror.address() as AddressInfo).port}`;
+  });
+  afterAll(() => new Promise<void>((resolve) => mirror.close(() => resolve())));
+
+  const entry = (): PinnedFile => ({
+    id: 'entry.txt',
+    family: 'compression',
+    set: 'silesia',
+    origin: { kind: 'zip', archive: 'http://127.0.0.1:1/archive.zip', mirrors: [`${mirrorBase}/archive.zip`], entry: 'entry.txt', offset: 0, compressedSize: body.length, method: 0 },
+    bytes: body.length,
+    sha256: sha256(Buffer.from(body)),
+  });
+
+  it(
+    'reads the entry from the mirror of the archive when the archive cannot be reached',
+    async () => {
+      mirrorHits = 0;
+      resetVerifiedSamples();
+      expect((await downloadSample(entry())).toString()).toBe(body);
+      expect(mirrorHits).toBe(2);
+    },
+    MIRROR_FALLBACK_HANG_GUARD_MS
+  );
+
+  it(
+    'fails closed on a mirror whose archive holds other bytes',
+    async () => {
+      wrongBytes = true;
+      resetVerifiedSamples();
+      const cacheDir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'corpus-zip-mirror-')), 'cache');
+      try {
+        await expect(ensureSample(entry(), { cacheDir })).rejects.toBeInstanceOf(CorpusDigestError);
+        expect(fs.existsSync(cacheDir)).toBe(false);
+      } finally {
+        wrongBytes = false;
+      }
+    },
+    MIRROR_FALLBACK_HANG_GUARD_MS
+  );
+
+  it('keeps the archive of every Silesia entry first and the web archive capture of the same archive as its mirror', () => {
+    const silesia = readRemoteManifest().samples.filter((sample) => sample.set === 'silesia');
+    expect(silesia).toHaveLength(12);
+    for (const sample of silesia) {
+      const origin = sample.origin as Extract<PinnedFile['origin'], { kind: 'zip' }>;
+      expect(origin.archive).toBe('https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip');
+      expect(origin.mirrors).toEqual(['https://web.archive.org/web/20250223203321id_/https://sun.aei.polsl.pl/~sdeor/corpus/silesia.zip']);
+    }
+  });
+});
+
 describe('the manifest entry of a mirrored file', () => {
   const manifest = readRemoteManifest();
   const mirrored = (mirrors: unknown): RemoteManifest => {
@@ -173,5 +247,22 @@ describe('the manifest entry of a mirrored file', () => {
     const origin = first?.origin as { url: string; mirrors: string[] };
     origin.mirrors = [origin.url];
     expect(() => validateRemoteManifest(copy)).toThrow(/mirrors repeats an address/);
+  });
+});
+
+describe('the manifest entry of a ZIP archive with mirrors', () => {
+  const withMirrors = (mirrors: unknown): RemoteManifest => {
+    const copy = JSON.parse(JSON.stringify(readRemoteManifest())) as RemoteManifest;
+    const first = copy.samples.find((sample) => sample.origin.kind === 'zip');
+    (first?.origin as { mirrors?: unknown }).mirrors = mirrors;
+    return copy;
+  };
+
+  it('accepts https addresses and refuses an empty list, a plain http address and the archive listed again', () => {
+    expect(() => validateRemoteManifest(withMirrors(['https://mirror.example/a.zip']))).not.toThrow();
+    expect(() => validateRemoteManifest(withMirrors([]))).toThrow(/mirrors/);
+    expect(() => validateRemoteManifest(withMirrors(['http://mirror.example/a.zip']))).toThrow(/mirrors/);
+    const own = (readRemoteManifest().samples.find((sample) => sample.origin.kind === 'zip')?.origin as { archive: string }).archive;
+    expect(() => validateRemoteManifest(withMirrors([own]))).toThrow(/mirrors repeats an address/);
   });
 });

@@ -31,7 +31,8 @@ describe('the origins of the pinned corpus files', () => {
       if (Array.isArray(node)) return node.flatMap(mirrored);
       if (node === null || typeof node !== 'object') return [];
       const record = node as { url?: string; mirrors?: string[] };
-      return [...(record.mirrors === undefined ? [] : [{ url: record.url ?? '', mirrors: record.mirrors }]), ...Object.values(node).flatMap(mirrored)];
+      // Only the files read from a web-archive capture list their original address last; a ZIP archive names its original first (`archive`) and the capture as its mirror.
+      return [...(record.mirrors === undefined || record.url === undefined ? [] : [{ url: record.url, mirrors: record.mirrors }]), ...Object.values(node).flatMap(mirrored)];
     };
     const found = mirrored(manifest);
     expect(found.length).toBeGreaterThan(0);

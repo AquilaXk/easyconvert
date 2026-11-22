@@ -1,7 +1,7 @@
 name: Public benchmark samples
 description: >-
   Restores the verified downloads of the public sample sets (bench/corpus/remote-manifest.json) of the benchmark families a
-  job runs, from the newest cache of the manifest's digest. The benchmark checks every file against the manifest's SHA-256
+  job runs, from the newest cache of the manifest's digest, else the newest cache of the family (files are content-addressed, so an older cache only misses the entries a manifest edit added). The benchmark checks every file against the manifest's SHA-256
   whatever the cache holds (bench/corpora.ts), so a stale or damaged cache costs a download, never a wrong measurement. One
   cache per family: a job that measures one family restores only the files of that family. The nightly parity jobs save what
   they hold with ./.github/actions/bench-corpora-save, also when they fail, so a host that refuses a download one night is
@@ -23,6 +23,7 @@ runs:
         key: bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-image-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-image-
 
     - name: Restore the video samples
       if: contains(format(',{0},', inputs.families), ',video,')
@@ -32,6 +33,7 @@ runs:
         key: bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-video-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-video-
 
     - name: Restore the audio samples
       if: contains(format(',{0},', inputs.families), ',audio,')
@@ -41,6 +43,7 @@ runs:
         key: bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-audio-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-audio-
 
     - name: Restore the compression samples
       if: contains(format(',{0},', inputs.families), ',compression,')
@@ -50,6 +53,7 @@ runs:
         key: bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-compression-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-compression-
 
     - name: Restore the document samples
       if: contains(format(',{0},', inputs.families), ',document,')
@@ -59,6 +63,7 @@ runs:
         key: bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-document-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-document-
 
     - name: Restore the pdf-ops samples
       if: contains(format(',{0},', inputs.families), ',pdf-ops,')
@@ -68,6 +73,7 @@ runs:
         key: bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-pdf-ops-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-pdf-ops-
 
     - name: Restore the ebook samples
       if: contains(format(',{0},', inputs.families), ',ebook,')
@@ -77,6 +83,7 @@ runs:
         key: bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-ebook-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-ebook-
 
     - name: Restore the font samples
       if: contains(format(',{0},', inputs.families), ',font,')
@@ -86,6 +93,7 @@ runs:
         key: bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-font-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-font-
 
     - name: Restore the cad samples
       if: contains(format(',{0},', inputs.families), ',cad,')
@@ -95,6 +103,7 @@ runs:
         key: bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-cad-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-cad-
 
     - name: Restore the raw samples
       if: contains(format(',{0},', inputs.families), ',raw,')
@@ -104,6 +113,7 @@ runs:
         key: bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-raw-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-raw-
 
     - name: Restore the vector samples
       if: contains(format(',{0},', inputs.families), ',vector,')
@@ -113,6 +123,7 @@ runs:
         key: bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-vector-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-vector-
 
     - name: Restore the data samples
       if: contains(format(',{0},', inputs.families), ',data,')
@@ -122,3 +133,4 @@ runs:
         key: bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}-${{ github.run_id }}
         restore-keys: |
           bench-corpora-data-${{ hashFiles('bench/corpus/remote-manifest.json') }}
+          bench-corpora-data-

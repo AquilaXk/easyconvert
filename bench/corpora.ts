@@ -76,6 +76,8 @@ export interface ZipOrigin {
   compressedSize: number;
   /** ZIP compression method (0 stored, 8 deflated). */
   method: number;
+  /** Other addresses of the same archive, tried in order when `archive` cannot be reached; each is read with the same range requests and its entry is held to the pinned size and SHA-256. */
+  mirrors?: string[];
 }
 
 /** The first bytes of a larger file (a few frames of an uncompressed video, read with one range request). */
@@ -161,24 +163,25 @@ function requireCount(value: unknown, where: string): void {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new CorpusError(`${where} must be a non-negative integer`);
 }
 
-function checkMirrors(origin: FileOrigin, where: string): void {
+function checkMirrors(origin: FileOrigin | ZipOrigin, address: string, where: string): void {
   if (origin.mirrors === undefined) return;
   if (!Array.isArray(origin.mirrors) || origin.mirrors.length === 0 || origin.mirrors.length > MAX_MIRRORS) throw new CorpusError(`${where}.mirrors must list 1 to ${MAX_MIRRORS} https URLs`);
   origin.mirrors.forEach((mirror, index) => requireHttps(mirror, `${where}.mirrors[${index}]`));
-  if (new Set([origin.url, ...origin.mirrors]).size !== origin.mirrors.length + 1) throw new CorpusError(`${where}.mirrors repeats an address`);
+  if (new Set([address, ...origin.mirrors]).size !== origin.mirrors.length + 1) throw new CorpusError(`${where}.mirrors repeats an address`);
 }
 
 function checkOrigin(id: string, origin: RemoteOrigin): void {
   const where = `${id}.origin`;
   if (origin.kind === 'file') {
     requireHttps(origin.url, `${where}.url`);
-    checkMirrors(origin, where);
+    checkMirrors(origin, origin.url, where);
   } else if (origin.kind === 'zip') {
     requireHttps(origin.archive, `${where}.archive`);
     if (typeof origin.entry !== 'string' || origin.entry === '') throw new CorpusError(`${where}.entry must name the archive entry`);
     requireCount(origin.offset, `${where}.offset`);
     requireCount(origin.compressedSize, `${where}.compressedSize`);
     if (origin.method !== 0 && origin.method !== 8) throw new CorpusError(`${where}.method must be 0 (stored) or 8 (deflated)`);
+    checkMirrors(origin, origin.archive, where);
   } else if (origin.kind === 'range') {
     requireHttps(origin.url, `${where}.url`);
     requireCount(origin.start, `${where}.start`);
@@ -376,13 +379,12 @@ function redirectHostsOf(sample: Pick<RemoteSample, 'set'>): readonly string[] {
   return readRemoteManifest().sets[sample.set]?.redirectHosts ?? [];
 }
 
-/** The bytes of a file from its address, or from the first mirror that answers when the address cannot be reached; the caller checks the digest of whichever bytes come. */
-async function fileBytes(origin: FileOrigin, maxBytes: number, hosts: readonly string[]): Promise<Buffer> {
-  if (origin.mirrors === undefined) return httpBytes(origin.url, null, maxBytes, hosts);
+/** What the first address of `addresses` that answers returns from `read`; the caller checks the digest of whichever bytes come. */
+async function firstAnswer(addresses: readonly string[], read: (address: string) => Promise<Buffer>): Promise<Buffer> {
   const failures: string[] = [];
-  for (const url of [origin.url, ...origin.mirrors]) {
+  for (const address of addresses) {
     try {
-      return await httpBytes(url, null, maxBytes, hosts, MIRRORED_RETRIES);
+      return await read(address);
     } catch (error) {
       if (!(error instanceof CorpusFetchError)) throw error;
       failures.push(error.message);
@@ -391,16 +393,28 @@ async function fileBytes(origin: FileOrigin, maxBytes: number, hosts: readonly s
   throw new CorpusFetchError(`no address of the file answered: ${failures.join('; ')}`);
 }
 
+/** The bytes of a file from its address, or from the first mirror that answers when the address cannot be reached. */
+function fileBytes(origin: FileOrigin, maxBytes: number, hosts: readonly string[]): Promise<Buffer> {
+  if (origin.mirrors === undefined) return httpBytes(origin.url, null, maxBytes, hosts);
+  return firstAnswer([origin.url, ...origin.mirrors], (url) => httpBytes(url, null, maxBytes, hosts, MIRRORED_RETRIES));
+}
+
+/** The inflated entry of a ZIP archive read from one address with two range requests (local header, then data). */
+async function zipEntryBytes(origin: ZipOrigin, archive: string, size: number, hosts: readonly string[], retries?: number): Promise<Buffer> {
+  const head = await httpBytes(archive, [origin.offset, origin.offset + ZIP_LOCAL_HEADER_PROBE_BYTES - 1], ZIP_LOCAL_HEADER_PROBE_BYTES, hosts, retries);
+  const dataStart = origin.offset + localHeaderLength(head);
+  const data = origin.compressedSize === 0 ? Buffer.alloc(0) : await httpBytes(archive, [dataStart, dataStart + origin.compressedSize - 1], origin.compressedSize, hosts, retries);
+  return inflateEntry({ name: origin.entry, method: origin.method, compressedSize: origin.compressedSize, size, localHeaderOffset: origin.offset }, data);
+}
+
 /** The sample's bytes from its origin, before any digest check. */
 export async function downloadSample(sample: PinnedFile): Promise<Buffer> {
   const origin = sample.origin;
   const hosts = redirectHostsOf(sample);
   if (origin.kind === 'file') return fileBytes(origin, sample.bytes, hosts);
   if (origin.kind === 'range') return httpBytes(origin.url, [origin.start, origin.end], sample.bytes, hosts);
-  const head = await httpBytes(origin.archive, [origin.offset, origin.offset + ZIP_LOCAL_HEADER_PROBE_BYTES - 1], ZIP_LOCAL_HEADER_PROBE_BYTES, hosts);
-  const dataStart = origin.offset + localHeaderLength(head);
-  const data = origin.compressedSize === 0 ? Buffer.alloc(0) : await httpBytes(origin.archive, [dataStart, dataStart + origin.compressedSize - 1], origin.compressedSize, hosts);
-  return inflateEntry({ name: origin.entry, method: origin.method, compressedSize: origin.compressedSize, size: sample.bytes, localHeaderOffset: origin.offset }, data);
+  if (origin.mirrors === undefined) return zipEntryBytes(origin, origin.archive, sample.bytes, hosts);
+  return firstAnswer([origin.archive, ...origin.mirrors], (archive) => zipEntryBytes(origin, archive, sample.bytes, hosts, MIRRORED_RETRIES));
 }
 
 export interface EnsureOptions {
