@@ -90,10 +90,17 @@ describe('the nightly job of the office rows', () => {
     expect(run?.run).toContain('--gaps bench/parity-gaps-office-image.json');
   });
 
-  it('cannot fail the run until its baseline is recorded from its own report', () => {
-    expect(job['continue-on-error']).toBe(true);
-    expect(Object.keys(readBaseline(path.join(ROOT, 'bench', 'baseline-office-image.json')).entries)).toEqual([]);
-    expect(readGaps(path.join(ROOT, 'bench', 'parity-gaps-office-image.json')).gaps).toEqual([]);
+  it('enforces the baseline recorded from its worker-image report without continue-on-error', () => {
+    expect(job['continue-on-error']).toBeUndefined();
+    const entries = Object.keys(readBaseline(path.join(ROOT, 'bench', 'baseline-office-image.json')).entries);
+    expect(entries.length).toBe(1037);
+    expect(entries.every((id) => /^(document|data|cad)\//.test(id))).toBe(true);
+    for (const family of ['document/', 'data/', 'cad/']) {
+      expect(entries.some((id) => id.startsWith(family))).toBe(true);
+    }
+    const gaps = readGaps(path.join(ROOT, 'bench', 'parity-gaps-office-image.json'));
+    expect(gaps.gaps).toEqual([]);
+    expect(gaps.acceptedSlowdowns).toEqual([]);
   });
 
   it('uploads the report, so that --baseline-from-report has a file to read', () => {

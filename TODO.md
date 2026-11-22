@@ -18,10 +18,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Offer `input_markdown_syntax` if wanted (entry 310).
 - Choose the OCR engine by document (entry 394): after the first pages of a scan that Tesseract scores below 0.6 read the rest with the ONNX engine alone (`gd-074905.pdf` 156 s against 187 s, where Tesseract reads the numeric tables at about 0.5 and the ONNX engine at 0.95, `cc-7600350.pdf` 70 s against 76 s; a text scan such as `gd-217600.pdf` is twice as slow, 246 s against 109 s); needs QA's decision since it moves the first reader of entry 302.
 - Add a corpus of real bordered tables with human transcriptions (entry 394 measured the cell rule on 16 drawn tables and three real scans only).
-- Install `epubcheck` in the Linux VM so `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity --family document` does not stop at `rich-structure.docx->html` with `MissingToolError`.
-
-- Fill `bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json` from the first reports of the nightly job `bench-parity-office-image` (`npm run bench:quality -- --baseline-from-report <report.json> --baseline bench/baseline-office-image.json`, bench/README.md, "Office rows in the worker image"), record the speed rows it puts below 0.9, then remove `continue-on-error` from the job (entry 386).
-- Bring the speed of the office rows that the suite decides back to 0.9 of the reference on LibreOffice 26.8: `drawingml-shapes-presentation.pptx` and `workbook.xlsx` to PDF read 0.76 and 0.73 (the pool's work around the suite takes 0.06 s next to its 0.14 s: sandbox start, profile reset, result copy; entry 385), and `dwg-example-2004` and `-2013` to PDF read 0.78 and 0.81 (our drawing of the reader's DXF against a suite twice as fast).
 - Run the test shards and the pull request parity job on LibreOffice 26.8 too (entry 386 covers the nightly rows only): they install the runner's 24.2, and the 169 test files that use the suite meet 26.8 only in the container job's one text file.
 - PDF to DOCX extra pages left after entry 390: `govdocs1-000018` 11 for 9, `govdocs1-000353` 12 for 10 (footnote marks written at full size), `govdocs1-000572` 11 for 8, `govdocs1-000618` 12 for 8 (the frames of a newsletter overlap), `govdocs1-001135` 11 for 10 (the spacer under the last table), `govdocs1-000341`, `govdocs1-000145` 7 for 6 and `govdocs1-000370` 9 for 8; the pdf2docx translation on branch `feat/pdf-docx-pdf2docx` stays unwired (entry 390), to look at again when the writer sets a paragraph beside a table or the reader gives glyph advances.
 
@@ -37,7 +33,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
 ## Tests, CI and code health
-- Refresh the shared Lima VM install `~/w` (its `node_modules` was built for Node 20 and lacks the formula engine packages, so current sources fail there); agents install their own copy until then.
 - Re-measure the `book-pg84.epub` quality rows against its rebuilt bytes (entry 224; `book-pg2701.epub` re-pinned in entry 328).
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
 

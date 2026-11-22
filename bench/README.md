@@ -206,16 +206,13 @@ which the image's policy and libheif do not allow.
 
 The job has its own `bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json` (`--baseline` and `--gaps`), because the rows
 differ from the runner's: the suite's DXF reader is another one (the reference now draws nothing for several of the plates it drew in part, and
-converts the others to SVG), and it starts about twice as fast, which moves every speed ratio of a row whose reference is the suite. Both files
-start empty and the job cannot fail the run (`continue-on-error`) until they are filled. To fill them, download the report of a night's run
-(`bench-office-image-results`) and run, on the checkout of the commit that night measured:
+converts the others to SVG), and it starts about twice as fast, which moves every speed ratio of a row whose reference is the suite. `bench/baseline-office-image.json` holds the 1,037 rows across `document`, `data` and `cad` recorded from the nightly worker-image report, with `bench/parity-gaps-office-image.json` empty because every row meets the 0.9 speed bar and reference parity. When new rows are added later, download the report of a night's run (`bench-office-image-results`) and run, on the checkout of the commit that night measured:
 
 ```
 npm run bench:quality -- --baseline-from-report <report.json> --baseline bench/baseline-office-image.json
 ```
 
-then record the speed rows that the run puts below 0.9 in the gap file, and remove `continue-on-error` from the job. The report names the commit,
-the branch and the event of the run, which the command requires. To run it by hand on a Linux host with Docker or rootless Podman:
+(the report names the commit, the branch and the event of the run, which the command requires) and record any speed row below 0.9 in the gap file. To run it by hand on a Linux host with Docker or rootless Podman:
 `bash scripts/bench-in-worker-image.sh <image> --parity --family document,data,cad --baseline bench/baseline-office-image.json --gaps bench/parity-gaps-office-image.json`
 (on rootless Podman set `CONTAINER_ENGINE=podman BENCH_IMAGE_RUN_FLAGS=--userns=keep-id`).
 
