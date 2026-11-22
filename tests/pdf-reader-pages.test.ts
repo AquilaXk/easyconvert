@@ -208,8 +208,8 @@ describe.skipIf(SKIP)('pages of a PDF converted to text, HTML, DOCX and XLSX', (
 
   it('leaves the other targets of a PDF as they were: they read every page', async () => {
     const pdf = await sixPages();
-    const md = await dispatchConversion(pdf, 'pdf', 'md', { pages: '2' }, 'doc.pdf');
-    expect(wordsIn(md.buffer.toString('utf-8'))).toEqual([...WORDS]);
+    const hocr = await dispatchConversion(pdf, 'pdf', 'hocr', { pages: '2' }, 'doc.pdf');
+    expect(wordsIn(hocr.buffer.toString('utf-8'))).toEqual([...WORDS]);
   });
 
   describe('a PDF with a password and owner restrictions', () => {
