@@ -226,6 +226,13 @@ describe('the nightly workflow', () => {
     expect(fetchesTestSamplesBeforeVitest(nightly.jobs.perf.steps)).toBe(true);
   });
 
+  it('checks the Dockerfile.worker LibreOffice and Orcus pins against trixie-backports on amd64 and arm64', () => {
+    const job = nightly.jobs['libreoffice-backports'];
+    expect(job.if).toBe("inputs.ab_base_ref == ''");
+    expect(job['timeout-minutes']).toBeLessThanOrEqual(15);
+    expect(job.steps.map((step) => step.run ?? '')).toContain('node scripts/check-libreoffice-backports.mjs');
+  });
+
   it('opens no issue and posts no comment: a failing night shows as a failed run in Actions', () => {
     for (const [name, workflow] of [['nightly.yml', nightly], ['regression-corpus.yml', regression]] as const) {
       expect(workflow.jobs.report, name).toBeUndefined();
@@ -368,9 +375,9 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 29 on a runner and 2 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(31);
-    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(29);
+  it('reads every job of every workflow file: 30 on a runner and 2 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(32);
+    expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(30);
     expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(2);
   });
 

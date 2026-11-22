@@ -23,14 +23,13 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Operations and security
 - Revoke the GitHub token that the production host's `ubuntu` user had stored for ghcr.io (removed from `~/.docker/config.json` on 2026-11-22; the deploy runner logs in per job since entry 389), if it is a long-lived personal token.
-- Before each deploy, check the LibreOffice version in trixie-backports and the LibreOffice security advisories, and raise the three pins of `Dockerfile.worker` together (entry 383: no `trixie-security` stream; backports keeps one version, so a newer 26.8.x stops the image build); add a nightly `apt-cache policy` check that warns before that happens.
+- Before each deploy, check the LibreOffice version in trixie-backports and the LibreOffice security advisories, and raise the three pins of `Dockerfile.worker` together (entry 383: no `trixie-security` stream; backports keeps one version, so a newer 26.8.x stops the image build; the nightly `libreoffice-backports` job checks `amd64` and `arm64`, entry 396).
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
 ## Tests, CI and code health
-- Re-measure the `book-pg84.epub` quality rows against its rebuilt bytes (entry 224; `book-pg2701.epub` re-pinned in entry 328).
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)

@@ -593,6 +593,24 @@ jobs:
             echo "skipped: package.json has no licenses:check script yet"
           fi
 
+  # Checks that trixie-backports still serves the LibreOffice and Orcus versions Dockerfile.worker pins on amd64 and arm64.
+  libreoffice-backports:
+    if: inputs.ab_base_ref == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Check trixie-backports LibreOffice and Orcus pins
+        run: node scripts/check-libreoffice-backports.mjs
+
   # Real-world files through every advertised pair (bench/realworld): zero crashes, hangs and bad outputs, and no growth
   # of any pair's typed-refusal rate past bench/realworld/baseline.json. Files are fetched by digest and cached per shard.
   realworld:

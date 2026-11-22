@@ -13721,6 +13721,26 @@
       "delta": 0.000006739528457533339,
       "ratio": null
     },
+    "ebook/book-pg2701.epub->rtf/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book-pg2701.epub->rtf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 0.9999797815054691,
+      "delta": 0,
+      "ratio": null
+    },
     "ebook/book-pg2701.epub->txt/converts": {
       "direction": "higher",
       "tolerance": {
@@ -13902,6 +13922,26 @@
       "ratio": null
     },
     "ebook/book-pg84.epub->pdf/word_f1": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0.02,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book-pg84.epub->rtf/converts": {
+      "direction": "higher",
+      "tolerance": {
+        "abs": 0,
+        "rel": 0
+      },
+      "ours": 1,
+      "delta": 0,
+      "ratio": null
+    },
+    "ebook/book-pg84.epub->rtf/word_f1": {
       "direction": "higher",
       "tolerance": {
         "abs": 0.02,
