@@ -63,6 +63,7 @@ const RELEVANT_PATHS = [
   'scripts/vtracer-pixels/src/main.rs',
   'scripts/vtracer-pixels/Cargo.lock',
   'scripts/vtracer-notices/THIRD-PARTY-NOTICES',
+  'scripts/pandoc-notices/THIRD-PARTY-NOTICES',
   'scripts/ffmpeg-patches/libvorbis-whole-frames.patch',
   'scripts/djvulibre-patches/include-search-visit-once.patch',
   'scripts/lib/djvulibre-gates.sh',

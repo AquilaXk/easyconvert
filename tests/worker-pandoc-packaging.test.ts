@@ -34,7 +34,7 @@ describe('the pandoc stage of the worker image', () => {
     const run = stage?.instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument) ?? [];
     expect(run).toContain('/tmp/install-pandoc.sh /opt/pandoc');
     const copies = stage?.instructions.filter((instruction) => instruction.keyword === 'COPY').map((instruction) => instruction.argument) ?? [];
-    expect(copies).toEqual(['scripts/install-pandoc.sh /tmp/install-pandoc.sh']);
+    expect(copies).toEqual(['scripts/install-pandoc.sh /tmp/install-pandoc.sh', 'scripts/pandoc-notices/THIRD-PARTY-NOTICES /tmp/pandoc-notices/THIRD-PARTY-NOTICES']);
   });
 
   it('copies the program and its licence directory into the runner, and the note and the copyright notice into the licence directory', () => {
@@ -43,7 +43,11 @@ describe('the pandoc stage of the worker image', () => {
       '--from=pandoc /opt/pandoc/share/doc/pandoc /usr/share/doc/pandoc',
     ]);
     const runs = runner.instructions.filter((instruction) => instruction.keyword === 'RUN').map((instruction) => instruction.argument);
-    expect(runs.filter((run) => run.startsWith('cp /usr/share/doc/pandoc/'))).toEqual(['cp /usr/share/doc/pandoc/SOURCE /licenses/pandoc.SOURCE', 'cp /usr/share/doc/pandoc/COPYRIGHT /licenses/pandoc.COPYRIGHT']);
+    expect(runs.filter((run) => run.startsWith('cp /usr/share/doc/pandoc/'))).toEqual([
+      'cp /usr/share/doc/pandoc/SOURCE /licenses/pandoc.SOURCE',
+      'cp /usr/share/doc/pandoc/COPYRIGHT /licenses/pandoc.COPYRIGHT',
+      'cp /usr/share/doc/pandoc/THIRD-PARTY-NOTICES /licenses/pandoc.THIRD-PARTY-NOTICES',
+    ]);
   });
 
   it('fails the build unless the program converts a Markdown file under the options of the worker route', () => {
