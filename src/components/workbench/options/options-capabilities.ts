@@ -124,8 +124,14 @@ function computeMediaCaps(
   return { showVideo, showVideoCodec, showImage, showAudio };
 }
 
-/** The document targets whose readers take the `pages` of a PDF (PDF to PDF keeps those pages), as the page-image targets do. */
-const PDF_PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['pdf', 'txt', 'html', 'md', 'docx', 'xlsx', 'xls', 'pptx', 'rtf', 'doc', 'ppt']);
+/**
+ * The targets, besides the page-image targets and SVG, whose conversion of a PDF takes the `pages` of the request: the readers of the
+ * document and e-book targets, the OCR markup writers, PostScript and DXF, and PDF itself (which keeps those pages).
+ */
+const PDF_PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set([
+  'pdf', 'txt', 'html', 'md', 'docx', 'xlsx', 'xls', 'pptx', 'rtf', 'doc', 'ppt',
+  'epub', 'azw3', 'mobi', 'lrf', 'oeb', 'pdb', 'hocr', 'alto', 'ps', 'dxf', 'odd',
+]);
 
 function canSelectSourcePages(
   src: string,

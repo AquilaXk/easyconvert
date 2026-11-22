@@ -933,6 +933,7 @@
   "tests/pdf-page-render-cost.test.ts": 15,
   "tests/pdf-page-selection-precedence.test.ts": 0.2,
   "tests/pdf-page-tree.test.ts": 4.8,
+  "tests/pdf-pages-remaining-targets.test.ts": 30,
   "tests/pdf-password-argv.test.ts": 4.1,
   "tests/pdf-password-not-persisted.test.ts": 2.1,
   "tests/pdf-picture-decoders-limits.test.ts": 8.3,

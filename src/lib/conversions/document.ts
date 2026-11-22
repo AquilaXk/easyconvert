@@ -121,7 +121,7 @@ export async function extractTextFromPdf(pdfBuffer: Buffer): Promise<string> {
 }
 
 /** The targets whose reader selects the pages a request names (`page`, `pages`); the others read every page. */
-const PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'rtf', 'md']);
+const PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'rtf', 'md', 'hocr', 'alto']);
 
 function pageSelectionFor(tgt: string, options: ConversionOptions): PageSelectionOptions | undefined {
   return PAGE_SELECTING_TARGETS.has(tgt) ? pageSelectionOf(options) : undefined;

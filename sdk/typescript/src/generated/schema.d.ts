@@ -765,7 +765,7 @@ export interface components {
             };
             /** @description Single target page or frame index (1-indexed): the PDF page to rasterize or to convert to TXT, HTML, DOCX, XLSX, XLS, PPTX, PPT, RTF or DOC, or the frame of a multi-frame image (animated GIF/WebP, multi-page TIFF or HEIF) to convert to a single-image output. */
             page?: number;
-            /** @description Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4"). A PDF converted to page images, SVG, PDF, TXT, HTML, Markdown, DOCX, XLSX, XLS, PPTX, PPT, RTF or DOC converts only these pages, and a page the document does not have is refused with `invalid_pages`. PDF to PDF keeps the listed pages in the order written (qpdf page selection); for PDF to the other document targets the other pages are not read, and the output keeps the numbers of the pages it holds (XLS and XLSX name a sheet for each page, PPTX and PPT write a slide for each). */
+            /** @description Page range expression for multi-page documents (e.g. "1-3,5", "2-", "-4"). A PDF converts only these pages to every target it offers, and a page the document does not have is refused with `invalid_pages`. PDF to PDF keeps the listed pages in the order written (qpdf page selection); PostScript holds one run of consecutive pages; for the other targets the other pages are not read, and the output counts the pages it holds (XLS and XLSX name a sheet for each page, PPTX and PPT write a slide for each, hOCR `ppageno` and ALTO `PHYSICAL_IMG_NR` number the pages of the file from its first). */
             pages?: string;
             multiPageOutput?: components["schemas"]["MultiPageOutput"];
             /** @description Expected total page count. */

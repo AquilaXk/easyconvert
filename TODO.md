@@ -49,4 +49,3 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - `sk`/`sk1` input through UniConvertor 2 as a separate sandboxed GPL program (behaviour only, no code copied).
 - GIF of a photograph: `quantizr-pixels` ties the Oklab route on SSIM and CIEDE2000 at 256 colours and takes 1.3 to 2 times the time above 1.3 MP because it runs on one thread: thread the program's remap and port the run tolerance to it, then measure again (entry 366).
 - Run the first event credit campaign on or after 2026-12-13 (terms version naming event credits takes effect).
-- `pages` is accepted but ignored for PDF to EPUB, AZW3, MOBI, LRF, OEB, PDB, hOCR and ALTO (entry 392): pass the selection to the e-book and OCR-markup readers, or refuse it with `invalid_pages`.
