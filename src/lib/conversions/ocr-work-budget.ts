@@ -59,10 +59,15 @@ export function ocrPageBudgetMs(): number {
   return Number.isInteger(override) && override > 0 ? override : OCR_PAGE_BUDGET_MS;
 }
 
-/** Milliseconds `pages` pages may take: the start-up allowance plus one page budget for each, and never past the job's own deadline. */
+/**
+ * Milliseconds `pages` pages may take: the start-up allowance plus one page budget for each, never less than one page may take on its
+ * own (`OCR_PAGE_GUARD_PAGES` budgets), and never past the job's own deadline. Without the floor a document of fewer than 15 pages ended
+ * at `(3 + pages)` budgets, 40 s for one page, before the 180 s that a single page is allowed: a form that needs 55 s alone failed as a
+ * one-page document and passed as a page of a longer one.
+ */
 export function ocrDocumentBudgetMs(pages: number, jobDeadlineMs?: number): number {
   const pageBudget = ocrPageBudgetMs();
-  const total = (OCR_ALLOWANCE_PAGES + pages) * pageBudget;
+  const total = Math.max((OCR_ALLOWANCE_PAGES + pages) * pageBudget, OCR_PAGE_GUARD_PAGES * pageBudget);
   if (jobDeadlineMs === undefined || !(jobDeadlineMs > 0)) return total;
   return Math.max(1, Math.min(total, Math.floor(jobDeadlineMs * OCR_JOB_DEADLINE_SHARE)));
 }

@@ -61,15 +61,24 @@ describe('the OCR work budget of one document', () => {
   });
 
   it('grows with the pages of the document, by an allowance and one page budget for each', () => {
-    expect(ocrDocumentBudgetMs(1)).toBe((OCR_ALLOWANCE_PAGES + 1) * OCR_PAGE_BUDGET_MS);
+    expect(ocrDocumentBudgetMs(20)).toBe((OCR_ALLOWANCE_PAGES + 20) * OCR_PAGE_BUDGET_MS);
     expect(ocrDocumentBudgetMs(70)).toBe(730_000);
     expect(ocrDocumentBudgetMs(500)).toBe(5_030_000);
     expect(ocrDocumentBudgetMs(500)).toBeGreaterThan(ocrDocumentBudgetMs(70));
   });
 
+  it('is never less than one page may take on its own, so a short document is not refused before its page limit', () => {
+    // A form that takes 55 s alone failed as a document of one page (40 s) and passed as one page of a longer document.
+    const pageLimit = OCR_PAGE_GUARD_PAGES * OCR_PAGE_BUDGET_MS;
+    for (const pages of [1, 2, 5, OCR_PAGE_GUARD_PAGES - OCR_ALLOWANCE_PAGES]) expect(ocrDocumentBudgetMs(pages), `${pages} pages`).toBe(pageLimit);
+    // From 16 pages the allowance and a budget for each page is more than a page may take, as before.
+    expect(ocrDocumentBudgetMs(OCR_PAGE_GUARD_PAGES - OCR_ALLOWANCE_PAGES + 1)).toBe((OCR_PAGE_GUARD_PAGES + 1) * OCR_PAGE_BUDGET_MS);
+  });
+
   it('never goes past the job deadline, and leaves the output a tenth of it', () => {
     expect(ocrDocumentBudgetMs(500, 180_000)).toBe(Math.floor(180_000 * OCR_JOB_DEADLINE_SHARE));
-    expect(ocrDocumentBudgetMs(1, 3_600_000)).toBe((OCR_ALLOWANCE_PAGES + 1) * OCR_PAGE_BUDGET_MS);
+    expect(ocrDocumentBudgetMs(1, 3_600_000)).toBe(OCR_PAGE_GUARD_PAGES * OCR_PAGE_BUDGET_MS);
+    expect(ocrDocumentBudgetMs(1, 60_000)).toBe(Math.floor(60_000 * OCR_JOB_DEADLINE_SHARE));
     expect(ocrDocumentBudgetMs(500, 0)).toBe(ocrDocumentBudgetMs(500));
   });
 
@@ -80,7 +89,7 @@ describe('the OCR work budget of one document', () => {
     }
     vi.stubEnv(OCR_PAGE_BUDGET_ENV, '4500');
     expect(ocrPageBudgetMs()).toBe(4_500);
-    expect(ocrDocumentBudgetMs(10)).toBe((OCR_ALLOWANCE_PAGES + 10) * 4_500);
+    expect(ocrDocumentBudgetMs(30)).toBe((OCR_ALLOWANCE_PAGES + 30) * 4_500);
   });
 
   oracleTest(
