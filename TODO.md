@@ -27,7 +27,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads, decide whether multi-segment parallel LZW (~200 ms saved on `3fr`, <0.01% byte change) is acceptable, and profile `dcraw_emu` on `3fr` (0.9 s).
 
 ## Operations and security
-- Read sandboxed program results (qpdf output files of entry 391, Ghostscript results) with `O_NOFOLLOW|O_NONBLOCK` and an `fstat` regular-file check so a compromised program cannot leave a FIFO that blocks the worker, map a missing output after exit 0 to a typed error, and add oversize/abnormal-exit cleanup tests for the qpdf output-file path.
 - Before each deploy, check the LibreOffice version in trixie-backports and the LibreOffice security advisories, and raise the three pins of `Dockerfile.worker` together (entry 383: no `trixie-security` stream; backports keeps one version, so a newer 26.8.x stops the image build); add a nightly `apt-cache policy` check that warns before that happens.
 - Turn on `UNVERIFIED_ACCOUNT_PURGE_ENABLED` on or after 2026-12-20 (30 days after the privacy text naming it was published), first with `UNVERIFIED_ACCOUNT_PURGE_DRY_RUN=true` (the default) for one pass, check the counts in the worker log, then set it to `false` (entry 364).
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.

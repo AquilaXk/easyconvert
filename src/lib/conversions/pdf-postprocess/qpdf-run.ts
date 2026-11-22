@@ -11,6 +11,7 @@ import {
   SandboxedTimeoutError,
   type SandboxedExecutionResult,
 } from '../../security/process-sandbox';
+import { readSandboxResult, SandboxOutputMissingError } from '../../security/sandbox-output';
 import { getQpdfBinaryPath } from './qpdf-path';
 import { launchQpdf } from './qpdf-runner';
 import { PAGE_TREE_LOOP_MESSAGE, reportsPageTreeLoop } from './page-tree-loop';
@@ -190,6 +191,9 @@ const QPDF_STDOUT = '-';
 
 let outputCounter = 0;
 
+/** The failure of a run that ended without a document, on standard output or in the file. */
+const noOutput = (action: string): PdfPostprocessError => new PdfPostprocessError(`${action} failed: qpdf produced no output.`);
+
 /**
  * Runs qpdf and returns the PDF it wrote; an empty result is a failure, never a document. The invocation is given where the document goes: standard
  * output, or a file of the workspace directory when the document is large (the file is removed again, whatever the outcome). The size of the
@@ -198,16 +202,20 @@ let outputCounter = 0;
 export async function runQpdfToBuffer(workspace: QpdfWorkspace, invocation: QpdfBufferInvocation): Promise<Buffer> {
   if (workspace.files.workDir === null || workspace.inputBytes < QPDF_OUTPUT_FILE_MIN_BYTES) {
     const { stdout } = await runQpdf(workspace, { ...invocation, args: invocation.args(QPDF_STDOUT), stdin: invocation.stdin?.(QPDF_STDOUT), expectedOutputBytes: workspace.inputBytes });
-    if (stdout.length === 0) throw new PdfPostprocessError(`${invocation.action} failed: qpdf produced no output.`);
+    if (stdout.length === 0) throw noOutput(invocation.action);
     return stdout;
   }
   const outputPath = path.join(workspace.dir, `output-${outputCounter++}.pdf`);
   try {
     await runQpdf(workspace, { ...invocation, args: invocation.args(outputPath), stdin: invocation.stdin?.(outputPath), maxFileSize: workspace.maxOutputBytes });
-    const document = fs.readFileSync(outputPath);
-    if (document.length === 0) throw new PdfPostprocessError(`${invocation.action} failed: qpdf produced no output.`);
+    // One descriptor, judged: a link or a pipe left by the program is refused and cannot block the worker, a file past the cap is not read.
+    const document = readSandboxResult(outputPath, workspace.maxOutputBytes);
+    if (document.length === 0) throw noOutput(invocation.action);
     return document;
+  } catch (error) {
+    throw error instanceof SandboxOutputMissingError ? noOutput(invocation.action) : toQpdfError(error, invocation.action);
   } finally {
-    fs.rmSync(outputPath, { force: true });
+    // Recursive: the program may leave a directory here, which a plain remove refuses and so would hide the error of the read. A link is removed, never followed.
+    fs.rmSync(outputPath, { force: true, recursive: true });
   }
 }

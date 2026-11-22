@@ -8,6 +8,7 @@ import {
   SandboxedProcessError,
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
+import { OUTPUT_READ_FLAGS } from '../security/sandbox-output';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError } from '../types';
 
 /**
@@ -128,7 +129,7 @@ export async function readDecodedFile(filePath: string, maxBytes: number, label:
   const linkStat = await fs.promises.lstat(filePath).catch(() => null);
   if (linkStat === null || !linkStat.isFile()) throw missing;
   if (linkStat.size > maxBytes) throw new PayloadLimitError(`Cannot decode the ${label} picture: it needs more memory than decoding allows`);
-  const handle = await fs.promises.open(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW).catch(() => {
+  const handle = await fs.promises.open(filePath, OUTPUT_READ_FLAGS).catch(() => {
     throw missing;
   });
   try {

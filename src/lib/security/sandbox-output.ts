@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ConversionFailedError } from '../types';
+import { SandboxedBufferLimitError } from './process-sandbox';
 
 /**
  * Reads of what a sandboxed program wrote, by the host that started it.
@@ -9,7 +10,9 @@ import { ConversionFailedError } from '../types';
  * it to make one), so a read that follows links hands the host any file of its user, which the next step then converts or returns.
  * Every read here opens the file itself with O_NOFOLLOW and judges the open file (fstat) instead of its name: what is checked is
  * what is read, and no swap of the name between the two can change it. O_NONBLOCK keeps the open of a named pipe, which a program
- * may also make, from waiting for a writer that never comes; the pipe is then refused as not a regular file.
+ * may also make, from waiting for a writer that never comes; the pipe is then refused as not a regular file. Node does not export
+ * O_CLOEXEC and does not need it: libuv adds it to every open, so no child of the worker inherits these descriptors. The flags are those of open(2):
+ * O_NOFOLLOW fails with ELOOP for a link at the last component, and O_NONBLOCK makes the read-only open of a FIFO return at once (fifo(7)).
  */
 
 /** The flags a read of an output opens with, for the caller that streams or reads the file by its own descriptor. */
@@ -24,6 +27,14 @@ export class SandboxOutputKindError extends ConversionFailedError {
   constructor(readonly kind: string) {
     super(`The converter left a ${kind} where its output belongs, not a regular file.`);
     this.name = 'SandboxOutputKindError';
+  }
+}
+
+/** What a sandboxed program was expected to write is not there: it ended without an error and left no file at its output path. */
+export class SandboxOutputMissingError extends ConversionFailedError {
+  constructor() {
+    super('The converter ended without writing its output.');
+    this.name = 'SandboxOutputMissingError';
   }
 }
 
@@ -75,6 +86,30 @@ export function readSandboxOutputIfPresent(filePath: string, guard?: SandboxOutp
   try {
     guard?.(opened.size);
     return fs.readFileSync(opened.fd);
+  } finally {
+    fs.closeSync(opened.fd);
+  }
+}
+
+/**
+ * The result file of a program that has ended, read through the one descriptor that was judged: a regular file (not a link, a directory or
+ * a pipe) of `maxBytes` or less, read to its size and no further. A file over the limit fails with SandboxedBufferLimitError before a byte
+ * is read, a missing one with SandboxOutputMissingError, anything but a regular file with SandboxOutputKindError. An empty file is an
+ * empty buffer: whether that is a failure is the caller's to say.
+ */
+export function readSandboxResult(filePath: string, maxBytes: number): Buffer {
+  const opened = openOutput(filePath);
+  if (opened === null) throw new SandboxOutputMissingError();
+  try {
+    if (opened.size > maxBytes) throw new SandboxedBufferLimitError(maxBytes, 'file-size');
+    const bytes = Buffer.allocUnsafe(opened.size);
+    let filled = 0;
+    while (filled < bytes.length) {
+      const read = fs.readSync(opened.fd, bytes, filled, bytes.length - filled, null);
+      if (read === 0) break;
+      filled += read;
+    }
+    return filled === bytes.length ? bytes : bytes.subarray(0, filled);
   } finally {
     fs.closeSync(opened.fd);
   }

@@ -9,7 +9,7 @@ import { reportsPageTreeLoop } from '../lib/conversions/pdf-postprocess/page-tre
 import { getQpdfBinaryPath } from '../lib/conversions/pdf-postprocess/qpdf-path';
 import { QPDF_MEMORY_LIMIT_MB } from '../lib/conversions/pdf-postprocess/qpdf-run';
 import { launchQpdf } from '../lib/conversions/pdf-postprocess/qpdf-runner';
-import { sandboxOutputSize } from '../lib/security/sandbox-output';
+import { readSandboxOutputAsync, sandboxOutputSize } from '../lib/security/sandbox-output';
 import {
   SandboxedBufferLimitError,
   SandboxedMemoryLimitError,
@@ -383,7 +383,8 @@ export async function withDecryptedPdf<T>(
   operation: (readablePdfPath: string) => Promise<T>
 ): Promise<T> {
   const guarded = async (readablePdfPath: string, preloaded?: Buffer): Promise<T> => {
-    const bytes = preloaded ?? (await fs.promises.readFile(readablePdfPath));
+    // Without `preloaded` the file is the copy qpdf decrypted into: what a sandboxed program wrote.
+    const bytes = preloaded ?? (await readSandboxOutputAsync(readablePdfPath));
     assertPdfJbig2WithinLimits(bytes);
     return operation(readablePdfPath);
   };

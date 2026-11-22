@@ -2,14 +2,17 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { SandboxedBufferLimitError } from '../src/lib/security/process-sandbox';
 import {
   readSandboxOutput,
   readSandboxOutputAsync,
   readSandboxOutputFiles,
   readSandboxOutputIfPresent,
+  readSandboxResult,
   sandboxOutputSize,
   SandboxOutputKindError,
+  SandboxOutputMissingError,
   writeSandboxOutput,
 } from '../src/lib/security/sandbox-output';
 
@@ -122,5 +125,86 @@ describe('what is not a file at the output path', () => {
     expect(spawnSync('mkfifo', [pipe]).status).toBe(0);
 
     expect(() => readSandboxOutput(pipe)).toThrow(SandboxOutputKindError);
+  });
+});
+
+describe('readSandboxResult', () => {
+  it('reads a regular file of the size limit or less', () => {
+    const file = output('result.bin');
+    fs.writeFileSync(file, 'x'.repeat(100));
+
+    expect(readSandboxResult(file, 100)).toHaveLength(100);
+    expect(readSandboxResult(file, 1000).toString()).toBe('x'.repeat(100));
+  });
+
+  it('reads an empty file as an empty buffer, which the caller judges', () => {
+    const file = output('result-empty.bin');
+    fs.writeFileSync(file, '');
+
+    expect(readSandboxResult(file, 10)).toHaveLength(0);
+  });
+
+  it('refuses a file over the limit before it reads a byte', () => {
+    const file = output('result-large.bin');
+    fs.writeFileSync(file, 'x'.repeat(101));
+
+    const refusal = (() => {
+      try {
+        readSandboxResult(file, 100);
+      } catch (error) {
+        return error;
+      }
+    })();
+    expect(refusal).toBeInstanceOf(SandboxedBufferLimitError);
+    expect(refusal).toMatchObject({ limitBytes: 100, kind: 'file-size' });
+  });
+
+  it('names a missing file with its own error', () => {
+    expect(() => readSandboxResult(output('result-missing.bin'), 10)).toThrow(SandboxOutputMissingError);
+  });
+
+  it('refuses a link, a dangling link and a directory as the wrong kind of file, and never reads the file a link names', () => {
+    const link = output('result-link.bin');
+    fs.symlinkSync(secret, link);
+    const dangling = output('result-dangling.bin');
+    fs.symlinkSync(path.join(root, 'nothing-here'), dangling);
+    const directory = output('result-directory.bin');
+    fs.mkdirSync(directory);
+
+    for (const refused of [link, dangling, directory]) expect(() => readSandboxResult(refused, 1000)).toThrow(SandboxOutputKindError);
+  });
+
+  it('refuses a named pipe without waiting for a writer, and opens with the flags that make that so', () => {
+    const pipe = output('result-pipe.bin');
+    expect(spawnSync('mkfifo', [pipe]).status).toBe(0);
+
+    const spy = vi.spyOn(fs, 'openSync');
+    try {
+      expect(() => readSandboxResult(pipe, 1000)).toThrow(SandboxOutputKindError);
+      const flags = spy.mock.calls.find(([target]) => target === pipe)?.[1] as number;
+      expect(flags & fs.constants.O_NONBLOCK).toBe(fs.constants.O_NONBLOCK);
+      expect(flags & fs.constants.O_NOFOLLOW).toBe(fs.constants.O_NOFOLLOW);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reads through the descriptor it opened, so a name swapped after the open changes nothing', () => {
+    const file = output('result-swapped.bin');
+    fs.writeFileSync(file, 'original');
+    const opened = fs.openSync;
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      const fd = (opened as (...args: unknown[]) => number)(target, ...rest);
+      if (target === file) {
+        fs.rmSync(file);
+        fs.symlinkSync(secret, file);
+      }
+      return fd;
+    }) as typeof fs.openSync);
+    try {
+      expect(readSandboxResult(file, 1000).toString()).toBe('original');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

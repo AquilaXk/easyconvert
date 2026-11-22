@@ -10,6 +10,7 @@ import {
   SandboxedTimeoutError,
 } from '../security/process-sandbox';
 import { launchSandboxedBinary } from '../security/sandbox-launcher';
+import { OUTPUT_READ_FLAGS } from '../security/sandbox-output';
 import { ConversionFailedError, EngineUnavailableError, PayloadLimitError, SERVER_FAULT_STATUS } from '../types';
 import { availableCpus } from '../workers/available-cpus';
 import { withCpuThreadBudget } from '../workers/cpu-thread-budget';
@@ -373,7 +374,7 @@ function assertOpenedOutput(stat: fs.Stats, maxBytes: number): void {
 }
 
 const OUTPUT_UNREADABLE = 'Cannot encode the image as .avif (the AVIF encoder output could not be read)';
-const OUTPUT_OPEN_FLAGS = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
+const OUTPUT_OPEN_FLAGS = OUTPUT_READ_FLAGS;
 
 function lstatOrUndefined(file: string): fs.Stats | undefined {
   try {
