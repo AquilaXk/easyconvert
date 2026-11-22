@@ -984,6 +984,7 @@
   "tests/pdf-to-docx-structure.test.ts": 7.1,
   "tests/pdf-to-docx-tables.test.ts": 6,
   "tests/pdf-to-epub-model.test.ts": 7.3,
+  "tests/pdf-to-pdf-pages.test.ts": 3.0,
   "tests/pdf-to-ppt.test.ts": 4.1,
   "tests/pdf-to-pptx-layout.test.ts": 5.4,
   "tests/pdf-tounicode-coverage.test.ts": 0.1,

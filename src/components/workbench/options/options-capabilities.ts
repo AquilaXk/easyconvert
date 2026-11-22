@@ -124,8 +124,8 @@ function computeMediaCaps(
   return { showVideo, showVideoCodec, showImage, showAudio };
 }
 
-/** The document targets whose readers take the `pages` of a PDF, as the page-image targets do. */
-const PDF_PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['txt', 'html', 'docx', 'xlsx', 'xls', 'pptx', 'rtf', 'doc', 'ppt']);
+/** The document targets whose readers take the `pages` of a PDF (PDF to PDF keeps those pages), as the page-image targets do. */
+const PDF_PAGE_SELECTING_TARGETS: ReadonlySet<string> = new Set(['pdf', 'txt', 'html', 'md', 'docx', 'xlsx', 'xls', 'pptx', 'rtf', 'doc', 'ppt']);
 
 function canSelectSourcePages(
   src: string,

@@ -440,6 +440,7 @@ Security
 389. [The worker and web images are private packages that only our own workflows and the deploy runner read, with the token of their run](#389-the-worker-and-web-images-are-private-packages-that-only-our-own-workflows-and-the-deploy-runner-read-with-the-token-of-their-run)
 390. [A paragraph of a kept page wraps where its page broke it, in the widths of the writer's face, and a face of other widths is set at its share](#390-a-paragraph-of-a-kept-page-wraps-where-its-page-broke-it-in-the-widths-of-the-writers-face-and-a-face-of-other-widths-is-set-at-its-share)
 391. [A large PDF is written by qpdf to a file of the job directory instead of standard output, and the qpdf output flags stay as they are](#391-a-large-pdf-is-written-by-qpdf-to-a-file-of-the-job-directory-instead-of-standard-output-and-the-qpdf-output-flags-stay-as-they-are)
+392. [PDF to PDF keeps the pages `pages` selects, written by the qpdf page operation, and PDF to Markdown reads only those pages](#392-pdf-to-pdf-keeps-the-pages-pages-selects-written-by-the-qpdf-page-operation-and-pdf-to-markdown-reads-only-those-pages)
 
 ---
 
@@ -11668,3 +11669,22 @@ Security
   | pdfcpu/pdfcpu | 8,917 | Apache-2.0 | not read | in-process writer | rejected: not on the path |
 - **Verified by**: `tests/pdf-ops-output-file.test.ts` (extract, delete, reorder, rotate and protection of a document of 64 KB write `output-<n>.pdf` in the directory the run was given, with a file size limit, return a document qpdf checks, and leave nothing on disk, also when qpdf refuses the run; a smaller document keeps `-`; red when every run writes to standard output), `tests/pdf-page-ops.test.ts`, `tests/pdf-ops-launcher.test.ts`, `tests/pdf-protect-key-length.test.ts`, `tests/pdf-split-page-count-parallel.test.ts`, `tests/pdf-compress-qpdf-limits.test.ts`, `tests/qpdf-runner.test.ts` and `tests/qpdf-runner-qpdf.test.ts` (on the VM), and the measurements above.
 - **Revisit when**: qpdf makes standard output block buffered in `qpdfjob_run_from_argv`, the runner takes a file descriptor for the output, or the reference's compression changes (the formats API gains a compression option).
+
+## 392. PDF to PDF keeps the pages `pages` selects, written by the qpdf page operation, and PDF to Markdown reads only those pages
+
+- **Date**: 2026-11-22
+- **Status**: Implemented (QA request: `pages` was accepted for PDF to PDF and the result held every page).
+- **Decision**:
+  1. **`pages` (and `page`) select the pages of a PDF converted to PDF.** The result is the document the extract operation writes (`extractPdfPages`, `page-ops.ts`, one qpdf run with `--pages . <range> --`), made after the conversion and before the watermark, optimize, PDF/A and protect steps, so those steps see the kept pages. The pages come in the order the specification lists them, as the extract operation and the reference's qpdf `pages` option write them (`1-3,5`, `4-`, `-3`). The syntax is checked before any work; a page past the end, a backward range, a character that is no digit and a `page` and a `pages` that name different pages are refused with `InvalidPageRangeError` (`invalid_pages`). A `null`, empty or blank value keeps every page, as before.
+  2. **The selection is an edit.** The result is written by qpdf from a copy opened for editing, so the edit-rights check of entry 4 applies: an encrypted source with owner restrictions needs the owner password or `confirmEditRights`, as for the other PDF operations. A document of 64 KB or more takes the output-file path of entry 391.
+  3. **PDF to Markdown takes the selection** through the reader that already served TXT, HTML and RTF (`PAGE_SELECTING_TARGETS`, `document.ts`); the page range field of the options panel shows for PDF to PDF and PDF to Markdown.
+  4. **Still ignored, listed in `TODO.md`:** PDF to EPUB, AZW3, MOBI, LRF, OEB, PDB (the e-book chain), hOCR and ALTO accept `pages` in the schema and read every page.
+- **Why**:
+  - The reference's formats API (`GET /v2/convert/formats?filter[input_format]=pdf&filter[output_format]=pdf&include=options,engine_versions`, 2026-11-22) lists `pages` and `split_pages` for `qpdf` 12.4.0 on this pair. An accepted option that changes nothing answers 200 with a document the request did not ask for.
+  - Reusing the extract operation keeps one page grammar, one set of refusals and the bookmarks, links and forms of the kept pages (qpdf copies pages as objects).
+- **Trade-offs**:
+  - A scanned PDF with OCR on is recognized page by page first and cut afterwards, so OCR reads pages the result drops.
+  - `split_pages` (one document per page) is not offered; the split operation covers it.
+- **Alternatives rejected**: refusing `pages` for PDF to PDF with a 400 (the reference honours it and the operation exists).
+- **Verified by**: `tests/pdf-to-pdf-pages.test.ts` (red before the change: 9 of 10 cases failed): pages 2-4 of the real 10-page `govdocs1-000562.pdf` against `pdftotext -f -l` of the source pages, `3,5-6` and `page` through the dispatcher, blank values, a 12-page document padded past 64 KB with `2-4,9-`, five refusals, a differing `page` and `pages`, and the Markdown text.
+- **Revisit when**: the e-book, hOCR and ALTO readers take a selection.
