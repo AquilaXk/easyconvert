@@ -1,0 +1,7 @@
+County Population Households Median age Area (sq mi) Density
+Adams 18,420 6,915 41.2 353 52.2
+Brooks 9,877 3,640 44.8 402 24.6
+Carver 52,310 19,882 36.5 287 182.3
+Dunmore 27,045 10,317 39.9 511 52.9
+Easton 6,512 2,466 47.3 620 10.5
+Fulton 33,998 12,704 38.1 299 113.7

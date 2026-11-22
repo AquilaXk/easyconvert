@@ -116,6 +116,53 @@ describe('Ruled-table uncovered glyph-ink detector (ocr-ruled-table)', () => {
     expect(hasUncoveredRuledTableInk(pnm, completeBlocks)).toBe(false);
   });
 
+  it('flags a grid with one dropped cell even when the rest of the page is read, and ignores a speck in a cell', () => {
+    const width = 600;
+    const height = 360;
+    const gray = new Uint8Array(width * height).fill(255);
+    for (const ry of [40, 120, 200, 280]) {
+      for (let x = 40; x <= 560; x++) {
+        gray[ry * width + x] = 0;
+        gray[(ry + 1) * width + x] = 0;
+      }
+    }
+    for (const rx of [40, 300, 560]) {
+      for (let y = 40; y <= 280; y++) {
+        gray[y * width + rx] = 0;
+        gray[y * width + rx + 1] = 0;
+      }
+    }
+    const cellOrigins = [
+      [70, 70], [330, 70],
+      [70, 150], [330, 150],
+      [70, 230], [330, 230],
+    ];
+    for (const [cx, cy] of cellOrigins) {
+      for (let dy = 0; dy < 14; dy++) {
+        for (let g = 0; g < 6; g++) {
+          for (let dx = 0; dx < 8; dx++) gray[(cy + dy) * width + (cx + g * 14 + dx)] = 10;
+        }
+      }
+    }
+    const boxesOf = (origins: number[][]): OcrLineBlock[] =>
+      origins.map(([cx, cy], idx) => ({
+        text: `Cell${idx}`,
+        bbox: { x: cx - 4, y: cy - 4, width: 96, height: 22 },
+        words: [{ text: `Cell${idx}`, bbox: { x: cx - 4, y: cy - 4, width: 96, height: 22 }, confidence: 0.95 }],
+      }));
+    // One cell of six has no word at all: 17% of the ink of the grid is uncovered, under the 25% of the grid as a whole, yet a cell is lost.
+    expect(hasUncoveredRuledTableInk(encodePgm(gray, width, height), boxesOf(cellOrigins.slice(0, 5)))).toBe(true);
+    // The cell is read by a word that stops short of its last third (a cell that lost its end, as `14,2` for `14,250.00`).
+    const shortWord = boxesOf(cellOrigins.slice(0, 5));
+    const [lx, ly] = cellOrigins[5];
+    shortWord.push({ text: 'Cell5', bbox: { x: lx - 4, y: ly - 4, width: 30, height: 22 }, words: [{ text: 'Cell5', bbox: { x: lx - 4, y: ly - 4, width: 30, height: 22 }, confidence: 0.95 }] });
+    expect(hasUncoveredRuledTableInk(encodePgm(gray, width, height), shortWord)).toBe(true);
+    // All six cells read: silent. A speck of a few pixels in an unread cell is not a cell with text.
+    const speck = new Uint8Array(gray);
+    for (let dy = 0; dy < 14; dy++) for (let dx = 0; dx < 84; dx++) speck[(150 + dy) * width + 330 + dx] = dy < 3 && dx < 4 ? 10 : 255;
+    expect(hasUncoveredRuledTableInk(encodePgm(speck, width, height), boxesOf([...cellOrigins.slice(0, 3), ...cellOrigins.slice(4)]))).toBe(false);
+  });
+
   it.skipIf(engMissing)(
     'detects uncovered cells on table_ruled.png under Tesseract, triggers ONNX second reading, and stays silent on prose',
     async () => {

@@ -1,0 +1,8 @@
+Account Debit Credit
+Cash at bank 14,250.00
+Accounts receivable 8,310.45
+Inventory 21,075.10
+Accounts payable 9,842.30
+Long-term loan 25,000.00
+Owner equity 8,793.25
+Totals 43,635.55 43,635.55

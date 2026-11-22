@@ -1,0 +1,5 @@
+Model Voltage Current Power Weight
+TX-100 12 V 2.5 A 30 W 0.8 kg
+TX-200 24 V 4.0 A 96 W 1.4 kg
+TX-350 24 V 6.5 A 156 W 2.1 kg
+TX-500 48 V 5.2 A 250 W 2.9 kg

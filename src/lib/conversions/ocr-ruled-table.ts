@@ -10,8 +10,11 @@ import type { OcrLineBlock } from './ocr-pdf-combiner';
  *    re-implemented from the mathematical run-length specification over uncompressed Netpbm (`P4`,
  *    `P5`, `P6`) buffers without copying C code.
  *  - RapidOCR / PaddleOCR PP-OCRv5 (`PaddlePaddle/PaddleOCR`, Apache-2.0): invoked as the rescue
- *    recognizer (`ocr.ts` `readSecondTimeWithOnnx`) only when both a ruled grid is present and at
- *    least 25% of non-rule character ink inside the grid lies outside Tesseract's word boxes.
+ *    recognizer (`ocr.ts` `readSecondTimeWithOnnx`) only when a ruled grid is present and either at
+ *    least 25% of the non-rule character ink inside the grid lies outside Tesseract's word boxes, or
+ *    one cell of the grid has most of its own ink outside them (a table whose last column or one
+ *    cell is dropped keeps a high confidence on the words that remain and loses little ink overall,
+ *    policy decision 392).
  */
 
 const MAX_HEADER_SCAN_BYTES = 128;
@@ -33,6 +36,9 @@ const MAX_GLYPH_RUN_FLOOR_PX = 48;
 const MAX_GLYPH_RUN_WIDTH_SHARE = 0.08;
 const MIN_GRID_GLYPH_INK_PX = 150;
 const MIN_UNCOVERED_INK_SHARE = 0.25;
+/** A cell counts when it holds at least this much glyph ink, and is dropped when this share of it lies outside the word boxes. */
+const MIN_CELL_GLYPH_INK_PX = 40;
+const MIN_UNCOVERED_CELL_SHARE = 0.4;
 
 type PnmKind = 'p4' | 'p5' | 'p6';
 
@@ -218,10 +224,31 @@ function buildWordCoverageTiles(width: number, height: number, blocks: readonly 
   return { tiles, cols };
 }
 
+interface GridCells {
+  /** Index of the cell row of each pixel row (-1 outside the rules), and of the cell column of each pixel column. */
+  rowOf: Int32Array;
+  colOf: Int32Array;
+  columns: number;
+  ink: Float64Array;
+  covered: Float64Array;
+}
+
+/** Cell rows lie between consecutive horizontal rules and cell columns between consecutive vertical rules. */
+function buildGridCells(width: number, height: number, hRules: readonly RuleBand[], vRules: readonly RuleBand[]): GridCells {
+  const rowOf = new Int32Array(height).fill(-1);
+  for (let i = 0; i + 1 < hRules.length; i++) rowOf.fill(i, hRules[i].pos, hRules[i + 1].pos);
+  const colOf = new Int32Array(width).fill(-1);
+  for (let j = 0; j + 1 < vRules.length; j++) colOf.fill(j, vRules[j].pos, vRules[j + 1].pos);
+  const columns = Math.max(1, vRules.length - 1);
+  const count = Math.max(1, hRules.length - 1) * columns;
+  return { rowOf, colOf, columns, ink: new Float64Array(count), covered: new Float64Array(count) };
+}
+
 function countGridGlyphInk(
   v: PnmView,
   grid: GridBounds,
-  masks: { rowRules: Uint8Array; colRules: Uint8Array; tiles: Uint8Array; tileCols: number }
+  masks: { rowRules: Uint8Array; colRules: Uint8Array; tiles: Uint8Array; tileCols: number },
+  cells: GridCells
 ): { totalInk: number; coveredInk: number } {
   const maxGlyphRun = Math.max(MAX_GLYPH_RUN_FLOOR_PX, (v.width * MAX_GLYPH_RUN_WIDTH_SHARE) | 0);
   const yStart = Math.max(0, grid.top + GRID_INNER_MARGIN_PX);
@@ -233,6 +260,7 @@ function countGridGlyphInk(
   for (let y = yStart; y <= yEnd; y++) {
     if (masks.rowRules[y] !== 0) continue;
     const tileRowBase = (y >>> TILE_SHIFT) * masks.tileCols;
+    const cellRowBase = cells.rowOf[y] * cells.columns;
     let runStart = -1;
     for (let x = xStart; x <= xEnd + 1; x++) {
       const dark = x <= xEnd && masks.colRules[x] === 0 && isDarkPixel(v, x, y);
@@ -240,9 +268,14 @@ function countGridGlyphInk(
       else if (!dark && runStart >= 0) {
         const len = x - runStart;
         if (len >= MIN_GLYPH_RUN_PX && len <= maxGlyphRun) {
+          let covered = 0;
+          for (let rx = runStart; rx < x; rx++) covered += masks.tiles[tileRowBase + (rx >>> TILE_SHIFT)];
           totalInk += len;
-          for (let rx = runStart; rx < x; rx++) {
-            coveredInk += masks.tiles[tileRowBase + (rx >>> TILE_SHIFT)];
+          coveredInk += covered;
+          const column = cells.colOf[runStart];
+          if (cells.rowOf[y] >= 0 && column >= 0) {
+            cells.ink[cellRowBase + column] += len;
+            cells.covered[cellRowBase + column] += covered;
           }
         }
         runStart = -1;
@@ -252,9 +285,18 @@ function countGridGlyphInk(
   return { totalInk, coveredInk };
 }
 
+/** Whether a cell of the grid holds glyph ink that is mostly outside the word boxes. */
+function hasDroppedCell(cells: GridCells): boolean {
+  for (let k = 0; k < cells.ink.length; k++) {
+    if (cells.ink[k] >= MIN_CELL_GLYPH_INK_PX && (cells.ink[k] - cells.covered[k]) / cells.ink[k] >= MIN_UNCOVERED_CELL_SHARE) return true;
+  }
+  return false;
+}
+
 /**
  * Whether `pnmImage` contains a ruled table grid (`>= 3` horizontal rules and `>= 2` vertical rules)
- * in which at least 25% of non-rule character ink lies outside `lineBlocks` (in `pnmImage` pixels).
+ * in which at least 25% of non-rule character ink lies outside `lineBlocks` (in `pnmImage` pixels), or
+ * in which one cell has 40% or more of its own ink (at least 40 pixels of it) outside them.
  */
 export function hasUncoveredRuledTableInk(pnmImage: Uint8Array, lineBlocks: readonly OcrLineBlock[]): boolean {
   const view = parsePnmView(pnmImage);
@@ -273,6 +315,8 @@ export function hasUncoveredRuledTableInk(pnmImage: Uint8Array, lineBlocks: read
   const rowRules = buildRuleAxisMask(view.height, hRules);
   const colRules = buildRuleAxisMask(view.width, vRules);
   const { tiles, cols } = buildWordCoverageTiles(view.width, view.height, lineBlocks);
-  const { totalInk, coveredInk } = countGridGlyphInk(view, grid, { rowRules, colRules, tiles, tileCols: cols });
-  return totalInk >= MIN_GRID_GLYPH_INK_PX && (totalInk - coveredInk) / totalInk >= MIN_UNCOVERED_INK_SHARE;
+  const cells = buildGridCells(view.width, view.height, hRules, vRules);
+  const { totalInk, coveredInk } = countGridGlyphInk(view, grid, { rowRules, colRules, tiles, tileCols: cols }, cells);
+  if (totalInk < MIN_GRID_GLYPH_INK_PX) return false;
+  return (totalInk - coveredInk) / totalInk >= MIN_UNCOVERED_INK_SHARE || hasDroppedCell(cells);
 }
