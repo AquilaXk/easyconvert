@@ -407,9 +407,10 @@ export async function recognizePage(
     const onnxSecondReading =
       secondReading && tesseractLang === requestedLanguage
         ? async (): Promise<RecognizedPage | null> => {
-            const read = (): Promise<RecognizedPage> => recognizeOnnxAttempt(imageBuffer, requestedLanguage, onnxRecognizer, quarterTurn, signal);
-            // A page without ink (a blank page) holds no text for the detector either: starting the engine would only cost its load.
-            if (!(await imageHasInk(imageBuffer))) return null;
+            // A page without ink (a blank page) holds no text for the detector either: starting the engine would only cost its load. The
+            // check decodes the page, so it runs after the gate: a document that has no second reading to spare does not pay it for each page.
+            const read = async (): Promise<RecognizedPage | null> =>
+              (await imageHasInk(imageBuffer)) ? recognizeOnnxAttempt(imageBuffer, requestedLanguage, onnxRecognizer, quarterTurn, signal) : null;
             return rescue ? rescue.run(read) : read();
           }
         : undefined;
@@ -482,7 +483,7 @@ export async function imageHasInk(image: Buffer): Promise<boolean> {
 }
 
 /** Whether a first reading is poor enough that the page may be turned or in another script. */
-function looksMisread(result: OcrResult): boolean {
+export function looksMisread(result: OcrResult): boolean {
   if (readingQuality(result) < OSD_SUSPECT_QUALITY) return true;
   return includesKoreanLanguage(result.language) && assessKoreanLayoutCoherence(result).fragmented;
 }

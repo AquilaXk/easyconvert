@@ -49,9 +49,13 @@ export const OSD_MIN_SCRIPT_CONFIDENCE = 0.1;
 /**
  * A first reading whose mean word score (weighted by characters) is below this is suspect, and the
  * page is looked at. Upright golden pages score 0.92 and more at every degradation; pages scanned
- * upside down or sideways, or read in the wrong language, score 0.62 and less.
+ * upside down or sideways, or read in the wrong language, score 0.62 and less (0.26 to 0.28 for a
+ * dense page of 870 to 1,420 words turned by 180 or 270 degrees, 0.19 to 0.46 for the sideways
+ * slides of `cc-7600350.pdf`). It was 0.8; a dense upright page of that PDF reads at 0.76, was
+ * judged turned by 180 degrees, and cost three more readings and a second reading by the ONNX engine
+ * (25 s of the 57 s of that page) that were thrown away.
  */
-export const OSD_SUSPECT_QUALITY = 0.8;
+export const OSD_SUSPECT_QUALITY = 0.7;
 /** A second reading, with the page turned or in another language, replaces the first only if it scores this much higher. */
 export const OSD_MIN_QUALITY_GAIN = 0.05;
 /** Wall-clock limit of one detection. */
