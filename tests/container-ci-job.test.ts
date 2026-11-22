@@ -200,8 +200,8 @@ describe('layer cache of the container job', () => {
     expect(build?.if).toBe("steps.changes.outputs.relevant == 'true'");
   });
 
-  it('logs in with the workflow token on pushes only, and no other step uses the token', () => {
-    expect(login?.if).toBe("steps.changes.outputs.relevant == 'true' && github.event_name == 'push'");
+  it('logs in with the workflow token on pushes and on pull requests of this repository (the package is private), and no other step uses the token', () => {
+    expect(login?.if).toBe("steps.changes.outputs.relevant == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)");
     expect(login?.with).toEqual({ registry: 'ghcr.io', username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' });
     const users = container.steps.filter((step) => JSON.stringify(step).includes('GITHUB_TOKEN'));
     expect(users).toEqual([login]);

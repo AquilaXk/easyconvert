@@ -4,7 +4,8 @@
 # production stack runs it queue-only (docker-compose.prod.yml), where the engines serve only the deploy smoke and the archive listing. This
 # image is therefore the worker image plus the Next.js build: it adds one layer (.next, public and next.config.mjs) to the worker image it is
 # built on, shares every other layer with it on disk and in the registry, and starts the server instead of the worker. Build the worker
-# image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE:
+# image first (Dockerfile.worker) and pass its digest as WORKER_IMAGE (the package is private: run `docker login ghcr.io` first, as the
+# build job does with the workflow token):
 #
 #   docker build -f Dockerfile.web --build-arg WORKER_IMAGE=ghcr.io/<owner>/easyconvert-worker@sha256:<digest> \
 #     --build-arg APP_ORIGIN=https://<public host> .

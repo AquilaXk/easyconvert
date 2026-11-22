@@ -64,15 +64,19 @@ describe('scripts/bench-in-worker-image.sh', () => {
 
 describe('the nightly job of the office rows', () => {
   const nightly = parse(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'nightly.yml'), 'utf-8')) as {
-    jobs: Record<string, { 'runs-on': string; 'continue-on-error'?: boolean; env?: Record<string, string>; steps: Array<{ name?: string; run?: string; uses?: string; env?: Record<string, string>; with?: Record<string, string> }> }>;
+    jobs: Record<string, { 'runs-on': string; permissions?: Record<string, string>; 'continue-on-error'?: boolean; env?: Record<string, string>; steps: Array<{ name?: string; run?: string; uses?: string; env?: Record<string, string>; with?: Record<string, string> }> }>;
   };
   const job = nightly.jobs['bench-parity-office-image'];
 
-  it('runs on the arm runner, pulls the image main names (public, arm64 only) and builds nothing', () => {
+  it('runs on the arm runner, logs in with the workflow token and pulls the image main names (private, arm64 only) and builds nothing', () => {
     expect(job['runs-on']).toBe('ubuntu-24.04-arm');
+    expect(job.permissions).toEqual({ contents: 'read', packages: 'read' });
+    const login = job.steps.find((step) => step.uses?.startsWith('docker/login-action@'));
+    expect(login?.with).toEqual({ registry: 'ghcr.io', username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}' });
     const pull = job.steps.find((step) => step.name === 'Pull the worker image of main');
     expect(pull?.run).toContain('docker pull');
     expect(pull?.run).toContain('-worker:main');
+    expect(job.steps.indexOf(login as never)).toBeLessThan(job.steps.indexOf(pull as never));
     expect(job.steps.some((step) => step.uses?.startsWith('docker/build-push-action'))).toBe(false);
   });
 

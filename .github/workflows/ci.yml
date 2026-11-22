@@ -459,9 +459,10 @@ jobs:
   #
   # The layer cache of the image is kept in the container registry of the repository (ghcr.io/<owner>/<repo>-worker:buildcache),
   # not in the Actions cache, whose 10 GB limit the layers filled and evicted the sample, tool and dependency caches with. Only a
-  # push to main writes it (`packages: write` is used by that login alone), so a pull request cannot pollute it; pull requests
-  # read it anonymously, which works for pull requests from forks too once the package is public. A cache that is not there
-  # (the first run, a private package) is a build without cache, not a failure.
+  # push to main writes it (`packages: write` is used by that login alone), so a pull request cannot pollute it. The package is
+  # private (docs/policy-decisions.md, entry 389): a push and a pull request from this repository log in with the workflow token,
+  # which reads the packages that name the repository; a pull request from a fork has no token that can, and builds without the
+  # cache. A cache that is not there (the first run, a fork) is a build without cache, not a failure.
   container:
     needs: sharp-libvips
     runs-on: ubuntu-24.04
@@ -520,7 +521,7 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to the container registry
-        if: steps.changes.outputs.relevant == 'true' && github.event_name == 'push'
+        if: steps.changes.outputs.relevant == 'true' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
         with:
           registry: ghcr.io
@@ -540,7 +541,7 @@ jobs:
             echo "layer cache: $ref"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "layer cache: none at $ref (not written yet, or the package is private): building without it"
+            echo "layer cache: none at $ref (not written yet, or this run cannot read the private package): building without it"
           fi
 
       # The sharplibvips stage is the build the sharp-libvips job made from the same stage and keeps in the cache, so the image

@@ -216,7 +216,7 @@ compose() { # compose <release-dir> <args...>
 
 pin() { # pin <repo> <ref>: pull and print repo@digest
   local repo="$1" ref="$2" digest
-  docker pull --quiet "$repo:$ref" > /dev/null || die "cannot pull $repo:$ref"
+  docker pull --quiet "$repo:$ref" > /dev/null || die "cannot pull $repo:$ref (the packages are private: the deploy job logs in to ghcr.io before this script runs)"
   digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$repo:$ref")"
   case "$digest" in "$repo@sha256:"*) printf '%s' "$digest" ;; *) die "no digest for $repo:$ref" ;; esac
 }

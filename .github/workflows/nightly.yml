@@ -260,7 +260,7 @@ jobs:
   # The office rows against the suite the worker image ships. The shards above install the runner's LibreOffice (Ubuntu 24.04, 24.2); the image
   # carries 26.8 from trixie-backports (docs/policy-decisions.md, entry 383), and the Debian packages cannot be installed on an Ubuntu runner, so
   # this job runs the families that use the suite inside the image that production runs: the build deploy-oci.yml promoted to `main`, pulled as
-  # is (it is public and arm64 only, hence the arm runner; no image is built here). Both sides of every row meet that suite and its fonts, and the
+  # is (the package is private, so the job logs in with the workflow token; the image is arm64 only, hence the arm runner; no image is built here). Both sides of every row meet that suite and its fonts, and the
   # worker's sandbox runs in the container with the flags of docker-compose.yml. The numbers are the family's own, quality and speed together,
   # against their own baseline and gap file: the rows differ from the runner's (the reference's DXF reader is another one, and the suite starts
   # about twice as fast), so they do not share bench/baseline.json. `vector` stays on the runner: its reference side needs the host's ImageMagick
@@ -271,6 +271,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
     continue-on-error: true
+    # The worker package is private: the pull is authenticated with the token of this run, which reads the packages that name this
+    # repository (docs/policy-decisions.md, entry 389). Nothing here writes a package.
+    permissions:
+      contents: read
+      packages: read
     env:
       OFFICE_IMAGE_FAMILIES: document,data,cad
 
@@ -306,6 +311,13 @@ jobs:
         uses: ./.github/actions/bench-corpora
         with:
           families: ${{ env.OFFICE_IMAGE_FAMILIES }}
+
+      - name: Log in to the container registry
+        uses: docker/login-action@5e57cd118135c172c3672efd75eb46360885c0ef # v3.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pull the worker image of main
         id: image

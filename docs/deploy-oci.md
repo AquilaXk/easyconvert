@@ -175,6 +175,17 @@ A per-service key in the secret (`EASYCONVERT_WORKER_CONCURRENCY` and the others
 
    The job log is public. It shows the digests, the line numbers of dropped lines of the secret, the HTTP status of a failed smoke conversion (never its answer) and, when a release fails its checks, the last 80 lines of the web and worker logs. The services are not meant to write a secret value to their logs, but no check proves it for every error path. Read the dump of a failed run before you treat its job log as free of secrets, and delete the run (Actions, the run's menu) if it shows one.
 
+## Registry access
+
+The packages `ghcr.io/aquilaxk/easyconvert-worker` and `ghcr.io/aquilaxk/easyconvert-web` are private (policy entry 389): the images carry GPL programs, and a private package means they are run as a service and not handed out. Nothing pulls them anonymously.
+
+- **Every workflow job that touches an image logs in first** with `docker/login-action` and `secrets.GITHUB_TOKEN`, with `packages: read` (`gate`, `deploy`, the nightly job `bench-parity-office-image`) or `packages: write` (`build`, `promote`, the `container` job of CI, which pushes the layer cache). The token belongs to the run and expires with it. No secret is added and no personal access token is used.
+- **The deploy job runs on the self-hosted runner on this host, not over ssh**, so `docker pull` in `deploy.sh` uses the login of that job. The login step has `logout: true`, which removes the entry from the Docker configuration of the runner user in the post step of the job, also after a failure or a cancel. Between jobs the host holds no registry credential. Do not run `docker login ghcr.io` by hand on the host.
+- **Rollback and reconcile pull nothing.** Both start releases whose images are on disk (the last two releases are kept). If an image of the current release was removed by hand, `reconcile` would ask the registry for it without a login and be refused; run `deploy-oci` with action `deploy` instead, which logs in.
+- **The packages must name this repository.** A package that a workflow of the repository published is linked to it and keeps the repository under "Manage Actions access" (package settings, role Write); the workflow token reads and writes the package only through that entry. Check the entry on both packages before and after the visibility change. A pull request from a fork has no such token: the CI image job builds without the layer cache.
+- **Pulling by hand from another machine** needs `docker login ghcr.io` with a personal access token that has `read:packages`, typed by the person who pulls; it is not stored in the repository.
+- **Making a package public again** is a distribution of the GPL programs inside: it needs the complete corresponding source first (`docs/licensing.md`, section 3).
+
 ## Rolling back
 
 - **Automatic.** When the new release does not become healthy, a container runs under another AppArmor profile, the smoke conversion fails or the worker cannot create its namespaces, `deploy.sh` starts the previous release again, removes the failed one (its env file included, also when the rollback fails too) and fails the job. With no previous release it stops the stack.
@@ -290,7 +301,7 @@ Every resource below exists already or is free, so this deployment adds no cost.
 | Public address, security list, port 443 to the CDN ranges | Existing | Existing resources, no added cost |
 | nginx on the host | The site file is added to the existing nginx | No added cost |
 | CDN, TLS and DNS | Free plan; an origin certificate instead of a paid or renewing one | Free |
-| Container images | GHCR, public repository | Free |
+| Container images | GHCR, private packages (the repository is public) | Free |
 | Image builds | GitHub-hosted arm64 runner, public repository | Free |
 | Deploy runner | A second service on the existing instance, same operating system | No added cost |
 | Object storage | Not used. User files stay on host disk | None |
