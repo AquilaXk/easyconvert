@@ -73,6 +73,8 @@ export interface QuantizeRequest {
   colours: number;
   /** The dithering level of the program's own scale, 0 to 1. */
   dither: number;
+  /** Relative distance tolerance for extending runs when undithered (`--run-tolerance`). */
+  runTolerance?: number;
   signal?: AbortSignal;
 }
 
@@ -95,8 +97,12 @@ export async function quantizePixels(rgba: Buffer, width: number, height: number
   const header = Buffer.alloc(HEADER_BYTES);
   header.writeUInt32LE(width, 0);
   header.writeUInt32LE(height, COUNT_BYTES);
+  const args = ['--colors', String(request.colours), '--dither', String(request.dither), '--target-psnr', String(QUANTIZR_TARGET_PSNR)];
+  if (request.runTolerance !== undefined && request.runTolerance > 0) {
+    args.push('--run-tolerance', String(request.runTolerance));
+  }
   try {
-    const run = await executeSandboxedBinary(program, ['--colors', String(request.colours), '--dither', String(request.dither), '--target-psnr', String(QUANTIZR_TARGET_PSNR)], {
+    const run = await executeSandboxedBinary(program, args, {
       stdin: Readable.from([header, rgba], { objectMode: false }),
       // A filter on standard input and output: it touches no file.
       workDir: null,

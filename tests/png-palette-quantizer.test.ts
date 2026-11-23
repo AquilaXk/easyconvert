@@ -164,6 +164,12 @@ describe('quantizePixels, as the wrapper runs the program', () => {
     try {
       const picture = await quantizePixels(rgba(5, 3), 5, 3, { colours: 64, dither: 0.25 });
       expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 64 --dither 0.25 --target-psnr ${QUANTIZR_TARGET_PSNR}`);
+      const runTolPicture = await quantizePixels(rgba(5, 3), 5, 3, { colours: 64, dither: 0, runTolerance: 0.25 });
+      expect(runTolPicture).not.toBeNull();
+      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 64 --dither 0 --target-psnr ${QUANTIZR_TARGET_PSNR} --run-tolerance 0.25`);
+      const zeroTolPicture = await quantizePixels(rgba(5, 3), 5, 3, { colours: 64, dither: 0, runTolerance: 0 });
+      expect(zeroTolPicture).not.toBeNull();
+      expect(fs.readFileSync(argsFile, 'utf8')).toBe(`--colors 64 --dither 0 --target-psnr ${QUANTIZR_TARGET_PSNR}`);
       const input = fs.readFileSync(inputFile);
       expect([input.readUInt32LE(0), input.readUInt32LE(4), input.length]).toEqual([5, 3, 8 + 5 * 3 * 4]);
       expect(picture).not.toBeNull();

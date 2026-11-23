@@ -7,10 +7,11 @@
 //
 // Input:  the width and the height (two little-endian u32), then width * height RGBA bytes (8 bits a sample, straight alpha).
 // Output: the number of palette entries (little-endian u32), the entries as RGBA bytes, then width * height palette indices, one byte each.
-// Usage:  quantizr-pixels [--colors 2..256] [--dither 0..1] [--target-psnr 1..200]
-//         (defaults: 256 colours, dithering level 1.0, the library's own, and no target). With a target the palette may have fewer colours than
-//         asked for, as long as the PSNR of its colours against the pixels, computed over the three colour channels before dithering, stays at or
-//         above it (in decibels).
+// Usage:  quantizr-pixels [--colors 2..256] [--dither 0..1] [--target-psnr 1..200] [--run-tolerance 0..2]
+//         (defaults: 256 colours, dithering level 1.0, the library's own, no target, and run tolerance 0). With a target the palette may have
+//         fewer colours than asked for, as long as the PSNR of its colours against the pixels, computed over the three colour channels before
+//         dithering, stays at or above it (in decibels). With a positive run tolerance (when undithered), an opaque pixel keeps the previous
+//         opaque pixel's palette index if its RGBA distance is within (1 + run_tolerance) times the nearest entry's distance.
 use std::io::{Read, Write};
 use std::process::ExitCode;
 
@@ -27,10 +28,12 @@ struct Settings {
     dither: f32,
     /// PSNR in dB below which the palette may not be made smaller than `colors`; 0 for no target.
     target_psnr: f32,
+    /// Relative distance tolerance (0..=2) for extending runs of the previous opaque index when undithered.
+    run_tolerance: f32,
 }
 
 fn parse_arguments() -> Result<Settings, String> {
-    let mut settings = Settings { colors: 256, dither: 1.0, target_psnr: 0.0 };
+    let mut settings = Settings { colors: 256, dither: 1.0, target_psnr: 0.0, run_tolerance: 0.0 };
     let mut arguments = std::env::args().skip(1);
     while let Some(name) = arguments.next() {
         let value = arguments.next().ok_or_else(|| format!("{name} needs a value"))?;
@@ -41,6 +44,12 @@ fn parse_arguments() -> Result<Settings, String> {
                 settings.target_psnr = value.parse().map_err(|_| "--target-psnr is not a number".to_string())?;
                 if !(1.0..=200.0).contains(&settings.target_psnr) {
                     return Err("--target-psnr is not between 1 and 200".to_string());
+                }
+            }
+            "--run-tolerance" => {
+                settings.run_tolerance = value.parse().map_err(|_| "--run-tolerance is not a number".to_string())?;
+                if !(0.0..=2.0).contains(&settings.run_tolerance) {
+                    return Err("--run-tolerance is not between 0 and 2".to_string());
                 }
             }
             _ => return Err(format!("unknown argument {name}")),
@@ -80,6 +89,9 @@ fn run() -> Result<(), String> {
     }
     let mut result = QuantizeResult::quantize(&image, &options);
     result.set_dithering_level(settings.dither).map_err(failed)?;
+    if settings.run_tolerance > 0.0 {
+        result.set_run_tolerance(settings.run_tolerance).map_err(failed)?;
+    }
     let mut indices = vec![0u8; width * height];
     result.remap_image(&image, &mut indices).map_err(failed)?;
     let palette = result.get_palette();
