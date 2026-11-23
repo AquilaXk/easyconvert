@@ -452,6 +452,7 @@ Security
 401. [Calibre runs set RLIMIT_CORE to 1 byte so piped Linux crash collectors do not stall Chromium SIGSEGV retries or inspect book memory](#401-calibre-runs-set-rlimit_core-to-1-byte-so-piped-linux-crash-collectors-do-not-stall-chromium-sigsegv-retries-or-inspect-book-memory)
 402. [OpenSymbol and StandardSymL private-use glyphs in PDF and Office text map through the Apache OpenOffice StarMath and Symbol tables](#402-opensymbol-and-standardsyml-private-use-glyphs-in-pdf-and-office-text-map-through-the-apache-openoffice-starmath-and-symbol-tables)
 403. [Shared-disk TUS uploads keep only session metadata and locks in Redis, cap Redis byte staging at 8 MiB, and pipeline slice writes](#403-shared-disk-tus-uploads-keep-only-session-metadata-and-locks-in-redis-cap-redis-byte-staging-at-8-mib-and-pipeline-slice-writes)
+404. [All conversion and tool job enqueue sites and queue SSE streams bind to resource-class queues](#404-all-conversion-and-tool-job-enqueue-sites-and-queue-sse-streams-bind-to-resource-class-queues)
 
 ---
 
@@ -11970,3 +11971,21 @@ Security
   - **Keeping `128 MiB` cap without deleting crossed keys**: retains up to ~171 MiB of obsolete base64 slices in Redis for 24 hours whenever an upload grows past the staging threshold.
 - **Verified by**: `tests/config-schema.test.ts`, `tests/config-docs-drift.test.ts`, `tests/tus-local-redis-staging.test.ts`, `tests/tus-memory.test.ts`, `tests/tus-protocol.test.ts`, `tests/tus-expiry.test.ts`, `tests/tus-staged-file-cleanup.test.ts`, `tests/tus-remote-record-retry.test.ts`, `tests/upload-direct-and-tus.test.ts`, `tests/scale-out-control-plane.test.ts`, `tests/sdk-and-b2b-adversarial-fixes.test.ts`, `tests/adversarial-queue-storage-queries.test.ts`, `guard:anti-cheat`, `guard:code-smells`, `guard:policy-decisions`, `licenses:check`, `npm run lint`, and `npx tsc --noEmit`.
 - **Revisit when**: `STORAGE_DRIVER=local` is deprecated for multi-replica deployments or S3/OCI part size (`TUS_REMOTE_PART_BYTES`) changes.
+
+## 404. All conversion and tool job enqueue sites and queue SSE streams bind to resource-class queues
+
+- **Date**: 2026-11-23
+- **Status**: Implemented, decided 2026-11-23 (P0-02 resource-class queue routing remediation); nothing is deployed.
+- **Decision**:
+  - **Every conversion and tool job enqueue caller resolves its target queue via `resolveResourceClass` and `getQueueForResourceClass`, stamps `resourceClass` on `ConversionJobData`, and schedules with `tierToPriority`**: `POST /api/queue/jobs` (`src/app/api/queue/jobs/route.ts`), `POST /api/v1/convert` `queueReserved` (`src/app/api/v1/convert/route.ts`), `dispatchSyncRouteConversion` and `dispatchSyncWebTool` (`src/lib/queue/wait-for-job.ts`), and `POST /api/tools/jobs` (`src/app/api/tools/jobs/route.ts`) now match `POST /api/v1/jobs` and `enqueueGraphNodeJob` (`src/lib/queue/graph/node-jobs.ts`), leaving the legacy default queue (`easyconvert-jobs`) empty (`defaultQueueOwnJobCounts()`). `POST /api/queue/jobs` also reports the selected `targetQueue.name` in its JSON response.
+  - **Web tools map to their resource family through one shared helper (`webToolResourceFormat` in `src/lib/queue/wait-for-job.ts`)**: `archive-create` and `archive-extract` map to `'zip'`, and PDF tools map to `'pdf'`, so `resolveResourceClass` routes web tool jobs to `easyconvert-jobs:cpu` (or `easyconvert-jobs:memory` past `50 MiB`).
+  - **Queue SSE telemetry (`GET /api/queue/jobs/[id]` in `src/app/api/queue/jobs/[id]/route.ts`) subscribes to `getQueueForJob(job.data)` and falls back to `conversionQueue` only as an additional listener when `targetQueue !== conversionQueue`**, cleaning up every subscription on terminal events, stream cancel, or client abort.
+- **Why**:
+  - Split workers in production (`WORKER_QUEUES=light`, `cpu`, `memory`, `gpu`) do not subscribe to `easyconvert-jobs` outside the `light` fallback compatibility setting; jobs queued onto bare `conversionQueue` bypassed per-class isolation, missed `tierToPriority`, or could stall behind heterogeneous work, and SSE streams listening only on `conversionQueue` missed `telemetry:<jobId>` events emitted directly on the resource-class queue over Redis Pub/Sub.
+- **Trade-offs**:
+  - Subscribing SSE streams to both `targetQueue` and `conversionQueue` preserves compatibility for legacy default-queue jobs while delivering resource-queue `telemetry:<jobId>` events, keeping two listener registrations per active stream until it closes.
+- **Alternatives rejected**:
+  - **Changing `WORKER_QUEUES` across all split workers to include `default`**: reintroduces head-of-line blocking across light, CPU, memory, and GPU workloads and breaks `tests/compose-hardening.test.ts` and `tests/oci-deploy.test.ts`.
+  - **Forwarding all `telemetry:<jobId>` wildcard channels across queues**: requires per-job dynamic listener wiring between queues rather than subscribing directly on `getQueueForJob(job.data)`.
+- **Verified by**: `tests/job-deadline-enqueue-sites.test.ts`, `tests/resource-class-queues.test.ts`, `tests/legacy-route-validation.test.ts`, `tests/refusal-codes.test.ts`, `tests/worker-native-engines-and-api-dx.test.ts`, `tests/job-lifecycle-safety.test.ts`, `tests/scale-out-control-plane.test.ts`, `tests/config-schema.test.ts`, `tests/compose-hardening.test.ts`, `tests/oci-deploy.test.ts`, `guard:anti-cheat`, `guard:code-smells`, `guard:policy-decisions`, `licenses:check`, `npm run lint`, and `npx tsc --noEmit`.
+- **Revisit when**: legacy `easyconvert-jobs` default queue fallback is retired after confirming zero in-flight jobs on `default`.

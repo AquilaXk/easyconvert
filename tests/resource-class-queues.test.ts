@@ -1,13 +1,20 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import {
   resourceQueues,
   conversionQueue,
   allConversionQueues,
+  defaultQueueOwnJobCounts,
   getQueueForResourceClass,
   getQueueForJob,
   getJobAcrossQueues,
   cancelJobAcrossQueues,
+  processConversionJob,
+  attachJobLifecycleListeners,
+  attachInputCleanupOnCompletion,
 } from '../src/lib/queue/conversion-queue';
 import {
   resolveResourceClass,
@@ -16,9 +23,20 @@ import {
   tierToPriority,
   RESOURCE_CLASSES,
 } from '../src/lib/queue/resource-class';
-import { resolveSubscribedQueues } from '../src/worker';
+import { resolveSubscribedQueues, ociWorker, stopHeartbeat } from '../src/worker';
 import { POST as createJobPost } from '../src/app/api/v1/jobs/route';
 import { GET as getJobGet } from '../src/app/api/v1/jobs/[id]/route';
+import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
+import { GET as queueJobGet } from '../src/app/api/queue/jobs/[id]/route';
+import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
+import { POST as toolsJobsPost } from '../src/app/api/tools/jobs/route';
+import { GET as toolsJobGet } from '../src/app/api/tools/jobs/[id]/route';
+import { dispatchSyncWebTool } from '../src/lib/queue/wait-for-job';
+import {
+  registerLiveWorkerHeartbeat,
+  unregisterLiveWorkerHeartbeat,
+  resetLocalLiveWorkersForTests,
+} from '../src/lib/queue/worker-presence';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { graphScheduler } from '../src/lib/queue/graph/scheduler';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
@@ -28,6 +46,12 @@ import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
   const activeWorkers: Worker<any, any>[] = [];
+
+  beforeAll(async () => {
+    await ociWorker.close();
+    stopHeartbeat();
+    resetLocalLiveWorkersForTests();
+  });
 
   afterEach(async () => {
     while (activeWorkers.length > 0) {
@@ -594,6 +618,394 @@ describe('WP-33: Resource-Class Queues and Priority Scheduling', () => {
       expect(jobVideo).toBeDefined();
       expect(jobVideo?.data.resourceClass).toBe('gpu');
       expect(jobVideo?.opts.priority).toBe(1);
+    });
+  });
+
+  // =========================================================================
+  // 7. All Enqueue Sites and SSE Streams Bound to Resource-Class Queues
+  // =========================================================================
+  describe('7. All Enqueue Sites and SSE Streams Bound to Resource-Class Queues', () => {
+    const CSV_BYTES = Buffer.from('name,score\nAlice,100\nBob,95\n', 'utf8');
+    const DOCX_BYTES = fs.readFileSync(path.join(__dirname, 'fixtures', 'document', 'rich-structure.docx'));
+    const createdJobIds: string[] = [];
+    const registeredHeartbeats: string[] = [];
+
+    beforeAll(async () => {
+      for (const q of allConversionQueues) {
+        const leftover = await q.getJobs(['waiting', 'delayed', 'active']);
+        await Promise.all(leftover.map((job) => q.remove(job.id).catch(() => {})));
+      }
+    });
+
+    afterEach(async () => {
+      vi.unstubAllEnvs();
+      for (const workerId of registeredHeartbeats.splice(0)) {
+        await unregisterLiveWorkerHeartbeat(workerId).catch(() => {});
+      }
+      resetLocalLiveWorkersForTests();
+      for (const jobId of createdJobIds.splice(0)) {
+        await conversionQueue.remove(jobId).catch(() => {});
+      }
+    });
+
+    async function createUserWithKey(tier: 'paid' | 'free') {
+      const uid = `routing_${tier}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const user = await redisUserStore.createUser({
+        emailVerified: true,
+        name: `Routing ${tier}`,
+        email: `${uid}@example.com`,
+        tier,
+      });
+      const key = await redisKeyStore.generateApiKey(user.id, `Routing Key ${uid}`, {
+        scopes: ['convert:write', 'convert:read'],
+      });
+      return { userId: user.id, key: key.secretKey };
+    }
+
+    async function makeSinglePagePdf(): Promise<Buffer> {
+      const doc = await PDFDocument.create();
+      doc.addPage([200, 200]);
+      return Buffer.from(await doc.save());
+    }
+
+    function startSplitResourceWorker(): Worker<ConversionJobData, ConversionJobResult> {
+      vi.stubEnv('WORKER_QUEUES', 'light,cpu,memory,gpu');
+      const splitQueues = resolveSubscribedQueues();
+      expect(splitQueues.map((q) => q.name)).toEqual([
+        'easyconvert-jobs:light',
+        'easyconvert-jobs:cpu',
+        'easyconvert-jobs:memory',
+        'easyconvert-jobs:gpu',
+      ]);
+      const worker = new Worker(splitQueues, processConversionJob, { concurrency: 2 });
+      attachJobLifecycleListeners(worker);
+      attachInputCleanupOnCompletion(worker);
+      activeWorkers.push(worker);
+      return worker;
+    }
+
+    it('POST /api/queue/jobs routes csv->json to light and docx->pdf to cpu with tier priority, leaves default empty, and completes on a split worker', async () => {
+      const paid = await createUserWithKey('paid');
+      const free = await createUserWithKey('free');
+      const defaultBefore = await defaultQueueOwnJobCounts();
+
+      const csvRes = await queueJobsPost(
+        new NextRequest('https://easyconvert.app/api/queue/jobs', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${paid.key}`,
+          },
+          body: JSON.stringify({
+            filename: 'scores.csv',
+            targetFormat: 'json',
+            inputBufferBase64: CSV_BYTES.toString('base64'),
+            fileSize: CSV_BYTES.length,
+          }),
+        })
+      );
+      expect(csvRes.status).toBe(200);
+      const csvBody = (await csvRes.json()) as { success: boolean; jobId: string; queue: string };
+      createdJobIds.push(csvBody.jobId);
+      expect(csvBody.success).toBe(true);
+      expect(csvBody.queue).toBe('easyconvert-jobs:light');
+
+      const lightJob = await resourceQueues.light.getJob(csvBody.jobId);
+      expect(lightJob?.data.resourceClass).toBe('light');
+      expect(lightJob?.opts.priority).toBe(tierToPriority('paid'));
+
+      const docxForm = new FormData();
+      docxForm.append(
+        'file',
+        new File([new Uint8Array(DOCX_BYTES)], 'report.docx', {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        })
+      );
+      docxForm.append('targetFormat', 'pdf');
+
+      const docxRes = await queueJobsPost(
+        new NextRequest('https://easyconvert.app/api/queue/jobs', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${free.key}` },
+          body: docxForm,
+        })
+      );
+      expect(docxRes.status).toBe(200);
+      const docxBody = (await docxRes.json()) as { success: boolean; jobId: string; queue: string };
+      createdJobIds.push(docxBody.jobId);
+      expect(docxBody.success).toBe(true);
+      expect(docxBody.queue).toBe('easyconvert-jobs:cpu');
+
+      const cpuJob = await resourceQueues.cpu.getJob(docxBody.jobId);
+      expect(cpuJob?.data.resourceClass).toBe('cpu');
+      expect(cpuJob?.opts.priority).toBe(tierToPriority('free'));
+
+      const defaultAfterEnqueue = await defaultQueueOwnJobCounts();
+      expect(defaultAfterEnqueue.waiting).toBe(0);
+      expect(defaultAfterEnqueue.waiting).toBe(defaultBefore.waiting);
+
+      startSplitResourceWorker();
+
+      await vi.waitFor(
+        async () => {
+          const doneLight = await resourceQueues.light.getJob(csvBody.jobId);
+          const doneCpu = await resourceQueues.cpu.getJob(docxBody.jobId);
+          expect(doneLight?.state).toBe('completed');
+          expect(doneCpu?.state).toBe('completed');
+        },
+        { timeout: 15_000, interval: 40 }
+      );
+
+      const finishedLight = await resourceQueues.light.getJob(csvBody.jobId);
+      const finishedCpu = await resourceQueues.cpu.getJob(docxBody.jobId);
+      expect(finishedLight?.returnvalue?.mimeType).toBe('application/json');
+      expect(finishedCpu?.returnvalue?.mimeType).toBe('application/pdf');
+    }, 30_000);
+
+    it('POST /api/v1/convert with Prefer: respond-async routes to resourceQueues.light with tierToPriority and leaves default empty', async () => {
+      const paid = await createUserWithKey('paid');
+      const free = await createUserWithKey('free');
+      const defaultBefore = await defaultQueueOwnJobCounts();
+
+      const sendAsyncConvert = async (apiKey: string) => {
+        const form = new FormData();
+        form.append('file', new File([new Uint8Array(CSV_BYTES)], 'scores.csv', { type: 'text/csv' }));
+        form.append('targetFormat', 'json');
+        return v1ConvertPost(
+          new NextRequest('https://easyconvert.app/api/v1/convert', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              Prefer: 'respond-async',
+            },
+            body: form,
+          })
+        );
+      };
+
+      const paidRes = await sendAsyncConvert(paid.key);
+      expect(paidRes.status).toBe(202);
+      const paidBody = (await paidRes.json()) as { jobId: string };
+      createdJobIds.push(paidBody.jobId);
+
+      const freeRes = await sendAsyncConvert(free.key);
+      expect(freeRes.status).toBe(202);
+      const freeBody = (await freeRes.json()) as { jobId: string };
+      createdJobIds.push(freeBody.jobId);
+
+      const paidJob = await resourceQueues.light.getJob(paidBody.jobId);
+      const freeJob = await resourceQueues.light.getJob(freeBody.jobId);
+      expect(paidJob?.data.resourceClass).toBe('light');
+      expect(paidJob?.opts.priority).toBe(tierToPriority('paid'));
+      expect(freeJob?.data.resourceClass).toBe('light');
+      expect(freeJob?.opts.priority).toBe(tierToPriority('free'));
+
+      const defaultAfter = await defaultQueueOwnJobCounts();
+      expect(defaultAfter.waiting).toBe(0);
+      expect(defaultAfter.waiting).toBe(defaultBefore.waiting);
+    });
+
+    it('POST /api/tools/jobs (merge and archive-create) and dispatchSyncWebTool (merge) in queue-only mode route to resourceQueues.cpu and complete on a split worker', async () => {
+      vi.stubEnv('WEB_EXECUTION_MODE', 'queue-only');
+      const paid = await createUserWithKey('paid');
+      const free = await createUserWithKey('free');
+      const workerId = `split_tools_worker_${Date.now()}`;
+      await registerLiveWorkerHeartbeat(workerId);
+      registeredHeartbeats.push(workerId);
+
+      const pdfA = await makeSinglePagePdf();
+      const pdfB = await makeSinglePagePdf();
+
+      const mergeForm = new FormData();
+      mergeForm.set('tool', 'merge');
+      mergeForm.append('files', new File([new Uint8Array(pdfA)], 'a.pdf', { type: 'application/pdf' }));
+      mergeForm.append('files', new File([new Uint8Array(pdfB)], 'b.pdf', { type: 'application/pdf' }));
+
+      const mergePost = await toolsJobsPost(
+        new NextRequest('https://easyconvert.app/api/tools/jobs', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${paid.key}` },
+          body: mergeForm,
+        })
+      );
+      expect(mergePost.status).toBe(201);
+      const mergeCreated = (await mergePost.json()) as { id: string; status: string };
+      createdJobIds.push(mergeCreated.id);
+
+      const archiveForm = new FormData();
+      archiveForm.set('tool', 'archive-create');
+      archiveForm.set('options', JSON.stringify({ format: 'zip' }));
+      archiveForm.append('files', new File([Buffer.from('archive note', 'utf8')], 'note.txt', { type: 'text/plain' }));
+
+      const archivePost = await toolsJobsPost(
+        new NextRequest('https://easyconvert.app/api/tools/jobs', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${free.key}` },
+          body: archiveForm,
+        })
+      );
+      expect(archivePost.status).toBe(201);
+      const archiveCreated = (await archivePost.json()) as { id: string; status: string };
+      createdJobIds.push(archiveCreated.id);
+
+      const mergeJob = await resourceQueues.cpu.getJob(mergeCreated.id);
+      const archiveJob = await resourceQueues.cpu.getJob(archiveCreated.id);
+      expect(mergeJob?.data.resourceClass).toBe('cpu');
+      expect(mergeJob?.opts.priority).toBe(tierToPriority('paid'));
+      expect(archiveJob?.data.resourceClass).toBe('cpu');
+      expect(archiveJob?.opts.priority).toBe(tierToPriority('free'));
+      expect((await defaultQueueOwnJobCounts()).waiting).toBe(0);
+
+      startSplitResourceWorker();
+
+      await vi.waitFor(
+        async () => {
+          const pollMerge = await toolsJobGet(
+            new NextRequest(`https://easyconvert.app/api/tools/jobs/${mergeCreated.id}`, {
+              headers: { Authorization: `Bearer ${paid.key}` },
+            }),
+            { params: Promise.resolve({ id: mergeCreated.id }) }
+          );
+          const mergeStatus = (await pollMerge.json()) as { status: string; result?: { size: number } };
+          expect(mergeStatus.status).toBe('completed');
+          expect(mergeStatus.result?.size).toBeGreaterThan(100);
+
+          const pollArchive = await toolsJobGet(
+            new NextRequest(`https://easyconvert.app/api/tools/jobs/${archiveCreated.id}`, {
+              headers: { Authorization: `Bearer ${free.key}` },
+            }),
+            { params: Promise.resolve({ id: archiveCreated.id }) }
+          );
+          const archiveStatus = (await pollArchive.json()) as { status: string; result?: { size: number } };
+          expect(archiveStatus.status).toBe('completed');
+          expect(archiveStatus.result?.size).toBeGreaterThan(20);
+        },
+        { timeout: 15_000, interval: 40 }
+      );
+
+      const defaultAddSpy = vi.spyOn(conversionQueue, 'add');
+      const cpuAddSpy = vi.spyOn(resourceQueues.cpu, 'add');
+
+      const syncMerge = await dispatchSyncWebTool({
+        tool: 'merge',
+        files: [
+          { name: 'a.pdf', buffer: pdfA },
+          { name: 'b.pdf', buffer: pdfB },
+        ],
+        options: {},
+        userId: paid.userId,
+        tier: 'paid',
+      });
+      expect(syncMerge.kind).toBe('file');
+      if (syncMerge.kind === 'file') {
+        expect(syncMerge.mimeType).toBe('application/pdf');
+        expect(syncMerge.buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+      }
+      expect(defaultAddSpy).not.toHaveBeenCalled();
+      expect(cpuAddSpy).toHaveBeenCalledTimes(1);
+      expect(cpuAddSpy.mock.calls[0][1].resourceClass).toBe('cpu');
+      expect(cpuAddSpy.mock.calls[0][2]?.priority).toBe(tierToPriority('paid'));
+      expect((await defaultQueueOwnJobCounts()).waiting).toBe(0);
+    });
+
+    it('GET /api/queue/jobs/[id]?stream=true delivers completed SSE telemetry emitted directly on targetQueue when conversionQueue does not emit', async () => {
+      const paid = await createUserWithKey('paid');
+
+      const cases = [
+        {
+          queue: resourceQueues.light,
+          resourceClass: 'light' as const,
+          filename: 'scores.csv',
+          sourceFormat: 'csv',
+          targetFormat: 'json',
+          outFilename: 'scores.json',
+          mimeType: 'application/json',
+        },
+        {
+          queue: resourceQueues.cpu,
+          resourceClass: 'cpu' as const,
+          filename: 'report.docx',
+          sourceFormat: 'docx',
+          targetFormat: 'pdf',
+          outFilename: 'report.pdf',
+          mimeType: 'application/pdf',
+        },
+      ];
+
+      for (const item of cases) {
+        const job = await item.queue.add('convert', {
+          jobId: '',
+          originalFilename: item.filename,
+          sourceFormat: item.sourceFormat,
+          targetFormat: item.targetFormat,
+          fileSize: 128,
+          options: {},
+          userId: paid.userId,
+          resourceClass: item.resourceClass,
+          inputBufferBase64: Buffer.from('a,b\n1,2\n', 'utf8').toString('base64'),
+        });
+        createdJobIds.push(job.id);
+
+        const sseRes = await queueJobGet(
+          new NextRequest(`https://easyconvert.app/api/queue/jobs/${job.id}?stream=true`, {
+            headers: { Authorization: `Bearer ${paid.key}` },
+          }),
+          { params: Promise.resolve({ id: job.id }) }
+        );
+        expect(sseRes.status).toBe(200);
+        expect(sseRes.headers.get('content-type')).toBe('text/event-stream');
+
+        const reader = sseRes.body!.getReader();
+        const decoder = new TextDecoder();
+        const firstChunk = await reader.read();
+        expect(firstChunk.done).toBe(false);
+        const firstText = decoder.decode(firstChunk.value);
+        expect(firstText).toContain('event: initial');
+
+        // Simulate cross-process Redis Pub/Sub delivering telemetry on the resource queue without touching conversionQueue.
+        item.queue.emit(`telemetry:${job.id}`, {
+          event: 'completed',
+          data: {
+            jobId: job.id,
+            progress: 100,
+            state: 'completed',
+            result: {
+              jobId: job.id,
+              status: 'completed',
+              resultKey: `results/${job.id}/${item.outFilename}`,
+              downloadUrl: `/api/storage/file/${encodeURIComponent(`results/${job.id}/${item.outFilename}`)}`,
+              filename: item.outFilename,
+              mimeType: item.mimeType,
+              size: 42,
+              durationMs: 7,
+              engineUsed: 'ts-engine',
+            },
+          },
+        });
+
+        let restText = '';
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          restText += decoder.decode(next.value, { stream: true });
+        }
+        restText += decoder.decode();
+
+        expect(restText).toContain('event: completed');
+        const dataLine = restText
+          .split('\n')
+          .find((line) => line.startsWith('data: '));
+        expect(dataLine).toBeDefined();
+        const parsed = JSON.parse(dataLine!.slice('data: '.length)) as {
+          jobId: string;
+          state: string;
+          result?: Record<string, unknown>;
+        };
+        expect(parsed.jobId).toBe(job.id);
+        expect(parsed.state).toBe('completed');
+        expect(parsed.result?.filename).toBe(item.outFilename);
+        expect(parsed.result).not.toHaveProperty('engineUsed');
+      }
     });
   });
 });

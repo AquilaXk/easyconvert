@@ -9,13 +9,15 @@ import type {
 } from '../types';
 import { ConversionFailedError, QueueUnavailableError } from '../types';
 import { sanitizeNodeOutputFilename } from './graph/node-jobs';
-import { cancelJobAcrossQueues, conversionQueue, getQueueForJob } from './conversion-queue';
+import { cancelJobAcrossQueues, conversionQueue, getQueueForResourceClass } from './conversion-queue';
+import { resolveResourceClass, tierToPriority } from './resource-class';
 import { subscribeToJobTelemetry, type JobTelemetryEvent } from './job-telemetry';
 import { enqueueConversionJob } from './enqueue';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from './worker-presence';
 import { stagedInputKey } from '../storage/key-namespace';
 import type { StoredToolJobResult } from '../tools/tool-job-store';
-import { runWebTool, type WebTool, type WebToolFile, type WebToolOptions, type WebToolOutput } from '../tools/web-tools';
+import type { WebTool } from '../tools/tool-names';
+import { runWebTool, type WebToolFile, type WebToolOptions, type WebToolOutput } from '../tools/web-tools';
 
 /**
  * Stateless Web control-plane wait helper (`WEB_EXECUTION_MODE=queue-only`, Reference Service `wait=true` model).
@@ -26,12 +28,17 @@ import { runWebTool, type WebTool, type WebToolFile, type WebToolOptions, type W
  * via `cancelJobAcrossQueues`.
  */
 
+/** Resolves the format family used to select a resource-class queue for a web tool run. */
+export function webToolResourceFormat(tool: WebTool): 'zip' | 'pdf' {
+  return tool === 'archive-extract' || tool === 'archive-create' ? 'zip' : 'pdf';
+}
+
 const POLL_INTERVAL_MS = 120;
 
 async function waitForQueuedJobResult(
   jobId: string,
   signal?: AbortSignal,
-  targetQueue: ReturnType<typeof getQueueForJob> = conversionQueue
+  targetQueue: ReturnType<typeof getQueueForResourceClass> = conversionQueue
 ): Promise<ConversionJobResult> {
   signal?.throwIfAborted();
 
@@ -153,6 +160,12 @@ export async function dispatchSyncRouteConversion(
   await storageProvider.saveObject(tempInputKey, params.inputBuffer, 'application/octet-stream', safeName);
 
   const { signal, deadlineAt, ...serializableOptions } = params.options;
+  const resourceClass = resolveResourceClass(
+    params.sourceFormat,
+    params.targetFormat,
+    params.inputBuffer.length,
+    serializableOptions
+  );
   const jobData: ConversionJobData = {
     jobId,
     originalFilename: params.originalFilename,
@@ -162,17 +175,18 @@ export async function dispatchSyncRouteConversion(
     storageKey: tempInputKey,
     options: serializableOptions,
     userId: params.userId,
+    resourceClass,
     transientSyncWait: true,
   };
 
-  const targetQueue = getQueueForJob(jobData);
+  const targetQueue = getQueueForResourceClass(resourceClass);
   let resultKeyToErase: string | undefined;
   try {
     await enqueueConversionJob(
       targetQueue,
       'convert',
       jobData,
-      { jobId },
+      { jobId, priority: tierToPriority(params.tier) },
       { tier: params.tier, inputBytes: params.inputBuffer.length, notAfter: deadlineAt }
     );
     const jobResult = await waitForQueuedJobResult(jobId, signal, targetQueue);
@@ -248,9 +262,11 @@ export async function dispatchSyncWebTool(params: {
       cleanupKeys.push(key);
     }
 
-    const sourceFormat = params.tool === 'archive-extract' || params.tool === 'archive-create' ? 'zip' : 'pdf';
+    const sourceFormat = webToolResourceFormat(params.tool);
+    const resClass = resolveResourceClass(sourceFormat, sourceFormat, totalBytes, {});
+    const targetQueue = getQueueForResourceClass(resClass);
     await enqueueConversionJob(
-      conversionQueue,
+      targetQueue,
       'web-tool-sync',
       {
         jobId,
@@ -260,6 +276,7 @@ export async function dispatchSyncWebTool(params: {
         fileSize: totalBytes,
         options: {},
         userId: params.userId,
+        resourceClass: resClass,
         transientSyncWait: true,
         toolJob: {
           tool: params.tool,
@@ -268,11 +285,11 @@ export async function dispatchSyncWebTool(params: {
           cleanupUploadKeys: cleanupKeys,
         },
       },
-      { jobId },
+      { jobId, priority: tierToPriority(params.tier) },
       { tier: params.tier, inputBytes: totalBytes, notAfter: params.deadlineAt }
     );
 
-    const completed = await waitForQueuedJobResult(jobId, params.signal);
+    const completed = await waitForQueuedJobResult(jobId, params.signal, targetQueue);
     const toolResult = completed.toolResult as StoredToolJobResult | undefined;
     if (!toolResult) {
       throw new ConversionFailedError('Worker completed tool request without returning toolResult.');

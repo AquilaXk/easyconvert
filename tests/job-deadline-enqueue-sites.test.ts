@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as queueJobsRoute } from '../src/app/api/queue/jobs/route';
@@ -90,6 +91,60 @@ describe('no conversion job is queued without a deadline', () => {
       'lib/queue/graph/node-jobs.ts',
       'lib/queue/wait-for-job.ts',
     ]);
+  });
+
+  it('passes a resource-class queue (never bare conversionQueue) to enqueueConversionJob and handOffConversionJob across all callers', () => {
+    const ENQUEUE_CALLERS = [
+      'app/api/queue/jobs/route.ts',
+      'app/api/tools/jobs/route.ts',
+      'app/api/v1/convert/route.ts',
+      'app/api/v1/jobs/route.ts',
+      'lib/queue/graph/node-jobs.ts',
+      'lib/queue/wait-for-job.ts',
+    ];
+    const offenders: string[] = [];
+    let checkedCalls = 0;
+
+    for (const rel of ENQUEUE_CALLERS) {
+      const fullPath = path.join(SRC_DIR, rel);
+      const text = fs.readFileSync(fullPath, 'utf8');
+      const sf = ts.createSourceFile(fullPath, text, ts.ScriptTarget.Latest, true);
+      const defaultQueueAliases = new Set<string>(['conversionQueue']);
+
+      const collectAliases = (node: ts.Node): void => {
+        if (
+          ts.isVariableDeclaration(node) &&
+          ts.isIdentifier(node.name) &&
+          node.initializer &&
+          ts.isIdentifier(node.initializer) &&
+          defaultQueueAliases.has(node.initializer.text)
+        ) {
+          defaultQueueAliases.add(node.name.text);
+        }
+        ts.forEachChild(node, collectAliases);
+      };
+      collectAliases(sf);
+
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+          const callee = node.expression.text;
+          const queueArgIndex = callee === 'enqueueConversionJob' ? 0 : callee === 'handOffConversionJob' ? 1 : -1;
+          if (queueArgIndex >= 0) {
+            checkedCalls += 1;
+            const queueArg = node.arguments[queueArgIndex];
+            if (!queueArg || (ts.isIdentifier(queueArg) && defaultQueueAliases.has(queueArg.text))) {
+              const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
+              offenders.push(`${rel}:${line + 1} (${callee})`);
+            }
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sf);
+    }
+
+    expect(checkedCalls).toBe(7);
+    expect(offenders).toEqual([]);
   });
 
   it('sets the timeout in the wrapper itself, and the options type has no timeout to supply', () => {

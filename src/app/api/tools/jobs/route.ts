@@ -13,8 +13,10 @@ import { storageProvider as s3Storage } from '@/lib/storage';
 import { isUploadKey, resultKey, stagedInputKey } from '@/lib/storage/key-namespace';
 import { JobTimeoutError, QueueUnavailableError } from '@/lib/types';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
-import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { handOffConversionJob } from '@/lib/queue/enqueue';
+import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
+import { webToolResourceFormat } from '@/lib/queue/wait-for-job';
 import { concurrencyLimitResponse, mayEnqueue, acquireSyncSlot } from '@/lib/queue/concurrency-limit';
 import { conversionDeadlineMs } from '@/lib/queue/job-deadline';
 import { readObjectHeader } from '@/lib/storage/object-header';
@@ -57,10 +59,6 @@ interface ParsedToolJobInputs {
   totalBytes: number;
   inlineFiles?: WebToolFile[];
   storedRefs?: StoredInputFileRef[];
-}
-
-function toolSourceFormat(toolName: WebTool): 'zip' | 'pdf' {
-  return toolName === 'archive-extract' || toolName === 'archive-create' ? 'zip' : 'pdf';
 }
 
 async function storeToolOutput(output: WebToolOutput, caller: User): Promise<StoredToolJobResult> {
@@ -252,11 +250,13 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
         ...(parsed.storedRefs ?? []).map((ref) => ref.key).filter((key) => isUploadKey(key)),
       ];
       const totalBytes = parsed.totalBytes;
-      const sourceFormat = toolSourceFormat(parsed.toolName);
+      const sourceFormat = webToolResourceFormat(parsed.toolName);
+      const resClass = resolveResourceClass(sourceFormat, sourceFormat, totalBytes, {});
+      const targetQueue = getQueueForResourceClass(resClass);
 
       await handOffConversionJob(
         reserved,
-        conversionQueue,
+        targetQueue,
         {
           jobId,
           originalFilename: parsed.toolName,
@@ -265,6 +265,7 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
           fileSize: totalBytes,
           options: {},
           userId: caller.id,
+          resourceClass: resClass,
           toolJob: {
             tool: parsed.toolName,
             options: (options ?? {}) as Record<string, unknown>,
@@ -272,7 +273,7 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
             cleanupUploadKeys: cleanupKeys,
           },
         },
-        { jobId },
+        { jobId, priority: tierToPriority(caller.tier) },
         { tier: caller.tier, inputBytes: totalBytes }
       );
     });
@@ -324,7 +325,7 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
             );
         if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
         const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
-        const sourceFormat = toolSourceFormat(parsed.toolName);
+        const sourceFormat = webToolResourceFormat(parsed.toolName);
         const deadlineMs = conversionDeadlineMs({ tier: caller.tier, sourceFormat, targetFormat: sourceFormat, inputBytes: totalBytes });
         deadlineTimer = setTimeout(() => {
           timedOut = true;
@@ -413,7 +414,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const room = await mayEnqueue(caller.id, caller.tier);
     if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
   } else {
-    const sourceFormat = toolSourceFormat(parsed.toolName);
+    const sourceFormat = webToolResourceFormat(parsed.toolName);
     const localLeaseMs =
       conversionDeadlineMs({
         tier: caller.tier,

@@ -6,7 +6,7 @@ import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as loginRoute } from '../src/app/api/auth/login/route';
 import { POST as registerRoute } from '../src/app/api/auth/register/route';
 import { POST as queueJobsRoute } from '../src/app/api/queue/jobs/route';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { resourceQueues } from '../src/lib/queue/conversion-queue';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 import QueueItemRow from '../src/components/workbench/QueueItemRow';
@@ -241,7 +241,7 @@ describe('a failure the server did not classify keeps its text in the server log
 
   it('answers a job the queue could not take with a fixed sentence, and logs the queue error', async () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(noop);
-    vi.spyOn(conversionQueue, 'add').mockRejectedValue(new Error(`EACCES: open '${MISSING_BINARY}'`));
+    vi.spyOn(resourceQueues.light, 'add').mockRejectedValue(new Error(`EACCES: open '${MISSING_BINARY}'`));
     const res = await queueJobsRoute(new NextRequest('http://localhost:3000/api/queue/jobs', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

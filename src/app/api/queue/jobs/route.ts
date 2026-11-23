@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
-import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
 import { detectFormatFromFilename } from '@/lib/registry';
@@ -245,22 +246,29 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
       spilledKey = storageKey;
     }
 
+    const routedBytes = prepared.inputBytes ?? request.fileSize;
+    const cleanOptions = stripEngineControls(request.options);
+    const resClass = resolveResourceClass(prepared.sourceFormat, request.targetFormat, routedBytes, cleanOptions);
+    const targetQueue = getQueueForResourceClass(resClass);
+
     const job = await handOffConversionJob(
       unit,
-      conversionQueue,
+      targetQueue,
       {
         jobId: '',
         originalFilename: request.originalFilename,
         sourceFormat: prepared.sourceFormat,
         targetFormat: request.targetFormat,
-        fileSize: prepared.inputBytes ?? request.fileSize,
+        fileSize: routedBytes,
         storageKey,
-        options: stripEngineControls(request.options),
+        options: cleanOptions,
         userId: user.id,
+        resourceClass: resClass,
       },
       {
         attempts: 2,
         backoff: { type: 'fixed', delay: 1500 },
+        priority: tierToPriority(user.tier),
       },
       { tier: user.tier, inputBytes: prepared.inputBytes }
     );
@@ -271,7 +279,7 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
       status: job.state,
       progress: job.progress,
       createdAt: job.timestamp,
-      queue: conversionQueue.name,
+      queue: targetQueue.name,
     });
   } catch (error: unknown) {
     if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);

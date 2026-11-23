@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as convertRoute } from '../src/app/api/convert/route';
 import { POST as queueJobsRoute } from '../src/app/api/queue/jobs/route';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { allConversionQueues, resourceQueues } from '../src/lib/queue/conversion-queue';
 import { storageProvider } from '../src/lib/storage';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
@@ -100,8 +100,11 @@ describe('POST /api/convert', () => {
 
 describe('POST /api/queue/jobs', () => {
   function spyOnEffects() {
+    const spies = allConversionQueues.map((q) => vi.spyOn(q, 'add'));
+    const lightIndex = allConversionQueues.indexOf(resourceQueues.light);
     return {
-      enqueue: vi.spyOn(conversionQueue, 'add'),
+      enqueue: spies[lightIndex],
+      allEnqueues: spies,
       upload: vi.spyOn(storageProvider, 'initiateMultipartUpload'),
     };
   }
@@ -112,7 +115,7 @@ describe('POST /api/queue/jobs', () => {
     expect(res.status).toBe(HTTP_BAD_REQUEST);
     expect((await res.json()).success).toBe(false);
     expect(effects.upload).not.toHaveBeenCalled();
-    expect(effects.enqueue).not.toHaveBeenCalled();
+    for (const spy of effects.allEnqueues) expect(spy).not.toHaveBeenCalled();
   });
 
   it('answers 400 for a JSON body whose filename has an unknown extension', async () => {
@@ -125,7 +128,7 @@ describe('POST /api/queue/jobs', () => {
       })
     );
     expect(res.status).toBe(HTTP_BAD_REQUEST);
-    expect(effects.enqueue).not.toHaveBeenCalled();
+    for (const spy of effects.allEnqueues) expect(spy).not.toHaveBeenCalled();
   });
 
   it('answers 400 for a JSON body without a filename instead of queueing a "bin" source', async () => {
@@ -137,7 +140,7 @@ describe('POST /api/queue/jobs', () => {
       })
     );
     expect(res.status).toBe(HTTP_BAD_REQUEST);
-    expect(effects.enqueue).not.toHaveBeenCalled();
+    for (const spy of effects.allEnqueues) expect(spy).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -156,7 +159,7 @@ describe('POST /api/queue/jobs', () => {
     expect(res.status).toBe(HTTP_BAD_REQUEST);
     const body = await res.json();
     expect(body.invalidParams.map((p: { name: string }) => p.name)).toContain(name);
-    expect(effects.enqueue).not.toHaveBeenCalled();
+    for (const spy of effects.allEnqueues) expect(spy).not.toHaveBeenCalled();
   });
 
   it('answers 400 for options that break the schema in a multipart request, before storing the upload', async () => {
@@ -164,7 +167,7 @@ describe('POST /api/queue/jobs', () => {
     const res = await queueJobsRoute(multipart('/api/queue/jobs', convertForm(pngFile(), 'jpg', { quality: QUALITY_OVER_MAXIMUM })));
     expect(res.status).toBe(HTTP_BAD_REQUEST);
     expect(effects.upload).not.toHaveBeenCalled();
-    expect(effects.enqueue).not.toHaveBeenCalled();
+    for (const spy of effects.allEnqueues) expect(spy).not.toHaveBeenCalled();
   });
 
   it('queues a known source with the registry extension and the validated options', async () => {

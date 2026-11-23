@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { conversionQueue, getQueueForJob } from '@/lib/queue/conversion-queue';
 import {
   subscribeToJobTelemetry,
   TERMINAL_JOB_STATES,
   TERMINAL_TELEMETRY_EVENTS,
+  type JobTelemetryEvent,
 } from '@/lib/queue/bullmq-engine';
 import { denyUnlessOwner } from '@/lib/api-keys/owner-access';
 import { redactText } from '@/lib/security/redact';
@@ -75,7 +76,7 @@ async function readJob(
 
         let closed = false;
         let keepaliveTimer: NodeJS.Timeout | null = null;
-        let unsubscribe: (() => void) | null = null;
+        const unsubscribers: Array<() => void> = [];
 
         const closeStream = () => {
           if (closed) return;
@@ -84,8 +85,9 @@ async function readJob(
             clearInterval(keepaliveTimer);
             keepaliveTimer = null;
           }
-          unsubscribe?.();
-          unsubscribe = null;
+          while (unsubscribers.length > 0) {
+            unsubscribers.pop()?.();
+          }
           try {
             controller.close();
           } catch {
@@ -103,7 +105,7 @@ async function readJob(
           }
         }, SSE_KEEPALIVE_INTERVAL_MS);
 
-        unsubscribe = subscribeToJobTelemetry(conversionQueue, jobId, (event) => {
+        const onTelemetryEvent = (event: JobTelemetryEvent) => {
           if (closed) return;
           try {
             const dataStr = JSON.stringify(event.event === 'completed' ? withoutEngineTrace(event.data, 'result') : event.data);
@@ -115,7 +117,13 @@ async function readJob(
           } catch {
             closeStream();
           }
-        });
+        };
+
+        const targetQueue = getQueueForJob(job.data);
+        unsubscribers.push(subscribeToJobTelemetry(targetQueue, jobId, onTelemetryEvent));
+        if (targetQueue !== conversionQueue) {
+          unsubscribers.push(subscribeToJobTelemetry(conversionQueue, jobId, onTelemetryEvent));
+        }
 
         req.signal.addEventListener('abort', closeStream, { once: true });
         if (req.signal.aborted) closeStream();

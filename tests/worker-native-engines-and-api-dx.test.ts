@@ -19,7 +19,7 @@ import { subscriptionStore } from '../src/lib/billing/subscription-store';
 import { keyStore } from '../src/lib/api-keys/key-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { userStore } from '../src/lib/auth/user-store';
-import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { conversionQueue, resourceQueues } from '../src/lib/queue/conversion-queue';
 import { buildRateLimitHeaders } from '../src/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '../src/lib/api/problem-details';
 import { expectRateLimitHeaders, requiredHeader } from './helpers/ratelimit-headers';
@@ -308,7 +308,7 @@ describe('Worker Native Engines & API DX Enterprise Enhancements', () => {
       const largeChunk = new Uint8Array(largeSize);
       largeChunk.fill(0x61); // filled with 'a'
 
-      const queueSpy = vi.spyOn(conversionQueue, 'add').mockResolvedValueOnce({
+      const queueSpy = vi.spyOn(resourceQueues.cpu, 'add').mockResolvedValueOnce({
         id: 'job_large_10mb',
         timestamp: Date.now(),
         data: {} as any,

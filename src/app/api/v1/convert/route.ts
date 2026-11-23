@@ -9,9 +9,10 @@ import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outc
 import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { conversionQueue } from '@/lib/queue/conversion-queue';
+import { getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
+import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { conversionDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
@@ -379,9 +380,14 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
   if (unrecorded) return reply(unrecorded);
 
   const inputBytes = await trustedInputBytes({ storageKey: uploadedStorageKey }, storageProvider);
+  const routedBytes = inputBytes ?? file.size;
+  const cleanOptions = stripEngineControls(options);
+  const resClass = resolveResourceClass(sourceDef.id, targetDef.id, routedBytes, cleanOptions);
+  const targetQueue = getQueueForResourceClass(resClass);
+
   const job = await handOffConversionJob(
     unit,
-    conversionQueue,
+    targetQueue,
     {
       jobId: '',
       originalFilename: safeFilename,
@@ -389,15 +395,17 @@ async function queueReserved(c: ReservedConversion, unit: ReservedUnit): Promise
       targetFormat: targetDef.id,
       fileSize: file.size,
       storageKey: uploadedStorageKey,
-      options: stripEngineControls(options),
+      options: cleanOptions,
       webhookUrl: c.webhookUrl,
       webhookSecret: c.webhookSecret,
       webhookKeyId: c.webhookKeyId,
       userId: user.id,
+      resourceClass: resClass,
     },
     {
       attempts: 3,
       backoff: { type: 'exponential', delay: 1000 },
+      priority: tierToPriority(user.tier),
     },
     { tier: user.tier, inputBytes }
   );
