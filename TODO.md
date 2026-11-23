@@ -18,9 +18,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Run the test shards and the pull request parity job on LibreOffice 26.8 too (entry 386 covers the nightly rows only): they install the runner's 24.2, and the 169 test files that use the suite meet 26.8 only in the container job's one text file.
 - PDF to DOCX extra pages left after entry 390: `govdocs1-000018` 11 for 9, `govdocs1-000353` 12 for 10 (footnote marks written at full size), `govdocs1-000572` 11 for 8, `govdocs1-000618` 12 for 8 (the frames of a newsletter overlap), `govdocs1-001135` 11 for 10 (the spacer under the last table), `govdocs1-000341`, `govdocs1-000145` 7 for 6 and `govdocs1-000370` 9 for 8; the pdf2docx translation on branch `feat/pdf-docx-pdf2docx` stays unwired (entry 390), to look at again when the writer sets a paragraph beside a table or the reader gives glyph advances.
 
-## Speed
-- Cut camera-RAW-to-GIF time further (`3fr` 1.88 s, `mos` 1.23 s, `arw` 337 ms after entries 279, 313 and 315): split the palette histogram/median-cut/k-means step across pool threads and profile `dcraw_emu` on `3fr` (0.9 s).
-
 ## Operations and security
 - Revoke the GitHub token that the production host's `ubuntu` user had stored for ghcr.io (removed from `~/.docker/config.json` on 2026-11-22; the deploy runner logs in per job since entry 389), if it is a long-lived personal token.
 - Before each deploy, check the LibreOffice version in trixie-backports and the LibreOffice security advisories, and raise the three pins of `Dockerfile.worker` together (entry 383: no `trixie-security` stream; backports keeps one version, so a newer 26.8.x stops the image build; the nightly `libreoffice-backports` job checks `amd64` and `arm64`, entry 396).

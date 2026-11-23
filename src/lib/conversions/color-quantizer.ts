@@ -24,6 +24,21 @@ import { DirectColourMemo } from './image-colour-direct-memo';
 import { GIF_PHOTO_PIXEL_BUDGET, QUANTIZER_PIXEL_BUDGET, assertPixelBudget } from './image-input-limits';
 import { KdTree3 } from './kd-tree';
 import { getCpuPool, runCpuTask, shareBytes } from '../workers/cpu-pool';
+import {
+  HISTOGRAM_BINS,
+  HISTOGRAM_SHIFT,
+  QUANT_ALPHA_THRESHOLD,
+  QUANT_HISTOGRAM_BITS,
+  QUANT_MAX_COLORS,
+  clampColourCount,
+  histogramStripesTransfer,
+  mergeHistogramStripes,
+  type HistogramStripePayload,
+  type HistogramStripeResult,
+  type MergedStripeHistogram,
+} from './color-quantizer-histogram';
+
+export { QUANT_ALPHA_THRESHOLD, QUANT_HISTOGRAM_BITS, QUANT_MAX_COLORS };
 
 export interface RgbColor {
   r: number;
@@ -43,15 +58,10 @@ export interface OklabColor {
 // Limits and constants
 // ---------------------------------------------------------------------------------------------------------------
 
-export const QUANT_MAX_COLORS = 256;
-/** Bits of each channel the histogram keeps: 32 x 32 x 32 bins. */
-export const QUANT_HISTOGRAM_BITS = 5;
 /** k-means passes over the histogram; the refinement usually settles in fewer. */
 export const QUANT_MAX_ITERATIONS = 18;
 /** k-means stops when no centroid moves more than this in Oklab (about a twentieth of a just-noticeable difference). */
 export const QUANT_CONVERGENCE_DELTA = 1e-4;
-/** A pixel with less alpha than this is transparent when transparency is kept (GIF has one transparent index). */
-export const QUANT_ALPHA_THRESHOLD = 128;
 /** Rasters of at least this many pixels are mapped through the candidate grid (it costs a few tens of ms to build). */
 const GRID_MIN_PIXELS = 100_000;
 /** Pixels from which the palette mapper keeps its colour answers in a table indexed by the colour (`DirectColourMemo`). */
@@ -67,8 +77,6 @@ const BLUE_NOISE_OFFSETS: ReadonlyArray<readonly [number, number]> = [
   [43, 11],
 ];
 
-const HISTOGRAM_SHIFT = 8 - QUANT_HISTOGRAM_BITS;
-const HISTOGRAM_BINS = 1 << (3 * QUANT_HISTOGRAM_BITS);
 const RGBA_STRIDE = 4;
 const RGB_STRIDE = 3;
 const BYTE_MAX = 255;
@@ -383,11 +391,6 @@ function assertRaster(pixels: ArrayLike<number>, width: number, height: number):
   }
 }
 
-function clampColourCount(maxColors: number): number {
-  if (!Number.isFinite(maxColors)) return QUANT_MAX_COLORS;
-  return Math.max(1, Math.min(QUANT_MAX_COLORS, Math.floor(maxColors)));
-}
-
 /** The image's distinct opaque colours as packed 0xRRGGBB when there are at most `limit`; otherwise null. */
 function exactColours(pixels: ArrayLike<number>, pixelCount: number, limit: number, ignoreTransparent: boolean): Int32Array | null {
   const table = new Int32Array(EXACT_TABLE_SIZE).fill(-1);
@@ -479,16 +482,12 @@ function countColours(pixels: ArrayLike<number>, from: number, to: number, ignor
   }
 }
 
-function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTransparent: boolean): Histogram {
-  const counts = HISTOGRAM_COUNTS;
-  const sumsR = HISTOGRAM_SUMS_R;
-  const sumsG = HISTOGRAM_SUMS_G;
-  const sumsB = HISTOGRAM_SUMS_B;
-  counts.fill(0);
-  sumsR.fill(0);
-  sumsG.fill(0);
-  sumsB.fill(0);
-  for (let from = 0; from < pixelCount; from += HISTOGRAM_CHUNK_PIXELS) countColours(pixels, from, Math.min(pixelCount, from + HISTOGRAM_CHUNK_PIXELS), ignoreTransparent);
+function histogramFromRawTotals(
+  counts: Uint32Array,
+  sumsR: ArrayLike<number>,
+  sumsG: ArrayLike<number>,
+  sumsB: ArrayLike<number>
+): Histogram {
   let occupied = 0;
   for (let bin = 0; bin < HISTOGRAM_BINS; bin += 1) if (counts[bin] > 0) occupied += 1;
   const weight = new Float64Array(occupied);
@@ -508,6 +507,19 @@ function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTra
     k += 1;
   }
   return { size: occupied, weight, lab };
+}
+
+function buildHistogram(pixels: ArrayLike<number>, pixelCount: number, ignoreTransparent: boolean): Histogram {
+  const counts = HISTOGRAM_COUNTS;
+  const sumsR = HISTOGRAM_SUMS_R;
+  const sumsG = HISTOGRAM_SUMS_G;
+  const sumsB = HISTOGRAM_SUMS_B;
+  counts.fill(0);
+  sumsR.fill(0);
+  sumsG.fill(0);
+  sumsB.fill(0);
+  for (let from = 0; from < pixelCount; from += HISTOGRAM_CHUNK_PIXELS) countColours(pixels, from, Math.min(pixelCount, from + HISTOGRAM_CHUNK_PIXELS), ignoreTransparent);
+  return histogramFromRawTotals(counts, sumsR, sumsG, sumsB);
 }
 
 interface Box {
@@ -652,20 +664,18 @@ function refineCentroids(histogram: Histogram, initial: Float64Array, count: num
   return centroids;
 }
 
-/** Palette (r, g, b triples) for the image's opaque pixels, at most `maxColors` colours. */
-function buildPalette(pixels: ArrayLike<number>, pixelCount: number, maxColors: number, ignoreTransparent: boolean): Uint8Array {
-  const exact = exactColours(pixels, pixelCount, maxColors, ignoreTransparent);
-  if (exact !== null) {
-    if (exact.length === 0) return Uint8Array.of(0, 0, 0);
-    const palette = new Uint8Array(exact.length * RGB_STRIDE);
-    for (let i = 0; i < exact.length; i += 1) {
-      palette[i * RGB_STRIDE] = (exact[i] >> 16) & BYTE_MAX;
-      palette[i * RGB_STRIDE + 1] = (exact[i] >> 8) & BYTE_MAX;
-      palette[i * RGB_STRIDE + 2] = exact[i] & BYTE_MAX;
-    }
-    return palette;
+function exactRgbPalette(exact: Int32Array): Uint8Array {
+  if (exact.length === 0) return Uint8Array.of(0, 0, 0);
+  const palette = new Uint8Array(exact.length * RGB_STRIDE);
+  for (let i = 0; i < exact.length; i += 1) {
+    palette[i * RGB_STRIDE] = (exact[i] >> 16) & BYTE_MAX;
+    palette[i * RGB_STRIDE + 1] = (exact[i] >> 8) & BYTE_MAX;
+    palette[i * RGB_STRIDE + 2] = exact[i] & BYTE_MAX;
   }
-  const histogram = buildHistogram(pixels, pixelCount, ignoreTransparent);
+  return palette;
+}
+
+function paletteFromHistogram(histogram: Histogram, maxColors: number): Uint8Array {
   const { order, boxes } = medianCut(histogram, maxColors);
   const initial = new Float64Array(boxes.length * RGB_STRIDE);
   const initialAssigned = new Int32Array(histogram.size);
@@ -684,6 +694,13 @@ function buildPalette(pixels: ArrayLike<number>, pixelCount: number, maxColors: 
     palette[i * RGB_STRIDE + 2] = rgb.b;
   }
   return palette;
+}
+
+/** Palette (r, g, b triples) for the image's opaque pixels, at most `maxColors` colours. */
+function buildPalette(pixels: ArrayLike<number>, pixelCount: number, maxColors: number, ignoreTransparent: boolean): Uint8Array {
+  const exact = exactColours(pixels, pixelCount, maxColors, ignoreTransparent);
+  if (exact !== null) return exactRgbPalette(exact);
+  return paletteFromHistogram(buildHistogram(pixels, pixelCount, ignoreTransparent), maxColors);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -1233,7 +1250,37 @@ export function runPaletteTask(payload: PaletteTaskPayload): PaletteTaskResult {
   return paletteOfImage(payload.pixels, payload.pixelCount, payload.maxColors, payload.keepsTransparency);
 }
 
-/** `quantizeImageAsync` of a raster whose plain mapping is cut into `stripes` stripes that the pool threads run side by side. */
+/** What the `quantizePaletteFromStripes` pool task is asked to merge and quantize. */
+export interface PaletteFromStripesPayload {
+  stripes: HistogramStripeResult[];
+  maxColors: number;
+  keepsTransparency: boolean;
+}
+
+function finalizeMergedPalette(merged: MergedStripeHistogram): PaletteTaskResult {
+  const opaque =
+    merged.exact !== null
+      ? exactRgbPalette(merged.exact)
+      : paletteFromHistogram(
+          histogramFromRawTotals(merged.counts!, merged.sumsR!, merged.sumsG!, merged.sumsB!),
+          merged.opaqueColours
+        );
+  const opaqueSize = opaque.length / RGB_STRIDE;
+  const palette = new Uint8Array((opaqueSize + (merged.hasTransparent ? 1 : 0)) * RGB_STRIDE);
+  palette.set(opaque);
+  return { palette, opaqueSize, transparentIndex: merged.hasTransparent ? opaqueSize : -1 };
+}
+
+/** Merges stripe histograms and builds the exact or Oklab median-cut + k-means palette on a pool thread. */
+export function runPaletteFromStripesTask(payload: PaletteFromStripesPayload): PaletteTaskResult {
+  return finalizeMergedPalette(mergeHistogramStripes(payload.stripes, payload.maxColors, payload.keepsTransparency));
+}
+
+export function paletteTaskTransfer(result: PaletteTaskResult): ArrayBuffer[] {
+  return [result.palette.buffer as ArrayBuffer];
+}
+
+/** `quantizeImageAsync` of a raster whose plain mapping and histogram counting run in stripes side by side on the pool. */
 async function quantizeInStripes(
   pixels: Uint8Array,
   width: number,
@@ -1243,15 +1290,31 @@ async function quantizeInStripes(
 ): Promise<IndexedImage> {
   const { stripes, signal } = options;
   const pixelCount = width * height;
+  const keepsTransparency = options.transparency === 'threshold';
   const shared = await shareBytes(pixels);
+  const starts = stripeStarts(width, height, stripes);
+  const stripeHistograms = await Promise.all(
+    starts.map((from, k) =>
+      runCpuTask<HistogramStripeResult>(
+        'histogramStripe',
+        {
+          pixels: shared,
+          from,
+          to: k + 1 < starts.length ? starts[k + 1] : pixelCount,
+          maxColors,
+          keepsTransparency,
+        } satisfies HistogramStripePayload,
+        { signal }
+      )
+    )
+  );
   const { palette, opaqueSize, transparentIndex } = await runCpuTask<PaletteTaskResult>(
-    'quantizePalette',
-    { pixels: shared, pixelCount, maxColors, keepsTransparency: options.transparency === 'threshold' } satisfies PaletteTaskPayload,
-    { signal }
+    'quantizePaletteFromStripes',
+    { stripes: stripeHistograms, maxColors, keepsTransparency } satisfies PaletteFromStripesPayload,
+    { signal, transfer: histogramStripesTransfer(stripeHistograms) }
   );
   const indices = new Uint8Array(new SharedArrayBuffer(pixelCount));
   const task: PaletteMapTask = { pixels: shared, indices, palette, paletteSize: opaqueSize, transparentIndex, runTolerance: options.runTolerance ?? 0 };
-  const starts = stripeStarts(width, height, stripes);
   await Promise.all(starts.map((from, k) => runCpuTask<null>('mapStripe', { task, from, to: k + 1 < starts.length ? starts[k + 1] : pixelCount }, { signal })));
   await runCpuTask<null>('mapRepair', { task, starts: starts.slice(1) }, { signal });
   return { palette, paletteSize: palette.length / RGB_STRIDE, indices, transparentIndex };

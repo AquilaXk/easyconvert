@@ -4,11 +4,13 @@ import {
   quantizeImage,
   quantizeImageAsync,
   runMapStripe,
+  runPaletteFromStripesTask,
   runRepairStripes,
   STRIPED_MIN_PIXELS,
   stripeStarts,
   type IndexedImage,
 } from '../src/lib/conversions/color-quantizer';
+import { runHistogramStripe } from '../src/lib/conversions/color-quantizer-histogram';
 import { shutdownCpuPool } from '../src/lib/workers/cpu-pool';
 
 /**
@@ -159,5 +161,73 @@ describe('quantizeImageAsync of a large picture, mapped in stripes on the pool',
     expect(actual.transparentIndex).toBe(expected.transparentIndex);
     expect(Buffer.from(actual.palette).equals(Buffer.from(expected.palette))).toBe(true);
     expect(Buffer.from(actual.indices).equals(Buffer.from(expected.indices))).toBe(true);
+  }, 120_000);
+
+  it('gives the single-thread palette and indices for striped exact opaque, trailing-transparent, and 256+alpha overflow rasters', async () => {
+    const width = 1000;
+    const height = Math.ceil(STRIPED_MIN_PIXELS / width) + 10;
+    const pixelCount = width * height;
+
+    // 1) Exact opaque (256 distinct colours interleaved across stripes, keeping first-seen order).
+    const exactOpaque = new Uint8Array(pixelCount * RGBA);
+    for (let p = 0; p < pixelCount; p += 1) {
+      const c = (p * 17) & 0xff;
+      exactOpaque[p * RGBA] = c;
+      exactOpaque[p * RGBA + 1] = (c * 3) & 0xff;
+      exactOpaque[p * RGBA + 2] = 255 - c;
+      exactOpaque[p * RGBA + 3] = 255;
+    }
+    const expOpaque = quantizeImage(exactOpaque, width, height, 256, { dither: 'none', transparency: 'threshold' });
+    const actOpaque = await quantizeImageAsync(exactOpaque.slice(), width, height, 256, { dither: 'none', transparency: 'threshold' });
+    expect(actOpaque.transparentIndex).toBe(-1);
+    expect(actOpaque.paletteSize).toBe(expOpaque.paletteSize);
+    expect(Buffer.from(actOpaque.palette).equals(Buffer.from(expOpaque.palette))).toBe(true);
+    expect(Buffer.from(actOpaque.indices).equals(Buffer.from(expOpaque.indices))).toBe(true);
+
+    // 2) Boundary: 256 opaque colours across stripes PLUS a transparent pixel only in the final stripe
+    // forces opaqueColours = 255 and falls through exact-merge into the 5-bit histogram byte-identically.
+    const overflowWithAlpha = exactOpaque.slice();
+    overflowWithAlpha[(pixelCount - 1) * RGBA + 3] = 0;
+    const expOverflow = quantizeImage(overflowWithAlpha, width, height, 256, { dither: 'none', transparency: 'threshold' });
+    const actOverflow = await quantizeImageAsync(overflowWithAlpha.slice(), width, height, 256, { dither: 'none', transparency: 'threshold' });
+    expect(actOverflow.transparentIndex).toBe(expOverflow.transparentIndex);
+    expect(actOverflow.paletteSize).toBe(expOverflow.paletteSize);
+    expect(Buffer.from(actOverflow.palette).equals(Buffer.from(expOverflow.palette))).toBe(true);
+    expect(Buffer.from(actOverflow.indices).equals(Buffer.from(expOverflow.indices))).toBe(true);
+
+    // 3) 255 opaque colours + trailing transparent stays on the exact path and matches first-seen order across stripe cuts.
+    const exactWithAlpha = new Uint8Array(pixelCount * RGBA);
+    for (let p = 0; p < pixelCount; p += 1) {
+      const c = p % 255;
+      exactWithAlpha[p * RGBA] = c;
+      exactWithAlpha[p * RGBA + 1] = (c * 5) & 0xff;
+      exactWithAlpha[p * RGBA + 2] = (c * 7) & 0xff;
+      exactWithAlpha[p * RGBA + 3] = 255;
+    }
+    exactWithAlpha[(pixelCount - 1) * RGBA + 3] = 0;
+    const expExactAlpha = quantizeImage(exactWithAlpha, width, height, 256, { dither: 'none', transparency: 'threshold' });
+    for (const stripes of [2, 3, 5]) {
+      const starts = stripeStarts(width, height, stripes);
+      const partial = starts.map((from, k) =>
+        runHistogramStripe({
+          pixels: exactWithAlpha,
+          from,
+          to: k + 1 < starts.length ? starts[k + 1] : pixelCount,
+          maxColors: 256,
+          keepsTransparency: true,
+        })
+      );
+      const mergedPal = runPaletteFromStripesTask({ stripes: partial, maxColors: 256, keepsTransparency: true });
+      expect(mergedPal.transparentIndex, `stripes=${stripes}`).toBe(expExactAlpha.transparentIndex);
+      expect(Buffer.from(mergedPal.palette).equals(Buffer.from(expExactAlpha.palette)), `stripes=${stripes}`).toBe(true);
+    }
+
+    // 4) All-transparent raster produces [0,0,0, 0,0,0] with transparentIndex = 1 identically.
+    const allZero = new Uint8Array(pixelCount * RGBA);
+    const expAllZero = quantizeImage(allZero, width, height, 256, { dither: 'none', transparency: 'threshold' });
+    const actAllZero = await quantizeImageAsync(allZero.slice(), width, height, 256, { dither: 'none', transparency: 'threshold' });
+    expect(actAllZero.transparentIndex).toBe(expAllZero.transparentIndex);
+    expect(Buffer.from(actAllZero.palette).equals(Buffer.from(expAllZero.palette))).toBe(true);
+    expect(Buffer.from(actAllZero.indices).equals(Buffer.from(expAllZero.indices))).toBe(true);
   }, 120_000);
 });
