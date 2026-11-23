@@ -278,7 +278,13 @@ async function runCalibre(run: CalibreRun, args: readonly string[]): Promise<voi
     maxBuffer: request.options.maxBufferBytes || DEFAULT_MAX_BUFFER_BYTES,
     maxFileSize: MAX_OUTPUT_BYTES,
     memoryLimitMb: MEMORY_LIMIT_MB,
-    ...(CALIBRE_TARGETS[request.tgt]?.drawsPages ? { rlimits: { asBytes: PAGE_DRAWING_ADDRESS_SPACE_BYTES } } : {}),
+    rlimits: {
+      // Linux fs/coredump.c (`do_coredump`) still spawns a piped crash collector (apport, systemd-coredump) at RLIMIT_CORE == 0
+      // and blocks waitpid until it exits, whereas RLIMIT_CORE == 1 (`cprm.limit == 1`) skips pipe core_pattern and stays below
+      // ELF min_coredump (ELF_EXEC_PAGESIZE), writing neither a pipe dump nor a core file when Chromium faults.
+      coreBytes: 1,
+      ...(CALIBRE_TARGETS[request.tgt]?.drawsPages ? { asBytes: PAGE_DRAWING_ADDRESS_SPACE_BYTES } : {}),
+    },
     networkIsolated: true,
     // No PID namespace of its own: the launcher of calibre's release build reads /proc/<its own id>/exe, and /proc (which the sandbox cannot remount)
     // shows the host's processes, so in a namespace it reads another process (or none) and stops with "Failed to read exe path". It keeps the user and

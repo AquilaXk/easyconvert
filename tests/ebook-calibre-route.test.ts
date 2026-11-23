@@ -23,7 +23,7 @@ import {
   UnsupportedTargetError,
 } from '../src/lib/types';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
-import { executeSandboxedBinary, getUnshareCapability, SandboxedProcessError } from '../src/lib/security/process-sandbox';
+import { executeSandboxedBinary, getPrlimitCapability, getUnshareCapability, SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { withMissingBinary } from './helpers/native-tools';
 import { skipUnless } from './helpers/strict-skip';
 import { resolveLocalStagingDir } from '../src/lib/storage/storage-config';
@@ -474,6 +474,22 @@ describe('the calibre route against a stand-in program', () => {
       const error = await convertWithCalibre(deps(), request('tcr', target, Buffer.from('tcr book bytes')), fakeProgram(behavior)).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(ConversionFailedError);
       expect(runsOf()).toHaveLength(1);
+    });
+
+    // skip-ok: prlimit is Linux-only; skipUnless fails the run under ORACLE_STRICT_MODE=1 without prlimit on Linux.
+    it.skipIf(skipUnless('Linux prlimit (RLIMIT_CORE = 1)', process.platform === 'linux' && getPrlimitCapability().available))('runs both page-drawing and non-page-drawing targets with RLIMIT_CORE set to 1 byte', async () => {
+      const limitsFile = path.join(workDir, 'proc-limits.txt');
+      setScannedText('core limit ok');
+      const program = fakeProgram(`
+        const match = /^Max core file size\\s+(\\S+)/m.exec(fs.readFileSync('/proc/self/limits', 'utf8'));
+        fs.appendFileSync(${JSON.stringify(limitsFile)}, output.split('.').pop() + ':' + (match ? match[1] : 'missing') + '\\n');
+        ${validOutput()}
+      `);
+      const pdfResult = await convertWithCalibre(deps(), request('tcr', 'pdf', Buffer.from('tcr book bytes')), program);
+      const txtResult = await convertWithCalibre(deps(), request('tcr', 'txt', Buffer.from('tcr book bytes')), program);
+      expect(fs.readFileSync(limitsFile, 'utf8').trim().split('\n')).toEqual(['pdf:1', 'txt:1']);
+      if (pdfResult.filePath) fs.rmSync(pdfResult.filePath, { force: true });
+      if (txtResult.filePath) fs.rmSync(txtResult.filePath, { force: true });
     });
   });
 
