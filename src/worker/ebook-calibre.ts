@@ -1,18 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import JSZip from 'jszip';
 import { ARCHIVE_SECURITY_LIMITS } from '../lib/conversions/archive';
-import { MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
+import { InflateBudget, MAX_DOCUMENT_INFLATE_BYTES } from '../lib/conversions/bounded-inflate';
 import { CALIBRE_ONLY_SOURCES, calibreEngineUnavailable } from '../lib/conversions/calibre-ebook-targets';
 import { assertNoVectorImages, rewriteEpubFromModel } from '../lib/conversions/epub-rewrite';
 import { stageTimeoutMs } from '../lib/conversions/job-time';
 import { safeOutputStem } from '../lib/conversions/page-range';
 import { watchDirectoryGrowth } from './directory-growth-watch';
 import { fitsWindows1252 } from '../lib/conversions/office/windows-1252';
+import { resolveZipPath } from '../lib/conversions/office/zip-path';
+import { safeExtractXmlElements } from '../lib/conversions/safe-xml-scanner';
+import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes } from '../lib/conversions/zip-entry-reader';
 import { writeZipFile, type ZipEntryInput } from '../lib/conversions/zip-writer';
 import { endOfRun, recordEngineOutput } from '../lib/engine-output';
 import { launchSandboxedBinary, type LaunchedExecutionOptions } from '../lib/security/sandbox-launcher';
-import { OUTPUT_READ_FLAGS, sandboxOutputSize } from '../lib/security/sandbox-output';
+import { OUTPUT_READ_FLAGS, readSandboxOutput, sandboxOutputSize } from '../lib/security/sandbox-output';
+import { sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
 import {
   ConversionFailedError,
   CpuTaskTimeoutError,
@@ -116,6 +121,10 @@ interface OutputSignature {
 const PALMDB_TYPE_CREATOR_OFFSET = 60;
 const MOBIPOCKET_SIGNATURE: OutputSignature = { offset: PALMDB_TYPE_CREATOR_OFFSET, bytes: Buffer.from('BOOKMOBI', 'latin1') };
 const OEB_PACKAGE_FILE = /\.opf$/i;
+const SVG_EXTENSION = /\.svg$/i;
+const SVG_MEDIA_TYPE = 'image/svg+xml';
+const EPUB_MIMETYPE_ENTRY = 'mimetype';
+const ZIP_EOCD_SIGNATURE = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
 const EPUB_FIRST_ENTRY_OFFSET = 30;
 /** The first ZIP entry of an EPUB: the local header ends at byte 30, then come the name `mimetype` and its stored content. */
 const EPUB_SIGNATURE: OutputSignature = { offset: EPUB_FIRST_ENTRY_OFFSET, bytes: Buffer.from('mimetypeapplication/epub+zip', 'latin1') };
@@ -426,10 +435,53 @@ function listOebFiles(root: string): OebFile[] {
   return files;
 }
 
-/** The ZIP entries of the OEB files, each file opened when the writer reaches it so that no more than one is open at a time. */
-function* oebZipEntries(root: string, files: readonly OebFile[]): Generator<ZipEntryInput> {
+/** Resolves manifest `image/svg+xml` item paths relative to each `.opf` file as lowercase ZIP entry names. */
+function collectOpfSvgPaths(opfs: ReadonlyArray<{ path: string; xml: string }>): Set<string> {
+  const paths = new Set<string>();
+  for (const { path: opfPath, xml } of opfs) {
+    const baseDir = path.posix.dirname(opfPath);
+    for (const item of safeExtractXmlElements(xml, 'item', { maxElements: MAX_OEB_FILES })) {
+      if (item.attrs['media-type']?.trim().toLowerCase() !== SVG_MEDIA_TYPE) continue;
+      const href = item.attrs.href?.split('#')[0]?.trim();
+      if (!href) continue;
+      const resolved = resolveZipPath(baseDir === '.' ? '' : baseDir, href);
+      if (resolved) paths.add(resolved.toLowerCase());
+    }
+  }
+  return paths;
+}
+
+function isSvgEntry(entryName: string, opfSvgPaths: ReadonlySet<string>): boolean {
+  return SVG_EXTENSION.test(entryName) || opfSvgPaths.has(entryName.toLowerCase());
+}
+
+function sanitizeSvgBytes(raw: Buffer): Buffer {
+  return Buffer.from(sanitizeSvgDocument(raw.toString('utf8')), 'utf8');
+}
+
+function assertOebPartSize(size: number): void {
+  if (size > MAX_OEB_BYTES) throw new PayloadLimitError('The OEB folder is larger than a converted document may be.');
+}
+
+function readOebOpfSvgPaths(root: string, files: readonly OebFile[]): Set<string> {
+  const opfs: Array<{ path: string; xml: string }> = [];
+  for (const file of files) {
+    if (!OEB_PACKAGE_FILE.test(file.name)) continue;
+    opfs.push({ path: file.name, xml: readSandboxOutput(path.join(root, file.name), assertOebPartSize).toString('utf8') });
+  }
+  return collectOpfSvgPaths(opfs);
+}
+
+/** The ZIP entries of the OEB files, streaming non-SVG entries one descriptor at a time and sanitizing SVG assets. */
+function* oebZipEntries(root: string, files: readonly OebFile[], opfSvgPaths: ReadonlySet<string>): Generator<ZipEntryInput> {
   for (const { name, size } of files) {
-    const fd = fs.openSync(path.join(root, name), OUTPUT_READ_FLAGS);
+    const filePath = path.join(root, name);
+    if (isSvgEntry(name, opfSvgPaths)) {
+      const sanitized = sanitizeSvgBytes(readSandboxOutput(filePath, assertOebPartSize));
+      yield { name, data: sanitized, declaredSize: sanitized.length, method: 'deflate' };
+      continue;
+    }
+    const fd = fs.openSync(filePath, OUTPUT_READ_FLAGS);
     yield { name, data: fs.createReadStream('', { fd }), declaredSize: size, method: 'auto' };
   }
 }
@@ -440,9 +492,80 @@ async function packOebFolder(folder: string, run: CalibreRun): Promise<string> {
   if (!fs.lstatSync(folder, { throwIfNoEntry: false })?.isDirectory()) throw new ConversionFailedError(`calibre wrote no OEB folder for the .${src} file.`);
   const files = listOebFiles(folder);
   if (!files.some((file) => OEB_PACKAGE_FILE.test(file.name))) throw new InvalidConversionOutputError(src, tgt);
+  const opfSvgPaths = readOebOpfSvgPaths(folder, files);
   const destination = path.join(run.dir, `${OUTPUT_NAME}.${ZIP_FORMAT}`);
-  await writeZipFile(destination, oebZipEntries(folder, files));
+  await writeZipFile(destination, oebZipEntries(folder, files, opfSvgPaths));
   return destination;
+}
+
+function assertEpubOutputSize(size: number): void {
+  if (size > MAX_OUTPUT_BYTES) throw new PayloadLimitError(`calibre wrote an output file of ${size} bytes, more than the ${MAX_OUTPUT_BYTES}-byte limit.`);
+}
+
+async function collectEpubOpfSvgPaths(entries: readonly JSZip.JSZipObject[]): Promise<Set<string>> {
+  const budget = new InflateBudget(MAX_DOCUMENT_INFLATE_BYTES);
+  const opfs: Array<{ path: string; xml: string }> = [];
+  for (const entry of entries) {
+    if (!OEB_PACKAGE_FILE.test(entry.name)) continue;
+    const bytes = await readZipEntryBytes(entry, { maxBytes: MAX_OEB_BYTES, budget });
+    opfs.push({ path: entry.name, xml: bytes.toString('utf8') });
+  }
+  return collectOpfSvgPaths(opfs);
+}
+
+async function* sanitizedEpubEntries(
+  entries: readonly JSZip.JSZipObject[],
+  opfSvgPaths: ReadonlySet<string>
+): AsyncGenerator<ZipEntryInput> {
+  const rewriteBudget = new InflateBudget(MAX_DOCUMENT_INFLATE_BYTES);
+  const mimetype = entries.find((entry) => entry.name === EPUB_MIMETYPE_ENTRY);
+  if (mimetype) {
+    const data = await readZipEntryBytes(mimetype, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget: rewriteBudget });
+    yield { name: EPUB_MIMETYPE_ENTRY, data, declaredSize: data.length, method: 'store' };
+  }
+  for (const entry of entries) {
+    if (entry.name === EPUB_MIMETYPE_ENTRY) continue;
+    const raw = await readZipEntryBytes(entry, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget: rewriteBudget });
+    const data = isSvgEntry(entry.name, opfSvgPaths) ? sanitizeSvgBytes(raw) : raw;
+    yield { name: entry.name, data, declaredSize: data.length, method: 'auto' };
+  }
+}
+
+function hasEpubSignature(buffer: Buffer): boolean {
+  const end = EPUB_SIGNATURE.offset + EPUB_SIGNATURE.bytes.length;
+  return buffer.length >= end && buffer.subarray(EPUB_SIGNATURE.offset, end).equals(EPUB_SIGNATURE.bytes);
+}
+
+/**
+ * Sanitizes any SVG entry inside a calibre-written EPUB (matched by `.svg` or by `image/svg+xml` in an `.opf` manifest).
+ * Archives without SVG items stay untouched so zero recompression occurs on the fast path.
+ */
+async function sanitizeCalibreEpubOutput(outputPath: string, run: CalibreRun): Promise<string> {
+  if (!sandboxOutputSize(outputPath)) return outputPath;
+  const rawBuffer = readSandboxOutput(outputPath, assertEpubOutputSize);
+  if (!hasEpubSignature(rawBuffer) || rawBuffer.lastIndexOf(ZIP_EOCD_SIGNATURE) < 0) return outputPath;
+
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(rawBuffer);
+  } catch {
+    throw new InvalidConversionOutputError(run.request.src, run.request.tgt);
+  }
+
+  const entries = Object.values(zip.files).filter((entry) => !entry.dir);
+  if (entries.length > MAX_OEB_FILES) {
+    throw new PayloadLimitError(`The EPUB archive holds ${entries.length} files, more than the ${MAX_OEB_FILES} limit.`);
+  }
+  if (!entries.some((entry) => entry.name === EPUB_MIMETYPE_ENTRY)) {
+    throw new InvalidConversionOutputError(run.request.src, run.request.tgt);
+  }
+  const opfSvgPaths = await collectEpubOpfSvgPaths(entries);
+  if (!entries.some((entry) => isSvgEntry(entry.name, opfSvgPaths))) return outputPath;
+
+  const sanitizedPath = path.join(run.dir, `sanitized-${OUTPUT_NAME}.${EPUB_FORMAT}`);
+  await writeZipFile(sanitizedPath, sanitizedEpubEntries(entries, opfSvgPaths));
+  fs.rmSync(outputPath, { force: true });
+  return sanitizedPath;
 }
 
 /** Proves that the file calibre wrote is of the format asked for (the PalmDB type and creator, the LRF magic) before it is handed out. */
@@ -459,7 +582,7 @@ function assertOutputFormat(outputPath: string, src: string, tgt: string, signat
  */
 export const CALIBRE_TARGETS: Readonly<Record<string, CalibreTarget>> = {
   // The four targets the in-process engine also writes: calibre writes them for the books only it reads (CHM, LIT, TCR) with the defaults of its writers.
-  epub: { args: [], signature: EPUB_SIGNATURE },
+  epub: { args: [], finalize: sanitizeCalibreEpubOutput, signature: EPUB_SIGNATURE },
   pdf: { args: [], drawsPages: true, signature: { offset: 0, bytes: Buffer.from('%PDF-', 'latin1') } },
   rtf: { args: [], signature: { offset: 0, bytes: Buffer.from('{\\rtf1', 'latin1') } },
   txt: { args: [] },

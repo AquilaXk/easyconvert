@@ -11,8 +11,9 @@ import { assertNotSpoofedFile } from '../src/lib/security/file-guard';
 import { FORMAT_REGISTRY } from '../src/lib/registry';
 import { enginesForPair } from '../src/worker/engine-registry';
 import { ConversionFailedError, EngineUnavailableError } from '../src/lib/types';
-import { calibreBinary, normalized, textOfCalibreTarget } from './helpers/calibre-books';
+import { calibreBinary, calibreText, normalized, textOfCalibreTarget } from './helpers/calibre-books';
 import { extractTextWithExternalPdftotext, requireOracleTool } from './helpers/differential-oracle';
+import { palmDocText } from './helpers/palmdb-reader';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-office';
 import { skipUnless, skipWithoutTools } from './helpers/strict-skip';
@@ -256,20 +257,46 @@ describe.skipIf(calibreMissing || sevenZipMissing)('a CHM whose pages link to a 
   const HOSTS_FILE = '/etc/hosts';
   const hostile = fs.readFileSync(path.join(FIXTURES, 'hostile-links.chm'));
 
-  it.each(['epub', 'txt', 'oeb'] as const)('writes the book without the file the links name, as .%s', async (target) => {
+  async function extractedTextOfTarget(book: Buffer, target: string): Promise<string> {
+    if (target === 'txt') return book.toString('utf-8');
+    if (target === 'epub') return epubText(book);
+    if (target === 'oeb') return oebPagesText(book);
+    if (target === 'mobi') return `${palmDocText(book).toString('utf-8')}\n${calibreText(book, 'mobi')}`;
+    if (target === 'azw3') return calibreText(book, 'azw3');
+    if (target === 'pdf') return extractTextWithExternalPdftotext(book) ?? '';
+    return sofficeConvert(book, 'rtf', 'txt:Text', 'txt').toString('utf-8');
+  }
+
+  async function assertHostFileNotLeaked(target: string): Promise<void> {
     // The probe is meaningful only where the file exists and has a line that the book does not say (any Unix host).
     const sentinel = fs.existsSync(HOSTS_FILE) ? fs.readFileSync(HOSTS_FILE, 'utf-8').split('\n').find((line) => /\S{9,}/.test(line))?.trim() : undefined;
-    expect(sentinel, `${HOSTS_FILE} has a line to look for`).toBeDefined();
+    expect(typeof sentinel, `${HOSTS_FILE} has a line to look for`).toBe('string');
+    const hostLine = sentinel as string;
     const result = await dispatchConversion(hostile, 'chm', target, {}, 'hostile.chm');
-    expect(wordsOf(await epubOrText(result.buffer, target)).join(' ')).toContain('visible words of the book');
-    const entries = target === 'txt' ? [] : Object.keys((await JSZip.loadAsync(result.buffer)).files);
-    expect(entries.filter((name) => /hosts/i.test(name))).toEqual([]);
-    const everything = target === 'txt' ? result.buffer : Buffer.concat(await Promise.all(Object.values((await JSZip.loadAsync(result.buffer)).files).filter((file) => !file.dir).map((file) => file.async('nodebuffer'))));
-    expect(everything.includes(Buffer.from(sentinel as string)), 'the host file is not in the book').toBe(false);
+    const words = await wordsOfTarget(result.buffer, target);
+    expect(words.join(' ')).toContain('visible words of the book');
+    const extracted = await extractedTextOfTarget(result.buffer, target);
+    expect(extracted).not.toContain(hostLine);
+    expect(normalized(extracted)).not.toContain(normalized(hostLine));
+    expect(words.join(' ')).not.toContain(wordsOf(hostLine).join(' '));
+    expect(result.buffer.includes(Buffer.from(hostLine)), 'the host file is not in the book').toBe(false);
+    if (target === 'epub' || target === 'oeb') {
+      const zip = await JSZip.loadAsync(result.buffer);
+      expect(Object.keys(zip.files).filter((name) => /hosts/i.test(name))).toEqual([]);
+      const everything = Buffer.concat(await Promise.all(Object.values(zip.files).filter((file) => !file.dir).map((file) => file.async('nodebuffer'))));
+      expect(everything.includes(Buffer.from(hostLine)), 'the host file is not in the book entries').toBe(false);
+    }
+  }
+
+  it.each(['epub', 'txt', 'oeb', 'mobi', 'azw3'] as const)('writes the book without the file the links name, as .%s', async (target) => {
+    await assertHostFileNotLeaked(target);
   }, CONVERSION_TIMEOUT_MS);
 
-  async function epubOrText(book: Buffer, target: string): Promise<string> {
-    if (target === 'txt') return book.toString('utf-8');
-    return target === 'epub' ? epubText(book) : oebPagesText(book);
-  }
+  it.skipIf(pdfToolsMissing)('writes the book without the file the links name, as .pdf', async () => {
+    await assertHostFileNotLeaked('pdf');
+  }, CONVERSION_TIMEOUT_MS);
+
+  it.skipIf(sofficeMissing)('writes the book without the file the links name, as .rtf', async () => {
+    await assertHostFileNotLeaked('rtf');
+  }, CONVERSION_TIMEOUT_MS);
 });

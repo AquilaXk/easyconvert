@@ -20,6 +20,7 @@ import {
   EngineUnavailableError,
   InvalidConversionOutputError,
   PayloadLimitError,
+  SvgSanitizationError,
   UnsupportedTargetError,
 } from '../src/lib/types';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
@@ -559,6 +560,149 @@ describe('the calibre route against a stand-in program', () => {
     expect((error as Error).message).toMatch(/^The EPUB written from the \.txt file is /);
     expect(oversized.discarded).toEqual([epubPath]);
     expect(runsOf()).toHaveLength(1);
+  });
+});
+
+describe('SVG sanitization of calibre EPUB and OEB outputs', () => {
+  const CANARY_URI = 'file:///nonexistent-canary.txt';
+  const HOSTILE_SVG = [
+    `<!DOCTYPE svg [<!ENTITY ex SYSTEM "${CANARY_URI}">]>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" onload="alert(1)">`,
+    `<script>alert(2)</script>`,
+    `<image xlink:href="${CANARY_URI}"/>`,
+    `<rect width="10" height="10"/>`,
+    `</svg>`,
+  ].join('');
+  const CONTAINER_XML = '<?xml version="1.0" encoding="UTF-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>';
+  const CHAPTER_XHTML = '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Book body</p></body></html>';
+
+  function manifestPackage(extraItems: string): string {
+    return `<?xml version="1.0" encoding="UTF-8"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:identifier id="id">x</dc:identifier><dc:title>Book</dc:title><dc:language>en</dc:language></metadata><manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>${extraItems}</manifest><spine><itemref idref="c1"/></spine></package>`;
+  }
+
+  async function packageEpub(manifestItems: string, extraEntries: ReadonlyArray<[string, string | Buffer]>): Promise<Buffer> {
+    const zip = new JSZip();
+    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE', createFolders: false });
+    zip.file('META-INF/container.xml', CONTAINER_XML, { createFolders: false });
+    zip.file('OEBPS/content.opf', manifestPackage(manifestItems), { createFolders: false });
+    zip.file('OEBPS/c1.xhtml', CHAPTER_XHTML, { createFolders: false });
+    for (const [entryName, content] of extraEntries) {
+      zip.file(entryName, content, { createFolders: false });
+    }
+    return zip.generateAsync({ type: 'nodebuffer' });
+  }
+
+  function assertSanitizedSvgText(svg: string): void {
+    expect(svg).not.toContain('<script');
+    expect(svg).not.toContain('onload');
+    expect(svg).not.toContain('<!DOCTYPE');
+    expect(svg).not.toContain('<!ENTITY');
+    expect(svg).not.toContain('nonexistent-canary.txt');
+    expect(svg).not.toContain('file:');
+    expect(svg).toContain('<rect width="10" height="10"');
+  }
+
+  it('sanitizes .svg files and manifest image/svg+xml items in calibre-written .epub while preserving the EPUB signature', async () => {
+    const fixture = await packageEpub(
+      '<item id="svg1" href="diagram.svg" media-type="image/svg+xml"/><item id="svg2" href="vector-asset" media-type="image/svg+xml"/>',
+      [
+        ['OEBPS/diagram.svg', HOSTILE_SVG],
+        ['OEBPS/vector-asset', HOSTILE_SVG],
+      ]
+    );
+    const fixturePath = path.join(workDir, 'with-svg.epub');
+    fs.writeFileSync(fixturePath, fixture);
+    const program = fakeProgram(`fs.copyFileSync(${JSON.stringify(fixturePath)}, output);`);
+
+    const result = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('ITSF-book')), program);
+    expect(result.buffer.subarray(30, 58).toString('latin1')).toBe('mimetypeapplication/epub+zip');
+
+    const zip = await JSZip.loadAsync(result.buffer);
+    expect(Object.keys(zip.files)[0]).toBe('mimetype');
+    expect(await zip.file('mimetype')?.async('string')).toBe('application/epub+zip');
+    expect(await zip.file('OEBPS/c1.xhtml')?.async('string')).toBe(CHAPTER_XHTML);
+    expect(await zip.file('OEBPS/content.opf')?.async('string')).toContain('media-type="image/svg+xml"');
+    assertSanitizedSvgText((await zip.file('OEBPS/diagram.svg')?.async('string')) ?? '');
+    assertSanitizedSvgText((await zip.file('OEBPS/vector-asset')?.async('string')) ?? '');
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+  it('leaves calibre-written .epub bytes untouched on the fast path when the archive holds no SVG items', async () => {
+    const fixture = await packageEpub('', []);
+    const fixturePath = path.join(workDir, 'without-svg.epub');
+    fs.writeFileSync(fixturePath, fixture);
+    const program = fakeProgram(`fs.copyFileSync(${JSON.stringify(fixturePath)}, output);`);
+
+    const result = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('ITSF-book')), program);
+    expect(result.buffer.equals(fixture)).toBe(true);
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+  it('sanitizes .svg files and manifest image/svg+xml items when packing an OEB folder', async () => {
+    const opfXml = manifestPackage('<item id="svg1" href="diagram.svg" media-type="image/svg+xml"/><item id="svg2" href="../assets/vector-asset" media-type="image/svg+xml"/>');
+    const program = fakeProgram(`
+      fs.mkdirSync(output + '/OEBPS', { recursive: true });
+      fs.mkdirSync(output + '/assets', { recursive: true });
+      fs.writeFileSync(output + '/OEBPS/content.opf', ${JSON.stringify(opfXml)});
+      fs.writeFileSync(output + '/OEBPS/c1.xhtml', ${JSON.stringify(CHAPTER_XHTML)});
+      fs.writeFileSync(output + '/OEBPS/diagram.svg', ${JSON.stringify(HOSTILE_SVG)});
+      fs.writeFileSync(output + '/assets/vector-asset', ${JSON.stringify(HOSTILE_SVG)});
+    `);
+
+    const result = await convertWithCalibre(deps(), request('txt', 'oeb'), program);
+    const zip = await JSZip.loadAsync(result.buffer);
+    expect(await zip.file('OEBPS/content.opf')?.async('string')).toBe(opfXml);
+    expect(await zip.file('OEBPS/c1.xhtml')?.async('string')).toBe(CHAPTER_XHTML);
+    assertSanitizedSvgText((await zip.file('OEBPS/diagram.svg')?.async('string')) ?? '');
+    assertSanitizedSvgText((await zip.file('assets/vector-asset')?.async('string')) ?? '');
+    fs.rmSync(result.filePath as string, { force: true });
+  });
+
+  it('fails closed when a calibre-written .epub or OEB folder holds an SVG that cannot be sanitized safely', async () => {
+    const nested = `<svg>${'<scr'.repeat(20)}<script>${'ipt>'.repeat(20)}</svg>`;
+    const fixture = await packageEpub('<item id="svg1" href="nested.svg" media-type="image/svg+xml"/>', [['OEBPS/nested.svg', nested]]);
+    const fixturePath = path.join(workDir, 'unsanitizable-svg.epub');
+    fs.writeFileSync(fixturePath, fixture);
+    const epubProgram = fakeProgram(`fs.copyFileSync(${JSON.stringify(fixturePath)}, output);`);
+    const epubFailure = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('ITSF-book')), epubProgram).catch((error: unknown) => error);
+    expect(epubFailure).toBeInstanceOf(SvgSanitizationError);
+    expect((epubFailure as Error).message).toBe('SVG contains nested markup that cannot be sanitized safely.');
+
+    const opfXml = manifestPackage('<item id="svg1" href="nested" media-type="image/svg+xml"/>');
+    const oebProgram = fakeProgram(`
+      fs.mkdirSync(output + '/OEBPS', { recursive: true });
+      fs.writeFileSync(output + '/OEBPS/content.opf', ${JSON.stringify(opfXml)});
+      fs.writeFileSync(output + '/OEBPS/nested', ${JSON.stringify(nested)});
+    `);
+    const oebFailure = await convertWithCalibre(deps(), request('txt', 'oeb'), oebProgram).catch((error: unknown) => error);
+    expect(oebFailure).toBeInstanceOf(SvgSanitizationError);
+    expect((oebFailure as Error).message).toBe('SVG contains nested markup that cannot be sanitized safely.');
+  });
+
+  it('refuses a corrupt EPUB archive that carries an EOCD signature without a readable central directory', async () => {
+    const corruptProgram = fakeProgram(`
+      const book = Buffer.alloc(120);
+      book.write('PK\\x03\\x04', 0, 'latin1');
+      book.write('mimetypeapplication/epub+zip', 30, 'latin1');
+      book.write('PK\\x05\\x06', 90, 'latin1');
+      book.writeUInt16LE(1, 100);
+      book.writeUInt32LE(0x00ffffff, 106);
+      fs.writeFileSync(output, book);
+    `);
+    const corruptFailure = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('ITSF-book')), corruptProgram).catch((error: unknown) => error);
+    expect(corruptFailure).toBeInstanceOf(InvalidConversionOutputError);
+    expect((corruptFailure as Error).message).toBe('The conversion of the .chm file to .epub produced bytes that are not a .epub file.');
+
+    const emptyCdProgram = fakeProgram(`
+      const book = Buffer.alloc(120);
+      book.write('PK\\x03\\x04', 0, 'latin1');
+      book.write('mimetypeapplication/epub+zip', 30, 'latin1');
+      book.write('PK\\x05\\x06', 90, 'latin1');
+      fs.writeFileSync(output, book);
+    `);
+    const emptyCdFailure = await convertWithCalibre(deps(), request('chm', 'epub', Buffer.from('ITSF-book')), emptyCdProgram).catch((error: unknown) => error);
+    expect(emptyCdFailure).toBeInstanceOf(InvalidConversionOutputError);
+    expect((emptyCdFailure as Error).message).toBe('The conversion of the .chm file to .epub produced bytes that are not a .epub file.');
   });
 });
 
