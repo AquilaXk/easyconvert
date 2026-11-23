@@ -82,7 +82,17 @@ export function headingLevels(paragraphs: Paragraph[], bodySize: number): Map<Pa
 }
 
 export function inlineRuns(runs: StyledRun[]): Inline[] {
-  return runs.filter((run) => run.text !== '').map((run) => ({ text: run.text, bold: run.bold, italic: run.italic, monospace: run.monospace, ...(run.color === undefined ? {} : { color: run.color }), ...(run.fill === undefined ? {} : { shading: run.fill }), ...(run.widthPercent === undefined ? {} : { widthPercent: run.widthPercent }) }));
+  return runs.filter((run) => run.text !== '').map((run) => ({
+    text: run.text,
+    bold: run.bold,
+    italic: run.italic,
+    monospace: run.monospace,
+    ...(run.superscript ? { superscript: true } : {}),
+    ...(run.subscript ? { subscript: true } : {}),
+    ...(run.color === undefined ? {} : { color: run.color }),
+    ...(run.fill === undefined ? {} : { shading: run.fill }),
+    ...(run.widthPercent === undefined ? {} : { widthPercent: run.widthPercent }),
+  }));
 }
 
 /** Runs of a paragraph without its first `count` characters (a list marker). */

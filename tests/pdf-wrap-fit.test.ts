@@ -6,9 +6,12 @@ import { documentToDocx } from '../src/lib/conversions/document-model/docx';
 import type { DocumentModel } from '../src/lib/conversions/document-model/model';
 import type { PdfContentFont, PdfContentItem, PdfPageContent } from '../src/lib/conversions/pdf-text-types';
 import { faceWidthPercents, setFaceWidths } from '../src/lib/conversions/pdf-layout/face-width';
+import { lineFromItems } from '../src/lib/conversions/pdf-layout/lines';
 import { PageFlow, type PageSetup } from '../src/lib/conversions/pdf-layout/page-flow';
+import { ParagraphBuilder } from '../src/lib/conversions/pdf-layout/paragraphs';
+import { inlineRuns } from '../src/lib/conversions/pdf-layout/structure';
 import type { Box, LayoutLine, Paragraph } from '../src/lib/conversions/pdf-layout/types';
-import { WrapMetrics, wrappingIndent } from '../src/lib/conversions/pdf-layout/wrap-fit';
+import { singleLineIndent, WrapMetrics, wrappingIndent } from '../src/lib/conversions/pdf-layout/wrap-fit';
 
 /**
  * Where a paragraph of a kept page wraps. The widths the checks compare against come from pdf-lib's own measure of Times-Roman
@@ -217,5 +220,73 @@ describe('the DOCX writes the width percent of a run', () => {
     const xml = await (zip.file('word/document.xml') as JSZip.JSZipObject).async('string');
     expect(xml).toContain('<w:color w:val="FF0000"/><w:w w:val="85"/>');
     expect(xml.match(/<w:w /g)).toHaveLength(1);
+  });
+});
+
+describe('superscript and subscript marks and single-line fit', () => {
+  const fonts: PdfContentFont[] = [{ name: 'TimesRoman', bold: false, italic: false, monospace: false, serif: true }];
+  const makeItem = (text: string, x: number, width: number, baseline: number, size = 11): PdfContentItem => ({
+    text,
+    x,
+    width,
+    baseline,
+    size,
+    font: 0,
+    rtl: false,
+    angled: false,
+    vertical: false,
+  });
+
+  it('marks raised footnote numbers and lowered chemical subscripts without promoting spaces or long labels', () => {
+    const superLine = lineFromItems(
+      [makeItem('sentencing.', 72, 55, 100, 11), makeItem('12 ', 127, 10, 95, 6.6), makeItem('See Note', 137, 45, 100, 11)],
+      fonts
+    );
+    expect(superLine.runs.map((run) => [run.text, Boolean(run.superscript)])).toEqual([
+      ['sentencing.', false],
+      ['12', true],
+      [' See Note', false],
+    ]);
+
+    const subLine = lineFromItems(
+      [
+        makeItem('Compound CaSO', 72, 85, 100, 12),
+        makeItem('4', 157, 5, 103.5, 8),
+        makeItem(' with ', 162, 30, 100, 12),
+        makeItem('Occurrence Type:', 194, 60, 103.5, 8),
+      ],
+      fonts
+    );
+    expect(subLine.runs.map((run) => [run.text, Boolean(run.subscript)])).toEqual([
+      ['Compound CaSO', false],
+      ['4', true],
+      [' with Occurrence Type:', false],
+    ]);
+
+    const builder = new ParagraphBuilder(1, 1, false);
+    builder.add(lineFromItems([makeItem('footnote', 72, 42, 100, 11), makeItem('13', 114, 8, 95, 6.6)], fonts));
+    builder.add(lineFromItems([makeItem('continues here', 72, 65, 112, 11)], fonts));
+    const inlines = inlineRuns(builder.finish().runs);
+    expect(inlines.map((run) => [run.text, Boolean(run.superscript)])).toEqual([
+      ['footnote', false],
+      ['13', true],
+      [' continues here', false],
+    ]);
+  });
+
+  it('measures superscripts at 58 percent size and prevents single-line paragraphs from wrapping onto a second line', async () => {
+    const font = await timesRoman();
+    const superWords = metrics.wordsOf([{ text: 'word', bold: false, italic: false, monospace: false }, { text: '12', bold: false, italic: false, monospace: false, superscript: true }], SIZE);
+    const fullWords = metrics.wordsOf([{ text: 'word', bold: false, italic: false, monospace: false }, { text: '12', bold: false, italic: false, monospace: false }], SIZE);
+    expect(superWords?.[0].width).toBeLessThan(fullWords![0].width);
+
+    const sample = 'The district court sentenced both defendants under the guidelines';
+    const room = font.widthOfTextAtSize(sample, SIZE) - 6;
+    const oneLine = paragraphOf([lineOf(sample, LEFT + room, 100)]);
+    const widened = singleLineIndent(oneLine, SIZE, metrics, room, -4, -72);
+    expect(widened).toBeLessThan(-4);
+    expect(wrapped(font, sample, room - widened)).toEqual([sample]);
+    expect(singleLineIndent(paragraphOf([lineOf('Short line', LEFT + 100, 100)]), SIZE, metrics, room, -4, -72)).toBe(-4);
+    expect(singleLineIndent(oneLine, SIZE, metrics, room - 80, -4, -10)).toBe(-10);
   });
 });

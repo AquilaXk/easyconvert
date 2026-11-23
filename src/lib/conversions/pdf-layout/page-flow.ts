@@ -1,6 +1,6 @@
 import type { Block, DocumentMargins, ParagraphFormat, Section, TableBlock } from '../document-model/model';
 import type { Box, DetectedTable, LayoutLine, Paragraph } from './types';
-import { type WrapMetrics, wrappingIndent } from './wrap-fit';
+import { type WrapMetrics, singleLineIndent, wrappingIndent } from './wrap-fit';
 
 /**
  * The spacing, indents and page starts of a PDF's pages, for a writer of a flowing document that keeps the look of the pages: a
@@ -260,8 +260,12 @@ export class PageFlow {
   /** The right indent that makes the writer break the paragraph's lines where the page did, nearest the page's right edge; `fallback` where the face cannot tell. */
   private wrappingRight(paragraph: Paragraph, area: TextArea, leftPt: number, firstLinePt: number, align: NonNullable<ParagraphFormat['align']>, fallback: number): number {
     const { wrap } = this.page;
-    if (!wrap || paragraph.lines.length < 2) return fallback;
+    if (!wrap || paragraph.lines.length === 0) return fallback;
     const size = Math.abs(paragraph.size - wrap.bodySize) > 0.5 ? paragraph.size : wrap.bodySize;
+    if (paragraph.lines.length === 1) {
+      const minIndent = this.inCell ? Number.NEGATIVE_INFINITY : -this.margins.right;
+      return singleLineIndent(paragraph, size, wrap.metrics, area.right - area.left - leftPt - firstLinePt, fallback, minIndent);
+    }
     const edge = align === 'justify' ? area.right - Math.max(...paragraph.lines.map((line) => line.box.x1)) : fallback;
     return wrappingIndent(paragraph, size, wrap.metrics, (index) => area.right - area.left - leftPt - (index === 0 ? firstLinePt : 0), edge) ?? fallback;
   }
@@ -344,9 +348,10 @@ export const FIGURE_SPACER_MIN_PT = 1;
  * Takes the height of every figure's paragraph out of the gap above the block that follows it: that gap was measured from the block
  * above the figure, so it holds the figure's height already, and the paragraph that holds the figure open would add it again.
  */
-export function absorbFigureSpacers(blocks: readonly Block[]): void {
+export function absorbFigureSpacers(blocks: readonly Block[], pageOf?: readonly number[]): void {
   blocks.forEach((block, index) => {
     if (block.type !== 'paragraph' || block.spacerPt === undefined) return;
+    if (pageOf && pageOf[index] !== pageOf[index + 1]) return;
     const next = blocks[index + 1];
     const held = Math.max(block.spacerPt, FIGURE_SPACER_MIN_PT);
     if (next?.type === 'paragraph' || next?.type === 'heading') {

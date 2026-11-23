@@ -1,4 +1,4 @@
-import type { Block, PageShape, ParagraphBlock } from '../document-model/model';
+import type { Block, HeadingBlock, PageShape, ParagraphBlock } from '../document-model/model';
 import { extentOf } from '../document-model/shape-xml';
 import { COORDINATES_OF } from '../pdf-content-shapes';
 import type { PdfContentRule, PdfContentShape, PdfPageContent } from '../pdf-text-types';
@@ -132,46 +132,76 @@ function hostOf(group: Group, pageNumber: number, model: readonly Block[], origi
   });
 }
 
-/** Where the paragraph of a figure goes: before the first block of the page that starts under the group, else after the page's last block. */
-function figureIndex(group: Group, pageNumber: number, origins: readonly (BlockOrigin | null)[]): number {
-  const below = origins.findIndex((origin) => origin !== null && origin.pageNumber === pageNumber && origin.box.y0 >= group.box.y1 - GROUP_GAP / 2);
-  if (below >= 0) return below;
+/** Index immediately after the last block belonging to `pageNumber` (or an earlier page). */
+function afterPageIndex(pageNumber: number, origins: readonly (BlockOrigin | null)[], pageOf?: readonly number[]): number {
   let last = -1;
+  if (pageOf) {
+    pageOf.forEach((page, index) => {
+      if (page <= pageNumber) last = index;
+    });
+    return last + 1;
+  }
   origins.forEach((origin, index) => {
     if (origin !== null && origin.pageNumber <= pageNumber) last = index;
   });
   return last + 1;
 }
 
+/** Where the paragraph of a figure goes: before the first block of the page that starts under the group, else after the page's last block. */
+function figureIndex(group: Group, pageNumber: number, origins: readonly (BlockOrigin | null)[]): number {
+  const below = origins.findIndex((origin) => origin !== null && origin.pageNumber === pageNumber && origin.box.y0 >= group.box.y1 - GROUP_GAP / 2);
+  if (below >= 0) return below;
+  return afterPageIndex(pageNumber, origins);
+}
+
 /**
- * Hangs the uncarried shapes of the pages on the blocks of `body`, adding a paragraph for each figure. Its arrays run in step, and
- * stay in step. `grids` are the boxes of the tables each page draws (their rules are the tables' own).
+ * Hangs the uncarried shapes of the pages on the blocks of `body`, adding a paragraph for each figure (or, when `keepPages` is set,
+ * anchoring every shape to the page itself on a non-framed paragraph of that page so no spacer alters the page's flow height).
+ * Its arrays run in step, and stay in step. `grids` are the boxes of the tables each page draws (their rules are the tables' own).
  */
-export function hangShapes(body: BodyBlocks, pages: readonly PdfPageContent[], ink: PageInk, grids: ReadonlyMap<number, readonly Box[]>): void {
+export function hangShapes(body: BodyBlocks, pages: readonly PdfPageContent[], ink: PageInk, grids: ReadonlyMap<number, readonly Box[]>, keepPages = false): void {
   const { model, columnsOf, origins, pageOf } = body;
   const insertions: { index: number; order: number; block: ParagraphBlock; columns: number; page: number }[] = [];
-  for (const page of pages) {
-    for (const group of groupsOf(decorationsOf(page, ink, grids.get(page.pageNumber) ?? []))) {
-      const host = hostOf(group, page.pageNumber, model, origins);
+  if (keepPages) {
+    for (const page of pages) {
+      const decorations = decorationsOf(page, ink, grids.get(page.pageNumber) ?? []);
+      if (decorations.length === 0) continue;
+      const anchored = decorations.map((shape) => pageShapeOf(shape, hullOf(shape), null));
+      const host = model.findIndex((block, index) => pageOf[index] === page.pageNumber && isHost(block) && !block.format?.frame);
       if (host >= 0) {
-        const block = model[host] as ParagraphBlock;
-        const top = (origins[host] as BlockOrigin).box.y0;
-        block.shapes = [...(block.shapes ?? []), ...group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, top))];
+        const target = model[host] as ParagraphBlock | HeadingBlock;
+        target.shapes = [...(target.shapes ?? []), ...anchored];
         continue;
       }
-      const height = group.box.y1 - group.box.y0;
-      if (height > FIGURE_MAX_SHARE * page.height) {
-        // A frame or a backdrop holds no height open: it hangs on the first paragraph of its page and keeps its place on the page.
-        const first = model.findIndex((block, index) => isHost(block) && origins[index]?.pageNumber === page.pageNumber);
-        if (first >= 0) {
-          const target = model[first] as ParagraphBlock;
-          target.shapes = [...(target.shapes ?? []), ...group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, null))];
+      const index = afterPageIndex(page.pageNumber, origins, pageOf);
+      const block: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', shapes: anchored, spacerPt: 0 };
+      const columns = index > 0 && pageOf[index - 1] === page.pageNumber ? columnsOf[index - 1] : 1;
+      insertions.push({ index, order: insertions.length, block, columns, page: page.pageNumber });
+    }
+  } else {
+    for (const page of pages) {
+      for (const group of groupsOf(decorationsOf(page, ink, grids.get(page.pageNumber) ?? []))) {
+        const host = hostOf(group, page.pageNumber, model, origins);
+        if (host >= 0) {
+          const block = model[host] as ParagraphBlock;
+          const top = (origins[host] as BlockOrigin).box.y0;
+          block.shapes = [...(block.shapes ?? []), ...group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, top))];
+          continue;
         }
-        continue;
+        const height = group.box.y1 - group.box.y0;
+        if (height > FIGURE_MAX_SHARE * page.height) {
+          // A frame or a backdrop holds no height open: it hangs on the first paragraph of its page and keeps its place on the page.
+          const first = model.findIndex((block, index) => isHost(block) && origins[index]?.pageNumber === page.pageNumber);
+          if (first >= 0) {
+            const target = model[first] as ParagraphBlock;
+            target.shapes = [...(target.shapes ?? []), ...group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, null))];
+          }
+          continue;
+        }
+        const index = figureIndex(group, page.pageNumber, origins);
+        const block: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', shapes: group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, group.box.y0)), spacerPt: height };
+        insertions.push({ index, order: insertions.length, block, columns: columnsOf[Math.min(index, columnsOf.length - 1)] ?? 1, page: page.pageNumber });
       }
-      const index = figureIndex(group, page.pageNumber, origins);
-      const block: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', shapes: group.shapes.map(({ shape, hull }) => pageShapeOf(shape, hull, group.box.y0)), spacerPt: height };
-      insertions.push({ index, order: insertions.length, block, columns: columnsOf[Math.min(index, columnsOf.length - 1)] ?? 1, page: page.pageNumber });
     }
   }
   // Inserted from the back, so that an index still names the block it was found for, and the groups of one index in reverse, so that they end up in page order.

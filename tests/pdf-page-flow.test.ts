@@ -4,7 +4,10 @@ import { documentToDocx } from '../src/lib/conversions/document-model/docx';
 import { blankDocument } from '../src/lib/conversions/document-model/build';
 import type { Block, DocumentModel, ParagraphBlock, ParagraphFormat } from '../src/lib/conversions/document-model/model';
 import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections, type PageSetup } from '../src/lib/conversions/pdf-layout/page-flow';
+import { hangShapes, type BodyBlocks } from '../src/lib/conversions/pdf-layout/figures';
+import { PageInk } from '../src/lib/conversions/pdf-layout/ink';
 import type { Box, DetectedTable, LayoutLine, Paragraph } from '../src/lib/conversions/pdf-layout/types';
+import type { PdfPageContent } from '../src/lib/conversions/pdf-text-types';
 
 /**
  * The part of PDF to DOCX that keeps the pages: what `PageFlow` makes of the lines of a page (gap, line height, indents, alignment,
@@ -179,11 +182,64 @@ describe('pages as sections', () => {
     expect(sections[2].omitsHeader).toBeUndefined();
   });
 
-  it('takes the height of a figure out of the gap above what follows it', () => {
+  it('takes the height of a figure out of the gap above what follows it, and never subtracts across pages', () => {
     const spacer: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', spacerPt: 40 };
     const next: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', format: { beforePt: 55, lineHeightPt: 14, leftPt: 0, firstLinePt: 0, rightPt: 0 } };
     absorbFigureSpacers([spacer, next]);
     expect(next.format?.beforePt).toBe(15);
+
+    const across: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', format: { beforePt: 55, lineHeightPt: 14, leftPt: 0, firstLinePt: 0, rightPt: 0 } };
+    absorbFigureSpacers([spacer, across], [1, 2]);
+    expect(across.format?.beforePt).toBe(55);
+  });
+
+  it('anchors shapes on kept pages with pageRelative coordinates instead of figure spacer paragraphs', () => {
+    const makePage = (pageNumber: number): PdfPageContent => ({
+      pageNumber,
+      width: 612,
+      height: 792,
+      items: [],
+      rules: [],
+      shapes: [{ kind: 'rect', x0: 72, y0: 500, x1: 200, y1: 680, fill: 0xdddddd, z: 0 }],
+      images: [],
+      unmappedGlyphs: 0,
+      operatorsSkipped: false,
+      rulesTruncated: false,
+    });
+    const hostParagraph: ParagraphBlock = {
+      type: 'paragraph',
+      runs: [{ text: 'body', bold: false, italic: false, monospace: false }],
+      rtl: false,
+      align: 'left',
+      format: { beforePt: 10, lineHeightPt: 14, leftPt: 0, firstLinePt: 0, rightPt: 0 },
+    };
+    const framedParagraph: Block = {
+      type: 'paragraph',
+      runs: [{ text: 'framed', bold: false, italic: false, monospace: false }],
+      rtl: false,
+      align: 'left',
+      format: { beforePt: 0, lineHeightPt: 14, leftPt: 0, firstLinePt: 0, rightPt: 0, frame: { xPt: 50, yPt: 50, widthPt: 100 } },
+    };
+    const tableBlock: Block = { type: 'table', rows: [[]], columnWidths: [200], bordered: true };
+    const body: BodyBlocks = {
+      model: [framedParagraph, hostParagraph, tableBlock],
+      columnsOf: [1, 1, 1],
+      origins: [
+        { pageNumber: 1, box: { x0: 50, y0: 50, x1: 150, y1: 70 } },
+        { pageNumber: 1, box: { x0: 72, y0: 100, x1: 300, y1: 120 } },
+        { pageNumber: 2, box: { x0: 72, y0: 72, x1: 272, y1: 400 } },
+      ],
+      pageOf: [1, 1, 2],
+    };
+    const pages = [makePage(1), makePage(2)];
+    hangShapes(body, pages, new PageInk(pages), new Map(), true);
+    expect(body.model).toHaveLength(4);
+    expect((framedParagraph as ParagraphBlock).shapes).toBeUndefined();
+    expect((hostParagraph as ParagraphBlock).shapes?.[0].pageRelative).toBe(true);
+    const carrier = body.model[3] as ParagraphBlock;
+    expect(carrier.spacerPt).toBe(0);
+    expect(carrier.shapes?.[0].pageRelative).toBe(true);
+    expect(body.pageOf).toEqual([1, 1, 2, 2]);
   });
 });
 

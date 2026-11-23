@@ -19,7 +19,7 @@ import { LayoutBudget } from './limits';
 import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { hangShapes, type BlockOrigin, type BodyBlocks } from './figures';
-import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections, type PageSetup } from './page-flow';
+import { irregularColumnPages, PageFlow, pageSections, type PageSetup } from './page-flow';
 import { faceWidthPercents, setFaceWidths } from './face-width';
 import { WrapMetrics } from './wrap-fit';
 import { hexOf, PageInk, readableRuns } from './ink';
@@ -775,8 +775,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[], opti
   const keeping = options.pages ? pageKeepingOf(blocks, furniture, marginsOf(layouts), pages[0]?.width ?? 0, wrap) : undefined;
   const margins = keeping?.margins ?? marginsOf(layouts);
   const body = bodyOf(blocks, { bodySize, levels, ink, flow: keeping?.flow, framed: keeping?.framed });
-  if (ink.active) hangShapes(body, pages, ink, gridBoxesOf(layouts, ink));
-  if (keeping) absorbFigureSpacers(body.model);
+  if (ink.active) hangShapes(body, pages, ink, gridBoxesOf(layouts, ink), keeping !== undefined);
   const sections = keeping ? pageSections(body.model, body.columnsOf, body.pageOf, pages.map((page) => page.pageNumber), furniture, keeping.tops.margins) : sectionsOf(body);
   const first = pages[0];
   const documentModel: DocumentModel = {

@@ -231,12 +231,34 @@ export class ParagraphBuilder {
         // A hyphen before a capital letter or a digit is part of the compound ("Anglo-Saxon"): kept, with no space after it.
       } else if (needsSpaceBetween(this.tail, lineText)) {
         this.append(' ');
-        this.runPieces[this.runPieces.length - 1].push(' ');
+        const lastRun = this.runs[this.runs.length - 1];
+        if (lastRun?.superscript || lastRun?.subscript) {
+          this.runs.push({
+            text: '',
+            bold: lastRun.bold,
+            italic: lastRun.italic,
+            monospace: lastRun.monospace,
+            ...(lastRun.color === undefined ? {} : { color: lastRun.color }),
+            ...(lastRun.fill === undefined ? {} : { fill: lastRun.fill }),
+          });
+          this.runPieces.push([' ']);
+        } else if (this.runPieces.length > 0) {
+          this.runPieces[this.runPieces.length - 1].push(' ');
+        }
       }
     }
     for (const run of line.runs) {
       const last = this.runs[this.runs.length - 1];
-      if (last && last.bold === run.bold && last.italic === run.italic && last.monospace === run.monospace && last.color === run.color && last.fill === run.fill) {
+      if (
+        last &&
+        last.bold === run.bold &&
+        last.italic === run.italic &&
+        last.monospace === run.monospace &&
+        last.color === run.color &&
+        last.fill === run.fill &&
+        Boolean(last.superscript) === Boolean(run.superscript) &&
+        Boolean(last.subscript) === Boolean(run.subscript)
+      ) {
         this.runPieces[this.runPieces.length - 1].push(run.text);
       } else {
         this.runs.push({ ...run });

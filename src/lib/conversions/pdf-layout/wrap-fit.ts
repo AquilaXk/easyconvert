@@ -19,6 +19,8 @@ const FACES: Record<WriterFamily, readonly [string, string, string, string]> = {
 };
 const PER_MILLE = 1000;
 const PERCENT = 100;
+/** Size scale Word and LibreOffice use for superscripts and subscripts (`DFLT_ESC_PROP = 58`, ECMA-376 / OpenDocument). */
+const SCRIPT_SIZE_SHARE = 0.58;
 /** Points either side of a width at which a word fits that the candidate indents are set, so that a width the office suite measures a hair other than the table's does not move a break. */
 /** Least width in points of a span of indents that break alike for it to be one an indent is taken in. */
 const MIN_SPAN_PT = 0.1;
@@ -29,6 +31,12 @@ const EXTRA_LINE_COST = 3;
 const CUT_WORD = /\p{L}[\p{Pd}­]$/u;
 
 const loaded = new Map<string, Font>();
+const LATIN_TABLE_CODES = 256;
+const MISSING_GLYPH = -1;
+const HIGH_SURROGATE_START = 0xd800;
+const HIGH_SURROGATE_END = 0xdbff;
+const SINGLE_LINE_WIDTH_HEADROOM = 1.5;
+const latinWidthTables = new WeakMap<Font, Int32Array>();
 
 function faceOf(name: string): Font {
   let face = loaded.get(name);
@@ -39,11 +47,39 @@ function faceOf(name: string): Font {
   return face;
 }
 
+function latinTableOf(face: Font): Int32Array {
+  let table = latinWidthTables.get(face);
+  if (!table) {
+    table = new Int32Array(LATIN_TABLE_CODES).fill(MISSING_GLYPH);
+    for (let code = 0; code < LATIN_TABLE_CODES; code++) {
+      if (!Encodings.WinAnsi.canEncodeUnicodeCodePoint(code)) continue;
+      const glyph = face.getWidthOfGlyph(Encodings.WinAnsi.encodeUnicodeCodePoint(code).name);
+      if (glyph !== undefined) table[code] = glyph;
+    }
+    latinWidthTables.set(face, table);
+  }
+  return table;
+}
+
 /** The width in points of a stretch of text in a face, or undefined when the face has no glyph for one of its characters. */
 function widthOf(face: Font, text: string, size: number): number | undefined {
+  const table = latinTableOf(face);
   let units = 0;
-  for (const character of text) {
-    const code = character.codePointAt(0) as number;
+  for (let i = 0; i < text.length; i++) {
+    let code = text.charCodeAt(i);
+    if (code >= HIGH_SURROGATE_START && code <= HIGH_SURROGATE_END) {
+      const point = text.codePointAt(i);
+      if (point !== undefined) {
+        code = point;
+        i++;
+      }
+    }
+    if (code < LATIN_TABLE_CODES) {
+      const glyph = table[code];
+      if (glyph < 0) return undefined;
+      units += glyph;
+      continue;
+    }
     if (!Encodings.WinAnsi.canEncodeUnicodeCodePoint(code)) return undefined;
     const glyph = face.getWidthOfGlyph(Encodings.WinAnsi.encodeUnicodeCodePoint(code).name);
     if (glyph === undefined) return undefined;
@@ -79,16 +115,17 @@ export class WrapMetrics {
     let gap = 0;
     for (const run of runs) {
       const face = this.face(run);
+      const runSize = run.superscript || run.subscript ? size * SCRIPT_SIZE_SHARE : size;
       for (const piece of run.text.split(/(\s+)/u)) {
         if (piece === '') continue;
         if (/^\s+$/u.test(piece)) {
-          const space = widthOf(face, piece, size);
+          const space = widthOf(face, piece, runSize);
           if (space === undefined) return undefined;
           gap = (space * (run.widthPercent ?? PERCENT)) / PERCENT;
           open = false;
           continue;
         }
-        const natural = widthOf(face, piece, size);
+        const natural = widthOf(face, piece, runSize);
         if (natural === undefined) return undefined;
         const width = (natural * (run.widthPercent ?? PERCENT)) / PERCENT;
         if (open) words[words.length - 1].width += width;
@@ -170,4 +207,25 @@ export function wrappingIndent(paragraph: Paragraph, size: number, metrics: Wrap
     if (!best || score > best.score || (score === best.score && distance < best.distance)) best = { indent, score, distance };
   }
   return best?.indent;
+}
+
+/**
+ * Right indent for a single-line paragraph so the writer does not wrap its last word onto a second line when its face is slightly
+ * wider than `baseWidth - fallback`; left at `fallback` when the line already fits and bounded below by `minIndent` (the paper edge).
+ */
+export function singleLineIndent(
+  paragraph: Paragraph,
+  size: number,
+  metrics: WrapMetrics,
+  baseWidth: number,
+  fallback: number,
+  minIndent: number
+): number {
+  const line = paragraph.lines[0];
+  if (!line || (line.box.x1 - line.box.x0) * SINGLE_LINE_WIDTH_HEADROOM < baseWidth - fallback - FIT_MARGIN_PT) return fallback;
+  const words = metrics.wordsOf(paragraph.runs, size);
+  if (!words || words.length < 2) return fallback;
+  const width = words.reduce((sum, word, index) => sum + word.width + (index === 0 ? 0 : word.gap), 0);
+  const needed = baseWidth - width - FIT_MARGIN_PT;
+  return needed < fallback ? Math.max(minIndent, needed) : fallback;
 }

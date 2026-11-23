@@ -232,4 +232,24 @@ describe('what the pages need to be set as the page set them', () => {
     expect(pictures.length).toBeGreaterThanOrEqual(1);
     expect(pictures.filter((drawing) => drawing.startsWith('<wp:anchor ')).length).toBe(pictures.length);
   });
+
+  oracleTest(
+    'govdocs1-000353.pdf and govdocs1-000618.pdf: footnote superscripts and page-anchored figures keep the PDF page count',
+    ['soffice', 'pdfinfo'],
+    async (ctx) => {
+      const opinion = await convertedSample(ctx, 'govdocs1-000353.pdf');
+      expect(await documentXml(opinion.docx)).toContain('<w:vertAlign w:val="superscript"/>');
+      const review = await convertedSample(ctx, 'govdocs1-000618.pdf');
+      for (const [id, sample] of [['opinion', opinion], ['review', review]] as const) {
+        withFiles({ 'in.pdf': sample.source, 'out.docx': sample.docx }, (dir) => {
+          execFileSync(requireOracleTool('soffice'), ['--headless', `-env:UserInstallation=file://${path.join(dir, 'profile')}`, '--convert-to', 'pdf', '--outdir', path.join(dir, 'render'), path.join(dir, 'out.docx')], {
+            timeout: SOFFICE_TIMEOUT_MS,
+            stdio: 'ignore',
+          });
+          expect(pdfInfo(path.join(dir, 'render', 'out.pdf')).pages, id).toBe(pdfInfo(path.join(dir, 'in.pdf')).pages);
+        });
+      }
+    },
+    TEST_TIMEOUT_MS
+  );
 });

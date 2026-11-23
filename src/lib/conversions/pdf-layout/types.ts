@@ -20,6 +20,9 @@ export interface StyledRun {
   fill?: string;
   /** How wide the writer sets the glyphs against its own face, in percent, where the page's face is narrower or wider than the writer's. */
   widthPercent?: number;
+  /** Characters smaller than the line's dominant text and raised or lowered from its baseline. */
+  superscript?: boolean;
+  subscript?: boolean;
 }
 
 /** One line of text, or one cell-wide piece of a row, in logical (reading) order. */

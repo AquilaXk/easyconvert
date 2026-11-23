@@ -87,7 +87,7 @@ describe('the rows of a ruled table keep the height the page gave them', () => {
           expect(found, name).toBeDefined();
           expect(Math.abs((found as Word).y - (wanted as Word).y)).toBeLessThanOrEqual(MAX_ROW_OFFSET);
         }
-        expect(pageCount(rendered)).toBeLessThanOrEqual(pageCount(path.join(dir, 'in.pdf')) + 1);
+        expect(pageCount(rendered)).toBe(pageCount(path.join(dir, 'in.pdf')));
       });
     },
     TEST_TIMEOUT_MS

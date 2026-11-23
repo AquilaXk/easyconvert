@@ -174,9 +174,35 @@ function styleOf(item: PdfContentItem, fonts: FontList): Omit<StyledRun, 'text'>
 }
 
 function sameStyle(a: Omit<StyledRun, 'text'>, b: Omit<StyledRun, 'text'>): boolean {
-  return a.bold === b.bold && a.italic === b.italic && a.monospace === b.monospace && a.color === b.color && a.fill === b.fill;
+  return (
+    a.bold === b.bold &&
+    a.italic === b.italic &&
+    a.monospace === b.monospace &&
+    a.color === b.color &&
+    a.fill === b.fill &&
+    Boolean(a.superscript) === Boolean(b.superscript) &&
+    Boolean(a.subscript) === Boolean(b.subscript)
+  );
 }
 
+/** Upper ratio to the dominant line size for superscripts and subscripts. */
+const SCRIPT_MAX_SIZE_RATIO = 0.82;
+/** Minimum baseline shift (in dominant em) separating a script mark from baseline text. */
+const SCRIPT_MIN_SHIFT_EM = 0.15;
+/** Maximum non-space characters for a small shifted run to count as a script mark rather than a subheading. */
+const SCRIPT_MAX_CHARS = 6;
+const SIZE_PRECISION = 10;
+
+function scriptOf(item: PdfContentItem, dominantSize: number, baseline: number): Pick<StyledRun, 'superscript' | 'subscript'> {
+  const trimmed = item.text.trim();
+  if (dominantSize <= 0 || trimmed === '' || trimmed.length > SCRIPT_MAX_CHARS || /\s/u.test(trimmed) || item.size > SCRIPT_MAX_SIZE_RATIO * dominantSize) {
+    return {};
+  }
+  const rise = baseline - item.baseline;
+  if (rise >= SCRIPT_MIN_SHIFT_EM * dominantSize) return { superscript: true };
+  if (-rise >= SCRIPT_MIN_SHIFT_EM * dominantSize) return { subscript: true };
+  return {};
+}
 
 /** The pieces of an item's text with their colours (black pieces have none): the whole text when the item has no colour. */
 function colouredPieces(item: PdfContentItem): { text: string; color?: string }[] {
@@ -190,40 +216,78 @@ function colouredPieces(item: PdfContentItem): { text: string; color?: string }[
   return from < item.text.length ? [...pieces, { text: item.text.slice(from) }] : pieces;
 }
 
-const SIZE_PRECISION = 10;
+interface DominantLineStyle {
+  size: number;
+  bold: boolean;
+  italic: boolean;
+  monospace: boolean;
+  name: string;
+}
+
+function dominantStyleOf(logical: readonly PdfContentItem[], fonts: FontList): DominantLineStyle {
+  const weight = new Map<string, { chars: number } & DominantLineStyle>();
+  for (const item of logical) {
+    const style = styleOf(item, fonts);
+    const font = item.font >= 0 ? fonts[item.font] : undefined;
+    const key = `${Math.round(item.size * SIZE_PRECISION)}|${font?.name ?? ''}`;
+    const entry = weight.get(key) ?? { chars: 0, size: item.size, ...style, name: font?.name ?? '' };
+    entry.chars += item.text.trim().length;
+    weight.set(key, entry);
+  }
+  let dominant: { chars: number } & DominantLineStyle = { chars: -1, size: logical[0]?.size ?? 0, bold: false, italic: false, monospace: false, name: '' };
+  for (const entry of weight.values()) if (entry.chars > dominant.chars) dominant = entry;
+  return dominant;
+}
+
+/** Appends a styled piece to `runs`, merging matching styles and baseline spaces. */
+function pushStyledPiece(runs: StyledRun[], pieceText: string, pieceStyle: Omit<StyledRun, 'text'>): void {
+  const previous = runs[runs.length - 1];
+  const isBaseline = !previous?.superscript && !previous?.subscript && !pieceStyle.superscript && !pieceStyle.subscript;
+  if (previous && (sameStyle(previous, pieceStyle) || (pieceText.trim() === '' && isBaseline && sameStyle(previous, { ...pieceStyle, color: previous.color })))) {
+    previous.text += pieceText;
+  } else {
+    runs.push({ text: pieceText, ...pieceStyle });
+  }
+}
 
 /** The line a segment of runs makes: text in logical order, style runs, box and the style most characters have. */
 export function lineFromItems(items: PdfContentItem[], fonts: FontList): LayoutLine {
   const visual = [...items].sort((a, b) => a.x - b.x);
   const rtl = directionBalance(visual.map((item) => item.text).join('')) > 0;
   const logical = logicalOrder(visual, rtl ? 'R' : 'L');
+  const dominant = dominantStyleOf(logical, fonts);
+  const baseline = dominantBaseline(items, dominant.size);
   const runs: StyledRun[] = [];
-  const weight = new Map<string, { chars: number; size: number; bold: boolean; italic: boolean; monospace: boolean; name: string }>();
   let text = '';
   logical.forEach((item, index) => {
     const joint = index === 0 ? '' : separator(logical[index - 1], item);
-    const style = styleOf(item, fonts);
-    const piece = item.text;
-    if (joint !== '' && runs.length > 0) runs[runs.length - 1].text += joint;
-    for (const part of colouredPieces(item)) {
-      const previous = runs[runs.length - 1];
-      const partStyle = { ...style, ...(part.color === undefined ? {} : { color: part.color }), ...(item.fill === undefined || part.color === undefined ? {} : { fill: hexOf(item.fill) }) };
-      // White space takes the colour of the text before it, so a space between two coloured words is not a run of its own.
-      if (previous && (sameStyle(previous, partStyle) || (part.text.trim() === '' && sameStyle(previous, { ...partStyle, color: previous.color })))) previous.text += part.text;
-      else runs.push({ text: part.text, ...partStyle });
+    const baseStyle = styleOf(item, fonts);
+    const script = scriptOf(item, dominant.size, baseline);
+    if (joint !== '' && runs.length > 0) {
+      const last = runs[runs.length - 1];
+      if (!last.superscript && !last.subscript) last.text += joint;
+      else pushStyledPiece(runs, joint, baseStyle);
     }
-    text += joint + piece;
-    const font = item.font >= 0 ? fonts[item.font] : undefined;
-    const key = `${Math.round(item.size * SIZE_PRECISION)}|${font?.name ?? ''}`;
-    const entry = weight.get(key) ?? { chars: 0, size: item.size, ...style, name: font?.name ?? '' };
-    entry.chars += piece.trim().length;
-    weight.set(key, entry);
+    for (const part of colouredPieces(item)) {
+      const partBase = { ...baseStyle, ...(part.color === undefined ? {} : { color: part.color }), ...(item.fill === undefined || part.color === undefined ? {} : { fill: hexOf(item.fill) }) };
+      const partStyle = { ...partBase, ...script };
+      if ((script.superscript || script.subscript) && /\s/u.test(part.text)) {
+        const split = /^(\s*)(\S+)(\s*)$/u.exec(part.text);
+        if (split) {
+          if (split[1] !== '') pushStyledPiece(runs, split[1], partBase);
+          pushStyledPiece(runs, split[2], partStyle);
+          if (split[3] !== '') pushStyledPiece(runs, split[3], partBase);
+        } else {
+          pushStyledPiece(runs, part.text, partBase);
+        }
+      } else {
+        pushStyledPiece(runs, part.text, partStyle);
+      }
+    }
+    text += joint + item.text;
   });
-  let dominant = { chars: -1, size: logical[0]?.size ?? 0, bold: false, italic: false, monospace: false, name: '' };
-  for (const entry of weight.values()) if (entry.chars > dominant.chars) dominant = entry;
   const x0 = Math.min(...items.map((item) => item.x));
   const x1 = Math.max(...items.map((item) => item.x + item.width));
-  const baseline = dominantBaseline(items, dominant.size);
   return {
     runs,
     text,
