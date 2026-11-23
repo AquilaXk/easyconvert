@@ -4,9 +4,10 @@ import { parseCff } from './font-cff';
 import type { CompositeFontDictionary, PdfDocument, PdfUpdateBase, SimpleFontDictionary } from './pdf-document';
 import { type PdfObjectDefinition, withIncrementalUpdate } from './pdf-incremental-update';
 import { glyphNumberTexts } from './pdf-glyph-number-fonts';
-import { numericGlyphNameTexts } from './pdf-numeric-glyph-names';
+import { type CodeText, numericGlyphNameTexts } from './pdf-numeric-glyph-names';
 import { PDF_CONTENT_MAX_FONTS } from './pdf-text-types';
 import { readToUnicodeCoverage, type ToUnicodeCoverage } from './pdf-tounicode-coverage';
+import { type SimpleTextEntry, type3GlyphTexts } from './pdf-type3-tounicode';
 import { type CidText, standardOrderTexts } from './standard-font-glyph-order';
 import { type UnicodeCmap, readGlyphCount, readUnicodeCmap, sfntTableTags } from './truetype-cmap';
 
@@ -34,6 +35,11 @@ import { type UnicodeCmap, readGlyphCount, readUnicodeCmap, sfntTableTags } from
  *
  * A simple font of the CG Times faces whose glyphs are named by their numbers in the TrueType font the driver converted
  * (`G54`) gets a map of its codes the same way, with the characters those numbers stand for (pdf-glyph-number-fonts.ts).
+ *
+ * A Type 3 bitmap font whose `/Differences` name glyphs by single printable characters (or TeX `OT1` ligatures `U+000B`..`U+000F`
+ * for proportional prose faces) gets those entries added to its `/ToUnicode` map as well, whether it carries no map or a
+ * partial `/ToUnicode` map (such as a `T3UV` map that lists only ASCII letters, leaving codes 9..13 and 32 unmapped so
+ * pdf.js would treat them as whitespace before `recoverUnmappedGlyphs` runs; pdf-type3-tounicode.ts).
  *
  * A composite font whose /ToUnicode map lists some of its codes is read through the map alone by Poppler, and a code the map
  * lacks has no text (`poppler/GfxFont.cc` 26.09, `GfxCIDFont::getNextChar` lines 1939 to 1948, `CharCodeToUnicode::mapToUnicode`
@@ -80,10 +86,13 @@ type CodeBytes = 1 | 2;
 /** The codes `first` to `last` (inclusive) that have no text. */
 type Gap = readonly [first: number, last: number];
 
+/** Code and Unicode target: a single code point or a multi-character ligature string. */
+type MapEntry = CidText | SimpleTextEntry;
+
 /** What a ToUnicode stream the update adds holds. Fonts that read the same program and the same own map share one body. */
 interface MapBody {
   /** The codes that have text. */
-  entries: CidText[];
+  entries: MapEntry[];
   /** The codes that have none. */
   gaps: Gap[];
   /** The font's own ToUnicode map, which follows the entries and wins over them; null when the entries are the whole map. */
@@ -318,6 +327,35 @@ interface MapBudget {
 
 const codesOf = ({ entries, gaps }: MapBody): number => entries.length + gaps.reduce((sum, [first, last]) => sum + last - first + 1, 0);
 
+function simpleEntriesBody(entries: MapEntry[]): MapBody | null {
+  return entries.length > 0 ? { entries, gaps: [], own: null } : null;
+}
+
+/**
+ * Map completion for a Type 3 bitmap font with a partial /ToUnicode stream (such as T3UV covering only ASCII letters):
+ * adds unmapped character-named glyphs and proportional OT1 ligatures ahead of the font's own map so pdf.js does not drop
+ * codes 9..13 and 32 as whitespace.
+ */
+function mapCompletingType3(font: SimpleFontDictionary, known: Known): MapBody | null {
+  if (font.subtype !== 'Type3' || !font.text.trimEnd().endsWith('>>')) return null;
+  const data = font.toUnicodeData();
+  if (data === null) return null;
+  const { text, coverage } = ownMapOf(data, known);
+  if (coverage === 'inherits') return null;
+  if (!coverage.listsCodes) return simpleEntriesBody(type3GlyphTexts(font));
+  const entries = type3GlyphTexts(font, (code) => coverage.covers(code));
+  return entries.length > 0 ? { entries, gaps: [], own: text } : null;
+}
+
+function simpleFontBody(font: SimpleFontDictionary, numericEntries: CodeText[], known: Known): MapBody | null {
+  if (font.hasToUnicode) return mapCompletingType3(font, known);
+  if (!font.text.startsWith('<<') || !font.text.trimEnd().endsWith('>>')) return null;
+  if (numericEntries.length > 0) return { entries: numericEntries, gaps: [], own: null };
+  const glyphNumbers = glyphNumberTexts(font);
+  if (glyphNumbers.length > 0) return { entries: glyphNumbers, gaps: [], own: null };
+  return simpleEntriesBody(type3GlyphTexts(font));
+}
+
 function fontMaps(fonts: CompositeFontDictionary[], simpleFonts: SimpleFontDictionary[]): FontMap[] {
   const maps: FontMap[] = [];
   const known: Known = { programs: new Map(), cffCodes: new Map(), maps: new Map(), bodies: new Map(), keys: new Map() };
@@ -337,7 +375,7 @@ function fontMaps(fonts: CompositeFontDictionary[], simpleFonts: SimpleFontDicti
   };
   for (const font of fonts) add(font, font.hasToUnicode ? mapCompletingOwn(font, known) : mapFromProgram(font, known), 2);
   const numericTexts = numericGlyphNameTexts(simpleFonts);
-  simpleFonts.forEach((font, index) => add(font, font.hasToUnicode ? null : { entries: numericTexts[index].length > 0 ? numericTexts[index] : glyphNumberTexts(font), gaps: [], own: null }, 1));
+  simpleFonts.forEach((font, index) => add(font, simpleFontBody(font, numericTexts[index], known), 1));
   return maps;
 }
 
@@ -345,9 +383,9 @@ function hex(value: number, digits: number): string {
   return value.toString(16).toUpperCase().padStart(digits, '0');
 }
 
-/** The UTF-16BE code units of a code point in hex: four digits, or eight for a surrogate pair. */
-function utf16Hex(codePoint: number): string {
-  const text = String.fromCodePoint(codePoint);
+/** The UTF-16BE code units of a code point or string in hex: four digits per UTF-16 code unit. */
+function utf16Hex(target: number | string): string {
+  const text = typeof target === 'number' ? String.fromCodePoint(target) : target;
   let digits = '';
   for (let index = 0; index < text.length; index++) digits += hex(text.charCodeAt(index), 4);
   return digits;
@@ -429,8 +467,9 @@ function toUnicodeObjects(base: PdfUpdateBase, maps: FontMap[]): PdfObjectDefini
 }
 
 /**
- * `pdf` with a /ToUnicode map added to every composite font whose TrueType program gives text its CIDs lack, and to every
- * simple font whose numeric glyph names give text; the same bytes when there is none. A font whose program, map or tables do not read is left as it is. A stream that inflates past
+ * `pdf` with a /ToUnicode map added to composite fonts whose embedded tables give text their CIDs lack, and to simple
+ * fonts whose numeric glyph names, CG Times glyph numbers, or Type 3 character names / OT1 ligatures give text; the same
+ * bytes when there is none. A font whose program, map or tables do not read is left as it is. A stream that inflates past
  * a limit ends the pass: the file is then passed on as it is, so a limit is met once and never papered over for some fonts.
  */
 export function withFontProgramToUnicode(pdf: Buffer, document: PdfDocument): Buffer {
@@ -441,7 +480,8 @@ export function withFontProgramToUnicode(pdf: Buffer, document: PdfDocument): Bu
 /** The objects of `withFontProgramToUnicode`'s update, for a caller that writes them with other objects in one update. */
 export function fontProgramToUnicodeObjects(document: PdfDocument, base: PdfUpdateBase): PdfObjectDefinition[] {
   try {
-    return toUnicodeObjects(base, fontMaps(document.compositeFonts(MAX_FONTS, new InflateBudget(FONT_PROGRAM_BUDGET_BYTES)), document.simpleFonts(PDF_CONTENT_MAX_FONTS)));
+    const programBudget = new InflateBudget(FONT_PROGRAM_BUDGET_BYTES);
+    return toUnicodeObjects(base, fontMaps(document.compositeFonts(MAX_FONTS, programBudget), document.simpleFonts(PDF_CONTENT_MAX_FONTS, programBudget)));
   } catch (error) {
     if (error instanceof ConversionFailedError) return [];
     throw error;

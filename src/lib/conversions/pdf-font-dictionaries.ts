@@ -34,6 +34,8 @@ export interface CompositeFontDictionary {
 export interface SimpleFontDictionary {
   objectNumber: number;
   generation: number;
+  /** /Subtype of the font dictionary (Type1, MMType1, TrueType or Type3). */
+  subtype: string;
   /** The text of the dictionary (`<< ... >>`) as the file, or the object stream that holds it, writes it. */
   text: string;
   hasToUnicode: boolean;
@@ -45,4 +47,6 @@ export interface SimpleFontDictionary {
   firstChar: number | null;
   /** The first 256 items of /Widths, a number for each width and null for any other item; null when there is no array. */
   widths: ReadonlyArray<number | null> | null;
+  /** The decoded /ToUnicode stream, or null when the font has none, names a predefined CMap instead, or the stream cannot be decoded. */
+  toUnicodeData(): Buffer | null;
 }

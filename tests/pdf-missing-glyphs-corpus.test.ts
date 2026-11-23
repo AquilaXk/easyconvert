@@ -37,13 +37,12 @@ async function corpusFile(id: string): Promise<Buffer | null> {
 }
 
 /**
- * How often each of the digits and marks that this font's glyphs name occurs in `text`. The digits 1 and 4 and the comma are left
- * out: the glyphs at the codes 10, 11 and 13 of these fonts are missing from pdf.js's text before the reader sees them (Poppler
- * reads 245 "1" where the reader reads 114), which no glyph name can change.
+ * How often each of the digits and marks that this font's glyphs name occurs in `text` (leaving out `[`, which Poppler's
+ * reader drops while EasyConvert now keeps it alongside `]`, `,`, `1`, and `4`).
  */
 function countOf(text: string): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const character of text.match(/[0235-9.()]/g) ?? []) counts.set(character, (counts.get(character) ?? 0) + 1);
+  for (const character of text.match(/[0-9.,()\]]/g) ?? []) counts.set(character, (counts.get(character) ?? 0) + 1);
   return counts;
 }
 
@@ -55,7 +54,17 @@ const DOCUMENTS: ReadonlyArray<{ id: string; expected: readonly RegExp[]; unmapp
   },
   { id: 'govdocs1-000839.pdf', expected: [/time-domain \(FDTD\) program/, /0\.55 and 10\.8 μm/], unmappedAtMost: 20 },
   { id: 'govdocs1-004161.pdf', expected: [/0\.10 ± 0\.04 m Pa−1 with/, /highly correlated, ρ = 0\.7 in the observations/], unmappedAtMost: 2 },
-  { id: 'govdocs1-004647.pdf', expected: [/Y\. Papaphilipp ?ou, C\. Gardner, R\. Lambiase, Y\.Y\. Lee, I\. Marneris and J\. Wei/, /March 21, 2001/], unmappedAtMost: 60 },
+  {
+    id: 'govdocs1-004647.pdf',
+    expected: [
+      /Y\. Papaphilipp ?ou, C\. Gardner, R\. Lambiase, Y\.Y\. Lee, I\. Marneris and J\. Wei/,
+      /March 21, 2001/,
+      /Preliminary Change Request for the Low-field/,
+      /and finally 1\.3GeV compatible/,
+      /248m ring \[3 ?\], complementary studies/,
+    ],
+    unmappedAtMost: 25,
+  },
 ];
 
 describe('glyphs without a Unicode value in real corpus files', () => {

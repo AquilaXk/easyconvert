@@ -98,8 +98,6 @@ const MAX_PDF_XREF_STREAM_BYTES = 16 * 1024 * 1024;
 const MAX_WHITE_BEFORE_ENDSTREAM = 16;
 const STREAM_KEYWORD = 'stream';
 
-
-
 interface StreamSpan {
   dict: PdfDict;
   rawStart: number;
@@ -1343,8 +1341,26 @@ export class PdfDocument {
    * reference, each once and at most `limit`, read as `compositeFonts` reads its fonts. Encrypted files and files without
    * page structure have none.
    */
-  simpleFonts(limit: number): SimpleFontDictionary[] {
-    return this.pageFonts(limit, (num) => this.simpleFont(num));
+  simpleFonts(limit: number, budget: InflateBudget = new InflateBudget()): SimpleFontDictionary[] {
+    const streams = new Map<number, Buffer | null>();
+    return this.pageFonts(limit, (num) => this.simpleFont(num, (value) => this.decodeCachedStream(value, budget, streams)));
+  }
+
+  /** Decodes a non-image indirect stream once per object number within `budget`, returning null on non-limit decode failure. */
+  private decodeCachedStream(value: PdfValue | undefined, budget: InflateBudget, streams: Map<number, Buffer | null>): Buffer | null {
+    const stream = this.entryOf(value);
+    if (!stream || this.isImage(stream)) return null;
+    const known = streams.get(stream.num);
+    if (known !== undefined) return known;
+    let bytes: Buffer | null = null;
+    try {
+      const content = this.decodeStream(stream, budget, false);
+      bytes = content === null ? null : Buffer.from(content, 'latin1');
+    } catch (error) {
+      if (error instanceof DecompressionLimitError) throw error;
+    }
+    streams.set(stream.num, bytes);
+    return bytes;
   }
 
   /** The fonts `read` makes of the font references of the page resources and their forms, each object once and at most `limit`. */
@@ -1374,7 +1390,7 @@ export class PdfDocument {
     return [...fonts.values()];
   }
 
-  private simpleFont(num: number): SimpleFontDictionary | null {
+  private simpleFont(num: number, decoded: (value: PdfValue | undefined) => Buffer | null): SimpleFontDictionary | null {
     const entry = this.index.get(num);
     const dict = this.resolveDict({ kind: 'ref', num });
     const subtype = dict?.entries.get('Subtype');
@@ -1383,26 +1399,23 @@ export class PdfDocument {
     const baseFont = this.resolve(dict.entries.get('BaseFont'));
     const firstChar = this.resolve(dict.entries.get('FirstChar'));
     const widths = this.resolve(dict.entries.get('Widths'));
+    const resolvedWidths = isArray(widths) ? widths.items.slice(0, SIMPLE_FONT_CODES).map((item) => this.resolve(item)) : null;
+    const diffItem = (item: PdfValue): number | string | null => {
+      const value = this.resolve(item);
+      if (typeof value === 'number') return Number.isInteger(value) ? value : null;
+      return isName(value) ? value.value : null;
+    };
     return {
       objectNumber: num,
       generation: entry.gen,
+      subtype: subtype.value,
       text: entry.source.slice(entry.start, entry.end),
       hasToUnicode: dict.entries.has('ToUnicode'),
       baseFont: isName(baseFont) ? baseFont.value : null,
       firstChar: typeof firstChar === 'number' && Number.isInteger(firstChar) ? firstChar : null,
-      widths: isArray(widths)
-        ? widths.items.slice(0, SIMPLE_FONT_CODES).map((item) => {
-            const value = this.resolve(item);
-            return typeof value === 'number' ? value : null;
-          })
-        : null,
-      differences: isArray(differences)
-        ? differences.items.map((item) => {
-            const value = this.resolve(item);
-            if (typeof value === 'number') return Number.isInteger(value) ? value : null;
-            return isName(value) ? value.value : null;
-          })
-        : null,
+      widths: resolvedWidths ? resolvedWidths.map((value) => (typeof value === 'number' ? value : null)) : null,
+      differences: isArray(differences) ? differences.items.map(diffItem) : null,
+      toUnicodeData: () => decoded(dict.entries.get('ToUnicode')),
     };
   }
 
@@ -1425,21 +1438,7 @@ export class PdfDocument {
       const value = this.resolve(system?.entries.get(key));
       return value !== null && typeof value === 'object' && value.kind === 'string' ? value.value : null;
     };
-    const decoded = (value: PdfValue | undefined): Buffer | null => {
-      const stream = this.entryOf(value);
-      if (!stream || this.isImage(stream)) return null;
-      const known = streams.get(stream.num);
-      if (known !== undefined) return known;
-      let bytes: Buffer | null = null;
-      try {
-        const content = this.decodeStream(stream, budget, false);
-        bytes = content === null ? null : Buffer.from(content, 'latin1');
-      } catch (error) {
-        if (error instanceof DecompressionLimitError) throw error;
-      }
-      streams.set(stream.num, bytes);
-      return bytes;
-    };
+    const decoded = (value: PdfValue | undefined): Buffer | null => this.decodeCachedStream(value, budget, streams);
     const name = this.resolve(descendant?.entries.get('BaseFont'));
     return {
       objectNumber: num,
