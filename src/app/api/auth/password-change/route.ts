@@ -10,6 +10,7 @@ import {
   resetLoginAttempts,
   resolveAuthClientIp,
 } from '@/lib/auth/login-rate-limiter';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { createSessionCookie, createSessionToken, revokeAllUserSessions } from '@/lib/auth/session';
 import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
@@ -88,7 +89,8 @@ export async function POST(req: NextRequest) {
     const updated = await redisUserStore.findById(record.id);
     const response = NextResponse.json({ success: true });
     if (updated) {
-      const token = createSessionToken(redisUserStore.sanitizeUser(updated));
+      const user = await redisKeyStore.withCreditTier(redisUserStore.sanitizeUser(updated));
+      const token = createSessionToken(user);
       response.headers.set('Set-Cookie', createSessionCookie(token));
     }
     return response;

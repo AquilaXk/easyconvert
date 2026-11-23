@@ -54,8 +54,13 @@ interface StoredInputFileRef {
 interface ParsedToolJobInputs {
   toolName: WebTool;
   rawOptions: string | undefined;
+  totalBytes: number;
   inlineFiles?: WebToolFile[];
   storedRefs?: StoredInputFileRef[];
+}
+
+function toolSourceFormat(toolName: WebTool): 'zip' | 'pdf' {
+  return toolName === 'archive-extract' || toolName === 'archive-create' ? 'zip' : 'pdf';
 }
 
 async function storeToolOutput(output: WebToolOutput, caller: User): Promise<StoredToolJobResult> {
@@ -118,7 +123,8 @@ async function parseMultipartJobInputs(
     uploads.map(async (file) => ({ name: file.name, buffer: Buffer.from(await file.arrayBuffer()) }))
   );
   assertToolInput(toolName, inlineFiles);
-  return { toolName, rawOptions: formText(body.form, 'options'), inlineFiles };
+  const totalBytes = inlineFiles.reduce((sum, file) => sum + file.buffer.length, 0);
+  return { toolName, rawOptions: formText(body.form, 'options'), totalBytes, inlineFiles };
 }
 
 function serializeRawOptions(options: unknown): string | undefined {
@@ -196,7 +202,8 @@ async function parseJsonJobInputs(
       throw new WebToolRefusal(400, 'spoofed_file', error instanceof Error ? error.message : 'The file does not match its extension.');
     }
   }
-  return { toolName, rawOptions: serializeRawOptions(payload.options), storedRefs };
+  const totalBytes = metadataCheck.reduce((sum, item) => sum + item.size, 0);
+  return { toolName, rawOptions: serializeRawOptions(payload.options), totalBytes, storedRefs };
 }
 
 async function cleanupTemporaryUploads(refs: readonly StoredInputFileRef[] | undefined): Promise<void> {
@@ -244,11 +251,8 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
         ...stagedInlineKeys,
         ...(parsed.storedRefs ?? []).map((ref) => ref.key).filter((key) => isUploadKey(key)),
       ];
-      const totalBytes = parsed.inlineFiles
-        ? parsed.inlineFiles.reduce((sum, file) => sum + file.buffer.length, 0)
-        : (await Promise.all(storedRefs.map(async (ref) => (await s3Storage.stat(ref.key))?.size ?? 0))).reduce((sum, size) => sum + size, 0);
-
-      const sourceFormat = parsed.toolName === 'archive-extract' || parsed.toolName === 'archive-create' ? 'zip' : 'pdf';
+      const totalBytes = parsed.totalBytes;
+      const sourceFormat = toolSourceFormat(parsed.toolName);
 
       await handOffConversionJob(
         reserved,
@@ -320,7 +324,7 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
             );
         if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
         const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
-        const sourceFormat = parsed.toolName === 'archive-extract' || parsed.toolName === 'archive-create' ? 'zip' : 'pdf';
+        const sourceFormat = toolSourceFormat(parsed.toolName);
         const deadlineMs = conversionDeadlineMs({ tier: caller.tier, sourceFormat, targetFormat: sourceFormat, inputBytes: totalBytes });
         deadlineTimer = setTimeout(() => {
           timedOut = true;
@@ -409,7 +413,15 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     const room = await mayEnqueue(caller.id, caller.tier);
     if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
   } else {
-    const slot = await acquireSyncSlot(caller.id, caller.tier);
+    const sourceFormat = toolSourceFormat(parsed.toolName);
+    const localLeaseMs =
+      conversionDeadlineMs({
+        tier: caller.tier,
+        sourceFormat,
+        targetFormat: sourceFormat,
+        inputBytes: parsed.totalBytes,
+      }) + 15_000;
+    const slot = await acquireSyncSlot(caller.id, caller.tier, localLeaseMs);
     if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
     let released = false;
     releaseSlotOnce = () => {

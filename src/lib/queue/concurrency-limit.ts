@@ -30,6 +30,7 @@ export const CONCURRENCY_RETRY_AFTER_SECONDS = 5;
 const FREE_TIER = 'free';
 const IN_FLIGHT_STATES = ['waiting', 'active', 'delayed'] as const;
 const HTTP_TOO_MANY_REQUESTS = 429;
+const MAX_SYNC_SLOT_LEASE_MS = 24 * 60 * 60 * 1000;
 
 /** Leases sync concurrency slots longer than `syncMaxMs` so long synchronous conversions never lapse prematurely. */
 export function getSyncSlotLeaseMs(): number {
@@ -52,7 +53,10 @@ if (current + queued) >= limit then
   return 0
 end
 redis.call('ZADD', key, expiresAt, slotId)
-redis.call('PEXPIRE', key, 3600000)
+local keyTtl = math.max(3600000, expiresAt - now + 60000)
+if redis.call('PTTL', key) < keyTtl then
+  redis.call('PEXPIRE', key, keyTtl)
+end
 return 1
 `;
 
@@ -109,14 +113,20 @@ function takeSyncSlot(userId: string): () => void {
 export type ConversionSlot = { granted: true; release: () => void } | { granted: false; limit: number };
 
 /** Takes a slot for a synchronous conversion of `userId`, held until `release` is called. Not granted when the caller already has `limit` conversions in flight. */
-export async function acquireSyncSlot(userId: string, tier: string | undefined): Promise<ConversionSlot> {
+export async function acquireSyncSlot(
+  userId: string,
+  tier: string | undefined,
+  leaseMs: number = getSyncSlotLeaseMs()
+): Promise<ConversionSlot> {
   const limit = concurrencyLimitFor(tier);
   const redis = resolveRedisClient();
 
   if (redis) {
     const queued = await queuedJobs(userId, limit);
     const now = Date.now();
-    const expiresAt = now + getSyncSlotLeaseMs();
+    const effectiveLeaseMs =
+      Number.isFinite(leaseMs) && leaseMs > 0 ? Math.min(Math.ceil(leaseMs), MAX_SYNC_SLOT_LEASE_MS) : getSyncSlotLeaseMs();
+    const expiresAt = now + effectiveLeaseMs;
     const slotId = `${now}_${crypto.randomUUID()}`;
     const key = syncSlotKey(userId);
 

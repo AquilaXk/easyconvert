@@ -852,7 +852,7 @@ async function storedRequestInput(
   ownerUserId: string
 ): Promise<{ storageKey?: string; knownBytes?: number; spilledKey?: string }> {
   const { storageKey, uploadedBuffer, fileMeta, inputBufferBase64 } = input;
-  if (storageKey) return { storageKey };
+  if (storageKey && !isInlineInputKey(storageKey)) return { storageKey };
   if (uploadedBuffer && fileMeta) {
     const key = await storeRequestInput(uploadedBuffer, fileMeta, ownerUserId);
     return { storageKey: key, knownBytes: uploadedBuffer.length, spilledKey: key };

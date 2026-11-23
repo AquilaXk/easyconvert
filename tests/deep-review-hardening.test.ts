@@ -1,3 +1,4 @@
+import type Redis from 'ioredis';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -21,13 +22,30 @@ import { POST as toolJobsPost } from '../src/app/api/tools/jobs/route';
 import { POST as credentialsPost } from '../src/app/api/v1/storage/credentials/route';
 import { POST as directUploadPost } from '../src/app/api/v1/uploads/direct/route';
 import { POST as loginPost } from '../src/app/api/auth/login/route';
+import { POST as passwordChangePost } from '../src/app/api/auth/password-change/route';
+import { DELETE as accountDelete } from '../src/app/api/auth/account/route';
 import { hashPassword } from '../src/lib/auth/crypto';
+import { DEFAULT_JWT_AUDIENCE, DEFAULT_JWT_ISSUER, verifyJwt } from '../src/lib/auth/jwt';
+import { createSessionToken } from '../src/lib/auth/session';
+import { sessionCookieName, sessionTokensFromCookieHeader } from '../src/lib/auth/session-cookie';
+import type { SessionPayload } from '../src/lib/auth/types';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { resetLoginRateLimiterStore } from '../src/lib/auth/login-rate-limiter';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { registerCompletedUpload } from '../src/lib/storage/retention-service';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { acquireSyncSlot } from '../src/lib/queue/concurrency-limit';
+import {
+  ACQUIRE_SYNC_SLOT_LUA,
+  acquireSyncSlot,
+  setSyncSlotRedisClient,
+  SYNC_SLOT_LEASE_MS,
+  syncSlotKey,
+} from '../src/lib/queue/concurrency-limit';
+import { conversionQueue } from '../src/lib/queue/conversion-queue';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
+import { graphScheduler } from '../src/lib/queue/graph/scheduler';
+import { conversionDeadlineMs } from '../src/lib/queue/job-deadline';
+import { getToolJob } from '../src/lib/tools/tool-job-store';
 import { InMemoryIdempotencyStore } from '../src/lib/api/idempotency';
 import { IDEMPOTENCY_MAX_STORED_BODY_BYTES, storeCompletedResponse } from '../src/lib/api/with-idempotency';
 import { JOB_STAGING_MAX_AGE_MS } from '../src/lib/storage/temp-file';
@@ -39,6 +57,7 @@ const createdKeys: string[] = [];
 const tempDirs: string[] = [];
 
 afterEach(() => {
+  setSyncSlotRedisClient(null);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   resetLoginRateLimiterStore();
@@ -449,5 +468,236 @@ describe('deep-review hardening: streaming idempotency and stale /tmp scratch sw
     expect(fs.existsSync(agedDecode)).toBe(false);
     expect(fs.existsSync(freshQpdf)).toBe(true);
     expect(fs.existsSync(unrelated)).toBe(true);
+  });
+
+  it('preserves paid credit tier in refreshed session cookies on password-change and account 409 drain', async () => {
+    const email = `credits_refresh_${crypto.randomBytes(6).toString('hex')}@hardening.test`;
+    const currentPassword = 'ValidLoginPass123!';
+    const newPassword = 'UpdatedLoginPass456!';
+    const { hash, salt, iterations } = await hashPassword(currentPassword);
+    const created = await redisUserStore.createUser({
+      email,
+      name: 'Credit Refresh User',
+      tier: 'free',
+      emailVerified: true,
+      passwordHash: hash,
+      salt,
+      passwordIterations: iterations,
+    });
+    await redisKeyStore.creditPackage(created.id, {
+      transactionId: `txn_${crypto.randomBytes(6).toString('hex')}`,
+      credits: 25,
+      paid: '500',
+      at: Date.now(),
+    });
+
+    const initialUser = await redisKeyStore.withCreditTier(redisUserStore.sanitizeUser(created));
+    expect(initialUser.tier).toBe('paid');
+    const cookieName = sessionCookieName();
+    const initialToken = createSessionToken(initialUser);
+
+    const pwRes = await passwordChangePost(
+      new NextRequest(`${BASE_URL}/api/auth/password-change`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', cookie: `${cookieName}=${initialToken}` },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      })
+    );
+    expect(pwRes.status).toBe(200);
+    const pwSetCookie = pwRes.headers.get('set-cookie') ?? '';
+    const pwCookiePair = pwSetCookie.split(';')[0] ?? '';
+    const [refreshedPwToken] = sessionTokensFromCookieHeader(pwCookiePair);
+    expect(refreshedPwToken).toBeTruthy();
+    const pwPayload = verifyJwt<SessionPayload>(refreshedPwToken, {
+      issuer: DEFAULT_JWT_ISSUER,
+      audience: DEFAULT_JWT_AUDIENCE,
+    });
+    expect(pwPayload?.tier).toBe('paid');
+
+    const activeJob = await enqueueConversionJob(
+      conversionQueue,
+      'convert',
+      { jobId: '', originalFilename: 'drain.csv', sourceFormat: 'csv', targetFormat: 'json', fileSize: 4, options: {}, userId: created.id },
+      { attempts: 1 },
+      { tier: 'paid', inputBytes: 4 }
+    );
+    const realRemove = conversionQueue.remove.bind(conversionQueue);
+    const realGetJob = conversionQueue.getJob.bind(conversionQueue);
+    vi.spyOn(conversionQueue, 'remove').mockImplementation(async (id: string) => (id === activeJob.id ? false : realRemove(id)));
+    vi.spyOn(conversionQueue, 'getJob').mockImplementation(async (id: string) =>
+      id === activeJob.id ? ({ id, state: 'active' } as never) : realGetJob(id)
+    );
+
+    try {
+      const delRes = await accountDelete(
+        new NextRequest(`${BASE_URL}/api/auth/account`, {
+          method: 'DELETE',
+          headers: { 'content-type': 'application/json', cookie: pwCookiePair },
+          body: JSON.stringify({ confirm: 'DELETE', password: newPassword }),
+        })
+      );
+      expect(delRes.status).toBe(409);
+      const delCookiePair = (delRes.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
+      const [refreshedDelToken] = sessionTokensFromCookieHeader(delCookiePair);
+      expect(refreshedDelToken).toBeTruthy();
+      const delPayload = verifyJwt<SessionPayload>(refreshedDelToken, {
+        issuer: DEFAULT_JWT_ISSUER,
+        audience: DEFAULT_JWT_AUDIENCE,
+      });
+      expect(delPayload?.tier).toBe('paid');
+    } finally {
+      vi.restoreAllMocks();
+      await realRemove(activeJob.id).catch(() => false);
+      await redisUserStore.deleteUser(created.id).catch(() => false);
+    }
+  });
+
+  it('spills inline base64 bytes to storage when POST /api/v1/jobs graph sets storageKey to "inline"', async () => {
+    const { apiKey } = await makeTestUserWithKey('paid');
+    const tinyPng = await sharp({ create: { width: 2, height: 2, channels: 3, background: { r: 20, g: 40, b: 60 } } }).png().toBuffer();
+
+    const res = await v1JobsPost(
+      new NextRequest(`${BASE_URL}/api/v1/jobs`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          filename: 'dot.png',
+          sourceFormat: 'png',
+          targetFormat: 'webp',
+          storageKey: 'inline',
+          inputBufferBase64: tinyPng.toString('base64'),
+          graph: {
+            nodes: {
+              upload: { op: 'import.upload', storageKey: 'inline' },
+              convert: { op: 'convert', input: 'upload', targetFormat: 'webp' },
+              export: { op: 'export.url', input: 'convert' },
+            },
+          },
+        }),
+      })
+    );
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { jobId: string };
+    expect(body.jobId).toBeTruthy();
+
+    try {
+      const state = await graphScheduler.getGraphState(body.jobId);
+      const uploadNode = state?.graph.nodes.upload as { storageKey?: string } | undefined;
+      expect(uploadNode?.storageKey).toBeTruthy();
+      expect(uploadNode?.storageKey).not.toBe('inline');
+      if (uploadNode?.storageKey) {
+        createdKeys.push(uploadNode.storageKey);
+        const stored = await s3Storage.getObject(uploadNode.storageKey);
+        expect(stored?.buffer).toEqual(tinyPng);
+      }
+    } finally {
+      await graphScheduler.cancelGraph(body.jobId, 'test cleanup').catch(() => false);
+      await graphScheduler.deleteGraph(body.jobId).catch(() => false);
+    }
+  });
+
+  it('extends sync slot Redis leases when explicit leaseMs exceeds SYNC_SLOT_LEASE_MS on local /api/tools/jobs fallback', async () => {
+    expect(ACQUIRE_SYNC_SLOT_LUA).toContain("redis.call('PTTL', key) < keyTtl");
+
+    const zsets = new Map<string, Map<string, number>>();
+    const observedExpirations: number[] = [];
+
+    const mockRedis = {
+      async eval(_script: string, _numKeys: number, key: string, nowStr: string, expiresAtStr: string, slotId: string, limitStr: string, queuedStr: string) {
+        const now = Number(nowStr);
+        const expiresAt = Number(expiresAtStr);
+        const limit = Number(limitStr);
+        const queued = Number(queuedStr) || 0;
+        let zset = zsets.get(key);
+        if (!zset) {
+          zset = new Map();
+          zsets.set(key, zset);
+        }
+        for (const [member, score] of zset.entries()) {
+          if (score < now) zset.delete(member);
+        }
+        if (zset.size + queued >= limit) return 0;
+        zset.set(slotId, expiresAt);
+        observedExpirations.push(expiresAt);
+        return 1;
+      },
+      async zrem(key: string, member: string) {
+        return (zsets.get(key)?.delete(member) ?? false) ? 1 : 0;
+      },
+      async zremrangebyscore(key: string, _min: string, max: number | string) {
+        const zset = zsets.get(key);
+        if (!zset) return 0;
+        const maxScore = Number(max);
+        let removed = 0;
+        for (const [member, score] of zset.entries()) {
+          if (score <= maxScore) {
+            zset.delete(member);
+            removed += 1;
+          }
+        }
+        return removed;
+      },
+      async zcard(key: string) {
+        return zsets.get(key)?.size ?? 0;
+      },
+    } as unknown as Redis;
+
+    setSyncSlotRedisClient(mockRedis);
+
+    const longLeaseMs = 1_800_000;
+    const directSlot = await acquireSyncSlot('slot-lease-user', 'paid', longLeaseMs);
+    expect(directSlot.granted).toBe(true);
+    const key = syncSlotKey('slot-lease-user');
+    await mockRedis.zremrangebyscore(key, '-inf', Date.now() + SYNC_SLOT_LEASE_MS + 10_000);
+    expect(await mockRedis.zcard(key)).toBe(1);
+    if (directSlot.granted) directSlot.release();
+    expect(await mockRedis.zcard(key)).toBe(0);
+
+    // Extreme leaseMs must be bounded rather than overflowing or failing downstream Redis PEXPIRE.
+    const cappedBefore = Date.now();
+    const cappedSlot = await acquireSyncSlot('slot-cap-user', 'paid', Number.MAX_SAFE_INTEGER);
+    expect(cappedSlot.granted).toBe(true);
+    expect(observedExpirations[observedExpirations.length - 1] - cappedBefore).toBeLessThanOrEqual(24 * 60 * 60 * 1000 + 1_000);
+    if (cappedSlot.granted) cappedSlot.release();
+
+    const { user, apiKey } = await makeTestUserWithKey('paid');
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    const pdfBytes = Buffer.from(await doc.save());
+    const form = new FormData();
+    form.set('tool', 'rotate');
+    form.set('options', JSON.stringify({ angle: 90 }));
+    form.append('files', new File([new Uint8Array(pdfBytes)], 'sample.pdf', { type: 'application/pdf' }));
+
+    const beforeSubmit = Date.now();
+    const expectedDeadline = conversionDeadlineMs({
+      tier: 'paid',
+      sourceFormat: 'pdf',
+      targetFormat: 'pdf',
+      inputBytes: pdfBytes.length,
+    });
+    expect(expectedDeadline + 15_000).toBeGreaterThan(SYNC_SLOT_LEASE_MS);
+
+    const res = await toolJobsPost(
+      new NextRequest(`${BASE_URL}/api/tools/jobs`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${apiKey}` },
+        body: form,
+      })
+    );
+    expect(res.status).toBe(201);
+    const { id: toolJobId } = (await res.json()) as { id: string };
+    expect(observedExpirations.length).toBeGreaterThanOrEqual(3);
+    const toolLeaseAt = observedExpirations[observedExpirations.length - 1];
+    expect(toolLeaseAt - beforeSubmit).toBeGreaterThanOrEqual(expectedDeadline + 14_000);
+
+    await vi.waitFor(async () => {
+      const done = await getToolJob(toolJobId);
+      expect(done?.status).toBe('completed');
+      if (done?.result?.kind === 'file' && done.result.file.key) createdKeys.push(done.result.file.key);
+    });
+    await vi.waitFor(async () => {
+      expect(await mockRedis.zcard(syncSlotKey(user.id))).toBe(0);
+    });
   });
 });

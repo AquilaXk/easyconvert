@@ -11,6 +11,7 @@ import {
   recordFailedLogin,
   resolveAuthClientIp,
 } from '@/lib/auth/login-rate-limiter';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
 import { clearSessionCookies, createSessionCookie, createSessionToken } from '@/lib/auth/session';
 import { readSessionOrRefusal } from '@/lib/auth/session-refusal';
@@ -123,7 +124,8 @@ export async function DELETE(req: NextRequest) {
         );
         const refreshed = await redisUserStore.findById(record.id);
         if (refreshed) {
-          conflict.headers.set('Set-Cookie', createSessionCookie(createSessionToken(redisUserStore.sanitizeUser(refreshed))));
+          const user = await redisKeyStore.withCreditTier(redisUserStore.sanitizeUser(refreshed));
+          conflict.headers.set('Set-Cookie', createSessionCookie(createSessionToken(user)));
         }
         return conflict;
       }
