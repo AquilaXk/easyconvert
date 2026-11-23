@@ -1,3 +1,5 @@
+import { isOpenSymbolFontName, mapOpenSymbolCharacter } from './pdf-opensymbol-map';
+
 /**
  * Symbol-font character tables for the office readers. Symbol fonts keep their glyphs at character codes 0x20-0xFF;
  * Office files store those characters either as the byte itself or at U+F000 + code, the private-use range a symbol
@@ -221,16 +223,24 @@ const FONT_NAME_SUFFIX = /(?:regular|mt)$/;
 /** The WP Greek faces differ by typeface ("WP Greek Century", "WP Greek Courier") and share one table. */
 const WP_GREEK_FACE = /^wpgreek(?:century|courier|helve)?$/;
 
+/** Subset tag prefix stripped from PDF embedded font names (`DAAAAA+Symbol`). */
+const SUBSET_TAG = /^[A-Z]{6}\+/;
+
 /** The key of the symbol-font table a font name selects, or undefined when the font is not a symbol font. */
 function tableKey(fontName: string): string | undefined {
-  const key = fontName.toLowerCase().replace(/[^a-z0-9]/g, '').replace(FONT_NAME_SUFFIX, '');
+  const key = fontName
+    .replace(SUBSET_TAG, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .replace(FONT_NAME_SUFFIX, '');
   if (WP_GREEK_FACE.test(key)) return 'wpgreek';
+  if (key === 'standardsyml') return 'symbol';
   return TABLES.has(key) ? key : undefined;
 }
 
-/** Whether the font name is Symbol, Wingdings, Wingdings 2, Wingdings 3 or Webdings. */
+/** Whether the font name is Symbol (including StandardSymL), Wingdings, Wingdings 2/3, Webdings, WP Greek, or OpenSymbol. */
 export function isSymbolFontName(fontName: string): boolean {
-  return tableKey(fontName) !== undefined;
+  return tableKey(fontName) !== undefined || isOpenSymbolFontName(fontName);
 }
 
 /** Whether the code point lies in the private-use range symbol-font characters are stored at. */
@@ -243,10 +253,13 @@ export function isSymbolFontPrivateUse(codePoint: number): boolean {
 }
 
 /**
- * The Unicode character a private-use code point (U+F020-U+F0FF or corporate PUA U+F600-U+F8FF) depicts in the named symbol font,
- * or undefined when the font is not a symbol font or its glyph for that code has no Unicode counterpart.
+ * The Unicode character a private-use code point (U+F020-U+F0FF, OpenSymbol U+E080-U+E0DD, or corporate PUA U+F600-U+F8FF)
+ * depicts in the named symbol font, or undefined when the font is not a symbol font or its glyph for that code has no Unicode counterpart.
  */
 export function mapSymbolFontCharacter(fontName: string, codePoint: number): string | undefined {
+  if (isOpenSymbolFontName(fontName)) {
+    return mapOpenSymbolCharacter(fontName, codePoint) ?? mapCorporatePuaSymbol(codePoint);
+  }
   const key = tableKey(fontName);
   if (key === undefined || !isSymbolFontPrivateUse(codePoint)) return undefined;
   if (codePoint === 0xf8f4) return '\u23AA';

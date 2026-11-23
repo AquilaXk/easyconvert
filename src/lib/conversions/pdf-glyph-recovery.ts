@@ -17,8 +17,8 @@ import { isSymbolFontName, mapCorporatePuaSymbol, mapSymbolFontCharacter } from 
  *    `/,`, `/(`, `/2`), the character the name is, which the glyph list does not know;
  *  - for the pi fonts of Adobe (MathematicalPi, Universal-Greek-with-Math-Pi), the catalogue names the glyph list lacks
  *    (`H11001`, `H9262`, pdf-pi-glyph-names.ts);
- *  - for the Symbol, Wingdings and Webdings families, the symbol-font tables of the office readers (symbol-font-map.ts)
- *    for the private-use character U+F000 + code that their fonts keep their glyphs at;
+ *  - for the Symbol (including StandardSymL), Wingdings, Webdings, and OpenSymbol/StarSymbol families, the symbol-font
+ *    tables of the office readers (symbol-font-map.ts, pdf-opensymbol-map.ts) for private-use U+F000 + code or U+E080..U+E0DD;
  *  - for the characters of the Adobe private-use area that stand for a symbol with a character of its own (the pieces of the
  *    big brackets and braces of Symbol and CMEX10, the serif and sans copyright, registered and trademark signs), the
  *    equivalents pdf.js maps them to (`SPECIAL_PRIVATE_USE_SYMBOLS`, pdf-glyph-list-pdfjs.ts).

@@ -65,6 +65,11 @@ const DOCUMENTS: ReadonlyArray<{ id: string; expected: readonly RegExp[]; unmapp
     ],
     unmappedAtMost: 25,
   },
+  {
+    id: 'govdocs1-002166.pdf',
+    expected: [/K's\s+and Σ's/, /\(Σ-,Σ0,Σ\+\)/, /0\s*⩽\s*λ\s*⩽\s*1/, /The result still has poles in\s+ε!/],
+    unmappedAtMost: 7,
+  },
 ];
 
 describe('glyphs without a Unicode value in real corpus files', () => {
