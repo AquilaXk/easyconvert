@@ -251,6 +251,42 @@ function storableBody(body: string, isBase64: boolean, byteLength: number): { bo
   return { body: '', isBase64, omittedBodyBytes: byteLength };
 }
 
+async function readBoundedBinaryBody(res: Response): Promise<{ base64: string; byteLength: number }> {
+  if (!res.body) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    return {
+      base64: buf.length <= IDEMPOTENCY_MAX_STORED_BODY_BYTES ? buf.toString('base64') : '',
+      byteLength: buf.length,
+    };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let kept = true;
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+      total += value.byteLength;
+      if (kept) {
+        if (total > IDEMPOTENCY_MAX_STORED_BODY_BYTES) {
+          kept = false;
+          chunks.length = 0;
+        } else {
+          chunks.push(value);
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return {
+    base64: kept ? Buffer.concat(chunks, total).toString('base64') : '',
+    byteLength: total,
+  };
+}
+
 /**
  * Stores a successful or client-error response in the idempotency store.
  */
@@ -261,24 +297,30 @@ export async function storeCompletedResponse(
   res: NextResponse | Response,
   lockToken?: string
 ): Promise<void> {
-  const clonedRes = res.clone();
-  const contentType = clonedRes.headers.get('content-type') || '';
+  const contentType = res.headers.get('content-type') || '';
   const isBinary =
     !contentType.includes('json') &&
     !contentType.includes('text') &&
     !contentType.includes('problem');
+  const clHeader = res.headers.get('content-length');
+  const declaredLength = clHeader !== null && /^\d+$/.test(clHeader.trim()) ? Number(clHeader.trim()) : null;
 
   let kept: ReturnType<typeof storableBody>;
-  if (isBinary) {
-    const buf = Buffer.from(await clonedRes.arrayBuffer());
-    kept = storableBody(buf.length <= IDEMPOTENCY_MAX_STORED_BODY_BYTES ? buf.toString('base64') : '', true, buf.length);
+  if (isBinary && declaredLength !== null && declaredLength > IDEMPOTENCY_MAX_STORED_BODY_BYTES) {
+    kept = storableBody('', true, declaredLength);
   } else {
-    const text = await clonedRes.text();
-    kept = storableBody(text, false, Buffer.byteLength(text));
+    const clonedRes = res.clone();
+    if (isBinary) {
+      const binary = await readBoundedBinaryBody(clonedRes);
+      kept = storableBody(binary.base64, true, binary.byteLength);
+    } else {
+      const text = await clonedRes.text();
+      kept = storableBody(text, false, Buffer.byteLength(text));
+    }
   }
 
   const headersRecord: Record<string, string> = {};
-  clonedRes.headers.forEach((val, key) => {
+  res.headers.forEach((val, key) => {
     if (key.toLowerCase() !== 'idempotent-replayed') {
       headersRecord[key] = val;
     }

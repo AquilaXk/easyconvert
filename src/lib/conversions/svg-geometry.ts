@@ -1119,21 +1119,24 @@ function renderUse(node: SvgNode, ctx: StyleContext, state: RenderState): void {
   const offset: AffineMatrix = [1, 0, 0, 1, numberAttr(node.attrs, 'x'), numberAttr(node.attrs, 'y')];
   const useCtx: StyleContext = { ...ctx, ctm: multiplyMatrix(ctx.ctm, offset) };
   state.useChain.push(id);
-  if (target.name === 'symbol') {
-    if (target.attrs.has('viewBox')) {
-      throw new UnsupportedOptionError('SVG <symbol> with a viewBox is not supported by metafile encoders.');
+  try {
+    if (target.name === 'symbol') {
+      if (target.attrs.has('viewBox')) {
+        throw new UnsupportedOptionError('SVG <symbol> with a viewBox is not supported by metafile encoders.');
+      }
+      const declared = declaredProperties(target.attrs, target.name, state.sheet);
+      assertNeutralPaintProperties(declared, state.pens);
+      assertValidPaintDeclarations(declared);
+      if (declared.get('display') === 'none') return;
+      renderChildren(target, deriveContext(useCtx, target.attrs, declared, state.pens), state);
+    } else if (NON_RENDERED_ELEMENTS.has(target.name)) {
+      throw new UnsupportedOptionError(`SVG <use> of non-rendering element <${target.name}> is not supported by metafile encoders.`);
+    } else {
+      renderNode(target, useCtx, state);
     }
-    const declared = declaredProperties(target.attrs, target.name, state.sheet);
-    assertNeutralPaintProperties(declared, state.pens);
-    assertValidPaintDeclarations(declared);
-    if (declared.get('display') === 'none') return;
-    renderChildren(target, deriveContext(useCtx, target.attrs, declared, state.pens), state);
-  } else if (NON_RENDERED_ELEMENTS.has(target.name)) {
-    throw new UnsupportedOptionError(`SVG <use> of non-rendering element <${target.name}> is not supported by metafile encoders.`);
-  } else {
-    renderNode(target, useCtx, state);
+  } finally {
+    state.useChain.pop();
   }
-  state.useChain.pop();
 }
 
 function renderChildren(node: SvgNode, ctx: StyleContext, state: RenderState): void {

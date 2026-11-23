@@ -7,6 +7,7 @@ import {
 } from '@/lib/auth/oauth';
 import { isEmailVerified } from '@/lib/auth/email-verified';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { handOverUnverifiedAccount } from '@/lib/auth/standing-access';
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { createSessionToken, createSessionCookie, getSessionFromRequest } from '@/lib/auth/session';
@@ -118,7 +119,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const user = redisUserStore.sanitizeUser(userRecord);
+    const user = await redisKeyStore.withCreditTier(redisUserStore.sanitizeUser(userRecord));
     const token = createSessionToken(user);
     const sessionCookieHeader = createSessionCookie(token);
 

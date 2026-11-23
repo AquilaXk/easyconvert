@@ -19,6 +19,7 @@ import {
   PdfWatermarkOptions,
   PdfWatermarkPosition,
   PdfWatermarkLayer,
+  PayloadLimitError,
   PdfPasswordRequiredError,
   PdfPostprocessError,
   UnsupportedOptionError,
@@ -125,6 +126,9 @@ function reorderContentStreamUnder(page: PDFPage): void {
   }
 }
 
+/** Maximum watermark tile draws allowed per page so a huge /MediaBox cannot stall the worker. */
+export const MAX_WATERMARK_TILES_PER_PAGE = 4_096;
+
 function renderTiled(
   pageWidth: number,
   pageHeight: number,
@@ -134,8 +138,33 @@ function renderTiled(
   startY: number,
   drawAt: (x: number, y: number) => void
 ): void {
+  if (
+    !Number.isFinite(pageWidth) ||
+    !Number.isFinite(pageHeight) ||
+    !Number.isFinite(stepX) ||
+    !Number.isFinite(stepY) ||
+    !Number.isFinite(startX) ||
+    !Number.isFinite(startY) ||
+    stepX <= 0 ||
+    stepY <= 0
+  ) {
+    return;
+  }
+  if (pageWidth <= startX || pageHeight <= startY) {
+    return;
+  }
+  const cols = Math.ceil((pageWidth - startX) / stepX);
+  const rows = Math.ceil((pageHeight - startY) / stepY);
+  if (!Number.isFinite(cols * rows) || cols * rows > MAX_WATERMARK_TILES_PER_PAGE) {
+    throw new PayloadLimitError(`Tiled watermark exceeds the ${MAX_WATERMARK_TILES_PER_PAGE} tiles-per-page limit.`);
+  }
+  let drawn = 0;
   for (let x = startX; x < pageWidth; x += stepX) {
     for (let y = startY; y < pageHeight; y += stepY) {
+      drawn += 1;
+      if (drawn > MAX_WATERMARK_TILES_PER_PAGE) {
+        throw new PayloadLimitError(`Tiled watermark exceeds the ${MAX_WATERMARK_TILES_PER_PAGE} tiles-per-page limit.`);
+      }
       drawAt(x, y);
     }
   }

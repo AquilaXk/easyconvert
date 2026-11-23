@@ -32,21 +32,26 @@ import { graphProgress } from '@/lib/queue/graph/graph-progress';
 import { respondOnce } from '@/lib/api/with-idempotency';
 import type { User } from '@/lib/auth/types';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, INLINE_JSON_BODY_MAX_BYTES } from '@/lib/plan-limits';
-import { readBoundedJsonText } from '@/lib/api/json-body-bounds';
+import { boundedJsonFieldProblem, parseBoundedJsonField, readBoundedJsonText } from '@/lib/api/json-body-bounds';
 import { formatBytes } from '@/lib/format-bytes';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
-/** The options object of a multipart `options` field, or the message that names what is wrong with it. */
-function parseOptionsField(raw: string): { options: ConversionOptions } | { error: string } {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { error: 'Invalid JSON format for "options" parameter.' };
+/** The options object of a multipart `options` field, or the refusal for a malformed or unbounded field. */
+function parseOptionsField(raw: string, instanceUri: string): { options: ConversionOptions } | { refusal: Response } {
+  const parsed = parseBoundedJsonField(raw);
+  if (!parsed.ok) {
+    return {
+      refusal:
+        parsed.kind === 'invalid_json'
+          ? failJson(400, 'Invalid JSON format for "options" parameter.')
+          : boundedJsonFieldProblem('options', parsed.kind, instanceUri),
+    };
   }
-  return isConversionOptionsObject(parsed) ? { options: parsed } : { error: 'The "options" field must be a JSON object.' };
+  return isConversionOptionsObject(parsed.value)
+    ? { options: parsed.value }
+    : { refusal: failJson(400, 'The "options" field must be a JSON object.') };
 }
 
 /** What a job request names: the input (a stored key, inline bytes or none yet), the target and the options. */
@@ -143,14 +148,17 @@ async function localObjectProblem(storageKey: string, sourceFormat: string, orig
 async function inputSpoofProblem(request: JobRequest, sourceFormat: string): Promise<Response | null> {
   const { inputBufferBase64, storageKey, originalFilename } = request;
   try {
+    // Check storageKey first whenever present, matching queueJob(), so inline decoy bytes cannot hide a spoofed stored key.
+    if (storageKey) {
+      if (request.uploadedInline) return null;
+      return storageProvider.kind === 'remote'
+        ? await remoteObjectProblem(storageKey, sourceFormat, originalFilename)
+        : await localObjectProblem(storageKey, sourceFormat, originalFilename);
+    }
     if (inputBufferBase64) {
       assertNotSpoofedFile(Buffer.from(inputBufferBase64, 'base64'), sourceFormat, originalFilename);
-      return null;
     }
-    if (!storageKey || request.uploadedInline) return null;
-    return storageProvider.kind === 'remote'
-      ? await remoteObjectProblem(storageKey, sourceFormat, originalFilename)
-      : await localObjectProblem(storageKey, sourceFormat, originalFilename);
+    return null;
   } catch (err) {
     return spoofRefusalOrThrow(err);
   }
@@ -160,11 +168,13 @@ async function inputSpoofProblem(request: JobRequest, sourceFormat: string): Pro
 type PreparedJobInput = { refusal: Response } | { sourceFormat: string; inputBytes: number | undefined };
 
 async function readQueueJobXmlPrefix(request: JobRequest): Promise<Uint8Array | undefined> {
+  if (request.storageKey) {
+    return readObjectHeader(storageProvider, request.storageKey)
+      .then((header) => header?.subarray(0, ALTO_SNIFF_BYTES))
+      .catch(() => undefined);
+  }
   if (request.inputBufferBase64) return Buffer.from(request.inputBufferBase64.slice(0, 5600), 'base64');
-  if (!request.storageKey) return undefined;
-  return readObjectHeader(storageProvider, request.storageKey)
-    .then((header) => header?.subarray(0, ALTO_SNIFF_BYTES))
-    .catch(() => undefined);
+  return undefined;
 }
 
 /** Authorizes the stored key, identifies the format, enforces the plan size limit and the spoof check. */
@@ -302,8 +312,8 @@ async function storeFormFile(file: File, request: JobRequest, instanceUri: strin
 
 /** Reads the `options` form field into the request; a refusal when it is malformed or names a removed option. */
 function applyFormOptions(optionsRaw: string, request: JobRequest, instanceUri: string): Response | null {
-  const parsed = parseOptionsField(optionsRaw);
-  if ('error' in parsed) return failJson(400, parsed.error);
+  const parsed = parseOptionsField(optionsRaw, instanceUri);
+  if ('refusal' in parsed) return parsed.refusal;
   const optionsProblem = legacyOptionsProblem(parsed.options, instanceUri);
   if (optionsProblem) return optionsProblem;
   request.options = parsed.options;

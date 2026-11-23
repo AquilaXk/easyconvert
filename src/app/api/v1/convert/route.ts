@@ -42,6 +42,7 @@ import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
 import { wantsRawResponse } from '@/lib/api/idempotency';
+import { boundedJsonFieldProblem, parseBoundedJsonField } from '@/lib/api/json-body-bounds';
 import { spoofRefusalProblem, typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { resolveEngineChoice } from '@/worker/engine-registry';
 import {
@@ -146,15 +147,16 @@ async function parseConvertFormData(formData: FormData, instanceUri: string, hea
   let options: ConversionOptions = {};
   const optionsRaw = formData.get('options');
   if (typeof optionsRaw === 'string' && optionsRaw.trim()) {
-    try {
-      const parsed = JSON.parse(optionsRaw);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        return badRequest('The "options" field must be a valid JSON object.');
-      }
-      options = parsed;
-    } catch {
-      return badRequest('Invalid JSON string provided in "options" field.');
+    const parsed = parseBoundedJsonField(optionsRaw);
+    if (!parsed.ok) {
+      return parsed.kind === 'invalid_json'
+        ? badRequest('Invalid JSON string provided in "options" field.')
+        : { facts, problem: boundedJsonFieldProblem('options', parsed.kind, instanceUri, headers) };
     }
+    if (!parsed.value || typeof parsed.value !== 'object' || Array.isArray(parsed.value)) {
+      return badRequest('The "options" field must be a valid JSON object.');
+    }
+    options = parsed.value as ConversionOptions;
   }
 
   return { facts, data: { file: file as File, sourceDef, targetDef, options } };

@@ -11,7 +11,7 @@ import { openOpcPackage } from '../package-access';
 import { XLSX_MAX_RANGES_PER_WORKBOOK, XLSX_NO_WORKSHEETS_MESSAGE, discoverXlsxSheets } from './xlsx-sheets';
 import { XLSX_MAX_CELL_TEXT_CHARS_ENV, xlsxMaxCellTextChars } from './spreadsheet-limits';
 import { XML_TREE_MAX_DEPTH } from '../xml-tree';
-import { worksheetBoundError } from './xlsx-worksheet-structure';
+import { applyWorksheetColumnWidth, worksheetBoundError } from './xlsx-worksheet-structure';
 import { type OfficeCellRange, type OfficeWorksheet, type OfficeWorksheetCell, type OfficeWorksheetHyperlink, type OfficeWorksheetPrintArea, type OpenXmlChartData } from './types';
 import { parseOpenXmlChart } from './chart-parse';
 import { DATE_SYSTEM_1900, DATE_SYSTEM_1904, type SpreadsheetDateSystem, formatSpreadsheetCellValue } from './spreadsheet-format';
@@ -138,17 +138,6 @@ function chargeMaterialisedCells(budgets: WorkbookBudgets, count: number): void 
       `The XLSX sheets hold more than ${XLSX_MAX_MATERIALISED_CELLS} cells, the empty cells and rows that pad a sparse sheet included.`
     );
   }
-}
-
-function applyColElement(attrs: Record<string, string>, columnWidths: number[], sheetName: string): void {
-  if (!attrs.min || !attrs.max || !attrs.width) return;
-  const min = Number.parseInt(attrs.min, 10) - 1;
-  const max = Number.parseInt(attrs.max, 10) - 1;
-  const ptWidth = Math.round(Number.parseFloat(attrs.width) * 7.5);
-  if (max >= XLSX_MAX_COLUMNS) {
-    throw worksheetBoundError(sheetName, `column ${max + 1} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
-  }
-  for (let c = min; c <= max; c++) columnWidths[c] = ptWidth;
 }
 
 function recordSheetAnnotation(
@@ -667,7 +656,7 @@ function parseWorksheetXml(
       colsBlocksSeen += 1;
       if (colsBlocksSeen === 1) inFirstCols = true;
     } else if (inFirstCols && local === 'col') {
-      applyColElement(attrs, columnWidths, sheetName);
+      applyWorksheetColumnWidth(attrs, columnWidths, sheetName);
     } else if ((local === 'mergeCell' || local === 'hyperlink') && (!hasSheetData || afterSheetData)) {
       if (annotationsUsed < allowance) {
         annotationsUsed += 1;

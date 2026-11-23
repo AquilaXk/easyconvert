@@ -62,7 +62,7 @@ describe('a tus upload to an object store whose record cannot be written', () =>
     fs.rmSync(ledgerDir, { recursive: true, force: true });
   });
 
-  async function start() {
+  async function start(totalLength: number = WHOLE.length) {
     const { userStore } = await import('../src/lib/auth/user-store');
     const { createSessionToken } = await import('../src/lib/auth/session');
     const { serializeTusMetadata } = await import('../src/lib/storage/tus-engine');
@@ -73,7 +73,7 @@ describe('a tus upload to an object store whose record cannot be written', () =>
     const created = await POST(
       new NextRequest(`${BASE_URL}/api/v1/uploads/tus`, {
         method: 'POST',
-        headers: { ...headers, 'Upload-Length': String(WHOLE.length), 'Upload-Metadata': serializeTusMetadata({ filename: 'whole.txt', filetype: 'text/plain' }) },
+        headers: { ...headers, 'Upload-Length': String(totalLength), 'Upload-Metadata': serializeTusMetadata({ filename: 'whole.txt', filetype: 'text/plain' }) },
       }),
       { params: Promise.resolve({}) }
     );
@@ -147,5 +147,77 @@ describe('a tus upload to an object store whose record cannot be written', () =>
     expect(refused.status).toBeGreaterThanOrEqual(400);
     expect(refused.headers.get('X-Storage-Key')).toBeNull();
     expect(server.objects.size).toBe(0);
+  });
+
+  it('aborts the reopened multipart upload and keeps 503 TusUploadNotRecordedError when rewind session persistence fails', async () => {
+    await failingLedger(1);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { TUS_REMOTE_PART_BYTES, getTusSessionStore, setTusSessionStore } = await import('../src/lib/storage/tus-engine');
+    const firstPart = Buffer.alloc(TUS_REMOTE_PART_BYTES - 16, 0x61);
+    const tailPart = Buffer.alloc(32, 0x62);
+    const tus = await start(firstPart.length + tailPart.length);
+    expect((await tus.patch(0, firstPart)).status).toBe(204);
+
+    const realStore = getTusSessionStore();
+    let failSaveForRewind = false;
+    setTusSessionStore(
+      new Proxy(realStore, {
+        get(target, prop) {
+          if (prop === 'saveSession') {
+            return async (session: Parameters<typeof realStore.saveSession>[0]) => {
+              if (failSaveForRewind && session.completed === false) {
+                throw new Error('session store unavailable during rewind');
+              }
+              return target.saveSession(session);
+            };
+          }
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      })
+    );
+
+    failSaveForRewind = true;
+    const refused = await tus.patch(firstPart.length, tailPart);
+    expect(refused.status).toBe(HTTP_UNAVAILABLE);
+    expect(server.uploads.size).toBe(0);
+    expect(server.objects.size).toBe(0);
+  });
+
+  it('keeps the completed object and ledger record when final session save fails after recordTusUpload succeeds', async () => {
+    await failingLedger(0);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { TUS_REMOTE_PART_BYTES, getTusSessionStore, setTusSessionStore } = await import('../src/lib/storage/tus-engine');
+    const firstPart = Buffer.alloc(TUS_REMOTE_PART_BYTES - 16, 0x61);
+    const tailPart = Buffer.alloc(32, 0x62);
+    const expected = Buffer.concat([firstPart, tailPart]);
+    const tus = await start(expected.length);
+    expect((await tus.patch(0, firstPart)).status).toBe(204);
+
+    const realStore = getTusSessionStore();
+    let failCompletedSave = false;
+    setTusSessionStore(
+      new Proxy(realStore, {
+        get(target, prop) {
+          if (prop === 'saveSession') {
+            return async (session: Parameters<typeof realStore.saveSession>[0]) => {
+              if (failCompletedSave && session.completed === true) {
+                throw new Error('transient session save failure after completion');
+              }
+              return target.saveSession(session);
+            };
+          }
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      })
+    );
+
+    failCompletedSave = true;
+    const res = await tus.patch(firstPart.length, tailPart);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(server.objects.size).toBe(1);
+    const stored = [...server.objects.values()][0];
+    expect(stored?.body.equals(expected)).toBe(true);
   });
 });

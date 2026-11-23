@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hashPassword, iterationsOf, passwordNeedsUpgrade, verifyPassword } from '@/lib/auth/crypto';
 import { redisUserStore } from '@/lib/auth/redis-user-store';
+import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { createSessionToken, createSessionCookie } from '@/lib/auth/session';
 import { authStoreUnavailableRefusal, codedRefusal, serverFault } from '@/lib/api/problem-details';
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
@@ -98,7 +99,7 @@ export async function POST(req: NextRequest) {
     await resetLoginAttempts(email);
     if (passwordNeedsUpgrade(iterationsOf(userRecord))) await upgradePasswordHash(userRecord.id, userRecord.passwordHash, password);
 
-    const user = redisUserStore.sanitizeUser(userRecord);
+    const user = await redisKeyStore.withCreditTier(redisUserStore.sanitizeUser(userRecord));
     const token = createSessionToken(user);
     const cookieHeader = createSessionCookie(token);
 

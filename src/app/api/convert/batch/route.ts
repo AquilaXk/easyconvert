@@ -31,6 +31,7 @@ import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outc
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
+import { boundedJsonFieldProblem, parseBoundedJsonField } from '@/lib/api/json-body-bounds';
 import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
 
 export const dynamic = 'force-dynamic';
@@ -41,29 +42,38 @@ export const dynamic = 'force-dynamic';
  */
 function parseBatchOptions(optionsRaw: string | null, instanceUri: string): { options: ConversionOptions } | { problem: NextResponse } {
   if (!optionsRaw) return { options: {} };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(optionsRaw);
-  } catch {
-    return { problem: NextResponse.json({ success: false, error: 'Invalid JSON for options.' }, { status: 400 }) };
+  const parsed = parseBoundedJsonField(optionsRaw);
+  if (!parsed.ok) {
+    return {
+      problem:
+        parsed.kind === 'invalid_json'
+          ? NextResponse.json({ success: false, error: 'Invalid JSON for options.' }, { status: 400 })
+          : boundedJsonFieldProblem('options', parsed.kind, instanceUri),
+    };
   }
-  if (!isConversionOptionsObject(parsed)) {
+  if (!isConversionOptionsObject(parsed.value)) {
     return { problem: NextResponse.json({ success: false, error: 'The "options" field must be a JSON object.' }, { status: 400 }) };
   }
-  const problem = legacyOptionsProblem(parsed, instanceUri);
-  return problem ? { problem } : { options: parsed };
+  const problem = legacyOptionsProblem(parsed.value, instanceUri);
+  return problem ? { problem } : { options: parsed.value };
 }
 
 /** The target format of each file name (and of `default`) from the `targetFormats` field: a JSON object whose values are strings. */
-function parseTargetFormats(raw: string | null): { map: Map<string, string> } | { problem: NextResponse } {
+function parseTargetFormats(raw: string | null, instanceUri: string): { map: Map<string, string> } | { problem: NextResponse } {
   if (!raw) return { map: new Map() };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { problem: NextResponse.json({ success: false, error: 'Invalid JSON for targetFormats map.' }, { status: 400 }) };
+  const parsed = parseBoundedJsonField(raw);
+  if (!parsed.ok) {
+    return {
+      problem:
+        parsed.kind === 'invalid_json'
+          ? NextResponse.json({ success: false, error: 'Invalid JSON for targetFormats map.' }, { status: 400 })
+          : boundedJsonFieldProblem('targetFormats', parsed.kind, instanceUri),
+    };
   }
-  const entries = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? Object.entries(parsed) : undefined;
+  const entries =
+    parsed.value !== null && typeof parsed.value === 'object' && !Array.isArray(parsed.value)
+      ? Object.entries(parsed.value)
+      : undefined;
   if (!entries || entries.some(([, format]) => typeof format !== 'string')) {
     return { problem: NextResponse.json({ success: false, error: 'The "targetFormats" field must be a JSON object whose values are strings.' }, { status: 400 }) };
   }
@@ -201,7 +211,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     const sizeProblem = validateBatchFileSizes(files, auth.user, instanceUri);
     if (sizeProblem) return sizeProblem;
 
-    const parsedTargets = parseTargetFormats(targetFormatsRaw);
+    const parsedTargets = parseTargetFormats(targetFormatsRaw, instanceUri);
     if ('problem' in parsedTargets) {
       return parsedTargets.problem;
     }

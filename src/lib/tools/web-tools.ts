@@ -154,6 +154,12 @@ function expectedExtension(tool: WebTool, name: string): { extension?: string; k
   return { extension: pdfExtensionOf(name), kind: 'a PDF' };
 }
 
+/** Expected format extension used for magic-byte spoof checking on `tool`, or undefined for `archive-create` or unsupported names. */
+export function expectedToolInputExtension(tool: WebTool, name: string): string | undefined {
+  if (tool === 'archive-create') return undefined;
+  return expectedExtension(tool, name).extension;
+}
+
 function refuseUnreadableInput(tool: WebTool, file: WebToolFile): void {
   if (file.buffer.length === 0) {
     throw new WebToolRefusal(HTTP_BAD_REQUEST, 'empty_file', `The file "${file.name}" is empty.`);

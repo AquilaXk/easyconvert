@@ -39,6 +39,10 @@ const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
  */
 export const WORKER_SANDBOX_DIR_NAME = new RegExp(`^(?:easyconvert_worker_sandbox_|libreoffice_(?:probe_)?(?:profile|work)_[A-Za-z0-9-]+_)${UUID}$`);
 
+/** Per-invocation temporary scratch directories written under `os.tmpdir()` by tools/converters when SIGKILL prevents `finally` cleanup. */
+const STALE_SCRATCH_DIR_NAME =
+  /^(?:easyconvert-(?:ocr-(?:pages-)?|onnx-ocr-|qpdf_|avif-|avifenc-|decode-|decoder-|spool-|sftp-(?:down|up|run)-)|easyconvert_(?:media|verapdf|metadata)_)/;
+
 export interface SandboxSweepOptions {
   directory?: string;
   now?: number;
@@ -73,13 +77,16 @@ export function sweepWorkerSandboxDirs(options: SandboxSweepOptions = {}): strin
       }
       continue;
     }
-    if (!WORKER_SANDBOX_DIR_NAME.test(name)) continue;
+    const isWorkerSandbox = WORKER_SANDBOX_DIR_NAME.test(name);
+    const isScratchDir = !isWorkerSandbox && STALE_SCRATCH_DIR_NAME.test(name);
+    if (!isWorkerSandbox && !isScratchDir) continue;
     const full = path.join(directory, name);
-    if (isOwnedWorkerSandboxDir(full)) continue;
+    if (isWorkerSandbox && isOwnedWorkerSandboxDir(full)) continue;
+    const minAgeMs = isWorkerSandbox ? staleAfterMs : Math.max(staleAfterMs, JOB_STAGING_MAX_AGE_MS);
     try {
       const stat = fs.lstatSync(full);
       if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid)) continue;
-      if (now - stat.mtimeMs < staleAfterMs) continue;
+      if (now - stat.mtimeMs < minAgeMs) continue;
       fs.rmSync(full, { recursive: true, force: true });
       removed.push(name);
     } catch {

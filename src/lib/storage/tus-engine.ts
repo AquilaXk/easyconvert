@@ -1131,6 +1131,52 @@ export class TusEngine {
     await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
   }
 
+  private async dropLocalSession(id: string, infoPath: string, binPath: string): Promise<void> {
+    await this.sessionStore.deleteSession(id).catch(() => false);
+    await fs.promises.rm(infoPath, { force: true }).catch(() => undefined);
+    await fs.promises.rm(binPath, { force: true }).catch(() => undefined);
+    this.localTailMarkers.delete(id);
+    await this.sessionStore.deleteStagedBytes?.(id).catch(() => undefined);
+  }
+
+  private async recoverCompletedRemoteFailure(params: {
+    id: string;
+    session: TusSession;
+    infoPath: string;
+    binPath: string;
+    clientOffset: number;
+    expectedLocalTailOffset: number;
+    savedFlushed: number;
+  }): Promise<void> {
+    const { id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, savedFlushed } = params;
+    // S3 consumed `remoteUploadId` and `recordTusUpload` purged `session.key`. Re-open a fresh multipart session
+    // when the full payload still sits in `binPath`; abort any unused reopen if rewind fails, preserving caller error.
+    if (savedFlushed === 0) {
+      let reinitUploadId: string | undefined;
+      try {
+        const reinit = await storageProvider.initiateMultipartUpload(
+          session.filename,
+          session.mimeType,
+          session.uploadLength,
+          session.ownerUserId,
+          TUS_REMOTE_PART_BYTES
+        );
+        reinitUploadId = reinit.uploadId;
+        session.key = reinit.key;
+        session.remoteUploadId = reinit.uploadId;
+        session.remoteParts = [];
+        session.remoteFlushedBytes = 0;
+        await this.rewindSessionToClientOffset(session, infoPath, binPath, expectedLocalTailOffset, clientOffset);
+        return;
+      } catch {
+        if (reinitUploadId) {
+          await Promise.resolve(storageProvider.abortMultipartUpload(reinitUploadId)).catch(() => undefined);
+        }
+      }
+    }
+    await this.dropLocalSession(id, infoPath, binPath);
+  }
+
   private async completeRemoteMultipartTus(params: {
     id: string;
     session: TusSession;
@@ -1167,6 +1213,8 @@ export class TusEngine {
 
     const savedParts = [...(session.remoteParts ?? [])];
     const savedFlushed = session.remoteFlushedBytes ?? 0;
+    let remoteCompleted = false;
+    let remoteRecorded = false;
     try {
       const tailBuffer = newTailBytes > 0 ? await fs.promises.readFile(binPath) : Buffer.alloc(0);
       const parts = [...savedParts];
@@ -1178,13 +1226,30 @@ export class TusEngine {
       session.remoteParts = parts;
       session.remoteFlushedBytes = session.uploadLength;
       await storageProvider.completeMultipartUpload(session.remoteUploadId!, parts);
+      remoteCompleted = true;
       await recordTusUpload(session.key);
+      remoteRecorded = true;
       await this.sessionStore.saveSession(session);
       await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
       await fs.promises.rm(binPath, { force: true });
       this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
+      if (remoteRecorded) {
+        throw err;
+      }
+      if (remoteCompleted) {
+        await this.recoverCompletedRemoteFailure({
+          id,
+          session,
+          infoPath,
+          binPath,
+          clientOffset,
+          expectedLocalTailOffset,
+          savedFlushed,
+        });
+        throw err;
+      }
       session.remoteParts = savedParts;
       session.remoteFlushedBytes = savedFlushed;
       await this.rewindSessionToClientOffset(session, infoPath, binPath, expectedLocalTailOffset, clientOffset);

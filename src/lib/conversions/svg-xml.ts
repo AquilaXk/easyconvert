@@ -15,11 +15,23 @@ const XML_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot:
 
 const MAX_CODE_POINT = 0x10ffff;
 
+/** XML 1.0 Fifth Edition §2.2 Char production (forbids NUL, control characters other than tab/LF/CR, surrogates, and non-characters FFFE/FFFF). */
+function isValidXmlChar(code: number): boolean {
+  return (
+    code === 0x9 ||
+    code === 0xa ||
+    code === 0xd ||
+    (code >= 0x20 && code <= 0xd7ff) ||
+    (code >= 0xe000 && code <= 0xfffd) ||
+    (code >= 0x10000 && code <= MAX_CODE_POINT)
+  );
+}
+
 function decodeXmlEntities(value: string): string {
   return value.replace(/&(#x[0-9a-fA-F]+|#\d+|[a-zA-Z]+);/g, (whole, ent: string) => {
     if (ent.startsWith('#')) {
       const code = ent.startsWith('#x') ? Number.parseInt(ent.slice(2), 16) : Number.parseInt(ent.slice(1), 10);
-      if (Number.isNaN(code) || code < 0 || code > MAX_CODE_POINT) {
+      if (!Number.isSafeInteger(code) || !isValidXmlChar(code)) {
         throw new CadGeometryUnavailableError(`Invalid XML character reference "${whole}".`);
       }
       return String.fromCodePoint(code);

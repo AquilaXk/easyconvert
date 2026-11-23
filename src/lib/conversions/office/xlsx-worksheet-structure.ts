@@ -19,21 +19,35 @@ function splitWorksheetAtCells(sheetXml: string): { beforeCells: string; cells: 
   return { beforeCells: sheetXml.slice(0, sheetData.startIndex), cells: sheetData.content };
 }
 
+/** Applies a validated `<col min max width/>` range into zero-based `columnWidths`, rejecting negative, zero, inverted, or out-of-range indices. */
+export function applyWorksheetColumnWidth(attrs: Record<string, string>, columnWidths: number[], sheetName: string): void {
+  if (!attrs.min || !attrs.max || !attrs.width) return;
+  const rawMin = Number(attrs.min);
+  const rawMax = Number(attrs.max);
+  if (!Number.isSafeInteger(rawMin) || rawMin < 1) {
+    throw worksheetBoundError(sheetName, `column ${attrs.min} is before the first column of a worksheet (1)`);
+  }
+  if (!Number.isSafeInteger(rawMax) || rawMax > XLSX_MAX_COLUMNS) {
+    throw worksheetBoundError(sheetName, `column ${attrs.max} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
+  }
+  if (rawMax < rawMin) {
+    throw worksheetBoundError(sheetName, `column range ${rawMin}..${rawMax} has min greater than max`);
+  }
+  const rawWidth = Number.parseFloat(attrs.width);
+  if (!Number.isFinite(rawWidth) || rawWidth < 0) return;
+  const ptWidth = Math.round(rawWidth * 7.5);
+  for (let c = rawMin - 1; c < rawMax; c++) {
+    columnWidths[c] = ptWidth;
+  }
+}
+
 /** The widths in points of the columns a worksheet sets, by zero-based column: `<cols><col min="1" max="1" width="15" customWidth="1"/></cols>`. */
 function readColumnWidths(sheetXml: string, sheetName: string): number[] {
   const columnWidths: number[] = [];
   const [colsEl] = safeExtractXmlElements(sheetXml, 'cols', { maxElements: 1 });
   if (!colsEl) return columnWidths;
   for (const cl of safeExtractXmlElements(colsEl.content, 'col')) {
-    if (cl.attrs.min && cl.attrs.max && cl.attrs.width) {
-      const min = parseInt(cl.attrs.min, 10) - 1;
-      const max = parseInt(cl.attrs.max, 10) - 1;
-      const ptWidth = Math.round(parseFloat(cl.attrs.width) * 7.5);
-      if (max >= XLSX_MAX_COLUMNS) throw worksheetBoundError(sheetName, `column ${max + 1} is past the last column of a worksheet (${XLSX_LAST_COLUMN_NAME})`);
-      for (let c = min; c <= max; c++) {
-        columnWidths[c] = ptWidth;
-      }
-    }
+    applyWorksheetColumnWidth(cl.attrs, columnWidths, sheetName);
   }
   return columnWidths;
 }

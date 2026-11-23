@@ -41,6 +41,7 @@ import { conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
+import { boundedJsonFieldProblem, parseBoundedJsonField } from '@/lib/api/json-body-bounds';
 import { HTTP_SERVICE_UNAVAILABLE, refusalCodeOf, type ConversionRefusalCode } from '@/lib/refusal-codes';
 
 export const dynamic = 'force-dynamic';
@@ -217,16 +218,16 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
 
     let options: ConversionOptions = {};
     if (optionsRaw) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(optionsRaw);
-      } catch {
-        return refusal(400, 'invalid_options', 'Invalid JSON format for "options" parameter.');
+      const parsed = parseBoundedJsonField(optionsRaw);
+      if (!parsed.ok) {
+        return parsed.kind === 'invalid_json'
+          ? refusal(400, 'invalid_options', 'Invalid JSON format for "options" parameter.')
+          : boundedJsonFieldProblem('options', parsed.kind, instanceUri);
       }
-      if (!isConversionOptionsObject(parsed)) {
+      if (!isConversionOptionsObject(parsed.value)) {
         return refusal(400, 'invalid_options', 'The "options" field must be a JSON object.');
       }
-      options = parsed;
+      options = parsed.value;
       const optionsProblem = legacyOptionsProblem(options, instanceUri);
       if (optionsProblem) {
         return optionsProblem;

@@ -55,7 +55,7 @@ import { SealingKeyConfigError, SecretSealError } from '@/lib/security/job-secre
 import { checkSubmissionLimits } from '@/lib/jobs/submission-limits';
 import { validatePageRangeSyntax } from '@/lib/conversions';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
-import { readBoundedJson } from '@/lib/api/json-body-bounds';
+import { boundedJsonFieldProblem, parseBoundedJsonField, readBoundedJson } from '@/lib/api/json-body-bounds';
 import { INLINE_JOB_PAYLOAD_MAX_BYTES, INLINE_JSON_BODY_MAX_BYTES, fileTooLargeMessage, maxFileBytes, planOfCaller, type Plan, type PlanCaller } from '@/lib/plan-limits';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
 import { graphJobState, graphProcessedOn, listVisibleWork } from '@/lib/queue/user-jobs';
@@ -146,12 +146,12 @@ async function resolveJobSourceDef(input: JobSourceLookupInput): Promise<FormatD
   const sourceDef = (input.explicitSource ? getFormatByExtension(input.explicitSource) : undefined) ?? detectFormatFromFilename(input.originalFilename);
   if (input.explicitSource || input.skipAutoAlto || sourceDef?.id !== 'xml') return sourceDef;
   let prefix: Uint8Array | undefined;
-  if (input.uploadedBuffer) {
+  if (input.storageKey && !isInlineInputKey(input.storageKey)) {
+    prefix = (await readObjectRange(s3Storage, input.storageKey, 0, ALTO_SNIFF_BYTES).catch(() => undefined)) ?? undefined;
+  } else if (input.uploadedBuffer) {
     prefix = input.uploadedBuffer.subarray(0, ALTO_SNIFF_BYTES);
   } else if (input.inputBufferBase64) {
     prefix = Buffer.from(input.inputBufferBase64.slice(0, 5600), 'base64');
-  } else if (input.storageKey) {
-    prefix = (await readObjectRange(s3Storage, input.storageKey, 0, ALTO_SNIFF_BYTES).catch(() => undefined)) ?? undefined;
   }
   return promoteAltoXmlSource(sourceDef, undefined, input.targetFormat, prefix);
 }
@@ -170,7 +170,6 @@ function collectStoredInputChecks(input: {
   graph: JobGraph | undefined;
   sourceDef: { extension: string };
   originalFilename: string;
-  hasInlineBytes: boolean;
 }): StoredInputCheck[] {
   const checks: StoredInputCheck[] = [];
   const seen = new Set<string>();
@@ -181,7 +180,7 @@ function collectStoredInputChecks(input: {
     checks.push({ key, ext, filename, primary });
   };
 
-  if (input.storageKey && !isInlineInputKey(input.storageKey) && !input.hasInlineBytes) {
+  if (input.storageKey && !isInlineInputKey(input.storageKey)) {
     push(input.storageKey, input.sourceDef.extension, input.originalFilename, true);
   }
   if (input.graph) {
@@ -285,14 +284,56 @@ async function storageCredentialsRefusal(graph: JobGraph | undefined, userId: st
 
 type TasksField = { tasks: PipelineTask[] } | { namedTasks: NamedTaskMap; duplicates: string[] } | { response: NextResponse };
 
+type OptionsField = { options: ConversionOptions } | { response: NextResponse };
+type GraphField = { graph: JobGraph } | { response: NextResponse };
+
+/** The `options` field of a multipart job request, bounded and validated against `ConversionOptionsSchema`. */
+function parseMultipartOptions(raw: string, instanceUri: string): OptionsField {
+  const parsed = parseBoundedJsonField(raw);
+  if (!parsed.ok) {
+    return {
+      response:
+        parsed.kind === 'invalid_json'
+          ? createProblemDetailsResponse(400, 'Invalid JSON string provided in "options" parameter.', instanceUri)
+          : boundedJsonFieldProblem('options', parsed.kind, instanceUri),
+    };
+  }
+  const optValidation = validateOrProblem(ConversionOptionsSchema, parsed.value, instanceUri);
+  if (!optValidation.ok) return { response: optValidation.response };
+  return { options: (parsed.value && typeof parsed.value === 'object' ? parsed.value : {}) as ConversionOptions };
+}
+
+/** The `graph` field of a multipart job request, bounded and validated against `JobGraphSchema`. */
+function parseMultipartGraph(raw: string, instanceUri: string): GraphField {
+  const parsed = parseBoundedJsonField(raw);
+  if (!parsed.ok) {
+    return {
+      response:
+        parsed.kind === 'invalid_json'
+          ? createProblemDetailsResponse(400, 'Invalid JSON string provided in "graph" parameter.', instanceUri)
+          : boundedJsonFieldProblem('graph', parsed.kind, instanceUri),
+    };
+  }
+  if (!parsed.value || typeof parsed.value !== 'object') {
+    return { response: createProblemDetailsResponse(422, 'Request validation failed: graph must be an object', instanceUri) };
+  }
+  const graph = parsed.value as JobGraph;
+  const graphValidation = validateOrProblem(JobGraphSchema, graph, instanceUri);
+  return graphValidation.ok ? { graph } : { response: graphValidation.response };
+}
+
 /** The `tasks` field of a multipart request: the JSON of a pipeline array or of an object of named tasks, validated. */
 function parseMultipartTasks(raw: string, instanceUri: string): TasksField {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return { response: createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri) };
+  const field = parseBoundedJsonField(raw);
+  if (!field.ok) {
+    return {
+      response:
+        field.kind === 'invalid_json'
+          ? createProblemDetailsResponse(400, 'Invalid JSON string provided in "tasks" parameter.', instanceUri)
+          : boundedJsonFieldProblem('tasks', field.kind, instanceUri),
+    };
   }
+  const parsed = field.value;
   if (isNamedTaskMap(parsed)) {
     const validation = validateOrProblem(NamedTaskMapSchema, parsed, instanceUri);
     return validation.ok ? { namedTasks: parsed, duplicates: duplicateKeys(raw) } : { response: validation.response };
@@ -446,35 +487,16 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
 
       const optionsRaw = formData.get('options') as string | null;
       if (optionsRaw) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(optionsRaw);
-        } catch {
-          return reply(createProblemDetailsResponse(400, 'Invalid JSON string provided in "options" parameter.', instanceUri));
-        }
-        const optValidation = validateOrProblem(ConversionOptionsSchema, parsed, instanceUri);
-        if (!optValidation.ok) {
-          return reply(optValidation.response);
-        }
-        options = (parsed && typeof parsed === 'object' ? parsed : {}) as ConversionOptions;
+        const field = parseMultipartOptions(optionsRaw, instanceUri);
+        if ('response' in field) return reply(field.response);
+        options = field.options;
       }
 
       const graphRaw = formData.get('graph') as string | null;
       if (graphRaw) {
-        try {
-          const parsedGraph = JSON.parse(graphRaw);
-          if (parsedGraph && typeof parsedGraph === 'object') {
-            graph = parsedGraph as JobGraph;
-          } else {
-            return reply(createProblemDetailsResponse(422, 'Request validation failed: graph must be an object', instanceUri));
-          }
-        } catch {
-          return reply(createProblemDetailsResponse(400, 'Invalid JSON string provided in "graph" parameter.', instanceUri));
-        }
-        const graphValidation = validateOrProblem(JobGraphSchema, graph, instanceUri);
-        if (!graphValidation.ok) {
-          return reply(graphValidation.response);
-        }
+        const field = parseMultipartGraph(graphRaw, instanceUri);
+        if ('response' in field) return reply(field.response);
+        graph = field.graph;
       }
 
       const tasksRaw = formData.get('tasks') as string | null;
@@ -711,7 +733,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       }
 
       const verification = await verifyAllStoredInputs(
-        { storageKey, graph, sourceDef, originalFilename, hasInlineBytes: Boolean(uploadedBuffer || inputBufferBase64) },
+        { storageKey, graph, sourceDef, originalFilename },
         callerPlan,
         statKey
       );
@@ -801,8 +823,8 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       console.error('[Jobs] Invalid deadline setting or input:', error);
       return fail(500, 'Internal server error', 'Internal Server Error');
     }
-    const message = error instanceof Error ? error.message : 'Job enqueue failure';
-    return fail(500, message, 'Internal Server Error');
+    console.error('[Jobs] Unhandled job enqueue error:', error);
+    return fail(500, 'Internal server error', 'Internal Server Error');
   }
 }));
 

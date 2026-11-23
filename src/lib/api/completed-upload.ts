@@ -36,14 +36,20 @@ export async function recordCompletedUpload(
  * job deletes the file as it does for a visitor's.
  */
 export async function storeUploadedBuffer(
-  storage: Pick<IStorageBackend, 'initiateMultipartUpload' | 'uploadPart' | 'completeMultipartUpload' | 'deleteObject'>,
+  storage: Pick<IStorageBackend, 'initiateMultipartUpload' | 'uploadPart' | 'completeMultipartUpload' | 'deleteObject' | 'abortMultipartUpload'>,
   buffer: Buffer,
   file: { name: string; type: string; size: number },
   ownerUserId: string | undefined
 ): Promise<string> {
   const init = await storage.initiateMultipartUpload(file.name, file.type, file.size, ownerUserId);
-  await storage.uploadPart(init.uploadId, 1, buffer);
-  const { key } = await storage.completeMultipartUpload(init.uploadId);
+  let key: string;
+  try {
+    await storage.uploadPart(init.uploadId, 1, buffer);
+    ({ key } = await storage.completeMultipartUpload(init.uploadId));
+  } catch (error: unknown) {
+    await Promise.resolve(storage.abortMultipartUpload?.(init.uploadId)).catch(() => undefined);
+    throw error;
+  }
   try {
     await registerCompletedUpload(storage, key, { jobInput: true });
   } catch (error: unknown) {

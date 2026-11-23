@@ -1,4 +1,6 @@
 import { safeDecodeXmlEntities, safeExtractXmlElements } from '../safe-xml-scanner';
+import { PayloadLimitError } from '../../types';
+import { DOCX_MAX_TABLE_COLUMNS } from '../docx-model';
 import { withoutElements } from './xml-without';
 import { type DocxBlockElement, type DocxParagraph, type DocxRun, type DocxTable, type DocxTableCell, type OpenXmlChartData, type TableBorder } from './types';
 import { parseOpenXmlChart } from './chart-parse';
@@ -135,6 +137,34 @@ export function parseWordStyles(stylesXml: string): Map<string, WordTableStyle> 
   return styleMap;
 }
 
+/** Reads a table cell's `<w:gridSpan w:val="..."/>` while enforcing `DOCX_MAX_TABLE_COLUMNS` against the current column offset. */
+function readCellColumnSpan(tcXml: string, currentGridCol: number): number {
+  const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
+  const colSpan = spanMatch ? Math.max(1, Number.parseInt(spanMatch[1], 10)) : 1;
+  if (!Number.isSafeInteger(colSpan) || currentGridCol + colSpan > DOCX_MAX_TABLE_COLUMNS) {
+    throw new PayloadLimitError(`A table spans more than ${DOCX_MAX_TABLE_COLUMNS} columns.`);
+  }
+  return colSpan;
+}
+
+/** Parses bounded `<w:tblGrid><w:gridCol w:w="..."/></w:tblGrid>` column widths. */
+function parseTableGridWidths(chunk: string): number[] | undefined {
+  const tblGridEl = safeExtractFirstXmlElement(chunk, 'w:tblGrid');
+  if (!tblGridEl) return undefined;
+  const gridCols = safeExtractXmlElements(tblGridEl.content, 'w:gridCol', { maxElements: DOCX_MAX_TABLE_COLUMNS + 1 });
+  if (gridCols.length > DOCX_MAX_TABLE_COLUMNS) {
+    throw new PayloadLimitError(`A table spans more than ${DOCX_MAX_TABLE_COLUMNS} columns.`);
+  }
+  const parsedWidths: number[] = [];
+  for (const colEl of gridCols) {
+    const widthAttr = colEl.attrs['w:w'] ?? colEl.attrs.w;
+    if (widthAttr && /^\d+$/.test(widthAttr)) {
+      parsedWidths.push(Number.parseInt(widthAttr, 10));
+    }
+  }
+  return parsedWidths.length > 0 ? parsedWidths : undefined;
+}
+
 function parseSingleDocxTable(
   chunk: string,
   styleMap?: Map<string, WordTableStyle>,
@@ -186,8 +216,7 @@ function parseSingleDocxTable(
       const shdMatch = tcXml.match(/<w:shd[^>]*w:fill="([A-Fa-f0-9]{6})"/);
       const shading = shdMatch ? shdMatch[1] : inheritedStyle?.shading;
 
-      const spanMatch = tcXml.match(/<w:gridSpan[^>]*w:val="(\d+)"/);
-      const colSpan = spanMatch ? parseInt(spanMatch[1], 10) : 1;
+      const colSpan = readCellColumnSpan(tcXml, currentGridCol);
 
       // Vertical merge detection per OpenXML ISO/IEC 29500-1 §17.4.84
       const vMergeMatch = tcXml.match(/<w:vMerge\b([^>]*)\/?>/);
@@ -311,21 +340,7 @@ function parseSingleDocxTable(
     }
   }
 
-  const tblGridEl = safeExtractFirstXmlElement(chunk, 'w:tblGrid');
-  let colWidths: number[] | undefined;
-  if (tblGridEl) {
-    const gridCols = safeExtractXmlTags(tblGridEl.content, 'w:gridCol');
-    const parsedWidths: number[] = [];
-    for (const colXml of gridCols) {
-      const wMatch = colXml.match(/w:w="(\d+)"/);
-      if (wMatch) {
-        parsedWidths.push(parseInt(wMatch[1], 10));
-      }
-    }
-    if (parsedWidths.length > 0) {
-      colWidths = parsedWidths;
-    }
-  }
+  const colWidths = parseTableGridWidths(chunk);
 
   if (rows.length === 0) return null;
 

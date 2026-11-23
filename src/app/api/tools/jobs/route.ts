@@ -11,9 +11,14 @@ import { STORAGE_OBJECT_NOT_FOUND, mayUseStorageKeyAsJobInput } from '@/lib/api-
 import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { isUploadKey, resultKey, stagedInputKey } from '@/lib/storage/key-namespace';
+import { JobTimeoutError, QueueUnavailableError } from '@/lib/types';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { conversionQueue } from '@/lib/queue/conversion-queue';
 import { handOffConversionJob } from '@/lib/queue/enqueue';
+import { concurrencyLimitResponse, mayEnqueue, acquireSyncSlot } from '@/lib/queue/concurrency-limit';
+import { conversionDeadlineMs } from '@/lib/queue/job-deadline';
+import { readObjectHeader } from '@/lib/storage/object-header';
+import { assertNotSpoofedObject } from '@/lib/security/file-guard';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { MAX_TOOL_FILES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
@@ -29,11 +34,13 @@ import {
 import {
   assertToolInput,
   assertToolUploadMetadata,
+  expectedToolInputExtension,
   parseToolOptions,
   runWebTool,
   WebToolRefusal,
   type WebToolFile,
   type WebToolOutput,
+  type WebToolOptions,
 } from '@/lib/tools/web-tools';
 import { saveRetainedResult } from '@/lib/storage/retention-service';
 
@@ -174,6 +181,21 @@ async function parseJsonJobInputs(
     metadataCheck.push({ name, size: stat.size });
   }
   assertToolUploadMetadata(toolName, metadataCheck);
+  for (let i = 0; i < storedRefs.length; i += 1) {
+    const item = metadataCheck[i];
+    const ext = expectedToolInputExtension(toolName, item.name);
+    if (ext === undefined) continue;
+    const ref = storedRefs[i];
+    const header = await readObjectHeader(s3Storage, ref.key);
+    if (!header || header.length === 0) {
+      return codedRefusal(400, 'empty_file', `The file "${item.name}" is empty.`);
+    }
+    try {
+      await assertNotSpoofedObject(s3Storage, ref.key, item.size, header, ext, item.name);
+    } catch (error) {
+      throw new WebToolRefusal(400, 'spoofed_file', error instanceof Error ? error.message : 'The file does not match its extension.');
+    }
+  }
   return { toolName, rawOptions: serializeRawOptions(payload.options), storedRefs };
 }
 
@@ -184,6 +206,158 @@ async function cleanupTemporaryUploads(refs: readonly StoredInputFileRef[] | und
       .filter((ref) => isUploadKey(ref.key))
       .map((ref) => Promise.resolve().then(() => s3Storage.deleteObject(ref.key)).catch(() => undefined))
   );
+}
+
+interface QueuedToolDispatchInput {
+  caller: User;
+  jobId: string;
+  parsed: ParsedToolJobInputs;
+  options: WebToolOptions;
+  reservationId: string | undefined;
+  queueOnly: boolean;
+  liveWorker: boolean;
+  instanceUri: string;
+}
+
+async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<NextResponse> {
+  const { caller, jobId, parsed, options, reservationId, queueOnly, liveWorker, instanceUri } = input;
+  const stagedInlineKeys: string[] = [];
+  try {
+    await withReservedUnit(reservationId, async (reserved) => {
+      if (queueOnly && !liveWorker) {
+        throw new QueueUnavailableError('worker-pool', 'No live conversion worker is available to process queued tool jobs.');
+      }
+
+      const storedRefs: StoredInputFileRef[] = parsed.storedRefs
+        ? [...parsed.storedRefs]
+        : await Promise.all(
+            (parsed.inlineFiles ?? []).map(async (file, index) => {
+              const safeName = sanitizeNodeOutputFilename(file.name, `input_${index + 1}.bin`);
+              const key = stagedInputKey(caller.id, `tool_${jobId}_${index}_${safeName}`);
+              await s3Storage.saveObject(key, file.buffer, 'application/octet-stream', safeName);
+              stagedInlineKeys.push(key);
+              return { key, name: file.name };
+            })
+          );
+
+      const cleanupKeys = [
+        ...stagedInlineKeys,
+        ...(parsed.storedRefs ?? []).map((ref) => ref.key).filter((key) => isUploadKey(key)),
+      ];
+      const totalBytes = parsed.inlineFiles
+        ? parsed.inlineFiles.reduce((sum, file) => sum + file.buffer.length, 0)
+        : (await Promise.all(storedRefs.map(async (ref) => (await s3Storage.stat(ref.key))?.size ?? 0))).reduce((sum, size) => sum + size, 0);
+
+      const sourceFormat = parsed.toolName === 'archive-extract' || parsed.toolName === 'archive-create' ? 'zip' : 'pdf';
+
+      await handOffConversionJob(
+        reserved,
+        conversionQueue,
+        {
+          jobId,
+          originalFilename: parsed.toolName,
+          sourceFormat,
+          targetFormat: sourceFormat,
+          fileSize: totalBytes,
+          options: {},
+          userId: caller.id,
+          toolJob: {
+            tool: parsed.toolName,
+            options: (options ?? {}) as Record<string, unknown>,
+            storedRefs,
+            cleanupUploadKeys: cleanupKeys,
+          },
+        },
+        { jobId },
+        { tier: caller.tier, inputBytes: totalBytes }
+      );
+    });
+
+    return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
+  } catch (err: unknown) {
+    await Promise.all(stagedInlineKeys.map((key) => Promise.resolve().then(() => s3Storage.deleteObject(key)).catch(() => undefined)));
+    await deleteToolJob(jobId).catch(() => undefined);
+    return typedFailureProblem(err, instanceUri);
+  }
+}
+
+interface LocalToolRunInput {
+  caller: User;
+  jobId: string;
+  initialState: ToolJobState;
+  parsed: ParsedToolJobInputs;
+  options: WebToolOptions;
+  reservationId: string | undefined;
+  releaseSlot: () => void;
+}
+
+function launchLocalToolJob(input: LocalToolRunInput): void {
+  const { caller, jobId, initialState, parsed, options, reservationId, releaseSlot } = input;
+  const abortController = registerLocalToolAbort(jobId);
+  void withReservedUnit(reservationId, async (reserved) => {
+    let deadlineTimer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    try {
+      const current = await getToolJob(jobId);
+      if (current?.status === 'cancelled' || abortController.signal.aborted) {
+        await cleanupTemporaryUploads(parsed.storedRefs);
+        return;
+      }
+      await saveToolJob({ ...initialState, status: 'running', progress: 25 });
+      const stagedReleases: Array<() => Promise<void> | void> = [];
+      let output: WebToolOutput;
+      try {
+        const files: WebToolFile[] = parsed.inlineFiles
+          ? parsed.inlineFiles
+          : await Promise.all(
+              (parsed.storedRefs ?? []).map(async (ref) => {
+                const stored = await s3Storage.getObject(ref.key);
+                if (!stored) throw new Error('Input storage object missing.');
+                const maybeRelease = (stored as { release?: () => Promise<void> | void }).release;
+                if (typeof maybeRelease === 'function') stagedReleases.push(() => maybeRelease.call(stored));
+                return { name: ref.name, buffer: stored.buffer };
+              })
+            );
+        if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
+        const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
+        const sourceFormat = parsed.toolName === 'archive-extract' || parsed.toolName === 'archive-create' ? 'zip' : 'pdf';
+        const deadlineMs = conversionDeadlineMs({ tier: caller.tier, sourceFormat, targetFormat: sourceFormat, inputBytes: totalBytes });
+        deadlineTimer = setTimeout(() => {
+          timedOut = true;
+          abortController.abort(new JobTimeoutError(deadlineMs));
+        }, deadlineMs);
+        deadlineTimer.unref();
+        output = await runWebTool(parsed.toolName, files, options, abortController.signal);
+      } finally {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        await Promise.all(stagedReleases.map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
+      }
+      const afterRun = await getToolJob(jobId);
+      if (afterRun?.status === 'cancelled' || (abortController.signal.aborted && !timedOut)) {
+        await cleanupTemporaryUploads(parsed.storedRefs);
+        return;
+      }
+      const storedResult = await storeToolOutput(output, caller);
+      await cleanupTemporaryUploads(parsed.storedRefs);
+      await saveToolJob({ ...initialState, status: 'completed', progress: 100, result: storedResult });
+      await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });
+    } catch (err: unknown) {
+      await cleanupTemporaryUploads(parsed.storedRefs);
+      const current = await getToolJob(jobId);
+      if (!timedOut && (current?.status === 'cancelled' || abortController.signal.aborted)) {
+        await saveToolJob({ ...initialState, status: 'cancelled' }).catch(() => undefined);
+        return;
+      }
+      await saveToolJob({
+        ...initialState,
+        status: 'failed',
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined);
+    } finally {
+      unregisterLocalToolAbort(jobId);
+      releaseSlot();
+    }
+  });
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -228,8 +402,28 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     throw err;
   }
 
+  const queueOnly = isQueueOnlyWebMode();
+  const liveWorker = await hasLiveQueueWorker();
+  let releaseSlotOnce: (() => void) | undefined;
+  if (queueOnly || liveWorker) {
+    const room = await mayEnqueue(caller.id, caller.tier);
+    if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
+  } else {
+    const slot = await acquireSyncSlot(caller.id, caller.tier);
+    if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
+    let released = false;
+    releaseSlotOnce = () => {
+      if (released) return;
+      released = true;
+      slot.release();
+    };
+  }
+
   const unit = await reserveConversionUnit(caller, 1);
-  if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
+  if (!unit.reserved) {
+    releaseSlotOnce?.();
+    return conversionRefusalResponse(unit.refusal, instanceUri);
+  }
 
   const jobId = crypto.randomUUID();
   const initialState: ToolJobState = {
@@ -240,133 +434,37 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     progress: 0,
     createdAt: Date.now(),
   };
-  await saveToolJob(initialState);
-
-  const queueOnly = isQueueOnlyWebMode();
-  const liveWorker = await hasLiveQueueWorker();
-
-  if (queueOnly || liveWorker) {
-    const stagedInlineKeys: string[] = [];
-    try {
-      await withReservedUnit(unit.reservationId, async (reserved) => {
-        if (queueOnly && !liveWorker) {
-          const { QueueUnavailableError } = await import('@/lib/types');
-          throw new QueueUnavailableError('worker-pool', 'No live conversion worker is available to process queued tool jobs.');
-        }
-
-        const storedRefs: StoredInputFileRef[] = parsed.storedRefs
-          ? [...parsed.storedRefs]
-          : await Promise.all(
-              (parsed.inlineFiles ?? []).map(async (file, index) => {
-                const safeName = sanitizeNodeOutputFilename(file.name, `input_${index + 1}.bin`);
-                const key = stagedInputKey(caller.id, `tool_${jobId}_${index}_${safeName}`);
-                await s3Storage.saveObject(key, file.buffer, 'application/octet-stream', safeName);
-                stagedInlineKeys.push(key);
-                return { key, name: file.name };
-              })
-            );
-
-        const cleanupKeys = [
-          ...stagedInlineKeys,
-          ...(parsed.storedRefs ?? []).map((ref) => ref.key).filter((key) => isUploadKey(key)),
-        ];
-        const totalBytes = parsed.inlineFiles
-          ? parsed.inlineFiles.reduce((sum, file) => sum + file.buffer.length, 0)
-          : (
-              await Promise.all(
-                storedRefs.map(async (ref) => (await s3Storage.stat(ref.key))?.size ?? 0)
-              )
-            ).reduce((sum, size) => sum + size, 0);
-
-        const sourceFormat =
-          parsed.toolName === 'archive-extract' || parsed.toolName === 'archive-create' ? 'zip' : 'pdf';
-
-        await handOffConversionJob(
-          reserved,
-          conversionQueue,
-          {
-            jobId,
-            originalFilename: parsed.toolName,
-            sourceFormat,
-            targetFormat: sourceFormat,
-            fileSize: totalBytes,
-            options: {},
-            userId: caller.id,
-            toolJob: {
-              tool: parsed.toolName,
-              options: (options ?? {}) as Record<string, unknown>,
-              storedRefs,
-              cleanupUploadKeys: cleanupKeys,
-            },
-          },
-          { jobId },
-          { tier: caller.tier, inputBytes: totalBytes }
-        );
-      });
-
-      return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
-    } catch (err: unknown) {
-      await Promise.all(
-        stagedInlineKeys.map((key) => Promise.resolve().then(() => s3Storage.deleteObject(key)).catch(() => undefined))
-      );
-      await deleteToolJob(jobId).catch(() => undefined);
-      return typedFailureProblem(err, instanceUri);
-    }
+  try {
+    await saveToolJob(initialState);
+  } catch (err) {
+    releaseSlotOnce?.();
+    await withReservedUnit(unit.reservationId, async () => {
+      throw err;
+    });
   }
 
-  const abortController = registerLocalToolAbort(jobId);
-  void withReservedUnit(unit.reservationId, async (reserved) => {
-    try {
-      const current = await getToolJob(jobId);
-      if (current?.status === 'cancelled' || abortController.signal.aborted) {
-        await cleanupTemporaryUploads(parsed.storedRefs);
-        return;
-      }
-      await saveToolJob({ ...initialState, status: 'running', progress: 25 });
-      const stagedReleases: Array<() => Promise<void> | void> = [];
-      let output: WebToolOutput;
-      try {
-        const files: WebToolFile[] = parsed.inlineFiles
-          ? parsed.inlineFiles
-          : await Promise.all(
-              (parsed.storedRefs ?? []).map(async (ref) => {
-                const stored = await s3Storage.getObject(ref.key);
-                if (!stored) throw new Error('Input storage object missing.');
-                const maybeRelease = (stored as { release?: () => Promise<void> | void }).release;
-                if (typeof maybeRelease === 'function') stagedReleases.push(() => maybeRelease.call(stored));
-                return { name: ref.name, buffer: stored.buffer };
-              })
-            );
-        if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
-        output = await runWebTool(parsed.toolName, files, options, abortController.signal);
-      } finally {
-        await Promise.all(stagedReleases.map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
-      }
-      const afterRun = await getToolJob(jobId);
-      if (afterRun?.status === 'cancelled' || abortController.signal.aborted) {
-        await cleanupTemporaryUploads(parsed.storedRefs);
-        return;
-      }
-      const storedResult = await storeToolOutput(output, caller);
-      await cleanupTemporaryUploads(parsed.storedRefs);
-      await saveToolJob({ ...initialState, status: 'completed', progress: 100, result: storedResult });
-      await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });
-    } catch (err: unknown) {
-      await cleanupTemporaryUploads(parsed.storedRefs);
-      const current = await getToolJob(jobId);
-      if (current?.status === 'cancelled' || abortController.signal.aborted) {
-        await saveToolJob({ ...initialState, status: 'cancelled' }).catch(() => undefined);
-        return;
-      }
-      await saveToolJob({
-        ...initialState,
-        status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      }).catch(() => undefined);
-    } finally {
-      unregisterLocalToolAbort(jobId);
-    }
-  });
+  if (queueOnly || liveWorker) {
+    releaseSlotOnce?.();
+    return dispatchQueuedToolJob({
+      caller,
+      jobId,
+      parsed,
+      options,
+      reservationId: unit.reservationId,
+      queueOnly,
+      liveWorker,
+      instanceUri,
+    });
+  }
 
+  launchLocalToolJob({
+    caller,
+    jobId,
+    initialState,
+    parsed,
+    options,
+    reservationId: unit.reservationId,
+    releaseSlot: releaseSlotOnce ?? (() => undefined),
+  });
   return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
 });

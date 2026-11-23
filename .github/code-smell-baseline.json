@@ -16,14 +16,14 @@
     "rule": "complexity",
     "function": "POST",
     "count": 1,
-    "maxValue": 147
+    "maxValue": 139
   },
   {
     "file": "src/app/api/v1/jobs/route.ts",
     "rule": "max-lines-per-function",
     "function": "POST",
     "count": 1,
-    "maxValue": 370
+    "maxValue": 351
   },
   {
     "file": "src/lib/api-keys/webhook-dispatcher.ts",
@@ -808,7 +808,7 @@
     "rule": "complexity",
     "function": "parseSingleDocxTable",
     "count": 1,
-    "maxValue": 53
+    "maxValue": 48
   },
   {
     "file": "src/lib/conversions/office/drawingml-shapes.ts",

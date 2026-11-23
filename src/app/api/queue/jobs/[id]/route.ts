@@ -118,6 +118,7 @@ async function readJob(
         });
 
         req.signal.addEventListener('abort', closeStream, { once: true });
+        if (req.signal.aborted) closeStream();
       },
       cancel() {
         cleanupRef?.();

@@ -65,13 +65,31 @@ async function postDirectUploadAuthorized(req: NextRequest, instanceUri: string,
   const auth = { user };
 
   // 2. Parse request body
-  const body: DirectUploadInitiateBody = await req.json().catch(() => ({}));
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch {
+    return createProblemDetailsResponse(400, 'Invalid JSON request body.', instanceUri, 'Bad Request');
+  }
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return createProblemDetailsResponse(400, 'Expected a JSON object request body.', instanceUri, 'Bad Request');
+  }
+  const body = rawBody as DirectUploadInitiateBody;
   const { filename, mimeType = 'application/octet-stream', totalSize } = body;
 
   if (!filename || typeof filename !== 'string' || filename.trim().length === 0) {
     return createProblemDetailsResponse(
       400,
       'Missing or invalid "filename" in initiation payload.',
+      instanceUri,
+      'Bad Request'
+    );
+  }
+
+  if (typeof mimeType !== 'string' || mimeType.trim().length === 0) {
+    return createProblemDetailsResponse(
+      400,
+      'Invalid "mimeType" in initiation payload.',
       instanceUri,
       'Bad Request'
     );
@@ -89,7 +107,11 @@ async function postDirectUploadAuthorized(req: NextRequest, instanceUri: string,
   const tooLarge = fileSizeLimitProblem(auth.user, totalSize, instanceUri);
   if (tooLarge) return tooLarge;
 
-  if (body.partSize !== undefined && body.partSize > 0 && body.partSize < MIN_PART_SIZE && totalSize > body.partSize) {
+  if (body.partSize !== undefined && (typeof body.partSize !== 'number' || !Number.isSafeInteger(body.partSize) || body.partSize < 1)) {
+    return createProblemDetailsResponse(400, 'Invalid "partSize" in initiation payload.', instanceUri, 'Bad Request');
+  }
+
+  if (body.partSize !== undefined && body.partSize < MIN_PART_SIZE && totalSize > body.partSize) {
     return createProblemDetailsResponse(400, PART_SIZE_TOO_SMALL, instanceUri, 'Bad Request');
   }
 

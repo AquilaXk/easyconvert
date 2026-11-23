@@ -303,6 +303,8 @@ export class CpuPool {
         const detail = error.code === 'ERR_WORKER_OUT_OF_MEMORY' ? new PayloadLimitError(`The ${slot.task.kind} task exceeded its memory limit`) : error;
         const { task } = slot;
         this.retire(slot, () => task.reject(detail));
+      } else {
+        this.retire(slot, () => undefined);
       }
     });
     worker.on('exit', (code) => {

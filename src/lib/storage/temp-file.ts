@@ -337,7 +337,36 @@ export function stagedOutputCreatedAt(name: string): number | undefined {
   return stagedNameTime(name);
 }
 
-/** Removes the job directories and outputs of the local driver's staging folder that a stopped worker left, by the time in their names. */
-export function sweepStaleJobDirectories(now: number = Date.now()): Promise<number> {
-  return sweepByNameTime(resolveLocalStagingDir(), stagedNameTime, JOB_STAGING_MAX_AGE_MS, now);
+/**
+ * Removes the job directories and outputs left by a stopped worker, by the epoch timestamp in their names.
+ * In `local` driver mode this sweeps the dedicated staging folder; in non-local modes (`os.tmpdir()`), only
+ * entries prefixed `easyconvert-` owned by the current UID are eligible so shared `/tmp` files stay untouched.
+ */
+export async function sweepStaleJobDirectories(now: number = Date.now()): Promise<number> {
+  if (resolveStorageDriver() === 'local') {
+    return sweepByNameTime(resolveLocalStagingDir(), stagedNameTime, JOB_STAGING_MAX_AGE_MS, now);
+  }
+  const dir = os.tmpdir();
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith(STAGED_OUTPUT_PREFIX) && !name.startsWith('easyconvert-')) continue;
+    const created = stagedNameTime(name);
+    if (created === undefined || now - created <= JOB_STAGING_MAX_AGE_MS) continue;
+    const full = path.join(dir, name);
+    try {
+      const stat = await fs.promises.lstat(full);
+      if (uid !== undefined && stat.uid !== uid) continue;
+      if (await removeLeftover(full)) removed++;
+    } catch {
+      // already gone or unreadable
+    }
+  }
+  return removed;
 }

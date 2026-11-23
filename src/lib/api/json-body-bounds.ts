@@ -1,6 +1,6 @@
 import type { NextResponse } from 'next/server';
 import { createProblemDetailsResponse } from './problem-details';
-import { parseContentLength } from './request-body-limit';
+import { parseContentLength, SMALL_REQUEST_BODY_MAX_BYTES } from './request-body-limit';
 
 /**
  * The JSON body of a job request, read as text and checked before it is parsed. A JSON text is parsed whole into objects, and a body
@@ -59,6 +59,36 @@ export async function readBoundedJsonText(
     };
   }
   return { text };
+}
+
+export type BoundedJsonFieldResult =
+  | { ok: true; value: unknown }
+  | { ok: false; kind: 'too_large' | 'too_many_openers' | 'invalid_json' };
+
+/** Parses a multipart JSON form field after bounding its character length and `{`/`[` opener count. */
+export function parseBoundedJsonField(raw: string, maxChars: number = SMALL_REQUEST_BODY_MAX_BYTES): BoundedJsonFieldResult {
+  if (raw.length > maxChars) return { ok: false, kind: 'too_large' };
+  if (hasMoreOpenersThan(raw, JSON_BODY_MAX_OPENERS)) return { ok: false, kind: 'too_many_openers' };
+  try {
+    return { ok: true, value: JSON.parse(raw) };
+  } catch {
+    return { ok: false, kind: 'invalid_json' };
+  }
+}
+
+/** 413 Problem Details refusal for an oversized or opener-flooded multipart JSON form field. */
+export function boundedJsonFieldProblem(
+  fieldName: string,
+  kind: 'too_large' | 'too_many_openers',
+  instanceUri: string,
+  headers?: Record<string, string>,
+  maxChars: number = SMALL_REQUEST_BODY_MAX_BYTES
+): NextResponse {
+  const detail =
+    kind === 'too_large'
+      ? `The "${fieldName}" field exceeds the ${maxChars} character limit.`
+      : `The "${fieldName}" JSON field holds more than ${JSON_BODY_MAX_OPENERS} objects and arrays; a job request needs far fewer.`;
+  return createProblemDetailsResponse(413, detail, instanceUri, 'Payload Too Large', undefined, headers);
 }
 
 /** The parsed JSON body of a job request with its text (for a route that reads its raw text too), or the 413 above, or the 400 of a body that is not JSON. */

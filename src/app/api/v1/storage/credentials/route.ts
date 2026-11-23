@@ -53,18 +53,21 @@ export async function POST(req: NextRequest) {
 
 async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, userId: string): Promise<NextResponse> {
 
-  let body: {
+  let rawBody: unknown;
+  try {
+    rawBody = await req.json();
+  } catch {
+    return createProblemDetailsResponse(400, 'Invalid JSON request body.', instanceUri);
+  }
+  if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+    return createProblemDetailsResponse(400, 'Expected a JSON object request body.', instanceUri);
+  }
+  const body = rawBody as {
     providerType: StorageProviderType;
     credentials: CustomerStorageCredentials;
     name?: string;
     ttlSeconds?: number;
   };
-
-  try {
-    body = await req.json();
-  } catch {
-    return createProblemDetailsResponse(400, 'Invalid JSON request body.', instanceUri);
-  }
 
   const { providerType, credentials, name, ttlSeconds } = body;
   if (!providerType || !credentials) {
