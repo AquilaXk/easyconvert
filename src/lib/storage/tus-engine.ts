@@ -236,25 +236,11 @@ export class RedisTusSessionStore implements TusSessionStore {
     }
   }
 
-  private ownerIndexKey(ownerUserId: string): string {
-    return `tus:owner:${ownerUserId}`;
-  }
-
-  private lockKey(id: string): string {
-    return `tus:lock:${id}`;
-  }
-
-  private stageChunksKey(id: string): string {
-    return `tus:stage:{${id}}:chunks`;
-  }
-
-  private stageLengthKey(id: string): string {
-    return `tus:stage:{${id}}:len`;
-  }
-
-  private remoteRecordKey(id: string): string {
-    return `tus:remote:${id}`;
-  }
+  private ownerIndexKey(ownerUserId: string): string { return `tus:owner:${ownerUserId}`; }
+  private lockKey(id: string): string { return `tus:lock:${id}`; }
+  private stageChunksKey(id: string): string { return `tus:stage:{${id}}:chunks`; }
+  private stageLengthKey(id: string): string { return `tus:stage:{${id}}:len`; }
+  private remoteRecordKey(id: string): string { return `tus:remote:${id}`; }
 
   private readonly remoteExpiryKey = 'tus:remote_expiry';
 
@@ -1038,16 +1024,40 @@ export class TusEngine {
     await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
   }
 
-  private async ensureSharedLocalTailReady(id: string, binPath: string, expectedLocalTailOffset: number, initialFlushed: number): Promise<void> {
+  private async failShortStagedTail(session: TusSession, infoPath: string, actualTotal: number): Promise<never> {
+    this.localTailMarkers.delete(session.id);
+    session.uploadOffset = actualTotal;
+    await this.persistSession(session, infoPath);
+    throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
+  }
+
+  private async statSharedTailBytes(id: string, binPath: string, expectedLocalTailOffset: number): Promise<number> {
+    try {
+      return (await fs.promises.stat(binPath)).size;
+    } catch (err: unknown) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return -1;
+      throw new StorageServiceError(
+        `Cannot resume TUS upload "${id}" at offset ${expectedLocalTailOffset}: failed to inspect staged file on shared local storage.`,
+        'tus',
+        { retryable: true },
+        err
+      );
+    }
+  }
+
+  private async ensureSharedLocalTailReady(
+    params: { id: string; session: TusSession; infoPath: string; binPath: string; expectedLocalTailOffset: number; initialFlushed: number }
+  ): Promise<void> {
+    const { id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed } = params;
     if (expectedLocalTailOffset === 0) {
       await fs.promises.writeFile(binPath, Buffer.alloc(0));
       this.setLocalTailMarker(id, initialFlushed, 0);
       return;
     }
-    const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+    const localBytes = await this.statSharedTailBytes(id, binPath, expectedLocalTailOffset);
     if (localBytes > expectedLocalTailOffset) {
       rollbackChunk(binPath, expectedLocalTailOffset);
-      const trimmedBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+      const trimmedBytes = await this.statSharedTailBytes(id, binPath, expectedLocalTailOffset);
       if (trimmedBytes !== expectedLocalTailOffset) {
         throw new StorageServiceError(
           `Cannot resume TUS upload "${id}" at offset ${expectedLocalTailOffset}: failed to trim staged tail (${trimmedBytes} bytes) on shared local storage.`,
@@ -1056,11 +1066,9 @@ export class TusEngine {
         );
       }
     } else if (localBytes < expectedLocalTailOffset) {
-      throw new StorageServiceError(
-        `Cannot resume TUS upload "${id}" at offset ${expectedLocalTailOffset}: staged file is missing or incomplete (${localBytes} bytes) on shared local storage.`,
-        'tus',
-        { retryable: true }
-      );
+      const actualLocal = Math.max(0, localBytes);
+      if (localBytes < 0) await fs.promises.writeFile(binPath, Buffer.alloc(0));
+      await this.failShortStagedTail(session, infoPath, initialFlushed + actualLocal);
     }
     this.setLocalTailMarker(id, initialFlushed, expectedLocalTailOffset);
   }
@@ -1070,7 +1078,7 @@ export class TusEngine {
   ): Promise<void> {
     const { id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed, isRemoteMultipart } = params;
     if (!isRemoteMultipart && !this.shouldStageLocalBytesInRedis()) {
-      await this.ensureSharedLocalTailReady(id, binPath, expectedLocalTailOffset, initialFlushed);
+      await this.ensureSharedLocalTailReady({ id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed });
       return;
     }
     if (expectedLocalTailOffset > 0 && this.sessionStore.hydrateStagedFile) {
@@ -1080,10 +1088,7 @@ export class TusEngine {
       if (localBytes !== expectedLocalTailOffset || localMarker !== expectedMarker) {
         const hydrated = await this.sessionStore.hydrateStagedFile(id, binPath, expectedLocalTailOffset);
         if (hydrated !== expectedLocalTailOffset) {
-          const actualTotal = initialFlushed + Math.max(0, hydrated);
-          session.uploadOffset = actualTotal;
-          await this.persistSession(session, infoPath);
-          throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
+          await this.failShortStagedTail(session, infoPath, initialFlushed + Math.max(0, hydrated));
         }
         this.setLocalTailMarker(id, initialFlushed, expectedLocalTailOffset);
       }
@@ -1435,21 +1440,15 @@ export class TusEngine {
       await this.sessionStore.deleteStagedBytes?.(id);
       this.localTailMarkers.delete(id);
       let fileDeleted = false;
-      try {
-        if (fs.existsSync(infoPath)) {
-          await fs.promises.unlink(infoPath);
-          fileDeleted = true;
+      for (const filePath of [infoPath, binPath]) {
+        try {
+          if (fs.existsSync(filePath)) {
+            await fs.promises.unlink(filePath);
+            fileDeleted = true;
+          }
+        } catch {
+          // In-flight deletion race
         }
-      } catch {
-        // In-flight deletion race
-      }
-      try {
-        if (fs.existsSync(binPath)) {
-          await fs.promises.unlink(binPath);
-          fileDeleted = true;
-        }
-      } catch {
-        // In-flight deletion race
       }
       return storeDeleted || fileDeleted;
     });

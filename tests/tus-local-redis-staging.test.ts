@@ -12,6 +12,7 @@ import {
   RedisTusSessionStore,
   TUS_REMOTE_PART_BYTES,
   TusEngine,
+  TusStagedSizeMismatchError,
   serializeTusMetadata,
   setTusSessionStore,
 } from '../src/lib/storage/tus-engine';
@@ -419,34 +420,56 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
       expect((await readStreamBuffer(stored!.stream)).equals(Buffer.concat([c1, c2]))).toBe(true);
     }
 
-    // Case 2: short or missing .bin throws retryable StorageServiceError and keeps session.uploadOffset untouched in Redis
-    const chunk1 = crypto.randomBytes(2 * 1024 * 1024);
-    const chunk2 = crypto.randomBytes(2 * 1024 * 1024);
+    // Case 2: non-ENOENT stat failure throws retryable StorageServiceError without mutating uploadOffset,
+    // while truncated or missing (ENOENT) .bin rewinds uploadOffset to actual bytes and throws TusStagedSizeMismatchError (400)
+    const fullBytes = crypto.randomBytes(4 * 1024 * 1024);
+    const chunk1 = fullBytes.subarray(0, 2 * 1024 * 1024);
+    const chunk2 = fullBytes.subarray(2 * 1024 * 1024);
     const shortSess = await engine.createSession({
-      uploadLength: chunk1.length + chunk2.length,
+      uploadLength: fullBytes.length,
       metadataHeader: serializeTusMetadata({ filename: 'short-local.bin', filetype: 'application/octet-stream' }),
     });
+    storedKeys.push(shortSess.key);
     await engine.appendChunk(shortSess.id, 0, Readable.from([chunk1]));
 
     const shortBinPath = path.join(suiteStorageDir, 'tus', `${shortSess.id}.bin`);
+    const origStat = fs.promises.stat.bind(fs.promises);
+    const ioSpy = vi.spyOn(fs.promises, 'stat').mockImplementation(async (targetPath, ...args) => {
+      if (String(targetPath) === shortBinPath) {
+        throw Object.assign(new Error('EIO: temporary disk failure'), { code: 'EIO' });
+      }
+      return origStat(targetPath, ...args);
+    });
+    const ioErr = await engine
+      .appendChunk(shortSess.id, chunk1.length, Readable.from([chunk2]))
+      .catch((err: unknown) => err);
+    ioSpy.mockRestore();
+    expect(ioErr).toBeInstanceOf(StorageServiceError);
+    expect((ioErr as StorageServiceError).retryable).toBe(true);
+    expect((await store.getSession(shortSess.id))?.uploadOffset).toBe(chunk1.length);
+
     fs.truncateSync(shortBinPath, 1024 * 1024);
     const shortErr = await engine
       .appendChunk(shortSess.id, chunk1.length, Readable.from([chunk2]))
       .catch((err: unknown) => err);
-    expect(shortErr).toBeInstanceOf(StorageServiceError);
-    expect((shortErr as StorageServiceError).retryable).toBe(true);
-    expect((await store.getSession(shortSess.id))?.uploadOffset).toBe(chunk1.length);
+    expect(shortErr).toBeInstanceOf(TusStagedSizeMismatchError);
+    expect((shortErr as TusStagedSizeMismatchError).stagedBytes).toBe(1024 * 1024);
+    expect((await store.getSession(shortSess.id))?.uploadOffset).toBe(1024 * 1024);
 
     fs.rmSync(shortBinPath, { force: true });
     const missingErr = await engine
-      .appendChunk(shortSess.id, chunk1.length, Readable.from([chunk2]))
+      .appendChunk(shortSess.id, 1024 * 1024, Readable.from([chunk2]))
       .catch((err: unknown) => err);
-    expect(missingErr).toBeInstanceOf(StorageServiceError);
-    expect((missingErr as StorageServiceError).retryable).toBe(true);
-    expect((await store.getSession(shortSess.id))?.uploadOffset).toBe(chunk1.length);
+    expect(missingErr).toBeInstanceOf(TusStagedSizeMismatchError);
+    expect((missingErr as TusStagedSizeMismatchError).stagedBytes).toBe(0);
+    expect((await store.getSession(shortSess.id))?.uploadOffset).toBe(0);
     expect(hydrateSpy).toHaveBeenCalledTimes(0);
 
-    await engine.terminateSession(shortSess.id);
+    // Client can immediately resume cleanly from the rewound offset 0
+    const recovered = await engine.appendChunk(shortSess.id, 0, Readable.from([fullBytes]));
+    expect(recovered.isComplete).toBe(true);
+    const storedRecovered = await localFsStorage.getStream(shortSess.key);
+    expect((await readStreamBuffer(storedRecovered!.stream)).equals(fullBytes)).toBe(true);
   });
 
   it('preserves <= 8 MiB Redis staged keys and rolls back local .bin when saveSession fails past 8 MiB, then deletes keys once retry succeeds', async () => {
