@@ -204,9 +204,10 @@ const TUS_LOCK_TTL_MS = 30_000;
 const TUS_LOCK_RENEW_MS = 10_000;
 const TUS_LOCK_WAIT_MS = 15_000;
 const TUS_STAGE_SLICE_BYTES = 1024 * 1024;
-const MAX_REDIS_STAGED_UPLOAD_BYTES = 128 * 1024 * 1024;
 /** S3/OCI multipart flush quantum (`8 MiB >= 5 MiB` S3 minimum; `10 GiB / 8 MiB = 1,280 <= 10,000` parts). */
 export const TUS_REMOTE_PART_BYTES = 8 * 1024 * 1024;
+/** Cross-replica Redis byte staging cap (aligned with `TUS_REMOTE_PART_BYTES`, `tus/tusd` multipart part size). */
+export const MAX_REDIS_STAGED_UPLOAD_BYTES = TUS_REMOTE_PART_BYTES;
 const TUS_MAGIC_PROBE_BYTES = 64 * 1024;
 
 const TUS_RENEW_LOCK_LUA = `
@@ -303,40 +304,46 @@ export class RedisTusSessionStore implements TusSessionStore {
     newOffset: number,
     ttlSeconds: number
   ): Promise<void> {
-    if (
-      newOffset <= 0 ||
-      newOffset > MAX_REDIS_STAGED_UPLOAD_BYTES ||
-      typeof (this.redis as { rpush?: unknown }).rpush !== 'function'
-    ) {
+    if (newOffset <= 0 || typeof (this.redis as { rpush?: unknown }).rpush !== 'function') return;
+    if (newOffset > MAX_REDIS_STAGED_UPLOAD_BYTES) {
+      await this.deleteStagedBytes(id);
       return;
     }
     const chunksKey = this.stageChunksKey(id);
     const lenKey = this.stageLengthKey(id);
     const effectiveTtl = Math.max(60, Math.floor(ttlSeconds));
     const currentLen = Number((await this.redis.get(lenKey)) || '0');
-    let writeFrom = previousOffset;
-    if (currentLen !== previousOffset) {
-      await this.redis.del(chunksKey, lenKey);
-      writeFrom = 0;
-    }
+    const needsReset = previousOffset === 0 || currentLen !== previousOffset;
+    const encodedSlices: string[] = [];
+    let cursor = needsReset ? 0 : previousOffset;
     const handle = await fs.promises.open(binPath, 'r');
     try {
-      let cursor = writeFrom;
       while (cursor < newOffset) {
         const sliceLen = Math.min(TUS_STAGE_SLICE_BYTES, newOffset - cursor);
         const buf = Buffer.allocUnsafe(sliceLen);
         const { bytesRead } = await handle.read(buf, 0, sliceLen, cursor);
         if (bytesRead <= 0) break;
         const payload = bytesRead === sliceLen ? buf : buf.subarray(0, bytesRead);
-        await this.redis.rpush(chunksKey, payload.toString('base64'));
+        encodedSlices.push(payload.toString('base64'));
         cursor += bytesRead;
-      }
-      await this.redis.set(lenKey, String(cursor), 'EX', effectiveTtl);
-      if (typeof (this.redis as { expire?: unknown }).expire === 'function') {
-        await this.redis.expire(chunksKey, effectiveTtl);
       }
     } finally {
       await handle.close();
+    }
+    if (!isClusterRedis(this.redis) && typeof (this.redis as { pipeline?: unknown }).pipeline === 'function') {
+      const pipeline = this.redis.pipeline();
+      if (needsReset) pipeline.del(chunksKey, lenKey);
+      if (encodedSlices.length > 0) pipeline.rpush(chunksKey, ...encodedSlices);
+      pipeline.set(lenKey, String(cursor), 'EX', effectiveTtl);
+      if (cursor > 0) pipeline.expire(chunksKey, effectiveTtl);
+      await pipelineReplies(pipeline);
+      return;
+    }
+    if (needsReset) await this.redis.del(chunksKey, lenKey);
+    for (const slice of encodedSlices) await this.redis.rpush(chunksKey, slice);
+    await this.redis.set(lenKey, String(cursor), 'EX', effectiveTtl);
+    if (cursor > 0 && typeof (this.redis as { expire?: unknown }).expire === 'function') {
+      await this.redis.expire(chunksKey, effectiveTtl);
     }
   }
 
@@ -365,22 +372,22 @@ export class RedisTusSessionStore implements TusSessionStore {
       await fs.promises.writeFile(binPath, Buffer.alloc(0));
       return 0;
     }
+    if (expectedOffset > MAX_REDIS_STAGED_UPLOAD_BYTES) {
+      const localSize = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+      if (localSize === expectedOffset) return localSize;
+      throw new StorageServiceError(
+        `Cannot resume TUS upload "${id}" at offset ${expectedOffset}: staged bytes exceed ${MAX_REDIS_STAGED_UPLOAD_BYTES} bytes and are missing on local disk; configure shared EASYCONVERT_STORAGE_DIR or STORAGE_DRIVER=s3|oci for multi-replica uploads.`,
+        'tus',
+        { retryable: true }
+      );
+    }
     if (typeof (this.redis as { lrange?: unknown }).lrange !== 'function') {
       return fs.promises.stat(binPath).then((st) => st.size, () => 0);
     }
     const stagedLen = Number((await this.redis.get(this.stageLengthKey(id))) || '0');
     if (stagedLen < expectedOffset) {
       const localSize = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
-      if (localSize === expectedOffset) {
-        return localSize;
-      }
-      if (expectedOffset > MAX_REDIS_STAGED_UPLOAD_BYTES) {
-        throw new StorageServiceError(
-          `Cannot resume TUS upload "${id}" at offset ${expectedOffset}: staged bytes exceed ${MAX_REDIS_STAGED_UPLOAD_BYTES} bytes and are missing on local disk; configure shared EASYCONVERT_STORAGE_DIR or STORAGE_DRIVER=s3|oci for multi-replica uploads.`,
-          'tus',
-          { retryable: true }
-        );
-      }
+      if (localSize === expectedOffset) return localSize;
       return localSize > 0 ? localSize : 0;
     }
     await fs.promises.mkdir(path.dirname(binPath), { recursive: true });
@@ -800,10 +807,11 @@ async function finalizeTusSession(session: TusSession, binPath: string): Promise
 export class TusEngine {
   private readonly tusDir: string;
   private readonly defaultTtlSeconds: number;
+  private readonly usesSharedLocalDir: boolean;
   private readonly lockManager = new SessionLockManager();
   readonly maxUploadSize: number = LARGEST_PLAN_FILE_BYTES;
 
-  constructor(options?: { tusDir?: string; defaultTtlSeconds?: number }) {
+  constructor(options?: { tusDir?: string; defaultTtlSeconds?: number; stageLocalInRedis?: boolean }) {
     this.tusDir =
       options?.tusDir ||
       path.resolve(
@@ -811,7 +819,12 @@ export class TusEngine {
         'tus'
       );
     this.defaultTtlSeconds = options?.defaultTtlSeconds || 86400; // 24 hours
+    this.usesSharedLocalDir = !options?.tusDir && options?.stageLocalInRedis !== true;
     this.ensureDirectory();
+  }
+
+  private shouldStageLocalBytesInRedis(): boolean {
+    return !(storageProvider.kind === 'local' && this.usesSharedLocalDir);
   }
 
   get sessionStore(): TusSessionStore {
@@ -1020,14 +1033,46 @@ export class TusEngine {
     this.localTailMarkers.set(id, `${flushedBytes}:${tailBytes}`);
   }
 
+  private async persistSession(session: TusSession, infoPath: string): Promise<void> {
+    await this.sessionStore.saveSession(session);
+    await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+  }
+
+  private async ensureSharedLocalTailReady(id: string, binPath: string, expectedLocalTailOffset: number, initialFlushed: number): Promise<void> {
+    if (expectedLocalTailOffset === 0) {
+      await fs.promises.writeFile(binPath, Buffer.alloc(0));
+      this.setLocalTailMarker(id, initialFlushed, 0);
+      return;
+    }
+    const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+    if (localBytes > expectedLocalTailOffset) {
+      rollbackChunk(binPath, expectedLocalTailOffset);
+      const trimmedBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
+      if (trimmedBytes !== expectedLocalTailOffset) {
+        throw new StorageServiceError(
+          `Cannot resume TUS upload "${id}" at offset ${expectedLocalTailOffset}: failed to trim staged tail (${trimmedBytes} bytes) on shared local storage.`,
+          'tus',
+          { retryable: true }
+        );
+      }
+    } else if (localBytes < expectedLocalTailOffset) {
+      throw new StorageServiceError(
+        `Cannot resume TUS upload "${id}" at offset ${expectedLocalTailOffset}: staged file is missing or incomplete (${localBytes} bytes) on shared local storage.`,
+        'tus',
+        { retryable: true }
+      );
+    }
+    this.setLocalTailMarker(id, initialFlushed, expectedLocalTailOffset);
+  }
+
   private async ensureStagedTailReady(
-    id: string,
-    session: TusSession,
-    infoPath: string,
-    binPath: string,
-    expectedLocalTailOffset: number,
-    initialFlushed: number
+    params: { id: string; session: TusSession; infoPath: string; binPath: string; expectedLocalTailOffset: number; initialFlushed: number; isRemoteMultipart: boolean }
   ): Promise<void> {
+    const { id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed, isRemoteMultipart } = params;
+    if (!isRemoteMultipart && !this.shouldStageLocalBytesInRedis()) {
+      await this.ensureSharedLocalTailReady(id, binPath, expectedLocalTailOffset, initialFlushed);
+      return;
+    }
     if (expectedLocalTailOffset > 0 && this.sessionStore.hydrateStagedFile) {
       const expectedMarker = `${initialFlushed}:${expectedLocalTailOffset}`;
       const localBytes = await fs.promises.stat(binPath).then((st) => st.size, () => -1);
@@ -1037,8 +1082,7 @@ export class TusEngine {
         if (hydrated !== expectedLocalTailOffset) {
           const actualTotal = initialFlushed + Math.max(0, hydrated);
           session.uploadOffset = actualTotal;
-          await this.sessionStore.saveSession(session);
-          await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+          await this.persistSession(session, infoPath);
           throw new TusStagedSizeMismatchError(actualTotal, session.uploadLength);
         }
         this.setLocalTailMarker(id, initialFlushed, expectedLocalTailOffset);
@@ -1127,8 +1171,7 @@ export class TusEngine {
     session.completed = false;
     rollbackChunk(binPath, rollbackBytes);
     session.uploadOffset = clientOffset;
-    await this.sessionStore.saveSession(session);
-    await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+    await this.persistSession(session, infoPath);
   }
 
   private async dropLocalSession(id: string, infoPath: string, binPath: string): Promise<void> {
@@ -1139,15 +1182,9 @@ export class TusEngine {
     await this.sessionStore.deleteStagedBytes?.(id).catch(() => undefined);
   }
 
-  private async recoverCompletedRemoteFailure(params: {
-    id: string;
-    session: TusSession;
-    infoPath: string;
-    binPath: string;
-    clientOffset: number;
-    expectedLocalTailOffset: number;
-    savedFlushed: number;
-  }): Promise<void> {
+  private async recoverCompletedRemoteFailure(
+    params: { id: string; session: TusSession; infoPath: string; binPath: string; clientOffset: number; expectedLocalTailOffset: number; savedFlushed: number }
+  ): Promise<void> {
     const { id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, savedFlushed } = params;
     // S3 consumed `remoteUploadId` and `recordTusUpload` purged `session.key`. Re-open a fresh multipart session
     // when the full payload still sits in `binPath`; abort any unused reopen if rewind fails, preserving caller error.
@@ -1177,16 +1214,9 @@ export class TusEngine {
     await this.dropLocalSession(id, infoPath, binPath);
   }
 
-  private async completeRemoteMultipartTus(params: {
-    id: string;
-    session: TusSession;
-    infoPath: string;
-    binPath: string;
-    clientOffset: number;
-    expectedLocalTailOffset: number;
-    initialFlushed: number;
-    newTailBytes: number;
-  }): Promise<void> {
+  private async completeRemoteMultipartTus(
+    params: { id: string; session: TusSession; infoPath: string; binPath: string; clientOffset: number; expectedLocalTailOffset: number; initialFlushed: number; newTailBytes: number }
+  ): Promise<void> {
     const { id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, initialFlushed, newTailBytes } = params;
     session.completed = true;
     try {
@@ -1195,8 +1225,7 @@ export class TusEngine {
       session.completed = false;
       const actualTail = err instanceof TusStagedSizeMismatchError ? err.stagedBytes : expectedLocalTailOffset;
       session.uploadOffset = initialFlushed + Math.min(actualTail, expectedLocalTailOffset);
-      await this.sessionStore.saveSession(session);
-      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      await this.persistSession(session, infoPath);
       throw new TusStagedSizeMismatchError(initialFlushed + actualTail, session.uploadLength);
     }
 
@@ -1229,25 +1258,14 @@ export class TusEngine {
       remoteCompleted = true;
       await recordTusUpload(session.key);
       remoteRecorded = true;
-      await this.sessionStore.saveSession(session);
-      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      await this.persistSession(session, infoPath);
       await fs.promises.rm(binPath, { force: true });
       this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
-      if (remoteRecorded) {
-        throw err;
-      }
+      if (remoteRecorded) throw err;
       if (remoteCompleted) {
-        await this.recoverCompletedRemoteFailure({
-          id,
-          session,
-          infoPath,
-          binPath,
-          clientOffset,
-          expectedLocalTailOffset,
-          savedFlushed,
-        });
+        await this.recoverCompletedRemoteFailure({ id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, savedFlushed });
         throw err;
       }
       session.remoteParts = savedParts;
@@ -1305,8 +1323,7 @@ export class TusEngine {
     } catch (err) {
       session.completed = false;
       session.uploadOffset = err instanceof TusStagedSizeMismatchError ? Math.min(err.stagedBytes, clientOffset) : clientOffset;
-      await this.sessionStore.saveSession(session);
-      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      await this.persistSession(session, infoPath);
       throw err;
     }
 
@@ -1315,14 +1332,47 @@ export class TusEngine {
       assertNotSpoofedFilePath(binPath, declaredFormat, session.filename);
       await finalizeTusSession(session, binPath);
       await recordTusUpload(session.key);
-      await this.sessionStore.saveSession(session);
-      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+      await this.persistSession(session, infoPath);
       await fs.promises.rm(binPath, { force: true });
       this.localTailMarkers.delete(id);
       await this.sessionStore.deleteStagedBytes?.(id);
     } catch (err) {
       await this.rewindSessionToClientOffset(session, infoPath, binPath, clientOffset, clientOffset);
       throw err;
+    }
+  }
+
+  private async persistIncompleteChunk(
+    params: { id: string; session: TusSession; infoPath: string; binPath: string; clientOffset: number; expectedLocalTailOffset: number; newOffset: number; isRemoteMultipart: boolean }
+  ): Promise<void> {
+    const { id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, newOffset, isRemoteMultipart } = params;
+    const stageLocalInRedis = !isRemoteMultipart && this.shouldStageLocalBytesInRedis();
+    if (stageLocalInRedis && newOffset > 0 && newOffset <= MAX_REDIS_STAGED_UPLOAD_BYTES && this.sessionStore.syncStagedBytes) {
+      const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
+      try {
+        await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
+      } catch (err) {
+        session.uploadOffset = clientOffset;
+        rollbackChunk(binPath, expectedLocalTailOffset);
+        throw err;
+      }
+    }
+    let sessionSaved = false;
+    try {
+      await this.sessionStore.saveSession(session);
+      sessionSaved = true;
+      await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+    } catch (err) {
+      session.uploadOffset = clientOffset;
+      if (sessionSaved) await this.sessionStore.saveSession(session).catch(() => undefined);
+      if (!isRemoteMultipart) rollbackChunk(binPath, expectedLocalTailOffset);
+      throw err;
+    }
+    if (!isRemoteMultipart) {
+      this.setLocalTailMarker(id, 0, newOffset);
+      if (stageLocalInRedis && newOffset > MAX_REDIS_STAGED_UPLOAD_BYTES) {
+        await this.sessionStore.deleteStagedBytes?.(id);
+      }
     }
   }
 
@@ -1344,17 +1394,8 @@ export class TusEngine {
       const initialFlushed = isRemoteMultipart ? (session.remoteFlushedBytes ?? 0) : 0;
       const expectedLocalTailOffset = clientOffset - initialFlushed;
 
-      await this.ensureStagedTailReady(id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed);
-      const chunkBytes = await this.streamChunkToStaging({
-        session,
-        binPath,
-        clientOffset,
-        expectedLocalTailOffset,
-        initialFlushed,
-        isRemoteMultipart,
-        stream,
-        checksumHeader,
-      });
+      await this.ensureStagedTailReady({ id, session, infoPath, binPath, expectedLocalTailOffset, initialFlushed, isRemoteMultipart });
+      const chunkBytes = await this.streamChunkToStaging({ session, binPath, clientOffset, expectedLocalTailOffset, initialFlushed, isRemoteMultipart, stream, checksumHeader });
 
       const newOffset = clientOffset + chunkBytes;
       const newTailBytes = expectedLocalTailOffset + chunkBytes;
@@ -1363,37 +1404,15 @@ export class TusEngine {
 
       if (isRemoteMultipart && session.remoteUploadId) {
         if (isComplete) {
-          await this.completeRemoteMultipartTus({
-            id,
-            session,
-            infoPath,
-            binPath,
-            clientOffset,
-            expectedLocalTailOffset,
-            initialFlushed,
-            newTailBytes,
-          });
+          await this.completeRemoteMultipartTus({ id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, initialFlushed, newTailBytes });
         } else {
-          await this.flushIntermediateRemoteMultipartTus(
-            id,
-            session,
-            binPath,
-            expectedLocalTailOffset,
-            initialFlushed,
-            newTailBytes
-          );
+          await this.flushIntermediateRemoteMultipartTus(id, session, binPath, expectedLocalTailOffset, initialFlushed, newTailBytes);
         }
       } else if (isComplete) {
         await this.completeLocalStagedTus(id, session, infoPath, binPath, clientOffset);
-      } else if (newOffset > 0 && this.sessionStore.syncStagedBytes) {
-        this.setLocalTailMarker(id, 0, newOffset);
-        const remainingTtl = Math.max(60, Math.floor((session.expiresAt - Date.now()) / 1000));
-        await this.sessionStore.syncStagedBytes(id, binPath, clientOffset, newOffset, remainingTtl);
       }
-
       if (!isComplete) {
-        await this.sessionStore.saveSession(session);
-        await fs.promises.writeFile(infoPath, JSON.stringify(session, null, 2), 'utf-8');
+        await this.persistIncompleteChunk({ id, session, infoPath, binPath, clientOffset, expectedLocalTailOffset, newOffset, isRemoteMultipart });
       }
       return { newOffset, isComplete, session };
     });

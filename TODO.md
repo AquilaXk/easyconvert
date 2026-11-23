@@ -17,6 +17,16 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Add a corpus of real bordered tables with human transcriptions (entry 394 measured the cell rule on 16 drawn tables and three real scans only).
 - Run the test shards and the pull request parity job on LibreOffice 26.8 too (entry 386 covers the nightly rows only): they install the runner's 24.2, and the 169 test files that use the suite meet 26.8 only in the container job's one text file.
 - PDF to DOCX extra pages left after entry 390: `govdocs1-000018` 11 for 9, `govdocs1-000353` 12 for 10 (footnote marks written at full size), `govdocs1-000572` 11 for 8, `govdocs1-000618` 12 for 8 (the frames of a newsletter overlap), `govdocs1-001135` 11 for 10 (the spacer under the last table), `govdocs1-000341`, `govdocs1-000145` 7 for 6 and `govdocs1-000370` 9 for 8; the pdf2docx translation on branch `feat/pdf-docx-pdf2docx` stays unwired (entry 390), to look at again when the writer sets a paragraph beside a table or the reader gives glyph advances.
+- Sanitize SVG files written into EPUB and OEB outputs by calibre and verify host-link containment across PDF, RTF, MOBI and AZW3 targets.
+- Enforce MAX_DOCUMENT_INFLATE_BYTES when rewriting packages in stripOfficeMacros and ooxmlVariantAsPlainPackage instead of calling unbounded JSZip.generateAsync.
+- Replace synchronous full-file fs.readFileSync in convertWithNativeFfmpeg image-header checks with a bounded header read (>= 256 bytes for BMP V5) and pictureFileHead, and move multipart upload routes to streaming parsing.
+- Create encrypted 7-Zip archives asynchronously after path normalisation with 0700 staging permissions so worker heartbeats never stall.
+- Disable the global libvips operation cache (sharp.cache(false)) in pinBaseImageThreads for one-shot conversions.
+- Preserve quotes in stripDoctype and skip CDATA/comments in stripElement in svg-sanitizer.ts, and call sanitizeSvgDocument in text-pdf-route.ts.
+- Cap browser OffscreenCanvas pixel area in canvas-header-guard.ts, close ImageBitmap in finally blocks across L0/L1A/L2, escalate >1 MiB PNG tail metadata, and stream bundle downloads.
+- Write ZIP64 local file header extra fields for >= 4 GiB entries and reject > 65,535-byte entry names in streaming-zip.ts.
+- Bound OpenCascade STEP/IGES assembly face/triangle expansion, pass outputUnit on STL/OBJ to IGES/STEP, and tighten OBJ/STL/STEP/CGM bounds.
+- Bound or make iterative the PDFDict/PDFArray traversal in pdf-merge-object-copier.ts so deep object trees cannot overflow the call stack.
 
 ## Operations and security
 - Revoke the GitHub token that the production host's `ubuntu` user had stored for ghcr.io (removed from `~/.docker/config.json` on 2026-11-22; the deploy runner logs in per job since entry 389), if it is a long-lived personal token.
@@ -25,9 +35,30 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
+- Route /api/queue/jobs, synchronous web tools and /api/tools/jobs through getQueueForJob resource queues instead of the default conversionQueue.
+- Align uploads/<userId>/... and intermediate/... storage-key ownership checks with account erasure, tool_job cleanup and follow-up job inputs.
+- Preserve worker failedStatus, failedCode and failedRefusalCode in wait-for-job.ts, mask 5xx messages, and defer staged-input deletion until cancellation settles.
+- Move /api/convert/batch encrypted ZIP creation off the web event loop, bound batch file count, charge concurrency per in-flight job, and mask item errors.
+- Move graph and pipeline execution (node-executor.ts) from stored.buffer to VfsPayload file paths and replace getObject with stat in nodeCharge.
+- Remove the unpooled soffice fallback in runHeadlessOffice and align worker-cpu memory limits with its LibreOffice slot budget.
+- Check quota, multipart content type and sync concurrency slots before acquireIdempotency reads request bodies in POST /api/v1/convert.
+- Persist or require pinned host keys in the BYOS SFTP adapter, try all validated DNS addresses, confine sftp runs, and clean unconsumed download spools.
+- Enforce forbidden HTTP header checks on graph import.url/export.url nodes and BYOS http credentials, and delete unused byos-operations.ts.
+- Validate field types, required inputs, format pairs and options before reserving quota in POST /api/queue/jobs, and call stored.release() on errors.
+- Allow capability-owned upload keys in POST /api/v1/archives/inspect, release downloaded temp objects, and dispatch inspections to workers in queue-only mode.
+- Make tool job status transitions atomic against cancellation, wrap POST /api/tools/jobs in withinSingleRequest, return 404 on foreign /api/v1/jobs/[id], and harden /api/storage/bundle.
+- Isolate LibreOffice OSL_PIPE sockets inside the job directory and narrow ocr-onnx-helper.ts readDirs from process.cwd() to its bundle and node_modules.
+- Switch queue Lua scripts to EVALSHA, round-robin popNextEligibleJob across queues, poll targetQueue directly in waitForQueuedJobResult, and drop duplicate progress writes.
+- Enforce active API key cap atomically in Lua on POST /api/keys and cap initial presigned part URLs in POST /api/v1/uploads/direct.
+- Stream TUS remote multipart part flushes from file descriptors in 8 MiB slices and persist part progress incrementally.
+- Fix Azure 0-byte SharedKey signing, map GCS/Azure/WebDAV 429 and 5xx responses to retryable StorageServiceError, and encode WebDAV basePath segments.
+- Run website-capture page height probes in an isolated JS world with guarded int parsing and multi-address connection fallback.
+- Separate per-worker /tmp scratch mounts, protect live LibreOffice pool profiles during deploy.sh sweep, and add noexec to /home/easyconvert tmpfs.
+- Extend nginx-easyconvert.conf conversion rate-limit zones to /api/v1/jobs, /api/queue/jobs, /api/tools/, /api/fetch-url, /api/storage/bundle and /api/v1/archives/inspect.
 
 ## Tests, CI and code health
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
+- Extract shared storage types from unused oci-storage.ts and remove dead OciObjectStorageService implementation.
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
 - Engine choice, second step (entry 267): install a second engine version when a pair needs it, expose `default` and `latest` flags in `GET /api/formats`, show per-node engine and version in the graph view, and probe engine versions at worker startup.
