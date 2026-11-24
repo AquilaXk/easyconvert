@@ -299,7 +299,7 @@ describe('Batch 2 security adversarial hardening (RED -> GREEN)', () => {
         basePath: '/uploads',
         privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----',
       });
-      vi.spyOn(adapter as any, 'resolveAllowedAddress').mockResolvedValue('93.184.216.34');
+      vi.spyOn(adapter as any, 'resolveAllowedAddresses').mockResolvedValue(['93.184.216.34']);
       const runBatchSpy = vi
         .spyOn(adapter as any, 'runSftpBatch')
         .mockResolvedValue('');
