@@ -464,14 +464,15 @@ export class EasyConvertClient {
     const uploadId = initData.uploadId;
     const partSize = validateMultipartPartSize(initData.partSize);
 
-    const rawKey = initData.key ?? initData.storageKey;
+    const rawKey =
+      typeof initData.key === 'string' && initData.key.length > 0 ? initData.key : initData.storageKey;
     const storageKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : undefined;
     const rawParts: unknown = initData.parts ?? initData.partUrls ?? [];
     if (!Array.isArray(rawParts)) {
       throw new Error('Invalid multipart parts list');
     }
     const declaredTotalParts = resolveValidatedTotalParts(initData.totalParts, rawParts.length);
-    if (declaredTotalParts === undefined && rawParts.length === 0 && file.size > 0) {
+    if (declaredTotalParts === undefined && rawParts.length === 0) {
       throw new Error('Multipart upload initialization returned no parts');
     }
 
@@ -523,9 +524,18 @@ export class EasyConvertClient {
       const problem = (await completeRes.json().catch(() => undefined)) as ProblemDetails | undefined;
       throw new EasyConvertApiError(completeRes.status, problem);
     }
-    const completeData = (await completeRes.json()) as { storageKey?: string; key?: string };
+    const completeData = (await completeRes.json()) as { storageKey?: unknown; key?: unknown };
+    if (typeof completeData !== 'object' || completeData === null || Array.isArray(completeData)) {
+      throw new Error('Invalid multipart upload completion response');
+    }
+    const rawCompleteKey =
+      typeof completeData.storageKey === 'string' && completeData.storageKey.length > 0
+        ? completeData.storageKey
+        : completeData.key;
+    const finalStorageKey =
+      typeof rawCompleteKey === 'string' && rawCompleteKey.length > 0 ? rawCompleteKey : storageKey ?? '';
     return {
-      storageKey: completeData.storageKey ?? completeData.key ?? storageKey ?? '',
+      storageKey: finalStorageKey,
       uploadId,
     };
   }

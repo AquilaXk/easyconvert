@@ -304,6 +304,7 @@ describe('SDK Ergonomic Helpers', () => {
       for (const badInit of [
         { uploadId: 'mp_huge', key: 'k', partSize: 4, totalParts: 100_000_000, parts: [] },
         { uploadId: 'mp_zero', key: 'k', partSize: 4, totalParts: 0, parts: [] },
+        { uploadId: 'mp_missing_size', key: 'k', totalParts: 1, parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/1' }] },
         { uploadId: 'mp_bad_size', key: 'k', partSize: 0, totalParts: 1, parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/1' }] },
         { uploadId: 'mp_decimal_size', key: 'k', partSize: 0.5, totalParts: 1, parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/1' }] },
         { uploadId: 'mp_negative_size', key: 'k', partSize: -4, totalParts: 1, parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/1' }] },
@@ -417,6 +418,28 @@ describe('SDK Ergonomic Helpers', () => {
           },
           message: /missing contiguous partNumber 1/,
         },
+        {
+          init: {
+            uploadId: 'mp_exceeds_len',
+            key: 'k',
+            partSize: 2,
+            totalParts: 1,
+            parts: [
+              { partNumber: 1, uploadUrl: 'https://storage.test/1' },
+              { partNumber: 2, uploadUrl: 'https://storage.test/2' },
+            ],
+          },
+          message: /exceeds totalParts/,
+        },
+        {
+          init: {
+            uploadId: 'mp_huge_part_no_total',
+            key: 'k',
+            partSize: 2,
+            parts: [{ partNumber: 10_001, uploadUrl: 'https://storage.test/10001' }],
+          },
+          message: /Invalid multipart partNumber/,
+        },
       ];
 
       for (const { init, message } of badPayloads) {
@@ -427,6 +450,71 @@ describe('SDK Ergonomic Helpers', () => {
         await expect(client.uploadMultipart(new Blob(['ABCD']), { filename: 'bad.bin' })).rejects.toThrow(message);
         expect(mockFetch).toHaveBeenCalledTimes(1);
       }
+
+      const emptyInitFetch = vi.fn(async () =>
+        new Response(
+          JSON.stringify({ uploadId: 'mp_empty_parts', key: 'k', partSize: 4, parts: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      ) as unknown as typeof fetch;
+      const emptyClient = new EasyConvertClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetch: emptyInitFetch });
+      await expect(emptyClient.uploadMultipart(new Blob([]), { filename: 'empty.bin' })).rejects.toThrow(
+        /Multipart upload initialization returned no parts/
+      );
+      expect(emptyInitFetch).toHaveBeenCalledTimes(1);
+
+      for (const badCompleteBody of ['null', '[]']) {
+        const badCompleteFetch = vi.fn(async (input: RequestInfo | URL) => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+          if (url.endsWith('/api/v1/uploads/direct')) {
+            return new Response(
+              JSON.stringify({
+                uploadId: 'mp_bad_complete',
+                key: 'k',
+                partSize: 4,
+                totalParts: 1,
+                parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/1', expiresAt: 9999999999 }],
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          if (url.startsWith('https://storage.test/')) {
+            return new Response(null, { status: 200, headers: { ETag: '"e1"' } });
+          }
+          return new Response(badCompleteBody, { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }) as unknown as typeof fetch;
+        const badCompleteClient = new EasyConvertClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetch: badCompleteFetch });
+        await expect(badCompleteClient.uploadMultipart(new Blob(['ABCD']), { filename: 'bad-complete.bin' })).rejects.toThrow(
+          /Invalid multipart upload completion response/
+        );
+      }
+
+      const fallbackKeyFetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith('/api/v1/uploads/direct')) {
+          return new Response(
+            JSON.stringify({
+              uploadId: 'mp_fallback_key',
+              key: '',
+              storageKey: 'uploads/safe/ts.bin',
+              partSize: 4,
+              totalParts: 1,
+              parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/1', expiresAt: 9999999999 }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.startsWith('https://storage.test/')) {
+          return new Response(null, { status: 200, headers: { ETag: '"e1"' } });
+        }
+        return new Response(JSON.stringify({ storageKey: 999, key: '' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+      const fallbackKeyClient = new EasyConvertClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetch: fallbackKeyFetch });
+      const fallbackKeyRes = await fallbackKeyClient.uploadMultipart(new Blob(['ABCD']), { filename: 'fallback-key.bin' });
+      expect(fallbackKeyRes).toEqual({ storageKey: 'uploads/safe/ts.bin', uploadId: 'mp_fallback_key' });
 
       const nanMockFetch = vi.fn(async () => ({
         ok: true,

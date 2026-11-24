@@ -439,10 +439,11 @@ class EasyConvertClient:
         upload_id = init_data.get("uploadId")
         if not isinstance(upload_id, str) or not upload_id:
             raise ValueError("Missing or invalid multipart uploadId")
-        storage_key = init_data.get("key") or init_data.get("storageKey")
-        part_size_actual = _validate_multipart_part_size(
-            init_data.get("partSize", 5 * 1024 * 1024), "partSize"
-        )
+        raw_key = init_data.get("key")
+        if not isinstance(raw_key, str) or not raw_key:
+            raw_key = init_data.get("storageKey")
+        storage_key = raw_key if isinstance(raw_key, str) and raw_key else None
+        part_size_actual = _validate_multipart_part_size(init_data.get("partSize"), "partSize")
 
         raw_parts = init_data.get("parts")
         if raw_parts is None:
@@ -455,7 +456,7 @@ class EasyConvertClient:
         declared_total_parts = _resolve_declared_total_parts(
             init_data.get("totalParts"), len(raw_parts)
         )
-        if declared_total_parts is None and not raw_parts and total_size > 0:
+        if declared_total_parts is None and not raw_parts:
             raise ValueError("Multipart upload initialization returned no parts")
 
         pregenerated_urls = _collect_pregenerated_parts(raw_parts, declared_total_parts)
@@ -498,8 +499,12 @@ class EasyConvertClient:
         comp_data = comp_res.json()
         if not isinstance(comp_data, Mapping):
             raise ValueError("Invalid multipart upload completion response")
+        comp_key = comp_data.get("storageKey")
+        if not isinstance(comp_key, str) or not comp_key:
+            comp_key = comp_data.get("key")
+        final_storage_key = comp_key if isinstance(comp_key, str) and comp_key else storage_key
         return {
-            "storageKey": comp_data.get("storageKey") or comp_data.get("key") or storage_key,
+            "storageKey": final_storage_key,
             "uploadId": upload_id,
         }
 

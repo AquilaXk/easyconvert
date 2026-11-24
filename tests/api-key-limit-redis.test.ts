@@ -218,7 +218,13 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
         if (entry.keyHash) createdHashesToClean.push(entry.keyHash);
       }
       expect(await admin.hlen(`${routePrefix}apikey_hashes`)).toBe(EXPECTED_LIMIT + 1);
-      expect(await admin.exists(`easyconvert:user_active_keys:${user.id}`)).toBe(0);
+      expect(
+        await admin.exists(
+          `easyconvert:user_active_keys:${user.id}`,
+          `easyconvert:user_keys:${user.id}`,
+          `easyconvert:apikeys:${firstBody.key.id}`
+        )
+      ).toBe(0);
 
       const tagged = await accountTaggedKeys(user.id, { apiKeyIds: createdKeysToClean });
       const activePrefix = redisKeyStore.getPrefix();
