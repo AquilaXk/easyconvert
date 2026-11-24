@@ -13,12 +13,19 @@ import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 import type { User } from '../src/lib/auth/types';
 import { SINGLE_REQUEST_FILE_MAX_BYTES } from '../src/lib/plan-limits';
-import { Worker, type Job } from '../src/lib/queue/bullmq-engine';
-import { processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
+import { JobCancelledError, Worker, type Job } from '../src/lib/queue/bullmq-engine';
+import {
+  cancelJobAcrossQueues,
+  conversionQueue,
+  flushPendingCancellationListeners,
+  processConversionJob,
+  resourceQueues,
+} from '../src/lib/queue/conversion-queue';
+import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { processQueuedArchiveInspection } from '../src/lib/queue/node-processor';
-import { dispatchSyncArchiveInspection } from '../src/lib/queue/wait-for-job';
+import { dispatchSyncArchiveInspection, rehydrateQueuedJobFailure } from '../src/lib/queue/wait-for-job';
 import * as workerPresence from '../src/lib/queue/worker-presence';
 import { PROBLEM_TYPE_BASE } from '../src/lib/refusal-codes';
 import { storageProvider } from '../src/lib/storage';
@@ -501,6 +508,290 @@ describe('P1-08: POST /api/v1/archives/inspect key authorization, object release
       await openWorkers.pop()!.close();
       expect(faultRes.status).toBe(500);
       expect((await faultRes.json()).detail).toBe('Failed to inspect archive.');
+
+      // Caller-supplied { storageKey } must remain intact after worker errors
+      expect(await storageProvider.stat(key)).not.toBeNull();
+    }, 20_000);
+
+    it('masks missing worker input objects to 500 without leaking keys and cleans up cleanupUploadKeys only on final failure', async () => {
+      const alice = await makeUser('missing_input_500');
+      const zipBytes = await buildZipBuffer([{ name: 'temp.txt', text: 'tmp' }]);
+      const retryKeptKey = await saveStoredObject(
+        `uploads/${alice.user.id}/missing_retry_keep_${Date.now()}.zip`,
+        zipBytes,
+        'tmp.zip'
+      );
+      const missingKey = `uploads/${alice.user.id}/nonexistent_${Date.now()}.zip`;
+
+      // Non-final retryable attempt must throw plain Error (not ConversionFailedError) and retain staged upload for retry
+      const retryJob = {
+        id: 'job_missing_retry_1',
+        attemptsMade: 1,
+        opts: { attempts: 3 },
+        data: {
+          jobId: 'job_missing_retry_1',
+          originalFilename: 'tmp.zip',
+          sourceFormat: 'zip',
+          targetFormat: 'zip',
+          fileSize: zipBytes.length,
+          options: {},
+          userId: alice.user.id,
+          archiveInspect: { storageKey: missingKey, cleanupUploadKeys: [retryKeptKey] },
+        },
+      } as Job<ConversionJobData, ConversionJobResult>;
+      const retryErr = await processQueuedArchiveInspection(retryJob, storageProvider).catch((e: unknown) => e);
+      expect(retryErr).toBeInstanceOf(Error);
+      expect(retryErr).not.toBeInstanceOf(ConversionFailedError);
+      expect(await storageProvider.stat(retryKeptKey)).not.toBeNull();
+
+      // Rehydrating that untyped Error must mask the staged key and yield status 500
+      const rehydrated = rehydrateQueuedJobFailure({ message: (retryErr as Error).message });
+      expect((rehydrated as { status?: number }).status).toBe(500);
+      expect(rehydrated.message).toBe('Internal conversion error');
+      expect(rehydrated.message).not.toContain(missingKey);
+
+      // Final failure attempt must delete staged cleanupUploadKeys
+      const finalJob = { ...retryJob, attemptsMade: 3 } as Job<ConversionJobData, ConversionJobResult>;
+      await expect(processQueuedArchiveInspection(finalJob, storageProvider)).rejects.toThrow(
+        `Input storage object missing for key "${missingKey}".`
+      );
+      expect(await storageProvider.stat(retryKeptKey)).toBeNull();
+
+      // End-to-end HTTP POST /api/v1/archives/inspect in queue-only mode returns 500 without leaking storageKey
+      vi.stubEnv('WEB_EXECUTION_MODE', 'queue-only');
+      vi.spyOn(workerPresence, 'hasLiveQueueWorker').mockResolvedValue(true);
+      const key = `uploads/${Date.now()}_disappeared.zip`;
+      const statSpy = vi.spyOn(storageProvider, 'stat').mockResolvedValue({
+        size: zipBytes.length,
+        etag: '"gone"',
+        mimeType: 'application/zip',
+        filename: 'disappeared.zip',
+      });
+      const worker = new Worker<ConversionJobData, ConversionJobResult>(
+        [resourceQueues.cpu],
+        processConversionJob,
+        { concurrency: 1 }
+      );
+      openWorkers.push(worker);
+
+      const res = await postInspectJson(alice.headers, { storageKey: key });
+      statSpy.mockRestore();
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.detail).toBe('Failed to inspect archive.');
+      expect(JSON.stringify(body)).not.toContain(key);
+    }, 20_000);
+
+    it('enforces inspectSizeProblem parity (400 empty and 413 oversized) on raw binary payloads', async () => {
+      const alice = await makeUser('raw_size_parity');
+      const inspectSpy = vi.spyOn(conversions, 'inspectArchive');
+
+      // 0-byte raw body keeps 400 Empty archive payload response
+      const emptyRes = await inspectRoute(
+        new NextRequest(ROUTE_URL, {
+          method: 'POST',
+          headers: { ...alice.headers, 'Content-Type': 'application/octet-stream' },
+          body: new Uint8Array(0),
+        })
+      );
+      expect(emptyRes.status).toBe(400);
+      expect((await emptyRes.json()).detail).toBe('Empty archive payload provided for inspection.');
+
+      // > SINGLE_REQUEST_FILE_MAX_BYTES raw body returns 413 before inspecting buffer
+      const oversizedReq = new NextRequest(ROUTE_URL, {
+        method: 'POST',
+        headers: { ...alice.headers, 'Content-Type': 'application/octet-stream' },
+      });
+      Object.defineProperty(oversizedReq, 'arrayBuffer', {
+        value: vi.fn(async () => ({ byteLength: SINGLE_REQUEST_FILE_MAX_BYTES + 1 }) as ArrayBuffer),
+      });
+      const oversizedRes = await inspectRoute(oversizedReq);
+      expect(oversizedRes.status).toBe(413);
+      const oversizedBody = await oversizedRes.json();
+      expect(oversizedBody.detail).toContain('uploaded archive');
+      expect(oversizedBody.detail).toContain('POST /api/v1/jobs');
+      expect(inspectSpy).not.toHaveBeenCalled();
+    });
+
+    it('cleans up staged tempInputKey via worker and cancellation listener when client aborts past CANCEL_SETTLE_MAX_MS', async () => {
+      vi.stubEnv('WEB_EXECUTION_MODE', 'queue-only');
+      vi.spyOn(workerPresence, 'hasLiveQueueWorker').mockResolvedValue(true);
+      const alice = await makeUser('qo_late_abort');
+      const zipBytes = await buildZipBuffer([{ name: 'slow.txt', text: 'payload' }]);
+
+      let stagedKeySeen: string | undefined;
+      let activeJob: Job<ConversionJobData, ConversionJobResult> | undefined;
+      let releaseWorker!: () => void;
+      const workerStarted = new Promise<void>((resolve) => {
+        const releaseGate = new Promise<void>((done) => {
+          releaseWorker = done;
+        });
+        const worker = new Worker<ConversionJobData, ConversionJobResult>(
+          [resourceQueues.cpu],
+          async (job: Job<ConversionJobData, ConversionJobResult>) => {
+            activeJob = job;
+            stagedKeySeen = job.data.archiveInspect?.storageKey;
+            expect(job.data.archiveInspect?.cleanupUploadKeys).toEqual([stagedKeySeen]);
+            resolve();
+            await releaseGate;
+            return processQueuedArchiveInspection(job, storageProvider);
+          },
+          { concurrency: 1 }
+        );
+        openWorkers.push(worker);
+      });
+
+      const ac = new AbortController();
+      const dispatchPromise = dispatchSyncArchiveInspection({
+        archiveBuffer: zipBytes,
+        inputBytes: zipBytes.length,
+        filename: 'slow.zip',
+        userId: alice.user.id,
+        tier: 'paid',
+        signal: ac.signal,
+      });
+
+      await workerStarted;
+
+      // Simulate distributed worker remaining 'active' past CANCEL_SETTLE_MAX_MS while abort signal reaches active attempt
+      const cancelSpy = vi.spyOn(conversionQueue, 'cancelJob').mockImplementation(async (_id, reason) => {
+        activeJob?._abortAttempt(new JobCancelledError(reason || 'cancelled'));
+        return true;
+      });
+      const getJobSpy = vi.spyOn(resourceQueues.cpu, 'getJob').mockImplementation(async (id) => {
+        if (!activeJob || activeJob.id !== id) return undefined;
+        return Object.assign(Object.create(Object.getPrototypeOf(activeJob)), activeJob, {
+          getState: async () => 'active' as const,
+        });
+      });
+
+      ac.abort(new Error('client timed out'));
+
+      // settleQueueOnlyCleanup exits after CANCEL_SETTLE_MAX_MS with settledNotActive === false, preserving tempInputKey for worker
+      await expect(dispatchPromise).rejects.toThrow();
+      cancelSpy.mockRestore();
+      getJobSpy.mockRestore();
+      expect(stagedKeySeen).toBeTruthy();
+      expect(await storageProvider.stat(stagedKeySeen!)).not.toBeNull();
+
+      // Once worker exits via processQueuedArchiveInspection abort handler, tempInputKey is deleted
+      releaseWorker();
+      await openWorkers.pop()!.close();
+      await flushPendingCancellationListeners();
+      expect(await storageProvider.stat(stagedKeySeen!)).toBeNull();
+
+      // Also verify attachJobCancellationListeners cleans up cleanupUploadKeys when an unstarted job is cancelled in queue
+      const queuedKey = await saveStoredObject(
+        `uploads/${alice.user.id}/queued_cancel_${Date.now()}.zip`,
+        zipBytes,
+        'queued_cancel.zip'
+      );
+      const queuedJobId = `syncinspect_cancel_test_${Date.now()}`;
+      await enqueueConversionJob(
+        resourceQueues.cpu,
+        'archive-inspect-sync',
+        {
+          jobId: queuedJobId,
+          originalFilename: 'queued_cancel.zip',
+          sourceFormat: 'zip',
+          targetFormat: 'zip',
+          fileSize: zipBytes.length,
+          options: {},
+          userId: alice.user.id,
+          resourceClass: 'cpu',
+          transientSyncWait: true,
+          archiveInspect: {
+            storageKey: queuedKey,
+            filename: 'queued_cancel.zip',
+            cleanupUploadKeys: [queuedKey],
+          },
+        },
+        { jobId: queuedJobId },
+        { tier: 'paid', inputBytes: zipBytes.length }
+      );
+      expect(await cancelJobAcrossQueues(queuedJobId, 'client disconnected')).toBe(true);
+      await flushPendingCancellationListeners();
+      expect(await storageProvider.stat(queuedKey)).toBeNull();
+    }, 20_000);
+
+    it('never deletes caller-supplied { storageKey } uploads on worker completion, failure, or cancellation', async () => {
+      const alice = await makeUser('caller_key_preserve');
+      const zipBytes = await buildZipBuffer([{ name: 'keep.txt', text: 'forever' }]);
+      const callerKey = await saveStoredObject(
+        `uploads/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_keep.zip`,
+        zipBytes,
+        'keep.zip'
+      );
+
+      // 1. Worker completion preserves callerKey
+      const okJob = {
+        id: 'job_caller_ok',
+        attemptsMade: 1,
+        opts: { attempts: 1 },
+        data: {
+          jobId: 'job_caller_ok',
+          originalFilename: 'keep.zip',
+          sourceFormat: 'zip',
+          targetFormat: 'zip',
+          fileSize: zipBytes.length,
+          options: {},
+          userId: alice.user.id,
+          archiveInspect: { storageKey: callerKey, filename: 'keep.zip' },
+        },
+      } as Job<ConversionJobData, ConversionJobResult>;
+      const okRes = await processQueuedArchiveInspection(okJob, storageProvider);
+      expect(okRes.archiveInspection).toMatchObject({ format: 'zip', totalEntries: 1 });
+      expect(await storageProvider.stat(callerKey)).not.toBeNull();
+
+      // 2. Worker final failure preserves callerKey
+      const encKey = await saveStoredObject(
+        `uploads/${Date.now()}_${crypto.randomBytes(4).toString('hex')}_keep_enc.rar`,
+        buildEncryptedHeaderRar(),
+        'keep_enc.rar'
+      );
+      const failJob = {
+        id: 'job_caller_fail',
+        attemptsMade: 3,
+        opts: { attempts: 3 },
+        data: {
+          jobId: 'job_caller_fail',
+          originalFilename: 'keep_enc.rar',
+          sourceFormat: 'zip',
+          targetFormat: 'zip',
+          fileSize: 20,
+          options: {},
+          userId: alice.user.id,
+          archiveInspect: { storageKey: encKey, filename: 'keep_enc.rar' },
+        },
+      } as Job<ConversionJobData, ConversionJobResult>;
+      await expect(processQueuedArchiveInspection(failJob, storageProvider)).rejects.toThrow(
+        ArchiveEncryptedHeaderError
+      );
+      expect(await storageProvider.stat(encKey)).not.toBeNull();
+
+      // 3. Queue cancellation preserves callerKey
+      const cancelJobId = `syncinspect_caller_cancel_${Date.now()}`;
+      await enqueueConversionJob(
+        resourceQueues.cpu,
+        'archive-inspect-sync',
+        {
+          jobId: cancelJobId,
+          originalFilename: 'keep.zip',
+          sourceFormat: 'zip',
+          targetFormat: 'zip',
+          fileSize: zipBytes.length,
+          options: {},
+          userId: alice.user.id,
+          resourceClass: 'cpu',
+          transientSyncWait: true,
+          archiveInspect: { storageKey: callerKey, filename: 'keep.zip' },
+        },
+        { jobId: cancelJobId },
+        { tier: 'paid', inputBytes: zipBytes.length }
+      );
+      expect(await cancelJobAcrossQueues(cancelJobId, 'caller aborted')).toBe(true);
+      await flushPendingCancellationListeners();
+      expect(await storageProvider.stat(callerKey)).not.toBeNull();
     });
 
     it('rejects oversized multipart uploads lazily before buffering fileEntry.arrayBuffer()', async () => {

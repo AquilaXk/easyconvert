@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Job } from './bullmq-engine';
+import { JobCancelledError, type Job } from './bullmq-engine';
 import { isFinalFailure } from './job-failure';
 import {
   ConversionFailedError,
@@ -26,7 +26,7 @@ import { engineTraceFields } from '../api/engine-trace';
 import { conversionWarningsFields } from '../api/conversion-warnings';
 import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
-import { processQueuedToolJob } from '../tools/queued-tool-runner';
+import { cleanupQueuedToolUploads, processQueuedToolJob } from '../tools/queued-tool-runner';
 import { openPasswordOption } from './option-secrets';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -180,13 +180,14 @@ export async function processQueuedArchiveInspection(
   rootStorage: IStorageBackend = storageProvider
 ): Promise<ConversionJobResult> {
   const payload = job.data.archiveInspect!;
+  const cleanupKeys = payload.cleanupUploadKeys;
   const startedAt = Date.now();
   const scope = scopeStorageObjects(rootStorage);
   try {
     job.signal?.throwIfAborted();
     const stored = await scope.storage.getObject(payload.storageKey);
     if (!stored) {
-      throw new ConversionFailedError(`Storage object not found for key: "${payload.storageKey}".`);
+      throw new Error(`Input storage object missing for key "${payload.storageKey}".`);
     }
     const opened = openPasswordOption(payload.options ?? {}, job.id);
     const inspection = await inspectArchive(stored.buffer, {
@@ -195,6 +196,7 @@ export async function processQueuedArchiveInspection(
       signal: job.signal,
     });
     job.signal?.throwIfAborted();
+    await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     return {
       jobId: job.id,
       status: 'completed',
@@ -206,6 +208,11 @@ export async function processQueuedArchiveInspection(
       durationMs: Date.now() - startedAt,
       archiveInspection: inspection,
     };
+  } catch (err: unknown) {
+    if (Boolean(job.signal?.aborted || err instanceof JobCancelledError) || isFinalFailure(job, err)) {
+      await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
+    }
+    throw err;
   } finally {
     await scope.releaseAll();
   }

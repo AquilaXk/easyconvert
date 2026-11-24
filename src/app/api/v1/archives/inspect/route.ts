@@ -163,7 +163,11 @@ async function readJsonInspectInput(
   };
 }
 
-async function readRawInspectInput(req: NextRequest, instanceUri: string): Promise<ParsedInspectInput> {
+async function readRawInspectInput(
+  req: NextRequest,
+  user: PlanCaller,
+  instanceUri: string
+): Promise<ParsedInspectInput> {
   let raw: ArrayBuffer;
   try {
     raw = await req.arrayBuffer();
@@ -173,6 +177,10 @@ async function readRawInspectInput(req: NextRequest, instanceUri: string): Promi
   }
   if (raw.byteLength === 0) {
     return { problem: createProblemDetailsResponse(400, 'Empty archive payload provided for inspection.', instanceUri, 'Bad Request') };
+  }
+  const sizeProblem = inspectSizeProblem(user, raw.byteLength, 'uploaded', instanceUri);
+  if (sizeProblem) {
+    return { problem: sizeProblem };
   }
   const archiveBuffer = Buffer.from(raw);
   return {
@@ -195,7 +203,7 @@ async function parseInspectInput(
   if (contentType.includes('application/json')) {
     return readJsonInspectInput(req, user, instanceUri);
   }
-  return readRawInspectInput(req, instanceUri);
+  return readRawInspectInput(req, user, instanceUri);
 }
 
 function inspectErrorResponse(err: unknown, instanceUri: string): NextResponse {

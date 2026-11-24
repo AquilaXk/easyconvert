@@ -636,6 +636,7 @@ export async function dispatchSyncArchiveInspection(
         archiveInspect: {
           storageKey: effectiveStorageKey,
           ...(params.filename ? { filename: params.filename } : {}),
+          ...(inputKeys.length > 0 ? { cleanupUploadKeys: inputKeys } : {}),
           ...(params.password ? { options: { password: params.password } } : {}),
         },
       },

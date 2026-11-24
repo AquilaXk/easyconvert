@@ -272,12 +272,15 @@ export function attachJobCancellationListeners(
         await releaseResultHold(job.data.storageKey, job.id);
       }
       await reportGraphNodeEnded(job, job.failedReason || 'The job was cancelled.');
-      if (job.data?.toolJob) {
+      const cleanupKeys = [
+        ...(job.data?.toolJob
+          ? (job.data.toolJob.cleanupUploadKeys ?? job.data.toolJob.storedRefs.map((ref) => ref.key))
+          : []),
+        ...(job.data?.archiveInspect?.cleanupUploadKeys ?? []),
+      ];
+      if (cleanupKeys.length > 0) {
         const { cleanupQueuedToolUploads } = await import('../tools/queued-tool-runner');
-        await cleanupQueuedToolUploads(
-          storageProvider,
-          job.data.toolJob.cleanupUploadKeys ?? job.data.toolJob.storedRefs.map((ref) => ref.key)
-        ).catch(() => undefined);
+        await cleanupQueuedToolUploads(storageProvider, cleanupKeys).catch(() => undefined);
       }
       if (!job.data?.reservationId) {
         return;

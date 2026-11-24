@@ -398,7 +398,7 @@ import type { GraphNode, NodeId } from './queue/graph/types';
 import type { QueuedToolJobPayload } from './tools/queued-tool-types';
 export type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy, GraphNode, NodeId, QueuedToolJobPayload };
 
-export interface QueuedArchiveInspectPayload { storageKey: string; filename?: string; options?: { password?: string }; }
+export interface QueuedArchiveInspectPayload { storageKey: string; filename?: string; cleanupUploadKeys?: string[]; options?: { password?: string }; }
 
 export interface ConversionJobData {
   jobId: string;
