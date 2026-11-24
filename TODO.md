@@ -33,7 +33,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
-- Preserve worker failedStatus, failedCode and failedRefusalCode in wait-for-job.ts, mask 5xx messages, and defer staged-input deletion until cancellation settles.
 - Move /api/convert/batch encrypted ZIP creation off the web event loop, bound batch file count, charge concurrency per in-flight job, and mask item errors.
 - Move graph and pipeline execution (node-executor.ts) from stored.buffer to VfsPayload file paths and replace getObject with stat in nodeCharge.
 - Remove the unpooled soffice fallback in runHeadlessOffice and align worker-cpu memory limits with its LibreOffice slot budget.

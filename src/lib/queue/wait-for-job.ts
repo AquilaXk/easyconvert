@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import { dispatchConversion } from '../conversions/dispatch';
+import { CONVERSION_REFUSAL_CODES, isCodeOf, type ConversionRefusalCode } from '../refusal-codes';
+import { maskServerText } from '../security/server-paths';
 import { storageProvider } from '../storage';
 import { eraseOwnedFile } from '../storage/retention-service';
 import type { WorkerConversionResult, WorkerEngineOptions } from '../../worker/worker-types';
@@ -7,11 +9,25 @@ import type {
   ConversionJobData,
   ConversionJobResult,
 } from '../types';
-import { ConversionFailedError, QueueUnavailableError } from '../types';
+import {
+  ArchiveInputUnprocessableError,
+  ConversionFailedError,
+  EncryptedOfficeDocumentError,
+  EngineMissingError,
+  PayloadLimitError,
+  QueueUnavailableError,
+  WORKER_OUTPUT_MISSING_DETAIL,
+  WorkerOutputMissingError,
+} from '../types';
+import type { Job, JobState } from './bullmq-engine';
 import { sanitizeNodeOutputFilename } from './graph/node-jobs';
 import { cancelJobAcrossQueues, conversionQueue, getQueueForResourceClass } from './conversion-queue';
 import { resolveResourceClass, tierToPriority } from './resource-class';
-import { subscribeToJobTelemetry, type JobTelemetryEvent } from './job-telemetry';
+import {
+  failedTelemetryFieldsFromPayload,
+  subscribeToJobTelemetry,
+  type JobTelemetryEvent,
+} from './job-telemetry';
 import { enqueueConversionJob } from './enqueue';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from './worker-presence';
 import { stagedInputKey } from '../storage/key-namespace';
@@ -34,11 +50,162 @@ export function webToolResourceFormat(tool: WebTool): 'zip' | 'pdf' {
 }
 
 const POLL_INTERVAL_MS = 120;
+const CANCEL_SETTLE_MAX_MS = 1_000;
+const CANCEL_SETTLE_STEP_MS = 50;
+const MAX_CANCEL_SETTLE_STEPS = Math.floor(CANCEL_SETTLE_MAX_MS / CANCEL_SETTLE_STEP_MS);
+const HTTP_BAD_REQUEST_MIN = 400;
+const HTTP_PAYLOAD_TOO_LARGE = 413;
+const HTTP_UNPROCESSABLE_ENTITY = 422;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+const HTTP_MAX_STATUS = 599;
+const INTERNAL_ERROR_DETAIL = 'Internal conversion error';
+
+type QueueEngine = ReturnType<typeof getQueueForResourceClass>;
+
+export interface RehydrateQueuedFailureInfo {
+  message?: string;
+  failedCode?: string;
+  failedStatus?: number;
+  failedRefusalCode?: string;
+}
+
+/**
+ * Rehydrates a queued worker failure on the control plane using only allowlisted refusal codes and finite HTTP error
+ * statuses, preserving typed 413/422/503/WorkerOutputMissingError subclasses for route error handlers. Server faults
+ * (>= 500) and untyped crashes are replaced with a generic message so internal paths never leak or collapse to HTTP 400.
+ */
+export function rehydrateQueuedJobFailure(info: RehydrateQueuedFailureInfo): Error {
+  const refusalCode = isCodeOf(CONVERSION_REFUSAL_CODES, info.failedRefusalCode)
+    ? info.failedRefusalCode
+    : undefined;
+  const status =
+    typeof info.failedStatus === 'number' &&
+    Number.isFinite(info.failedStatus) &&
+    info.failedStatus >= HTTP_BAD_REQUEST_MIN &&
+    info.failedStatus <= HTTP_MAX_STATUS
+      ? info.failedStatus
+      : undefined;
+  const code = typeof info.failedCode === 'string' && info.failedCode ? info.failedCode : 'ConversionFailedError';
+
+  if (
+    info.failedCode === 'EngineMissingError' ||
+    info.failedCode === 'EngineUnavailableError' ||
+    refusalCode === 'engine_unavailable'
+  ) {
+    return new EngineMissingError(maskServerText(info.message || 'Engine unavailable.'));
+  }
+
+  if (info.failedCode === 'WorkerOutputMissingError') {
+    return new WorkerOutputMissingError(WORKER_OUTPUT_MISSING_DETAIL);
+  }
+
+  if (refusalCode !== undefined && status !== undefined && status < HTTP_INTERNAL_SERVER_ERROR) {
+    const maskedMessage = maskServerText(info.message || 'Queued conversion failed.');
+    if (status === HTTP_PAYLOAD_TOO_LARGE) {
+      const err = new PayloadLimitError(maskedMessage);
+      err.name = code;
+      (err as { refusalCode: ConversionRefusalCode }).refusalCode = refusalCode;
+      return err;
+    }
+    if (status === HTTP_UNPROCESSABLE_ENTITY) {
+      const err =
+        refusalCode === 'encrypted_input'
+          ? new EncryptedOfficeDocumentError(maskedMessage)
+          : new ArchiveInputUnprocessableError(maskedMessage);
+      err.name = code;
+      (err as { refusalCode: ConversionRefusalCode }).refusalCode = refusalCode;
+      return err;
+    }
+    const err = new ConversionFailedError(maskedMessage);
+    err.name = code;
+    (err as { status?: number }).status = status;
+    (err as { refusalCode?: ConversionRefusalCode }).refusalCode = refusalCode;
+    return err;
+  }
+
+  const serverStatus =
+    status !== undefined && status >= HTTP_INTERNAL_SERVER_ERROR ? status : HTTP_INTERNAL_SERVER_ERROR;
+  if (refusalCode !== undefined) {
+    const err = new ConversionFailedError(INTERNAL_ERROR_DETAIL);
+    err.name = code;
+    (err as { status?: number }).status = serverStatus;
+    (err as { refusalCode?: ConversionRefusalCode }).refusalCode = refusalCode;
+    return err;
+  }
+
+  const err = new Error(INTERNAL_ERROR_DETAIL);
+  (err as { status?: number }).status = serverStatus;
+  return err;
+}
+
+async function readJobAcrossQueues(
+  targetQueue: QueueEngine,
+  jobId: string
+): Promise<Job<ConversionJobData, ConversionJobResult> | undefined> {
+  const direct = await targetQueue.getJob(jobId);
+  if (direct || targetQueue === conversionQueue) return direct;
+  return conversionQueue.getJob(jobId);
+}
+
+async function jobStateOf(job: Job<ConversionJobData, ConversionJobResult>): Promise<JobState> {
+  return typeof job.getState === 'function' ? await job.getState() : job.state;
+}
+
+async function tryReadJobAcrossQueues(
+  targetQueue: QueueEngine,
+  jobId: string
+): Promise<{ ok: true; job: Job<ConversionJobData, ConversionJobResult> | undefined } | { ok: false }> {
+  try {
+    return { ok: true, job: await readJobAcrossQueues(targetQueue, jobId) };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function settleQueueOnlyCleanup(params: {
+  targetQueue: QueueEngine;
+  jobId: string;
+  inputKeys: readonly string[];
+  resultKeysToErase: readonly string[];
+  aborted: boolean;
+  pendingCancel?: Promise<unknown>;
+}): Promise<void> {
+  const { targetQueue, jobId, inputKeys, resultKeysToErase, aborted, pendingCancel } = params;
+  if (aborted) {
+    await (
+      pendingCancel ??
+      cancelJobAcrossQueues(jobId, 'Synchronous caller disconnected or timed out').catch(() => undefined)
+    );
+    for (let step = 0; step < MAX_CANCEL_SETTLE_STEPS; step++) {
+      const probe = await tryReadJobAcrossQueues(targetQueue, jobId);
+      if (probe.ok && (!probe.job || (await jobStateOf(probe.job)) !== 'active')) {
+        break;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, CANCEL_SETTLE_STEP_MS));
+    }
+  }
+
+  const finalProbe = await tryReadJobAcrossQueues(targetQueue, jobId);
+  const settledNotActive = finalProbe.ok
+    ? !finalProbe.job || (await jobStateOf(finalProbe.job)) !== 'active'
+    : !aborted;
+  if (settledNotActive) {
+    await Promise.all(
+      inputKeys.map((key) => Promise.resolve().then(() => storageProvider.deleteObject(key)).catch(() => undefined))
+    );
+    await targetQueue.remove(jobId).catch(() => undefined);
+  }
+
+  await Promise.all(
+    resultKeysToErase.map((key) => eraseOwnedFile(storageProvider, key).catch(() => undefined))
+  );
+}
 
 async function waitForQueuedJobResult(
   jobId: string,
   signal?: AbortSignal,
-  targetQueue: ReturnType<typeof getQueueForResourceClass> = conversionQueue
+  targetQueue: QueueEngine = conversionQueue,
+  onCancelStarted?: (promise: Promise<unknown>) => void
 ): Promise<ConversionJobResult> {
   signal?.throwIfAborted();
 
@@ -73,12 +240,20 @@ async function waitForQueuedJobResult(
     };
 
     const onTelemetryEvent = (ev: JobTelemetryEvent): void => {
-      const payload = (ev.data ?? {}) as { result?: ConversionJobResult; error?: unknown };
+      const payload = (ev.data ?? {}) as Record<string, unknown> & {
+        result?: ConversionJobResult;
+        error?: unknown;
+      };
       if (ev.event === 'completed' && payload.result) {
         finishResolve(payload.result);
       } else if (ev.event === 'failed') {
-        const message = typeof payload.error === 'string' && payload.error ? payload.error : 'Queued conversion failed.';
-        finishReject(new ConversionFailedError(message));
+        const failedFields = failedTelemetryFieldsFromPayload(payload);
+        finishReject(
+          rehydrateQueuedJobFailure({
+            message: typeof payload.error === 'string' && payload.error ? payload.error : undefined,
+            ...failedFields,
+          })
+        );
       } else if (ev.event === 'cancelled') {
         const message = typeof payload.error === 'string' && payload.error ? payload.error : 'Job cancelled.';
         finishReject(signal?.aborted ? signal.reason : new ConversionFailedError(message));
@@ -86,7 +261,10 @@ async function waitForQueuedJobResult(
     };
 
     const onAbort = (): void => {
-      void cancelJobAcrossQueues(jobId, 'Synchronous caller disconnected or timed out').catch(() => undefined);
+      const cancelPromise = cancelJobAcrossQueues(jobId, 'Synchronous caller disconnected or timed out').catch(
+        () => undefined
+      );
+      onCancelStarted?.(cancelPromise);
       finishReject(signal?.reason ?? new Error('The operation was aborted.'));
     };
 
@@ -101,13 +279,20 @@ async function waitForQueuedJobResult(
     const pollOnce = async (): Promise<void> => {
       if (settled) return;
       try {
-        const job = await conversionQueue.getJob(jobId);
+        const job = await readJobAcrossQueues(targetQueue, jobId);
         if (!job) return;
-        const state = await job.getState();
+        const state = await jobStateOf(job);
         if (state === 'completed' && job.returnvalue) {
           finishResolve(job.returnvalue);
         } else if (state === 'failed') {
-          finishReject(new ConversionFailedError(job.failedReason || 'Queued conversion failed.'));
+          finishReject(
+            rehydrateQueuedJobFailure({
+              message: job.failedReason || undefined,
+              failedCode: job.failedCode,
+              failedStatus: job.failedStatus,
+              failedRefusalCode: job.failedRefusalCode,
+            })
+          );
         } else if (state === 'cancelled') {
           finishReject(signal?.aborted ? signal.reason : new ConversionFailedError(job.failedReason || 'Job cancelled.'));
         }
@@ -181,6 +366,8 @@ export async function dispatchSyncRouteConversion(
 
   const targetQueue = getQueueForResourceClass(resourceClass);
   let resultKeyToErase: string | undefined;
+  let enqueued = false;
+  let pendingCancel: Promise<unknown> | undefined;
   try {
     await enqueueConversionJob(
       targetQueue,
@@ -189,7 +376,10 @@ export async function dispatchSyncRouteConversion(
       { jobId, priority: tierToPriority(params.tier) },
       { tier: params.tier, inputBytes: params.inputBuffer.length, notAfter: deadlineAt }
     );
-    const jobResult = await waitForQueuedJobResult(jobId, signal, targetQueue);
+    enqueued = true;
+    const jobResult = await waitForQueuedJobResult(jobId, signal, targetQueue, (promise) => {
+      pendingCancel = promise;
+    });
     resultKeyToErase = jobResult.resultKey;
     const stored = await storageProvider.getObject(jobResult.resultKey);
     if (!stored) {
@@ -218,11 +408,14 @@ export async function dispatchSyncRouteConversion(
       await stored.release?.().catch(() => undefined);
     }
   } finally {
-    await Promise.resolve().then(() => storageProvider.deleteObject(tempInputKey)).catch(() => undefined);
-    if (resultKeyToErase) {
-      await eraseOwnedFile(storageProvider, resultKeyToErase).catch(() => undefined);
-    }
-    await conversionQueue.remove(jobId).catch(() => undefined);
+    await settleQueueOnlyCleanup({
+      targetQueue,
+      jobId,
+      inputKeys: [tempInputKey],
+      resultKeysToErase: resultKeyToErase ? [resultKeyToErase] : [],
+      aborted: Boolean(signal?.aborted || pendingCancel) && enqueued,
+      pendingCancel,
+    });
   }
 }
 
@@ -250,8 +443,13 @@ export async function dispatchSyncWebTool(params: {
   const totalBytes = params.files.reduce((sum, f) => sum + f.buffer.length, 0);
   const storedRefs: Array<{ key: string; name: string }> = [];
   const cleanupKeys: string[] = [];
+  const sourceFormat = webToolResourceFormat(params.tool);
+  const resClass = resolveResourceClass(sourceFormat, sourceFormat, totalBytes, {});
+  const targetQueue = getQueueForResourceClass(resClass);
 
   let resultKeysToErase: string[] = [];
+  let enqueued = false;
+  let pendingCancel: Promise<unknown> | undefined;
   try {
     for (let i = 0; i < params.files.length; i++) {
       const file = params.files[i];
@@ -262,9 +460,6 @@ export async function dispatchSyncWebTool(params: {
       cleanupKeys.push(key);
     }
 
-    const sourceFormat = webToolResourceFormat(params.tool);
-    const resClass = resolveResourceClass(sourceFormat, sourceFormat, totalBytes, {});
-    const targetQueue = getQueueForResourceClass(resClass);
     await enqueueConversionJob(
       targetQueue,
       'web-tool-sync',
@@ -288,8 +483,11 @@ export async function dispatchSyncWebTool(params: {
       { jobId, priority: tierToPriority(params.tier) },
       { tier: params.tier, inputBytes: totalBytes, notAfter: params.deadlineAt }
     );
+    enqueued = true;
 
-    const completed = await waitForQueuedJobResult(jobId, params.signal, targetQueue);
+    const completed = await waitForQueuedJobResult(jobId, params.signal, targetQueue, (promise) => {
+      pendingCancel = promise;
+    });
     const toolResult = completed.toolResult as StoredToolJobResult | undefined;
     if (!toolResult) {
       throw new ConversionFailedError('Worker completed tool request without returning toolResult.');
@@ -332,12 +530,13 @@ export async function dispatchSyncWebTool(params: {
     );
     return { kind: 'entries', entries };
   } finally {
-    await Promise.all(
-      cleanupKeys.map((key) => Promise.resolve().then(() => storageProvider.deleteObject(key)).catch(() => undefined))
-    );
-    await Promise.all(
-      resultKeysToErase.map((key) => eraseOwnedFile(storageProvider, key).catch(() => undefined))
-    );
-    await conversionQueue.remove(jobId).catch(() => undefined);
+    await settleQueueOnlyCleanup({
+      targetQueue,
+      jobId,
+      inputKeys: cleanupKeys,
+      resultKeysToErase,
+      aborted: Boolean(params.signal?.aborted || pendingCancel) && enqueued,
+      pendingCancel,
+    });
   }
 }

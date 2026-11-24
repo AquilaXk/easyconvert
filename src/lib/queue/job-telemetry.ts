@@ -1,8 +1,29 @@
 import type { IQueueEngine, Job } from './bullmq-engine';
+import type { ConversionRefusalCode } from '../refusal-codes';
 
 export interface JobTelemetryEvent {
   event: 'progress' | 'completed' | 'failed' | 'cancelled' | 'log';
   data: unknown;
+}
+
+/** Normalizes failure classification fields carried on queue Pub/Sub and telemetry payloads. */
+export function failedTelemetryFieldsFromPayload(payload: Record<string, unknown>): {
+  failedCode: string | undefined;
+  failedStatus: number | undefined;
+  failedRefusalCode: ConversionRefusalCode | undefined;
+} {
+  const rawStatus = payload.failedStatus;
+  const hasNumericStatus =
+    (typeof rawStatus === 'number' || (typeof rawStatus === 'string' && rawStatus.trim() !== '')) &&
+    Number.isFinite(Number(rawStatus));
+  return {
+    failedCode: typeof payload.failedCode === 'string' ? payload.failedCode : undefined,
+    failedStatus: hasNumericStatus ? Number(rawStatus) : undefined,
+    failedRefusalCode:
+      typeof payload.failedRefusalCode === 'string'
+        ? (payload.failedRefusalCode as ConversionRefusalCode)
+        : undefined,
+  };
 }
 
 /** Telemetry events after which a job emits nothing more. */
@@ -33,7 +54,17 @@ export function subscribeToJobTelemetry(
   };
   const onFailed = (job: Job) => {
     if (job.id === jobId) {
-      onEvent({ event: 'failed', data: { jobId, state: 'failed', error: job.failedReason } });
+      onEvent({
+        event: 'failed',
+        data: {
+          jobId,
+          state: 'failed',
+          error: job.failedReason,
+          failedCode: job.failedCode,
+          failedStatus: job.failedStatus,
+          failedRefusalCode: job.failedRefusalCode,
+        },
+      });
     }
   };
   const onCancelled = (job: Job) => {

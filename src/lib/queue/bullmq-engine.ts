@@ -39,17 +39,16 @@ import {
 } from './lua-scripts';
 import { addDeadLetter, migrateDeadLetters, purgeDeadLetters, readDeadLetters, type DeadLetterMigration } from './dead-letters';
 import {
-  dropEndedData,
-  finishedData,
+  dropEndedData, finishedData,
   forgetUserJobs,
   keepNewestEnded,
   keepJobsOf,
   removeEndedBefore,
   AgedEndedRemoval,
   removeStoredJob,
-  type KeepJobs,
-  type QueueKeySpace,
+  type KeepJobs, type QueueKeySpace,
 } from './ended-jobs';
+import { failedTelemetryFieldsFromPayload } from './job-telemetry';
 import { JobTimeoutError, QueueUnavailableError } from '../types';
 
 export type { KeepJobs } from './ended-jobs';
@@ -1301,8 +1300,9 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
                 if (localJob) Object.assign(localJob, { state: 'completed', progress: 100, returnvalue: payload.result });
                 this.emit('completed', localJob ?? { id: payload.jobId, state: 'completed', progress: 100, returnvalue: payload.result }, payload.result);
               } else if (payload.event === 'failed') {
-                if (localJob) Object.assign(localJob, { state: 'failed', failedReason: payload.error });
-                this.emit('failed', localJob ?? { id: payload.jobId, state: 'failed', failedReason: payload.error }, payload.error);
+                const failedPatch = { state: 'failed' as const, failedReason: payload.error, ...failedTelemetryFieldsFromPayload(payload) };
+                if (localJob) Object.assign(localJob, failedPatch);
+                this.emit('failed', localJob ?? { id: payload.jobId, ...failedPatch }, payload.error);
               }
             } catch {}
           });
@@ -2071,7 +2071,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         );
         return false;
       }
-      await this.publishEvent({ event: 'failed', jobId: job.id, error: job.failedReason });
+      await this.publishEvent({ event: 'failed', jobId: job.id, error: job.failedReason, failedCode: job.failedCode, failedStatus: job.failedStatus, failedRefusalCode: job.failedRefusalCode });
       await this.keepEndedJobs(job, 'failed', keep);
       return true;
     } catch (redisErr) {
