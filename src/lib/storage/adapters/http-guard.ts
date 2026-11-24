@@ -1,8 +1,63 @@
 import { Agent, request, type Dispatcher } from 'undici';
-import { StorageAdapterError, StorageSsrfError, StorageTimeoutError } from './adapter-interface';
+import {
+  StorageAdapterError,
+  StorageInputError,
+  StorageInvalidKeyError,
+  StorageSsrfError,
+  StorageTimeoutError,
+} from './adapter-interface';
 import { ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
 import { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS } from './http-limits';
 export { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS };
+
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_SERVER_ERROR_MIN = 500;
+const HTTP_SERVER_ERROR_MAX = 599;
+
+/** Control characters, Unicode line/paragraph separators, and backslashes forbidden in adapter paths. */
+export const FORBIDDEN_PATH_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\\]/u;
+
+export function isRetryableHttpStatus(statusCode: number): boolean {
+  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
+}
+
+export function stripTrailingSlashes(s: string): string {
+  let end = s.length;
+  while (end > 0 && s.charCodeAt(end - 1) === 47) {
+    end--;
+  }
+  return s.slice(0, end);
+}
+
+export function stripLeadingSlashes(s: string): string {
+  let start = 0;
+  while (start < s.length && s.charCodeAt(start) === 47) {
+    start++;
+  }
+  return s.slice(start);
+}
+
+export function stripSlashes(s: string): string {
+  return stripTrailingSlashes(stripLeadingSlashes(s));
+}
+
+export function encodeSafePathSegments(remotePath: string, provider: string): string {
+  if (typeof remotePath !== 'string' || !remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
+    throw new StorageInvalidKeyError(`Invalid remote path "${String(remotePath)}"`, provider);
+  }
+  const cleanPath = stripLeadingSlashes(remotePath);
+  const segments = cleanPath.split('/');
+  if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
+    throw new StorageInvalidKeyError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
+  }
+  return segments.map((seg) => encodeURIComponent(seg)).join('/');
+}
+
+export function assertValidMaxFiles(maxFiles: number, provider: string): void {
+  if (!Number.isInteger(maxFiles) || maxFiles < 0) {
+    throw new StorageInputError(`Invalid maxFiles listing limit: ${String(maxFiles)}`, provider);
+  }
+}
 
 /**
  * What the HTTP adapters (WebDAV, Azure Blob, GCS) share: an endpoint is reached over TLS and only when it resolves to

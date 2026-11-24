@@ -4,6 +4,7 @@ import http from 'node:http';
 import type { AddressInfo, Socket } from 'node:net';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { NextRequest } from 'next/server';
 import {
   AzureBlobStorageAdapter,
   GcsStorageAdapter,
@@ -13,6 +14,7 @@ import {
   StorageAuthenticationError,
   StorageInputError,
   StorageInvalidKeyError,
+  StorageListingLimitError,
   StorageServiceError,
 } from '../src/lib/storage/adapters/adapter-interface';
 import * as httpGuard from '../src/lib/storage/adapters/http-guard';
@@ -24,6 +26,9 @@ import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/q
 import { graphNodeJobId, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { storageProvider } from '../src/lib/storage/selected-storage';
 import { userStore } from '../src/lib/auth/user-store';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { credentialsVault } from '../src/lib/storage/credentials-vault';
+import { POST as credentialsPost } from '../src/app/api/v1/storage/credentials/route';
 
 const ACCOUNT = 'devaccount';
 const CONTAINER = 'ctr';
@@ -915,6 +920,144 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       allowDev(acceptedDav);
       const dav202 = new WebDavStorageAdapter({ type: 'webdav', url: acceptedDav.origin });
       expect(await dav202.delete('async-delete.txt')).toBe(true);
+    });
+
+    it('enforces WebDAV basePath rules on POST /api/v1/storage/credentials (rejects invalid and non-string values with 400)', async () => {
+      credentialsVault.clear();
+      const user = await userStore.createUser({
+        email: `webdav-cred-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'WebDAV Credential Tester',
+        tier: 'paid',
+      });
+      const key = await redisKeyStore.generateApiKey(user.id, 'WebDAV Test Key', {
+        scopes: ['convert:write', 'convert:read'],
+      });
+      const headers = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key.secretKey}`,
+      };
+
+      const invalidBasePaths: unknown[] = [
+        '../escape',
+        'a/../b',
+        'a/./b',
+        '.',
+        '..',
+        'a//b',
+        'a\\b',
+        'a\0b',
+        'a\nb',
+        'a\u2028b',
+        'bad\ud800surrogate',
+        123,
+        true,
+        null,
+        { nested: 'path' },
+        ['a'],
+      ];
+
+      for (const badBasePath of invalidBasePaths) {
+        const res = await credentialsPost(
+          new NextRequest('http://localhost:3000/api/v1/storage/credentials', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              providerType: 'webdav',
+              credentials: {
+                type: 'webdav',
+                url: 'https://dav.example.com/dav',
+                basePath: badBasePath,
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.detail).toMatch(/basePath/i);
+      }
+      expect(await credentialsVault.list(user.id)).toEqual([]);
+
+      for (const validBasePath of [undefined, '', '/', '/Team #1/café']) {
+        const res = await credentialsPost(
+          new NextRequest('http://localhost:3000/api/v1/storage/credentials', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              providerType: 'webdav',
+              credentials: {
+                type: 'webdav',
+                url: 'https://dav.example.com/dav',
+                ...(validBasePath !== undefined ? { basePath: validBasePath } : {}),
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(201);
+        const body = await res.json();
+        expect(body.success).toBe(true);
+        expect(body.credentialRef).toMatch(/^cred_[a-f0-9]{32}$/);
+      }
+    });
+
+    it('rejects invalid maxFiles (NaN, negative, float, Infinity, non-number) before network I/O and bounds maxFiles=0 cleanly', async () => {
+      const safeSpy = vi.spyOn(httpGuard, 'assertAdapterUrlSafe');
+      const azure = new AzureBlobStorageAdapter({
+        type: 'azure-blob',
+        storageAccount: ACCOUNT,
+        containerName: CONTAINER,
+        accountKey: ACCOUNT_KEY,
+      });
+      const gcs = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt' });
+      const dav = new WebDavStorageAdapter({ type: 'webdav', url: 'https://dav.example.com/dav' });
+
+      const invalidLimits: unknown[] = [Number.NaN, -1, -100, 1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '10', null, undefined];
+      for (const limit of invalidLimits) {
+        const azErr = await azure.listObjects('', limit as number).catch((e: unknown) => e);
+        expect(azErr).toBeInstanceOf(StorageInputError);
+
+        const gcsErr = await gcs.listObjects('', limit as number).catch((e: unknown) => e);
+        expect(gcsErr).toBeInstanceOf(StorageInputError);
+
+        const davErr = await dav.listDirectory('', limit as number).catch((e: unknown) => e);
+        expect(davErr).toBeInstanceOf(StorageInputError);
+      }
+      expect(safeSpy).not.toHaveBeenCalled();
+
+      let returnOneItem = false;
+      const listServer = await serve((req, _body, res) => {
+        if (req.url?.includes('comp=list')) {
+          const blobs = returnOneItem ? '<Blob><Name>a.txt</Name><Properties><Content-Length>1</Content-Length></Properties></Blob>' : '';
+          res.writeHead(200, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>${blobs}</Blobs></EnumerationResults>`);
+          return;
+        }
+        if (req.url?.includes('/storage/v1/b/')) {
+          const items = returnOneItem ? [{ name: 'a.txt', size: '1' }] : [];
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ items }));
+          return;
+        }
+        const entry = returnOneItem ? '<D:response><D:href>/dav/a.txt</D:href><D:propstat><D:prop><D:getcontentlength>1</D:getcontentlength></D:prop></D:propstat></D:response>' : '';
+        res.writeHead(207, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">${entry}</D:multistatus>`);
+      });
+      allowDev(listServer);
+
+      const azZero = new AzureBlobStorageAdapter({
+        type: 'azure-blob',
+        storageAccount: ACCOUNT,
+        containerName: CONTAINER,
+        accountKey: ACCOUNT_KEY,
+        customEndpoint: listServer.origin,
+      });
+      const gcsZero = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: listServer.origin });
+      const davZero = new WebDavStorageAdapter({ type: 'webdav', url: `${listServer.origin}/dav` });
+
+      expect(await azZero.listObjects('', 0)).toEqual([]);
+      expect(await gcsZero.listObjects('', 0)).toEqual([]);
+      expect(await davZero.listDirectory('', 0)).toEqual([]);
+
+      returnOneItem = true;
+      await expect(azZero.listObjects('', 0)).rejects.toThrow(StorageListingLimitError);
+      await expect(gcsZero.listObjects('', 0)).rejects.toThrow(StorageListingLimitError);
+      await expect(davZero.listDirectory('', 0)).rejects.toThrow(StorageListingLimitError);
     });
   });
 });

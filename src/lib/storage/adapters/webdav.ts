@@ -14,24 +14,22 @@ import { remotePathProblem } from '../customer-storage-paths';
 import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import { parseWebDavPropfindXml } from './listing-xml';
 import {
+  FORBIDDEN_PATH_CHAR,
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertValidMaxFiles,
+  encodeSafePathSegments,
   guardedRequest,
+  isRetryableHttpStatus,
   parseCleanBaseEndpointUrl,
   readBoundedBody,
   readErrorText,
   releaseDispatcher,
+  stripSlashes,
+  stripTrailingSlashes,
 } from './http-guard';
 
 const WEBDAV_PROPFIND_BODY = '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/><D:getcontentlength/></D:prop></D:propfind>';
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_SERVER_ERROR_MIN = 500;
-const HTTP_SERVER_ERROR_MAX = 599;
-const FORBIDDEN_PATH_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\\]/u;
-
-function isRetryableHttpStatus(statusCode: number): boolean {
-  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
-}
 
 function trimTrailingSlash(pathname: string): string {
   return pathname.endsWith('/') && pathname.length > 1 ? pathname.slice(0, -1) : pathname;
@@ -77,38 +75,6 @@ function extractWebDavChildName(href: string, targetUrl: URL, baseSegments: read
     return null;
   }
   return decoded;
-}
-
-function stripTrailingSlashes(s: string): string {
-  let end = s.length;
-  while (end > 0 && s.charCodeAt(end - 1) === 47) {
-    end--;
-  }
-  return s.slice(0, end);
-}
-
-function stripLeadingSlashes(s: string): string {
-  let start = 0;
-  while (start < s.length && s.charCodeAt(start) === 47) {
-    start++;
-  }
-  return s.slice(start);
-}
-
-function stripSlashes(s: string): string {
-  return stripTrailingSlashes(stripLeadingSlashes(s));
-}
-
-function encodeSafePathSegments(remotePath: string, provider: string): string {
-  if (typeof remotePath !== 'string' || !remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
-    throw new StorageInvalidKeyError(`Invalid remote path "${String(remotePath)}"`, provider);
-  }
-  const cleanPath = stripLeadingSlashes(remotePath);
-  const segments = cleanPath.split('/');
-  if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
-    throw new StorageInvalidKeyError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
-  }
-  return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
 
 /** Validates and percent-encodes WebDAV basePath segments; shared with credential validation. */
@@ -310,6 +276,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   }
 
   async listDirectory(directory: string, maxFiles: number): Promise<Array<{ name: string; size: number }>> {
+    assertValidMaxFiles(maxFiles, this.providerName);
     const dirProblem = remotePathProblem(directory, { allowEmpty: true });
     if (dirProblem) {
       throw new StorageInvalidKeyError(`directory ${dirProblem}`, this.providerName);

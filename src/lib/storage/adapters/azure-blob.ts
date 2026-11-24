@@ -16,26 +16,24 @@ import { remotePathProblem } from '../customer-storage-paths';
 import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import { parseAzureListBlobsXml } from './listing-xml';
 import {
+  FORBIDDEN_PATH_CHAR,
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertValidMaxFiles,
+  encodeSafePathSegments,
   guardedRequest,
+  isRetryableHttpStatus,
   parseCleanBaseEndpointUrl,
   readBoundedBody,
   readErrorText,
   releaseDispatcher,
+  stripLeadingSlashes,
+  stripTrailingSlashes,
 } from './http-guard';
 
 const AZURE_REST_VERSION = '2023-11-03';
 const MAX_AZURE_LIST_PAGES = 20;
 const MAX_AZURE_PAGE_RESULTS = 5000;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_SERVER_ERROR_MIN = 500;
-const HTTP_SERVER_ERROR_MAX = 599;
-const FORBIDDEN_PATH_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\\]/u;
-
-function isRetryableHttpStatus(statusCode: number): boolean {
-  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
-}
 
 function compareAsciiLower(a: string, b: string): number {
   const al = a.toLowerCase();
@@ -58,34 +56,6 @@ function extractConnectionStringPart(connStr: string | undefined, key: string): 
 
 /** The naming rule of an Azure storage account: it becomes the host name of the default endpoint and part of the signed resource. */
 export const AZURE_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
-
-function stripTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url.charCodeAt(end - 1) === 47) {
-    end--;
-  }
-  return url.slice(0, end);
-}
-
-function stripLeadingSlashes(pathStr: string): string {
-  let start = 0;
-  while (start < pathStr.length && pathStr.charCodeAt(start) === 47) {
-    start++;
-  }
-  return pathStr.slice(start);
-}
-
-function encodeSafePathSegments(remotePath: string, provider: string): string {
-  if (typeof remotePath !== 'string' || !remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
-    throw new StorageInvalidKeyError(`Invalid remote path "${String(remotePath)}"`, provider);
-  }
-  const cleanPath = stripLeadingSlashes(remotePath);
-  const segments = cleanPath.split('/');
-  if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
-    throw new StorageInvalidKeyError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
-  }
-  return segments.map((seg) => encodeURIComponent(seg)).join('/');
-}
 
 export class AzureBlobStorageAdapter implements IStorageAdapter {
   readonly providerName = 'azure-blob';
@@ -368,6 +338,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   }
 
   async listObjects(prefix: string, maxFiles: number): Promise<Array<{ path: string; size: number }>> {
+    assertValidMaxFiles(maxFiles, this.providerName);
     const prefixProblem = remotePathProblem(prefix, { allowEmpty: true });
     if (prefixProblem) {
       throw new StorageInvalidKeyError(`prefix ${prefixProblem}`, this.providerName);

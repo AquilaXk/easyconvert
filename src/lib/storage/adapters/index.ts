@@ -13,7 +13,7 @@ import {
 } from './adapter-interface';
 import { GcsStorageAdapter } from './gcs';
 import { AZURE_STORAGE_ACCOUNT_PATTERN, AzureBlobStorageAdapter } from './azure-blob';
-import { WebDavStorageAdapter } from './webdav';
+import { encodeWebDavBasePath, WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter, isSftpDevAllowlisted } from './sftp';
 import { S3StorageAdapter } from './s3';
 import {
@@ -102,9 +102,7 @@ function validateWebDavCredentials(credentials: Extract<CustomerStorageCredentia
     throw new StorageAdapterError('WebDAV url is required', 'webdav');
   }
   validateHttpEndpointSyntax(credentials.url, 'webdav');
-  if (credentials.basePath && (credentials.basePath.includes('..') || credentials.basePath.includes('\\') || credentials.basePath.includes('\0'))) {
-    throw new StorageAdapterError('Invalid WebDAV basePath: path traversal or invalid characters rejected', 'webdav');
-  }
+  encodeWebDavBasePath(credentials.basePath, 'webdav');
 }
 
 function validateHttpCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'http' }>): void {

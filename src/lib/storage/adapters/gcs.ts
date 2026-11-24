@@ -18,40 +18,34 @@ import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import {
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertValidMaxFiles,
   guardedRequest,
+  isRetryableHttpStatus,
   isTrustedGcsOAuthEndpoint,
   parseCleanBaseEndpointUrl,
   readBoundedBody,
   readErrorText,
   readJsonBody,
   releaseDispatcher,
+  stripLeadingSlashes,
+  stripTrailingSlashes,
 } from './http-guard';
 
 const MAX_GCS_LIST_PAGES = 20;
 const MAX_GCS_PAGE_RESULTS = 1000;
-const HTTP_TOO_MANY_REQUESTS = 429;
-const HTTP_SERVER_ERROR_MIN = 500;
-const HTTP_SERVER_ERROR_MAX = 599;
-
-function isRetryableHttpStatus(statusCode: number): boolean {
-  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
-}
 
 /** The object name of a remote path: dot segments are refused, as the other adapters and the S3 client do. */
 function toObjectName(remotePath: string): string {
-  const name = remotePath.replace(/^\/+/, '');
+  if (typeof remotePath !== 'string') {
+    throw new StorageInvalidKeyError('Object key must be a non-empty string.', 'gcs');
+  }
+  const name = stripLeadingSlashes(remotePath);
   try {
     assertValidObjectKey(name);
   } catch (err) {
     throw new StorageInvalidKeyError(err instanceof Error ? err.message : 'Invalid object key', 'gcs', err);
   }
   return name;
-}
-
-function stripTrailingSlashes(s: string): string {
-  let end = s.length;
-  while (end > 0 && s.charCodeAt(end - 1) === 47) end--;
-  return s.slice(0, end);
 }
 
 function signServiceAccountJwt(clientEmail: string, privateKey: string, provider: string): string {
@@ -348,6 +342,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
   }
 
   async listObjects(prefix: string, maxFiles: number): Promise<Array<{ path: string; size: number }>> {
+    assertValidMaxFiles(maxFiles, this.providerName);
     const prefixProblem = remotePathProblem(prefix, { allowEmpty: true });
     if (prefixProblem) {
       throw new StorageInvalidKeyError(`prefix ${prefixProblem}`, this.providerName);
