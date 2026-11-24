@@ -9,6 +9,7 @@ import type { CustomerStorageCredentials } from '../credentials-vault';
 import {
   type IStorageAdapter,
   StorageAdapterError,
+  StorageAuthenticationError,
   StorageInputError,
   StorageSsrfError,
 } from './adapter-interface';
@@ -16,7 +17,9 @@ import { GcsStorageAdapter } from './gcs';
 import { AZURE_STORAGE_ACCOUNT_PATTERN, AzureBlobStorageAdapter } from './azure-blob';
 import { encodeWebDavBasePath, WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter, isSftpDevAllowlisted } from './sftp';
+import { assertSftpPort, normalizeBasePath, sftpDestination, sftpKnownHostsLine } from './sftp-protocol';
 import { S3StorageAdapter } from './s3';
+import { SigV4SigningError, assertValidBucketName } from '../s3-sigv4';
 import {
   CUSTOM_HEADER_VALUE_REGEX,
   DEFAULT_MAX_CUSTOM_HEADERS,
@@ -29,9 +32,11 @@ import { isPrivateOrRestrictedHost, validateUrlForSsrf } from '../../security/ss
 import {
   assertTlsEndpoint,
   assertValidAzureContainerName,
+  assertValidGcsBucketName,
   isDevAllowlistedEndpoint,
   isTrustedGcsOAuthEndpoint,
   parseCleanBaseEndpointUrl,
+  parseGcsServiceAccountKeyJson,
 } from './http-guard';
 
 /**
@@ -40,8 +45,8 @@ import {
  */
 export const UNAVAILABLE_STORAGE_PROVIDERS: ReadonlySet<string> = new Set<string>();
 
-const GCS_BUCKET_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,220}[a-z0-9])?$/i;
 const MAX_HTTP_ENDPOINT_URL_CHARS = 8192;
+const S3_REGION_PATTERN = /^[a-z0-9-]{1,64}$/;
 
 function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMessage?: string): URL {
   const parsed = parseCleanBaseEndpointUrl(rawUrl, provider, invalidMessage);
@@ -60,29 +65,57 @@ export function validateExternalEndpointUrl(rawUrl: string, provider: string): v
   }
 }
 
-function isSimpleContainerIdentifier(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && !value.includes('..') && !value.includes('/') && !value.includes('\\');
+function validateS3Credentials(credentials: Extract<CustomerStorageCredentials, { type: 's3' }>): void {
+  if (
+    typeof credentials.bucket !== 'string' ||
+    !credentials.bucket ||
+    typeof credentials.accessKeyId !== 'string' ||
+    !credentials.accessKeyId ||
+    typeof credentials.secretAccessKey !== 'string' ||
+    !credentials.secretAccessKey
+  ) {
+    throw new StorageAuthenticationError('bucket, accessKeyId, and secretAccessKey are required', 's3');
+  }
+  try {
+    assertValidBucketName(credentials.bucket);
+  } catch (err) {
+    if (err instanceof SigV4SigningError) {
+      throw new StorageInputError(err.message, 's3', err);
+    }
+    throw err;
+  }
+  if (credentials.sessionToken !== undefined && typeof credentials.sessionToken !== 'string') {
+    throw new StorageInputError('Invalid S3 sessionToken: expected string', 's3');
+  }
+  if (credentials.region !== undefined && (typeof credentials.region !== 'string' || !S3_REGION_PATTERN.test(credentials.region))) {
+    throw new StorageInputError('Region must be lowercase letters, digits, and hyphens.', 's3');
+  }
+  if (credentials.forcePathStyle !== undefined && typeof credentials.forcePathStyle !== 'boolean') {
+    throw new StorageInputError('Invalid S3 forcePathStyle: expected boolean', 's3');
+  }
+  if (credentials.endpoint !== undefined) {
+    validateHttpEndpointSyntax(credentials.endpoint, 's3', 'S3 endpoint does not form a valid URL');
+  }
 }
 
 function validateGcsCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'gcs' }>): void {
-  if (!isSimpleContainerIdentifier(credentials.bucket) || !GCS_BUCKET_PATTERN.test(credentials.bucket)) {
-    throw new StorageAdapterError(`Invalid GCS bucket name: "${credentials.bucket}"`, 'gcs');
+  assertValidGcsBucketName(credentials.bucket, 'gcs');
+  if (credentials.projectId !== undefined && typeof credentials.projectId !== 'string') {
+    throw new StorageInputError('Invalid GCS projectId: expected string', 'gcs');
+  }
+  if (credentials.clientEmail !== undefined && typeof credentials.clientEmail !== 'string') {
+    throw new StorageInputError('Invalid GCS clientEmail: expected string', 'gcs');
+  }
+  if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
+    throw new StorageInputError('Invalid GCS privateKey: expected string', 'gcs');
   }
   if (Boolean(credentials.clientEmail) !== Boolean(credentials.privateKey)) {
     throw new StorageAdapterError('GCS service account requires both clientEmail and privateKey', 'gcs');
   }
-  if (credentials.serviceAccountKeyJson) {
-    try {
-      const parsed = JSON.parse(credentials.serviceAccountKeyJson) as { client_email?: unknown; private_key?: unknown };
-      if (!parsed || typeof parsed !== 'object' || typeof parsed.client_email !== 'string' || typeof parsed.private_key !== 'string') {
-        throw new StorageAdapterError('Invalid GCS serviceAccountKeyJson: missing client_email or private_key', 'gcs');
-      }
-    } catch (err) {
-      if (err instanceof StorageAdapterError) throw err;
-      throw new StorageAdapterError('Invalid GCS serviceAccountKeyJson format', 'gcs');
-    }
+  if (credentials.serviceAccountKeyJson !== undefined) {
+    parseGcsServiceAccountKeyJson(credentials.serviceAccountKeyJson, 'gcs');
   }
-  if (credentials.endpoint) {
+  if (credentials.endpoint !== undefined) {
     validateExternalEndpointUrl(credentials.endpoint, 'gcs');
     const hasOAuth = Boolean(credentials.serviceAccountKeyJson || (credentials.clientEmail && credentials.privateKey));
     if (hasOAuth && !isTrustedGcsOAuthEndpoint(new URL(credentials.endpoint))) {
@@ -96,13 +129,22 @@ function validateAzureBlobCredentials(credentials: Extract<CustomerStorageCreden
     throw new StorageAdapterError('Invalid Azure Blob storageAccount', 'azure-blob');
   }
   assertValidAzureContainerName(credentials.containerName, 'azure-blob');
-  if (credentials.customEndpoint) {
+  if (credentials.accountKey !== undefined && typeof credentials.accountKey !== 'string') {
+    throw new StorageInputError('Invalid Azure Blob accountKey: expected string', 'azure-blob');
+  }
+  if (credentials.sasToken !== undefined && typeof credentials.sasToken !== 'string') {
+    throw new StorageInputError('Invalid Azure Blob sasToken: expected string', 'azure-blob');
+  }
+  if (credentials.connectionString !== undefined && typeof credentials.connectionString !== 'string') {
+    throw new StorageInputError('Invalid Azure Blob connectionString: expected string', 'azure-blob');
+  }
+  if (credentials.customEndpoint !== undefined) {
     validateExternalEndpointUrl(credentials.customEndpoint, 'azure-blob');
   }
 }
 
 function validateWebDavCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'webdav' }>): void {
-  if (!credentials.url) {
+  if (typeof credentials.url !== 'string' || !credentials.url) {
     throw new StorageAdapterError('WebDAV url is required', 'webdav');
   }
   validateHttpEndpointSyntax(credentials.url, 'webdav');
@@ -113,6 +155,32 @@ function validateWebDavCredentials(credentials: Extract<CustomerStorageCredentia
     throw new StorageInputError('Invalid WebDAV username or password: expected string', 'webdav');
   }
   encodeWebDavBasePath(credentials.basePath, 'webdav');
+}
+
+function validateSftpCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'sftp' }>): void {
+  if (typeof credentials.host !== 'string' || !credentials.host) {
+    throw new StorageSsrfError('', 'sftp');
+  }
+  if (credentials.port !== undefined) {
+    assertSftpPort(credentials.port);
+  }
+  if (!isSftpDevAllowlisted(credentials.host, credentials.port) && isPrivateOrRestrictedHost(credentials.host)) {
+    throw new StorageSsrfError(credentials.host, 'sftp');
+  }
+  sftpDestination(credentials.host, credentials.username);
+  normalizeBasePath(credentials.basePath);
+  if (credentials.hostKey !== undefined) {
+    sftpKnownHostsLine(credentials.hostKey);
+  }
+  if (credentials.password !== undefined && typeof credentials.password !== 'string') {
+    throw new StorageInputError('The SFTP password must be a string', 'sftp');
+  }
+  if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
+    throw new StorageInputError('The SFTP privateKey must be a string', 'sftp');
+  }
+  if (credentials.passphrase !== undefined && typeof credentials.passphrase !== 'string') {
+    throw new StorageInputError('The SFTP passphrase must be a string', 'sftp');
+  }
 }
 
 function validateHttpCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'http' }>): void {
@@ -167,9 +235,7 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
   }
   switch (credentials.type) {
     case 's3':
-      if (credentials.endpoint) {
-        validateHttpEndpointSyntax(credentials.endpoint, 's3', 'S3 endpoint does not form a valid URL');
-      }
+      validateS3Credentials(credentials);
       break;
     case 'gcs':
       validateGcsCredentials(credentials);
@@ -181,15 +247,13 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
       validateWebDavCredentials(credentials);
       break;
     case 'sftp':
-      if (!credentials.host || (!isSftpDevAllowlisted(credentials.host, credentials.port) && isPrivateOrRestrictedHost(credentials.host))) {
-        throw new StorageSsrfError(credentials.host || '', 'sftp');
-      }
+      validateSftpCredentials(credentials);
       break;
     case 'http':
       validateHttpCredentials(credentials);
       break;
     default:
-      break;
+      throw new StorageInputError('Unsupported storage adapter provider type', 'unknown');
   }
 }
 
@@ -230,6 +294,9 @@ export function createStorageAdapter(credentials: CustomerStorageCredentials): I
     case 'sftp':
       return new SftpStorageAdapter(credentials);
     default:
-      throw new Error(`Unsupported storage adapter provider type: "${(credentials as { type: string }).type}"`);
+      throw new StorageInputError(
+        `Unsupported storage adapter provider type: "${String((credentials as { type?: unknown }).type)}"`,
+        'unknown'
+      );
   }
 }

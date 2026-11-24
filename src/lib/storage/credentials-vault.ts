@@ -15,6 +15,19 @@ export type StorageProviderType =
   | 'webdav'
   | 'http';
 
+export const STORAGE_PROVIDER_TYPES: ReadonlySet<StorageProviderType> = new Set<StorageProviderType>([
+  's3',
+  'gcs',
+  'azure-blob',
+  'sftp',
+  'webdav',
+  'http',
+]);
+
+export function isStorageProviderType(value: unknown): value is StorageProviderType {
+  return typeof value === 'string' && STORAGE_PROVIDER_TYPES.has(value as StorageProviderType);
+}
+
 export interface S3Credentials {
   type: 's3';
   bucket: string;

@@ -8,6 +8,7 @@ import {
   StorageAdapterError,
   StorageAdapterMetadata,
   StorageAuthenticationError,
+  StorageInputError,
   StorageNotFoundError,
   StorageServiceError,
   StorageSsrfError,
@@ -624,15 +625,34 @@ export class S3StorageAdapter implements IStorageAdapter {
   private readonly maxRequestDurationMs: number;
 
   constructor(credentials: S3Credentials, options: S3AdapterOptions = {}) {
-    if (!credentials.bucket || !credentials.accessKeyId || !credentials.secretAccessKey) {
+    if (
+      typeof credentials.bucket !== 'string' ||
+      !credentials.bucket ||
+      typeof credentials.accessKeyId !== 'string' ||
+      !credentials.accessKeyId ||
+      typeof credentials.secretAccessKey !== 'string' ||
+      !credentials.secretAccessKey
+    ) {
       throw new StorageAuthenticationError('bucket, accessKeyId, and secretAccessKey are required', PROVIDER);
+    }
+    if (credentials.sessionToken !== undefined && typeof credentials.sessionToken !== 'string') {
+      throw new StorageInputError('Invalid S3 sessionToken: expected string', PROVIDER);
+    }
+    if (credentials.region !== undefined && (typeof credentials.region !== 'string' || credentials.region.length === 0)) {
+      throw new StorageInputError('Invalid S3 region: expected non-empty string', PROVIDER);
+    }
+    if (credentials.endpoint !== undefined && (typeof credentials.endpoint !== 'string' || credentials.endpoint.length === 0)) {
+      throw new StorageInputError('Invalid S3 endpoint: expected non-empty string', PROVIDER);
+    }
+    if (credentials.forcePathStyle !== undefined && typeof credentials.forcePathStyle !== 'boolean') {
+      throw new StorageInputError('Invalid S3 forcePathStyle: expected boolean', PROVIDER);
     }
     this.#accessKeyId = credentials.accessKeyId;
     this.#secretAccessKey = credentials.secretAccessKey;
     this.#sessionToken = credentials.sessionToken || undefined;
     this.bucket = credentials.bucket;
-    this.region = credentials.region || DEFAULT_REGION;
-    this.endpoint = credentials.endpoint || undefined;
+    this.region = credentials.region ?? DEFAULT_REGION;
+    this.endpoint = credentials.endpoint;
     this.forcePathStyle = credentials.forcePathStyle;
 
     const partSize = options.partSizeBytes ?? S3_DEFAULT_PART_BYTES;

@@ -3,12 +3,14 @@ import {
   StorageAdapterError,
   StorageInputError,
   StorageInvalidKeyError,
+  StorageServiceError,
   StorageSsrfError,
   StorageTimeoutError,
   assertValidMaxFiles,
   assertValidUploadSize,
 } from './adapter-interface';
-import { ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
+import { isSsrfBlockedError, ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
+import { redactText } from '../../security/redact';
 import { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS } from './http-limits';
 export { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS, assertValidMaxFiles, assertValidUploadSize };
 
@@ -54,6 +56,38 @@ export function encodeSafePathSegments(remotePath: string, provider: string): st
     throw new StorageInvalidKeyError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
   }
   return segments.map((seg) => encodeURIComponent(seg)).join('/');
+}
+
+export const GCS_BUCKET_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,220}[a-z0-9])?$/i;
+
+export function assertValidGcsBucketName(bucket: unknown, provider = 'gcs'): asserts bucket is string {
+  if (
+    typeof bucket !== 'string' ||
+    !bucket ||
+    bucket.includes('..') ||
+    bucket.includes('/') ||
+    bucket.includes('\\') ||
+    !GCS_BUCKET_PATTERN.test(bucket)
+  ) {
+    throw new StorageInputError(`Invalid GCS bucket name: "${typeof bucket === 'string' ? bucket : typeof bucket}"`, provider);
+  }
+}
+
+export function parseGcsServiceAccountKeyJson(raw: unknown, provider = 'gcs'): { clientEmail: string; privateKey: string } {
+  if (typeof raw !== 'string' || !raw) {
+    throw new StorageInputError('Invalid GCS serviceAccountKeyJson: expected non-empty JSON string', provider);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new StorageInputError('Invalid GCS serviceAccountKeyJson format', provider);
+  }
+  const obj = parsed as { client_email?: unknown; private_key?: unknown } | null;
+  if (!obj || typeof obj !== 'object' || typeof obj.client_email !== 'string' || !obj.client_email || typeof obj.private_key !== 'string' || !obj.private_key) {
+    throw new StorageInputError('Invalid GCS serviceAccountKeyJson: missing client_email or private_key', provider);
+  }
+  return { clientEmail: obj.client_email, privateKey: obj.private_key };
 }
 
 export function assertValidAzureContainerName(containerName: unknown, provider = 'azure-blob'): asserts containerName is string {
@@ -118,7 +152,14 @@ export function parseCleanBaseEndpointUrl(rawUrl: string, provider: string, inva
   } catch {
     throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
   }
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+  if (
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    parsed.href.includes('?') ||
+    parsed.href.includes('#')
+  ) {
     throw new StorageAdapterError(
       `Invalid ${provider} endpoint URL: embedded credentials, query parameters, and fragments are not permitted`,
       provider
@@ -166,6 +207,65 @@ export async function releaseDispatcher(dispatcher: Dispatcher): Promise<void> {
   } catch {
     // an agent that cannot be destroyed holds nothing past the request
   }
+}
+
+const MAX_ERROR_CAUSE_DEPTH = 8;
+
+function findTimeoutKind(err: unknown): 'headers' | 'body' | null {
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: err, depth: 0 }];
+  const visited = new Set<unknown>();
+  while (queue.length > 0) {
+    const { value, depth } = queue.shift()!;
+    if (!value || typeof value !== 'object' || visited.has(value)) continue;
+    visited.add(value);
+    const code = (value as { code?: unknown }).code;
+    const name = value instanceof Error ? value.name : undefined;
+    if (code === 'UND_ERR_HEADERS_TIMEOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'ETIMEDOUT') {
+      return 'headers';
+    }
+    if (code === 'UND_ERR_BODY_TIMEOUT' || name === 'TimeoutError') {
+      return 'body';
+    }
+    if (depth >= MAX_ERROR_CAUSE_DEPTH) continue;
+    if (value instanceof Error && value.cause !== undefined) {
+      queue.push({ value: value.cause, depth: depth + 1 });
+    }
+    const nested = (value as { errors?: unknown }).errors;
+    if (Array.isArray(nested)) {
+      for (const item of nested) {
+        queue.push({ value: item, depth: depth + 1 });
+      }
+    }
+  }
+  return null;
+}
+
+export interface AdapterTimeoutOverrides {
+  headersTimeoutMs?: number;
+  responseTimeoutMs?: number;
+}
+
+/** Maps connect-time SSRF refusals, Undici/Node timeouts, and socket drops into typed StorageAdapterError instances. */
+export function mapAdapterTransportError(
+  err: unknown,
+  urlStr: string,
+  provider: string,
+  operation = 'Request',
+  timeouts?: AdapterTimeoutOverrides
+): StorageAdapterError {
+  if (err instanceof StorageAdapterError) return err;
+  if (isSsrfBlockedError(err)) {
+    return new StorageSsrfError(urlStr, provider);
+  }
+  const timeoutKind = findTimeoutKind(err);
+  if (timeoutKind === 'headers') {
+    return new StorageTimeoutError(timeouts?.headersTimeoutMs ?? ADAPTER_HEADERS_TIMEOUT_MS, provider);
+  }
+  if (timeoutKind === 'body') {
+    return new StorageTimeoutError(timeouts?.responseTimeoutMs ?? ADAPTER_RESPONSE_TIMEOUT_MS, provider);
+  }
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  return new StorageServiceError(`${operation} failed: ${redactText(rawMessage)}`, provider, { retryable: true }, err);
 }
 
 /**
@@ -224,6 +324,11 @@ export async function readBoundedBody(
   read.catch(() => {});
   try {
     await Promise.race([read, deadline]);
+  } catch (err) {
+    throw mapAdapterTransportError(err, '', provider, `Reading ${provider} response body`, {
+      headersTimeoutMs: timeoutMs,
+      responseTimeoutMs: timeoutMs,
+    });
   } finally {
     clearTimeout(timer);
     body.destroy();
@@ -244,11 +349,13 @@ export async function readErrorText(body: Parameters<typeof readBoundedBody>[0],
 export async function readJsonBody<T>(body: Parameters<typeof readBoundedBody>[0], provider: string): Promise<T> {
   const { text, truncated } = await readBoundedBody(body, provider);
   if (truncated) {
-    throw new StorageAdapterError(`The ${provider} answer is longer than ${ADAPTER_BODY_CAP_BYTES} bytes`, provider);
+    throw new StorageServiceError(`The ${provider} answer is longer than ${ADAPTER_BODY_CAP_BYTES} bytes`, provider, {
+      retryable: false,
+    });
   }
   try {
     return JSON.parse(text) as T;
   } catch (err) {
-    throw new StorageAdapterError(`The ${provider} answer is not valid JSON`, provider, err);
+    throw new StorageServiceError(`The ${provider} answer is not valid JSON`, provider, { retryable: false }, err);
   }
 }

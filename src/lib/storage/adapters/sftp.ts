@@ -9,6 +9,7 @@ import type { SftpCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
   StorageAdapterMetadata,
+  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageSsrfError,
@@ -16,6 +17,7 @@ import {
   StorageListingLimitError,
   StorageSizeLimitError,
   assertValidMaxFiles,
+  assertValidUploadSize,
 } from './adapter-interface';
 import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
 import {
@@ -256,7 +258,16 @@ export class SftpStorageAdapter implements IStorageAdapter {
   private readonly knownHostsLine: string | undefined;
 
   constructor(private readonly credentials: SftpCredentials) {
-    this.port = assertSftpPort(credentials.port ?? 22);
+    this.port = assertSftpPort(credentials.port === undefined ? 22 : credentials.port);
+    if (credentials.password !== undefined && typeof credentials.password !== 'string') {
+      throw new StorageInputError('The SFTP password must be a string', this.providerName);
+    }
+    if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
+      throw new StorageInputError('The SFTP privateKey must be a string', this.providerName);
+    }
+    if (credentials.passphrase !== undefined && typeof credentials.passphrase !== 'string') {
+      throw new StorageInputError('The SFTP passphrase must be a string', this.providerName);
+    }
     sftpDestination(credentials.host, credentials.username);
     this.basePath = normalizeBasePath(credentials.basePath);
     this.knownHostsLine = credentials.hostKey === undefined ? undefined : sftpKnownHostsLine(credentials.hostKey);
@@ -329,6 +340,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number; maxBytes?: number }
   ): Promise<StorageAdapterMetadata> {
+    assertValidUploadSize(options?.size, this.providerName);
     const maxBytes = Math.min(options?.maxBytes ?? SFTP_MAX_SPOOL_BYTES, SFTP_MAX_SPOOL_BYTES);
     if (options?.size !== undefined && options.size > maxBytes) {
       throw new StorageSizeLimitError(maxBytes, this.providerName);

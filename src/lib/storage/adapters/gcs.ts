@@ -4,6 +4,7 @@ import type { GcsCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
   StorageAdapterMetadata,
+  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageAdapterError,
@@ -17,12 +18,15 @@ import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import {
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertValidGcsBucketName,
   assertValidMaxFiles,
   assertValidUploadSize,
   guardedRequest,
   isRetryableHttpStatus,
   isTrustedGcsOAuthEndpoint,
+  mapAdapterTransportError,
   parseCleanBaseEndpointUrl,
+  parseGcsServiceAccountKeyJson,
   readBoundedBody,
   readErrorText,
   readJsonBody,
@@ -80,8 +84,24 @@ export class GcsStorageAdapter implements IStorageAdapter {
   private tokenExpiresAt = 0;
 
   constructor(private readonly credentials: GcsCredentials) {
+    assertValidGcsBucketName(credentials.bucket, this.providerName);
+    if (credentials.projectId !== undefined && typeof credentials.projectId !== 'string') {
+      throw new StorageInputError('Invalid GCS projectId: expected string', this.providerName);
+    }
+    if (credentials.clientEmail !== undefined && typeof credentials.clientEmail !== 'string') {
+      throw new StorageInputError('Invalid GCS clientEmail: expected string', this.providerName);
+    }
+    if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
+      throw new StorageInputError('Invalid GCS privateKey: expected string', this.providerName);
+    }
+    if (Boolean(credentials.clientEmail) !== Boolean(credentials.privateKey)) {
+      throw new StorageInputError('GCS service account requires both clientEmail and privateKey', this.providerName);
+    }
+    if (credentials.serviceAccountKeyJson !== undefined) {
+      parseGcsServiceAccountKeyJson(credentials.serviceAccountKeyJson, this.providerName);
+    }
     this.bucket = credentials.bucket;
-    const rawEndpoint = credentials.endpoint || 'https://storage.googleapis.com';
+    const rawEndpoint = credentials.endpoint !== undefined ? credentials.endpoint : 'https://storage.googleapis.com';
     const parsedEndpoint = parseCleanBaseEndpointUrl(rawEndpoint, this.providerName);
     const hasOAuthMaterial = Boolean(
       credentials.serviceAccountKeyJson || credentials.clientEmail || credentials.privateKey
@@ -92,7 +112,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
         this.providerName
       );
     }
-    this.endpoint = stripTrailingSlashes(rawEndpoint);
+    this.endpoint = stripTrailingSlashes(parsedEndpoint.href);
   }
 
   private assertSsrfSafe(urlStr: string): Promise<void> {
@@ -107,18 +127,10 @@ export class GcsStorageAdapter implements IStorageAdapter {
     let clientEmail = this.credentials.clientEmail;
     let privateKey = this.credentials.privateKey;
 
-    if (this.credentials.serviceAccountKeyJson) {
-      try {
-        const parsed = JSON.parse(this.credentials.serviceAccountKeyJson);
-        clientEmail = parsed.client_email;
-        privateKey = parsed.private_key;
-      } catch (err) {
-        // Rethrow JSON parse failure as typed StorageAuthenticationError
-        throw new StorageAuthenticationError(
-          `Invalid serviceAccountKeyJson format: ${err instanceof Error ? err.message : String(err)}`,
-          this.providerName
-        );
-      }
+    if (this.credentials.serviceAccountKeyJson !== undefined) {
+      const parsed = parseGcsServiceAccountKeyJson(this.credentials.serviceAccountKeyJson, this.providerName);
+      clientEmail = parsed.clientEmail;
+      privateKey = parsed.privateKey;
     }
 
     if (!clientEmail || !privateKey) {
@@ -169,13 +181,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
       this.tokenExpiresAt = Date.now() + expiresInSec * 1000;
       return this.cachedToken;
     } catch (err) {
-      if (err instanceof StorageAdapterError) throw err;
-      throw new StorageServiceError(
-        `Token exchange request failed: ${err instanceof Error ? err.message : String(err)}`,
-        this.providerName,
-        { retryable: true },
-        err
-      );
+      throw mapAdapterTransportError(err, tokenUrl, this.providerName, 'Token exchange request');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -230,6 +236,8 @@ export class GcsStorageAdapter implements IStorageAdapter {
       bodyStream.once('end', closeDispatcher);
       bodyStream.once('error', closeDispatcher);
       return bodyStream;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] Download');
     } finally {
       if (!streaming) {
         await releaseDispatcher(dispatcher);
@@ -291,6 +299,8 @@ export class GcsStorageAdapter implements IStorageAdapter {
         contentType: data.contentType || options?.contentType,
         lastModified: data.updated ? new Date(data.updated) : new Date(),
       };
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] Upload');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -334,6 +344,8 @@ export class GcsStorageAdapter implements IStorageAdapter {
         contentType: data.contentType,
         lastModified: data.updated ? new Date(data.updated) : undefined,
       };
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] Head');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -396,6 +408,8 @@ export class GcsStorageAdapter implements IStorageAdapter {
         }
         if (typeof body.nextPageToken !== 'string' || !body.nextPageToken) return files;
         pageToken = body.nextPageToken;
+      } catch (err) {
+        throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] List');
       } finally {
         await releaseDispatcher(dispatcher);
       }
@@ -432,6 +446,8 @@ export class GcsStorageAdapter implements IStorageAdapter {
         });
       }
       return false;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] Delete');
     } finally {
       await releaseDispatcher(dispatcher);
     }

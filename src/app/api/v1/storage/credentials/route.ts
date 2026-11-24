@@ -5,6 +5,7 @@ import {
   CredentialsVaultLimitError,
   CredentialsVaultPersistenceError,
   CustomerStorageCredentials,
+  isStorageProviderType,
   StorageProviderType,
   StorageAdapterError,
   validateStorageCredentials,
@@ -78,6 +79,14 @@ async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, 
     );
   }
 
+  if (typeof providerType !== 'string' || typeof credentials !== 'object' || Array.isArray(credentials)) {
+    return createProblemDetailsResponse(
+      400,
+      'Invalid "providerType" or "credentials" in payload.',
+      instanceUri
+    );
+  }
+
   if (
     ttlSeconds !== undefined &&
     (typeof ttlSeconds !== 'number' || !Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 90 * 86400)
@@ -110,10 +119,20 @@ async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, 
     return unavailable;
   }
 
-  if (credentials.type !== providerType) {
+  if (!isStorageProviderType(providerType)) {
     return createProblemDetailsResponse(
       400,
-      `Mismatch between providerType "${providerType}" and credentials.type "${credentials.type}".`,
+      'Unsupported storage providerType.',
+      instanceUri
+    );
+  }
+
+  const rawCredType = (credentials as { type?: unknown }).type;
+  if (rawCredType !== providerType) {
+    const actualType = typeof rawCredType === 'string' ? rawCredType.slice(0, 64) : typeof rawCredType;
+    return createProblemDetailsResponse(
+      400,
+      `Mismatch between providerType "${providerType}" and credentials.type "${actualType}".`,
       instanceUri
     );
   }
@@ -130,7 +149,7 @@ async function postCredentialsAuthorized(req: NextRequest, instanceUri: string, 
         BYOS_INVALID_ENDPOINT_TYPE
       );
     }
-    throw err;
+    return unclassifiedFailure(err, 'Failed to register credentials.', instanceUri);
   }
 
   try {

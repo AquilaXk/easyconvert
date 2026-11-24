@@ -2,6 +2,7 @@ import dns from 'node:dns';
 import http from 'node:http';
 import net from 'node:net';
 import type { AddressInfo, Socket } from 'node:net';
+import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Agent, Dispatcher } from 'undici';
 import type { Job } from '../src/lib/queue/bullmq-engine';
@@ -92,13 +93,19 @@ describe('HTTP BYOS adapters against an endpoint that stalls', () => {
 
   it.each(adapters.map((build, index) => [['webdav', 'azure-blob', 'gcs'][index], build] as const))(
     '%s gives up a request that gets no answer',
-    async (_name, build) => {
+    async (name, build) => {
       mode = 'silent';
       const adapter = build();
       const started = Date.now();
-      await expect(adapter.head('a.bin')).rejects.toThrow();
-      await expect(adapter.delete('a.bin')).rejects.toThrow();
-      await expect(adapter.downloadStream('a.bin')).rejects.toThrow();
+      await expect(adapter.head('a.bin')).rejects.toThrow(StorageTimeoutError);
+      await expect(adapter.delete('a.bin')).rejects.toThrow(StorageTimeoutError);
+      await expect(adapter.downloadStream('a.bin')).rejects.toThrow(StorageTimeoutError);
+      await expect(adapter.uploadStream('a.bin', Readable.from(['x']), { size: 1 })).rejects.toThrow(StorageTimeoutError);
+      if (name === 'webdav') {
+        await expect((adapter as WebDavStorageAdapter).listDirectory('', 10)).rejects.toThrow(StorageTimeoutError);
+      } else {
+        await expect((adapter as AzureBlobStorageAdapter | GcsStorageAdapter).listObjects('', 10)).rejects.toThrow(StorageTimeoutError);
+      }
       expect(Date.now() - started).toBeLessThan(STALL_HANG_GUARD_MS);
     },
     2 * STALL_HANG_GUARD_MS

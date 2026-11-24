@@ -12,19 +12,25 @@ import {
   S3_DEV_ENDPOINT_ALLOWLIST_ENV,
   SftpStorageAdapter,
   WebDavStorageAdapter,
+  createStorageAdapter,
+  validateStorageCredentials,
 } from '../src/lib/storage/adapters';
 import { listS3Files } from '../src/lib/storage/s3-customer-listing';
+import { assertValidBucketName, SigV4SigningError } from '../src/lib/storage/s3-sigv4';
 import {
+  StorageAdapterError,
   StorageAuthenticationError,
   StorageInputError,
   StorageInvalidKeyError,
   StorageListingLimitError,
   StorageServiceError,
+  StorageSsrfError,
 } from '../src/lib/storage/adapters/adapter-interface';
 import * as httpGuard from '../src/lib/storage/adapters/http-guard';
 import { BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/http-guard';
 import { ConversionFailedError } from '../src/lib/types';
-import { StorageUnavailableError, customerStorageFailure } from '../src/lib/storage/customer-storage-errors';
+import { StorageEndpointBlockedError, StorageUnavailableError, customerStorageFailure } from '../src/lib/storage/customer-storage-errors';
+import { refusalCodeOf } from '../src/lib/refusal-codes';
 import { validateJobGraph } from '../src/lib/jobs/graph';
 import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/queue/graph/node-storage-io';
 import { graphNodeJobId, sealGraph } from '../src/lib/queue/graph/node-jobs';
@@ -346,7 +352,7 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       await Promise.resolve(storageProvider.deleteObject(stored.key)).catch(() => false);
     }, 15_000);
 
-    it('rejects negative, fractional, or NaN upload sizes with StorageInputError across HTTP adapters', async () => {
+    it('rejects negative, fractional, non-finite, or unsafe upload sizes with StorageInputError across HTTP and SFTP adapters', async () => {
       const azure = new AzureBlobStorageAdapter({
         type: 'azure-blob',
         storageAccount: ACCOUNT,
@@ -355,9 +361,11 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       });
       const gcs = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt' });
       const dav = new WebDavStorageAdapter({ type: 'webdav', url: 'https://dav.example.com' });
+      const sftp = new SftpStorageAdapter({ type: 'sftp', host: 'sftp.example.com', username: 'u' });
 
-      for (const adapter of [azure, gcs, dav]) {
-        for (const badSize of [-1, Number.NaN, 1.5]) {
+      const badSizes = [-1, Number.NaN, 1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1];
+      for (const adapter of [azure, gcs, dav, sftp]) {
+        for (const badSize of badSizes) {
           await expect(adapter.uploadStream('file.bin', Readable.from([]), { size: badSize })).rejects.toThrow(
             StorageInputError
           );
@@ -746,6 +754,532 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         await Promise.resolve(storageProvider.deleteObject(k)).catch(() => false);
       }
     }, 15_000);
+
+    it('maps connect-time ESSRFBLOCKED to StorageSsrfError (storage_endpoint_blocked, retryable=false) across GCS OAuth, GCS, Azure Blob, and WebDAV', async () => {
+      vi.stubEnv('NODE_ENV', 'test');
+      vi.spyOn(dns.promises, 'lookup').mockResolvedValue(PUBLIC_DNS as never);
+      const connectLookup = vi.spyOn(dns, 'lookup').mockImplementation(((
+        _host: string,
+        _options: unknown,
+        callback: (err: null, addresses: dns.LookupAddress[]) => void
+      ) => {
+        process.nextTick(() => callback(null, [{ address: '127.0.0.1', family: 4 }]));
+      }) as never);
+
+      const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+
+      const gcsOauthAdapter = new GcsStorageAdapter({
+        type: 'gcs',
+        bucket: 'bkt',
+        clientEmail: 'svc@project.iam.gserviceaccount.com',
+        privateKey: pem,
+      });
+      const gcsAdapter = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: 'https://rebind-gcs.example.com' });
+      const azAdapter = new AzureBlobStorageAdapter({
+        type: 'azure-blob',
+        storageAccount: ACCOUNT,
+        containerName: CONTAINER,
+        accountKey: ACCOUNT_KEY,
+        customEndpoint: 'https://rebind-az.example.com',
+      });
+      const davAdapter = new WebDavStorageAdapter({ type: 'webdav', url: 'https://rebind-dav.example.com/dav' });
+
+      const ops: Array<() => Promise<unknown>> = [
+        () => gcsOauthAdapter.head('a.bin'),
+        () => gcsAdapter.head('a.bin'),
+        () => gcsAdapter.delete('a.bin'),
+        () => gcsAdapter.downloadStream('a.bin'),
+        () => gcsAdapter.uploadStream('a.bin', Readable.from(['x']), { size: 1 }),
+        () => gcsAdapter.listObjects('', 10),
+        () => azAdapter.head('a.bin'),
+        () => azAdapter.delete('a.bin'),
+        () => azAdapter.downloadStream('a.bin'),
+        () => azAdapter.uploadStream('a.bin', Readable.from(['x']), { size: 1 }),
+        () => azAdapter.listObjects('', 10),
+        () => davAdapter.head('a.bin'),
+        () => davAdapter.delete('a.bin'),
+        () => davAdapter.downloadStream('a.bin'),
+        () => davAdapter.uploadStream('a.bin', Readable.from(['x']), { size: 1 }),
+        () => davAdapter.listDirectory('', 10),
+      ];
+
+      for (const runOp of ops) {
+        const err = await runOp().catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(StorageSsrfError);
+        const mapped = customerStorageFailure(err);
+        expect(mapped).toBeInstanceOf(StorageEndpointBlockedError);
+        expect(refusalCodeOf(mapped)).toBe('storage_endpoint_blocked');
+        expect((mapped as StorageEndpointBlockedError).retryable).toBe(false);
+      }
+      expect(connectLookup).toHaveBeenCalled();
+
+      // Verify node-storage-io does NOT retry connect-time ESSRFBLOCKED
+      const callsBefore = connectLookup.mock.calls.length;
+      const user = await userStore.createUser({
+        email: `ssrf_noret_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'SsrfNoRetry',
+        tier: 'paid',
+      });
+      const graphId = `g_ssrf_rebind_${Date.now()}`;
+      const sealed = sealGraph(graphId, {
+        nodes: {
+          in: { op: 'import.webdav', path: 'file.txt', credentials: { url: 'https://rebind-dav.example.com/dav' } },
+        },
+      } as never);
+      const nodeErr = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(graphId, 'in'),
+          data: { graphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        sealed.nodes.in as never,
+        graphNodeJobId(graphId, 'in')
+      ).catch((e: unknown) => e);
+      expect(refusalCodeOf(nodeErr)).toBe('storage_endpoint_blocked');
+      expect(connectLookup.mock.calls.length - callsBefore).toBe(1);
+    });
+
+    it('maps socket drops to retryable StorageServiceError across all HTTP adapters and retries in node-storage-io', async () => {
+      let dropRequests = true;
+      const dropServer = await serve((_req, _body, _res) => {
+        // Not reached when socket destroyed in connection listener; kept as placeholder
+      });
+      // Replace request handler with immediate socket destruction on first pass, then normal responses
+      const rawServer = await new Promise<TestHttpServer>((resolve) => {
+        const hits: CapturedHit[] = [];
+        const sockets = new Set<Socket>();
+        const srv = http.createServer((req, res) => {
+          if (dropRequests) {
+            req.socket.destroy();
+            return;
+          }
+          const chunks: Buffer[] = [];
+          req.on('data', (c: Buffer) => chunks.push(c));
+          req.on('end', () => {
+            hits.push({ method: req.method ?? '', rawUrl: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks) });
+            if (req.method === 'HEAD') {
+              res.writeHead(200, { 'Content-Length': '4' }).end();
+            } else if (req.url?.includes('alt=media') || req.url?.startsWith('/dav/')) {
+              res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': '4' }).end('body');
+            } else {
+              res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"size":"4"}');
+            }
+          });
+        });
+        srv.on('connection', (s) => {
+          sockets.add(s);
+          s.on('close', () => sockets.delete(s));
+        });
+        srv.listen(0, '127.0.0.1', () => {
+          const { port } = srv.address() as AddressInfo;
+          resolve({
+            origin: `http://127.0.0.1:${port}`,
+            host: `127.0.0.1:${port}`,
+            hits,
+            close: () =>
+              new Promise<void>((r) => {
+                for (const s of sockets) s.destroy();
+                srv.close(() => r());
+              }),
+          });
+        });
+      });
+      servers.push(rawServer);
+      allowDev(dropServer, rawServer);
+
+      const gcs = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: rawServer.origin });
+      const az = new AzureBlobStorageAdapter({
+        type: 'azure-blob',
+        storageAccount: ACCOUNT,
+        containerName: CONTAINER,
+        accountKey: ACCOUNT_KEY,
+        customEndpoint: rawServer.origin,
+      });
+      const dav = new WebDavStorageAdapter({ type: 'webdav', url: `${rawServer.origin}/dav` });
+
+      for (const adapter of [gcs, az, dav]) {
+        const listOp = adapter instanceof WebDavStorageAdapter ? () => adapter.listDirectory('', 10) : () => adapter.listObjects('', 10);
+        for (const call of [
+          () => adapter.head('a.txt'),
+          () => adapter.delete('a.txt'),
+          () => adapter.downloadStream('a.txt'),
+          () => adapter.uploadStream('a.txt', Readable.from([Buffer.from('data')]), { size: 4 }),
+          listOp,
+        ]) {
+          const err = await call().catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(StorageServiceError);
+          expect((err as StorageServiceError).retryable).toBe(true);
+          const mapped = customerStorageFailure(err);
+          expect(mapped).toBeInstanceOf(StorageUnavailableError);
+          expect((mapped as StorageUnavailableError).retryable).toBe(true);
+        }
+      }
+
+      // Now verify node-storage-io retries a transport drop once and succeeds on attempt 2
+      let headAttempt = 0;
+      let getAttempt = 0;
+      let retryDavServer: TestHttpServer;
+      const srv2 = http.createServer((req, res) => {
+        if (req.method === 'HEAD') {
+          headAttempt++;
+          if (headAttempt === 1) {
+            req.socket.destroy();
+            return;
+          }
+          req.resume();
+          req.on('end', () => {
+            res.writeHead(200, { 'Content-Length': '4' }).end();
+          });
+          return;
+        }
+        getAttempt++;
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': '4' }).end('body');
+        });
+      });
+      const sockets2 = new Set<Socket>();
+      srv2.on('connection', (s) => {
+        sockets2.add(s);
+        s.on('close', () => sockets2.delete(s));
+      });
+      await new Promise<void>((resolve) => srv2.listen(0, '127.0.0.1', resolve));
+      const { port: p2 } = srv2.address() as AddressInfo;
+      retryDavServer = {
+        origin: `http://127.0.0.1:${p2}`,
+        host: `127.0.0.1:${p2}`,
+        hits: [],
+        close: () =>
+          new Promise<void>((r) => {
+            for (const s of sockets2) s.destroy();
+            srv2.close(() => r());
+          }),
+      };
+      servers.push(retryDavServer);
+      allowDev(retryDavServer);
+
+      const user = await userStore.createUser({
+        email: `drop_retry_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'DropRetry',
+        tier: 'paid',
+      });
+      const graphId = `g_drop_retry_${Date.now()}`;
+      const sealed = sealGraph(graphId, {
+        nodes: { in: { op: 'import.webdav', path: 'in.txt', credentials: { url: `${retryDavServer.origin}/dav` } } },
+      } as never);
+      const imported = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(graphId, 'in'),
+          data: { graphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        sealed.nodes.in as never,
+        graphNodeJobId(graphId, 'in')
+      );
+      expect(imported).toHaveLength(1);
+      expect(headAttempt).toBe(2);
+      expect(getAttempt).toBe(1);
+      await Promise.resolve(storageProvider.deleteObject(imported[0])).catch(() => false);
+      dropRequests = false;
+    }, 15_000);
+
+    it('maps GCS readJsonBody invalid/oversized 200 responses to non-retryable StorageServiceError across getAccessToken, head, and uploadStream', async () => {
+      let jsonMode: 'invalid' | 'oversized' = 'invalid';
+      let oauthHits = 0;
+      let dataHits = 0;
+      const oauthServer = await serve((_req, _body, res) => {
+        oauthHits++;
+        if (jsonMode === 'invalid') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end('{not-json');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(`{"access_token":"${'x'.repeat(70_000)}"}`);
+      });
+      const dataServer = await serve((_req, _body, res) => {
+        dataHits++;
+        if (jsonMode === 'invalid') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end('{not-json');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(`{"size":"${'9'.repeat(70_000)}"}`);
+      });
+      allowDev(oauthServer, dataServer);
+
+      const realGuardedRequest = httpGuard.guardedRequest;
+      vi.spyOn(httpGuard, 'guardedRequest').mockImplementation((url, options) => {
+        if (String(url) === 'https://oauth2.googleapis.com/token') {
+          return realGuardedRequest(`${oauthServer.origin}/token`, { ...options, dispatcher: undefined });
+        }
+        return realGuardedRequest(url, options);
+      });
+
+      const { privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+      const saJson = JSON.stringify({ client_email: 'svc@project.iam.gserviceaccount.com', private_key: pem });
+      const oauthGcs = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: saJson, endpoint: dataServer.origin });
+      const plainGcs = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: dataServer.origin });
+
+      for (const mode of ['invalid', 'oversized'] as const) {
+        jsonMode = mode;
+        for (const call of [
+          () => oauthGcs.head('a.bin'),
+          () => plainGcs.head('a.bin'),
+          () => plainGcs.uploadStream('a.bin', Readable.from([Buffer.from('hi')]), { size: 2 }),
+        ]) {
+          const err = await call().catch((e: unknown) => e);
+          expect(err).toBeInstanceOf(StorageServiceError);
+          expect((err as StorageServiceError).retryable).toBe(false);
+          const mapped = customerStorageFailure(err);
+          expect(mapped).toBeInstanceOf(StorageUnavailableError);
+          expect((mapped as StorageUnavailableError).retryable).toBe(false);
+        }
+      }
+
+      // Ensure node-storage-io does NOT retry non-retryable JSON parse errors
+      oauthHits = 0;
+      dataHits = 0;
+      jsonMode = 'invalid';
+      const user = await userStore.createUser({
+        email: `json_noret_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'JsonNoRetry',
+        tier: 'paid',
+      });
+      const graphId = `g_json_noret_${Date.now()}`;
+      const sealed = sealGraph(graphId, {
+        nodes: { in: { op: 'import.gcs', key: 'a.txt', credentials: { bucket: 'bkt', serviceAccountKeyJson: saJson, endpoint: dataServer.origin } } },
+      } as never);
+      const err = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(graphId, 'in'),
+          data: { graphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        sealed.nodes.in as never,
+        graphNodeJobId(graphId, 'in')
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StorageUnavailableError);
+      expect((err as StorageUnavailableError).retryable).toBe(false);
+      expect(oauthHits).toBe(1);
+      expect(dataHits).toBe(0);
+    });
+
+    it('retries serviceAccountKeyJson OAuth 429/503 and Azure/WebDAV head 429/503 inside node-storage-io, and maps delete 429/503 to retryable StorageServiceError', async () => {
+      const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+      const saJson = JSON.stringify({ client_email: 'sa@proj.iam.gserviceaccount.com', private_key: pem });
+
+      let oauthAttempt = 0;
+      const oauthServer = await serve((_req, body, res) => {
+        oauthAttempt++;
+        const params = new URLSearchParams(body.toString('utf8'));
+        const assertion = params.get('assertion') ?? '';
+        const [hdr, claims, sig] = assertion.split('.');
+        const verifier = crypto.createVerify('RSA-SHA256');
+        verifier.update(`${hdr}.${claims}`);
+        const validJwt = verifier.verify(publicKey, sig, 'base64url');
+        expect(validJwt).toBe(true);
+        const decodedClaims = JSON.parse(Buffer.from(claims, 'base64url').toString('utf8')) as { iss?: string };
+        expect(decodedClaims.iss).toBe('sa@proj.iam.gserviceaccount.com');
+
+        if (oauthAttempt === 1) {
+          res.writeHead(429).end('rate limited');
+          return;
+        }
+        if (oauthAttempt === 2) {
+          res.writeHead(503).end('unavailable');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ access_token: 'tok-sa-ok', expires_in: 3600 }));
+      });
+
+      const gcsDataServer = await serve((req, _body, res) => {
+        expect(req.headers.authorization).toBe('Bearer tok-sa-ok');
+        const parsed = new URL(req.url ?? '/', 'http://localhost');
+        if (parsed.searchParams.get('alt') === 'media') {
+          res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': '6' }).end('sa-doc');
+          return;
+        }
+        if (req.method === 'POST') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"size":"6"}');
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"size":"6"}');
+      });
+
+      let azHeadHits = 0;
+      const azHeadServer = await serve((req, _body, res) => {
+        if (req.method === 'HEAD') {
+          azHeadHits++;
+          if (azHeadHits === 1) {
+            res.writeHead(429).end();
+            return;
+          }
+          if (azHeadHits === 2) {
+            res.writeHead(503).end();
+            return;
+          }
+          res.writeHead(200, { 'Content-Length': '3', 'Content-Type': 'text/plain' }).end();
+          return;
+        }
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Length': '3' }).end('abc');
+          return;
+        }
+        if (req.method === 'DELETE') {
+          res.writeHead(429).end('throttled');
+          return;
+        }
+        res.writeHead(404).end();
+      });
+
+      let davHeadHits = 0;
+      const davHeadServer = await serve((req, _body, res) => {
+        if (req.method === 'HEAD') {
+          davHeadHits++;
+          if (davHeadHits === 1) {
+            res.writeHead(503).end();
+            return;
+          }
+          res.writeHead(200, { 'Content-Length': '3' }).end();
+          return;
+        }
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Length': '3' }).end('xyz');
+          return;
+        }
+        if (req.method === 'DELETE') {
+          res.writeHead(503).end('busy');
+          return;
+        }
+        res.writeHead(404).end();
+      });
+
+      allowDev(oauthServer, gcsDataServer, azHeadServer, davHeadServer);
+      const realGuardedRequest = httpGuard.guardedRequest;
+      vi.spyOn(httpGuard, 'guardedRequest').mockImplementation((url, options) => {
+        if (String(url) === 'https://oauth2.googleapis.com/token') {
+          return realGuardedRequest(`${oauthServer.origin}/token`, { ...options, dispatcher: undefined });
+        }
+        return realGuardedRequest(url, options);
+      });
+
+      const user = await userStore.createUser({
+        email: `sa_retry_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'SaRetry',
+        tier: 'paid',
+      });
+
+      const gcsGraphId = `g_sa_${Date.now()}`;
+      const gcsSealed = sealGraph(gcsGraphId, {
+        nodes: {
+          in: { op: 'import.gcs', key: 'in/sa.txt', credentials: { bucket: 'bkt', serviceAccountKeyJson: saJson, endpoint: gcsDataServer.origin } },
+          out: { op: 'export.gcs', input: 'in', prefix: 'out/', credentials: { bucket: 'bkt', serviceAccountKeyJson: saJson, endpoint: gcsDataServer.origin } },
+        },
+      } as never);
+      const gcsImported = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(gcsGraphId, 'in'),
+          data: { graphId: gcsGraphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        gcsSealed.nodes.in as never,
+        graphNodeJobId(gcsGraphId, 'in')
+      );
+      expect(oauthAttempt).toBe(3);
+      await exportToCustomerStorage(
+        {
+          id: graphNodeJobId(gcsGraphId, 'out'),
+          data: { graphId: gcsGraphId, graphNodeId: 'out', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        gcsSealed.nodes.out as never,
+        gcsImported,
+        graphNodeJobId(gcsGraphId, 'out')
+      );
+      // Export node instantiates a new adapter and performs one fresh token exchange (3 during import + 1 during export)
+      expect(oauthAttempt).toBe(4);
+
+      const azGraphId = `g_az_head_${Date.now()}`;
+      const azSealed = sealGraph(azGraphId, {
+        nodes: {
+          in: { op: 'import.azure-blob', key: 'doc.txt', credentials: { storageAccount: ACCOUNT, containerName: CONTAINER, accountKey: ACCOUNT_KEY, customEndpoint: azHeadServer.origin } },
+        },
+      } as never);
+      const azImported = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(azGraphId, 'in'),
+          data: { graphId: azGraphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        azSealed.nodes.in as never,
+        graphNodeJobId(azGraphId, 'in')
+      );
+      expect(azHeadHits).toBe(3);
+
+      const davGraphId = `g_dav_head_${Date.now()}`;
+      const davSealed = sealGraph(davGraphId, {
+        nodes: {
+          in: { op: 'import.webdav', path: 'doc.txt', credentials: { url: `${davHeadServer.origin}/dav` } },
+        },
+      } as never);
+      const davImported = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(davGraphId, 'in'),
+          data: { graphId: davGraphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        davSealed.nodes.in as never,
+        graphNodeJobId(davGraphId, 'in')
+      );
+      expect(davHeadHits).toBe(2);
+
+      // Verify delete 429/503 returns retryable StorageServiceError -> StorageUnavailableError(retryable=true)
+      const azDelErr = await new AzureBlobStorageAdapter({
+        type: 'azure-blob',
+        storageAccount: ACCOUNT,
+        containerName: CONTAINER,
+        accountKey: ACCOUNT_KEY,
+        customEndpoint: azHeadServer.origin,
+      })
+        .delete('doc.txt')
+        .catch((e: unknown) => e);
+      expect(azDelErr).toBeInstanceOf(StorageServiceError);
+      expect((azDelErr as StorageServiceError).retryable).toBe(true);
+      expect((customerStorageFailure(azDelErr) as StorageUnavailableError).retryable).toBe(true);
+
+      const davDelErr = await new WebDavStorageAdapter({ type: 'webdav', url: `${davHeadServer.origin}/dav` })
+        .delete('doc.txt')
+        .catch((e: unknown) => e);
+      expect(davDelErr).toBeInstanceOf(StorageServiceError);
+      expect((davDelErr as StorageServiceError).retryable).toBe(true);
+      expect((customerStorageFailure(davDelErr) as StorageUnavailableError).retryable).toBe(true);
+
+      for (const k of [...gcsImported, ...azImported, ...davImported]) {
+        await Promise.resolve(storageProvider.deleteObject(k)).catch(() => false);
+      }
+    }, 15_000);
   });
 
   describe('3. WebDAV basePath segment encoding and path validation', () => {
@@ -760,6 +1294,7 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
             '<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">',
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/q1%20report%232.csv</D:href><D:propstat><D:prop><D:getcontentlength>17</D:getcontentlength></D:prop></D:propstat></D:response>`,
+            `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/query-slash.csv?token=abc/</D:href><D:propstat><D:prop><D:getcontentlength>9</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/nested/skip.csv</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/.hidden</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/sub%20child/?sort=asc</D:href><D:propstat><D:prop><D:getcontentlength>0</D:getcontentlength></D:prop></D:propstat></D:response>`,
@@ -806,7 +1341,10 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         // drain
       }
       const listed = await adapter.listDirectory('sub dir', 10);
-      expect(listed).toEqual([{ name: 'q1 report#2.csv', size: 17 }]);
+      expect(listed).toEqual([
+        { name: 'q1 report#2.csv', size: 17 },
+        { name: 'query-slash.csv', size: 9 },
+      ]);
       expect(await adapter.delete('sub dir/doc #1.txt')).toBe(true);
 
       expect(davServer.hits.map((h) => [h.method, h.rawUrl])).toEqual([
@@ -1131,6 +1669,473 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       await expect(gcsZero.listObjects('', 0)).rejects.toThrow(StorageListingLimitError);
       await expect(davZero.listDirectory('', 0)).rejects.toThrow(StorageListingLimitError);
       await expect(listS3Files(s3Zero, '', 0)).rejects.toThrow(StorageListingLimitError);
+    });
+
+    it('imports and exports via node-storage-io using WebDAV encoded basePath end-to-end', async () => {
+      const basePath = '/Team #1/café';
+      const davFiles = new Map<string, Buffer>([
+        ['/dav/Team%20%231/caf%C3%A9/in%20dir/note%20%231.txt', Buffer.from('encoded-webdav-e2e')],
+      ]);
+      const davServer = await serve((req, body, res) => {
+        const rawUrl = req.url ?? '/';
+        if (req.method === 'PROPFIND') {
+          res.writeHead(207, { 'Content-Type': 'application/xml' }).end(
+            '<?xml version="1.0" encoding="utf-8"?><D:multistatus xmlns:D="DAV:">' +
+              '<D:response><D:href>/dav/Team%20%231/caf%C3%A9/in%20dir/note%20%231.txt</D:href>' +
+              '<D:propstat><D:prop><D:getcontentlength>18</D:getcontentlength></D:prop></D:propstat></D:response>' +
+              '</D:multistatus>'
+          );
+          return;
+        }
+        if (req.method === 'GET') {
+          const found = davFiles.get(rawUrl);
+          if (!found) {
+            res.writeHead(404).end();
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': String(found.length) }).end(found);
+          return;
+        }
+        if (req.method === 'PUT') {
+          davFiles.set(rawUrl, body);
+          res.writeHead(201, { ETag: '"e2e-ok"' }).end();
+          return;
+        }
+        res.writeHead(404).end();
+      });
+      allowDev(davServer);
+
+      const user = await userStore.createUser({
+        email: `dav_e2e_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'DavE2E',
+        tier: 'paid',
+      });
+      const graphId = `g_dav_base_${Date.now()}`;
+      const sealed = sealGraph(graphId, {
+        nodes: {
+          in: { op: 'import.webdav', directory: 'in dir', credentials: { url: `${davServer.origin}/dav`, basePath } },
+          out: { op: 'export.webdav', input: 'in', directory: 'out dir', credentials: { url: `${davServer.origin}/dav`, basePath } },
+        },
+      } as never);
+
+      const imported = await importFromCustomerStorage(
+        {
+          id: graphNodeJobId(graphId, 'in'),
+          data: { graphId, graphNodeId: 'in', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        sealed.nodes.in as never,
+        graphNodeJobId(graphId, 'in')
+      );
+      expect(imported).toHaveLength(1);
+
+      await exportToCustomerStorage(
+        {
+          id: graphNodeJobId(graphId, 'out'),
+          data: { graphId, graphNodeId: 'out', userId: user.id },
+          opts: { attempts: 1 },
+          signal: new AbortController().signal,
+          log: async () => {},
+        } as never,
+        storageProvider,
+        sealed.nodes.out as never,
+        imported,
+        graphNodeJobId(graphId, 'out')
+      );
+
+      expect(davFiles.get('/dav/Team%20%231/caf%C3%A9/out%20dir/note%20%231.txt')?.toString('utf8')).toBe('encoded-webdav-e2e');
+      expect(davServer.hits.map((h) => [h.method, h.rawUrl])).toEqual([
+        ['PROPFIND', '/dav/Team%20%231/caf%C3%A9/in%20dir/'],
+        ['GET', '/dav/Team%20%231/caf%C3%A9/in%20dir/note%20%231.txt'],
+        ['PUT', '/dav/Team%20%231/caf%C3%A9/out%20dir/note%20%231.txt'],
+      ]);
+      for (const k of imported) {
+        await Promise.resolve(storageProvider.deleteObject(k)).catch(() => false);
+      }
+    });
+  });
+
+  describe('4. Credential field types, trailing ?/# base URLs, bucket validation, and unclassified error masking', () => {
+    it('rejects trailing ?, #, and ?# base URLs across parseCleanBaseEndpointUrl, adapters, and POST /api/v1/storage/credentials', async () => {
+      credentialsVault.clear();
+      const user = await userStore.createUser({
+        email: `trail_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'TrailTester',
+        tier: 'paid',
+      });
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Trail Key', { scopes: ['convert:write', 'convert:read'] });
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${secretKey}` };
+
+      for (const badUrl of [
+        'https://dav.example.com/dav#',
+        'https://dav.example.com/dav?',
+        'https://dav.example.com/dav?#',
+        'https://blob.example.com?',
+        'https://storage.googleapis.com#',
+      ]) {
+        expect(() => httpGuard.parseCleanBaseEndpointUrl(badUrl, 'webdav')).toThrow(StorageAdapterError);
+        expect(() => new WebDavStorageAdapter({ type: 'webdav', url: badUrl })).toThrow(StorageAdapterError);
+        expect(() =>
+          new AzureBlobStorageAdapter({
+            type: 'azure-blob',
+            storageAccount: ACCOUNT,
+            containerName: CONTAINER,
+            customEndpoint: badUrl,
+          })
+        ).toThrow(StorageAdapterError);
+        expect(() => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: badUrl })).toThrow(StorageAdapterError);
+
+        for (const [providerType, creds] of [
+          ['webdav', { type: 'webdav', url: badUrl }],
+          ['azure-blob', { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: badUrl }],
+          ['gcs', { type: 'gcs', bucket: 'bkt', endpoint: badUrl }],
+          ['s3', { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIAEXAMPLEKEY000001', secretAccessKey: 'secret', endpoint: badUrl }],
+        ] as const) {
+          const res = await credentialsPost(
+            new NextRequest('http://localhost:3000/api/v1/storage/credentials', {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({ providerType, credentials: creds }),
+            })
+          );
+          expect(res.status, `${providerType} ${badUrl}`).toBe(400);
+        }
+      }
+      expect(await credentialsVault.list(user.id)).toEqual([]);
+    });
+
+    it('rejects non-string bucket names in assertValidBucketName with SigV4SigningError instead of TypeError', () => {
+      for (const badBucket of [12345, true, false, null, undefined, { name: 'b' }, ['b']]) {
+        for (const rules of ['dns', 'oci'] as const) {
+          const err = (() => {
+            try {
+              assertValidBucketName(badBucket as unknown as string, rules);
+            } catch (e) {
+              return e;
+            }
+            return undefined;
+          })();
+          expect(err).toBeInstanceOf(SigV4SigningError);
+          expect(err).not.toBeInstanceOf(TypeError);
+          expect((err as Error).message).toBe('Invalid bucket name: must be a string.');
+        }
+      }
+    });
+
+    it('rejects non-string/falsy fields, unknown providerType, and masks unclassified validation throws on POST /api/v1/storage/credentials', async () => {
+      credentialsVault.clear();
+      const user = await userStore.createUser({
+        email: `types_${Date.now()}_${Math.random().toString(36).slice(2)}@example.com`,
+        name: 'TypeTester',
+        tier: 'paid',
+      });
+      const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'Type Key', { scopes: ['convert:write', 'convert:read'] });
+      const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${secretKey}` };
+
+      const postCreds = (payload: unknown) =>
+        credentialsPost(
+          new NextRequest('http://localhost:3000/api/v1/storage/credentials', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+          })
+        );
+
+      const invalidPayloads: Array<[string, unknown, (() => unknown)?]> = [
+        [
+          'azure accountKey: 123',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, accountKey: 123 } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, accountKey: 123 as never }),
+        ],
+        [
+          'azure sasToken: 123',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, sasToken: 123 } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, sasToken: 123 as never }),
+        ],
+        [
+          'azure connectionString: 123',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, connectionString: 123 } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, connectionString: 123 as never }),
+        ],
+        [
+          'azure customEndpoint: 0',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: 0 } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: 0 as never }),
+        ],
+        [
+          'azure customEndpoint: false',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: false } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: false as never }),
+        ],
+        [
+          'azure customEndpoint: null',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: null } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: null as never }),
+        ],
+        [
+          'azure customEndpoint: empty',
+          { providerType: 'azure-blob', credentials: { type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: '' } },
+          () => new AzureBlobStorageAdapter({ type: 'azure-blob', storageAccount: ACCOUNT, containerName: CONTAINER, customEndpoint: '' }),
+        ],
+        [
+          'gcs endpoint: 0',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', endpoint: 0 } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: 0 as never }),
+        ],
+        [
+          'gcs endpoint: false',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', endpoint: false } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: false as never }),
+        ],
+        [
+          'gcs endpoint: null',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', endpoint: null } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: null as never }),
+        ],
+        [
+          'gcs projectId: 123',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', projectId: 123 } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', projectId: 123 as never }),
+        ],
+        [
+          'gcs clientEmail/privateKey numbers',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', clientEmail: 123, privateKey: 456 } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', clientEmail: 123 as never, privateKey: 456 as never }),
+        ],
+        [
+          'gcs clientEmail: 0, privateKey: false',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', clientEmail: 0, privateKey: false } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', clientEmail: 0 as never, privateKey: false as never }),
+        ],
+        [
+          'gcs serviceAccountKeyJson: 123',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: 123 } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: 123 as never }),
+        ],
+        [
+          'gcs serviceAccountKeyJson: 0',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: 0 } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: 0 as never }),
+        ],
+        [
+          'gcs serviceAccountKeyJson: empty',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: '' } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: '' }),
+        ],
+        [
+          'gcs serviceAccountKeyJson: false',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: false } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: false as never }),
+        ],
+        [
+          'gcs serviceAccountKeyJson: null',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: null } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', serviceAccountKeyJson: null as never }),
+        ],
+        [
+          'gcs bucket: 123',
+          { providerType: 'gcs', credentials: { type: 'gcs', bucket: 123 } },
+          () => new GcsStorageAdapter({ type: 'gcs', bucket: 123 as never }),
+        ],
+        [
+          's3 bucket: 12345',
+          { providerType: 's3', credentials: { type: 's3', bucket: 12345, accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X' } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 12345 as never, accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X' }),
+        ],
+        [
+          's3 bucket: true',
+          { providerType: 's3', credentials: { type: 's3', bucket: true, accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X' } },
+          () => new S3StorageAdapter({ type: 's3', bucket: true as never, accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X' }),
+        ],
+        [
+          's3 accessKeyId: 123',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 123, secretAccessKey: 'SECRET_X' } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 123 as never, secretAccessKey: 'SECRET_X' }),
+        ],
+        [
+          's3 secretAccessKey: 123',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 123 } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 123 as never }),
+        ],
+        [
+          's3 region: 123',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: 123 } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: 123 as never }),
+        ],
+        [
+          's3 region: 0',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: 0 } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: 0 as never }),
+        ],
+        [
+          's3 forcePathStyle: yes',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', forcePathStyle: 'yes' } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', forcePathStyle: 'yes' as never }),
+        ],
+        [
+          's3 endpoint: 0',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: 0 } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: 0 as never }),
+        ],
+        [
+          's3 endpoint: false',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: false } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: false as never }),
+        ],
+        [
+          's3 endpoint: null',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: null } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: null as never }),
+        ],
+        [
+          's3 endpoint: empty',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: '' } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', endpoint: '' }),
+        ],
+        [
+          's3 region: empty',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: '' } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: '' }),
+        ],
+        [
+          's3 region: null',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: null } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', region: null as never }),
+        ],
+        [
+          's3 sessionToken: 123',
+          { providerType: 's3', credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', sessionToken: 123 } },
+          () => new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X', sessionToken: 123 as never }),
+        ],
+        [
+          'webdav url: 123',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: 123 } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: 123 as never }),
+        ],
+        [
+          'webdav url: 0',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: 0 } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: 0 as never }),
+        ],
+        [
+          'webdav url: false',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: false } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: false as never }),
+        ],
+        [
+          'webdav url: null',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: null } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: null as never }),
+        ],
+        [
+          'webdav url: empty',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: '' } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: '' }),
+        ],
+        [
+          'webdav username: 123',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: 'https://dav.example.com/dav', username: 123 } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: 'https://dav.example.com/dav', username: 123 as never }),
+        ],
+        [
+          'webdav password: 123',
+          { providerType: 'webdav', credentials: { type: 'webdav', url: 'https://dav.example.com/dav', password: 123 } },
+          () => new WebDavStorageAdapter({ type: 'webdav', url: 'https://dav.example.com/dav', password: 123 as never }),
+        ],
+        [
+          'sftp host: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 123, username: 'u', password: 'p' } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 123 as never, username: 'u', password: 'p' }),
+        ],
+        [
+          'sftp username: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 123, password: 'p' } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 123 as never, password: 'p' }),
+        ],
+        [
+          'sftp port: 22 string',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', port: '22' } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', port: '22' as never }),
+        ],
+        [
+          'sftp password: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', password: 123 } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', password: 123 as never }),
+        ],
+        [
+          'sftp privateKey: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', privateKey: 123 } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', privateKey: 123 as never }),
+        ],
+        [
+          'sftp passphrase: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', passphrase: 123 } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', passphrase: 123 as never }),
+        ],
+        [
+          'sftp hostKey: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', hostKey: 123 } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', hostKey: 123 as never }),
+        ],
+        [
+          'sftp port: null',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', port: null } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', port: null as never }),
+        ],
+        [
+          'sftp basePath: 123',
+          { providerType: 'sftp', credentials: { type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', basePath: 123 } },
+          () => new SftpStorageAdapter({ type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', basePath: 123 as never }),
+        ],
+        ['invalid providerType ftp', { providerType: 'ftp', credentials: { type: 'ftp' } }],
+        ['invalid providerType toString', { providerType: 'toString', credentials: { type: 'toString' } }],
+        ['numeric providerType', { providerType: 123, credentials: { type: 123 } }],
+        ['boolean providerType', { providerType: true, credentials: { type: true } }],
+        ['string credentials', { providerType: 's3', credentials: 'not-an-object' }],
+        ['array credentials', { providerType: 's3', credentials: ['s3'] }],
+      ];
+
+      for (const [label, payload, ctor] of invalidPayloads) {
+        const res = await postCreds(payload);
+        expect(res.status, label).toBe(400);
+        if (ctor) {
+          expect(ctor, label).toThrow(StorageAdapterError);
+        }
+        const typeVal = (payload as { credentials?: { type?: unknown } })?.credentials?.type;
+        if (typeof typeVal === 'string' && ['s3', 'gcs', 'azure-blob', 'sftp', 'webdav', 'http'].includes(typeVal)) {
+          expect(() => createStorageAdapter((payload as { credentials: never }).credentials), label).toThrow(StorageAdapterError);
+        }
+      }
+      expect(await credentialsVault.list(user.id)).toEqual([]);
+
+      // Backward compatibility: valid password-only SFTP credentials still register with 201
+      const validSftpRes = await postCreds({
+        providerType: 'sftp',
+        credentials: { type: 'sftp', host: 'files.example.com', username: 'u', password: 'p', basePath: '/' },
+      });
+      expect(validSftpRes.status).toBe(201);
+
+      // Verify unknown providerType throws StorageAdapterError directly in validateStorageCredentials/createStorageAdapter
+      await expect(validateStorageCredentials({ type: 'ftp' } as never)).rejects.toThrow(StorageAdapterError);
+      expect(() => createStorageAdapter({ type: 'ftp' } as never)).toThrow(StorageAdapterError);
+
+      // Verify non-StorageAdapterError throw in validateStorageCredentials is masked via unclassifiedFailure
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      vi.spyOn(S3StorageAdapter.prototype, 'verifyEndpoint').mockRejectedValueOnce(new Error('ECONNREFUSED /var/run/internal.sock'));
+      const errRes = await postCreds({
+        providerType: 's3',
+        credentials: { type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIA_X', secretAccessKey: 'SECRET_X' },
+      });
+      expect(errRes.status).toBe(500);
+      expect(errRes.headers.get('content-type')).toContain('application/problem+json');
+      const errBody = await errRes.json();
+      expect(errBody.detail).toBe('Failed to register credentials.');
+      expect(JSON.stringify(errBody)).not.toContain('ECONNREFUSED');
+      expect(JSON.stringify(errBody)).not.toContain('/var/run/internal.sock');
+      expect(consoleError.mock.calls.some((call) => String(call[1]).includes('ECONNREFUSED'))).toBe(true);
     });
   });
 });

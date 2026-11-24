@@ -115,10 +115,18 @@ function parseOrigin(origin: string): URL {
 }
 
 function assertSignableCredentials(credentials: SigV4RequestCredentials, region: string): void {
-  if (!credentials.accessKeyId || !credentials.secretAccessKey) {
+  if (
+    typeof credentials.accessKeyId !== 'string' ||
+    !credentials.accessKeyId ||
+    typeof credentials.secretAccessKey !== 'string' ||
+    !credentials.secretAccessKey
+  ) {
     throw new SigV4SigningError('Access key id and secret access key are required.');
   }
-  if (!REGION_PATTERN.test(region)) {
+  if (credentials.sessionToken !== undefined && typeof credentials.sessionToken !== 'string') {
+    throw new SigV4SigningError('Session token must be a string.');
+  }
+  if (typeof region !== 'string' || !REGION_PATTERN.test(region)) {
     throw new SigV4SigningError('Region must be lowercase letters, digits, and hyphens.');
   }
 }
@@ -323,6 +331,9 @@ function isIpLiteralHost(endpoint: URL): boolean {
 }
 
 export function assertValidBucketName(bucket: string, rules: BucketNameRules = 'dns'): void {
+  if (typeof bucket !== 'string') {
+    throw new SigV4SigningError('Invalid bucket name: must be a string.');
+  }
   if (rules === 'oci') {
     // A name made only of dots would address another path (".." in "/<bucket>/<key>").
     if (!OCI_BUCKET_NAME_PATTERN.test(bucket) || DOT_SEGMENTS.has(bucket)) {
@@ -364,8 +375,11 @@ export function resolveS3Address(input: S3AddressInput): S3Address {
   if (input.key !== '') {
     assertValidObjectKey(input.key);
   }
-  if (!REGION_PATTERN.test(input.region)) {
+  if (typeof input.region !== 'string' || !REGION_PATTERN.test(input.region)) {
     throw new SigV4SigningError('Region must be lowercase letters, digits, and hyphens.');
+  }
+  if (input.endpoint !== undefined && typeof input.endpoint !== 'string') {
+    throw new SigV4SigningError('Request origin is not a valid URL.');
   }
   const endpoint = parseOrigin(input.endpoint ?? defaultS3Endpoint(input.region));
   const forcePathStyle = input.forcePathStyle ?? input.endpoint !== undefined;

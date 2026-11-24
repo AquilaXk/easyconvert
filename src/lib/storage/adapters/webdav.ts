@@ -22,6 +22,7 @@ import {
   encodeSafePathSegments,
   guardedRequest,
   isRetryableHttpStatus,
+  mapAdapterTransportError,
   parseCleanBaseEndpointUrl,
   readBoundedBody,
   readErrorText,
@@ -106,6 +107,13 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     }
     this.baseUrl = base;
 
+    if (
+      (credentials.username !== undefined && typeof credentials.username !== 'string') ||
+      (credentials.password !== undefined && typeof credentials.password !== 'string')
+    ) {
+      throw new StorageInputError('Invalid WebDAV username or password: expected string', this.providerName);
+    }
+
     if (credentials.username && credentials.password) {
       const token = Buffer.from(`${credentials.username}:${credentials.password}`, 'utf-8').toString('base64');
       this.authHeader = `Basic ${token}`;
@@ -167,6 +175,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       bodyStream.once('end', closeDispatcher);
       bodyStream.once('error', closeDispatcher);
       return bodyStream;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] Download');
     } finally {
       if (!streaming) {
         await releaseDispatcher(dispatcher);
@@ -226,6 +236,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         contentType: options?.contentType,
         lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
       };
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] Upload');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -268,6 +280,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         contentType,
         lastModified: lastModified ? new Date(lastModified) : undefined,
       };
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] Head');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -320,7 +334,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
 
       const files: Array<{ name: string; size: number }> = [];
       for (const entry of parseWebDavPropfindXml(text)) {
-        if (entry.isCollection || entry.href.endsWith('/')) continue;
+        if (entry.isCollection) continue;
         const name = extractWebDavChildName(entry.href, targetUrl, baseSegments);
         if (!name) continue;
         files.push({ name, size: entry.size });
@@ -329,6 +343,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         }
       }
       return files;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] PROPFIND');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -360,6 +376,8 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         });
       }
       return false;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] Delete');
     } finally {
       await releaseDispatcher(dispatcher);
     }

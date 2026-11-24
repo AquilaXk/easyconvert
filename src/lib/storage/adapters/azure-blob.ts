@@ -5,6 +5,7 @@ import {
   IStorageAdapter,
   StorageAdapterError,
   StorageAdapterMetadata,
+  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageInvalidKeyError,
@@ -23,6 +24,7 @@ import {
   encodeSafePathSegments,
   guardedRequest,
   isRetryableHttpStatus,
+  mapAdapterTransportError,
   parseCleanBaseEndpointUrl,
   readBoundedBody,
   readErrorText,
@@ -70,15 +72,24 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       throw new StorageAdapterError('Invalid Azure Blob storageAccount: 3 to 24 lowercase letters and digits', this.providerName);
     }
     assertValidAzureContainerName(credentials.containerName, this.providerName);
+    if (credentials.accountKey !== undefined && typeof credentials.accountKey !== 'string') {
+      throw new StorageInputError('Invalid Azure Blob accountKey: expected string', this.providerName);
+    }
+    if (credentials.sasToken !== undefined && typeof credentials.sasToken !== 'string') {
+      throw new StorageInputError('Invalid Azure Blob sasToken: expected string', this.providerName);
+    }
+    if (credentials.connectionString !== undefined && typeof credentials.connectionString !== 'string') {
+      throw new StorageInputError('Invalid Azure Blob connectionString: expected string', this.providerName);
+    }
     this.storageAccount = credentials.storageAccount;
     this.containerName = credentials.containerName;
-    this.accountKey = credentials.accountKey ?? extractConnectionStringPart(credentials.connectionString, 'AccountKey');
-    const rawSas = credentials.sasToken ?? extractConnectionStringPart(credentials.connectionString, 'SharedAccessSignature');
+    this.accountKey = (credentials.accountKey || undefined) ?? extractConnectionStringPart(credentials.connectionString, 'AccountKey');
+    const rawSas = (credentials.sasToken || undefined) ?? extractConnectionStringPart(credentials.connectionString, 'SharedAccessSignature');
     this.sasToken = rawSas ? stripLeadingSlashes(rawSas.replace(/^\?/, '')) : undefined;
 
-    if (credentials.customEndpoint) {
-      parseCleanBaseEndpointUrl(credentials.customEndpoint, this.providerName);
-      this.baseUrl = stripTrailingSlashes(credentials.customEndpoint);
+    if (credentials.customEndpoint !== undefined) {
+      const parsedEndpoint = parseCleanBaseEndpointUrl(credentials.customEndpoint, this.providerName);
+      this.baseUrl = stripTrailingSlashes(parsedEndpoint.href);
     } else {
       this.baseUrl = `https://${this.storageAccount}.blob.core.windows.net`;
     }
@@ -201,6 +212,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       bodyStream.once('end', closeDispatcher);
       bodyStream.once('error', closeDispatcher);
       return bodyStream;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] Download');
     } finally {
       if (!streaming) {
         await releaseDispatcher(dispatcher);
@@ -269,6 +282,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         contentType: options?.contentType,
         lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
       };
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] Upload');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -320,6 +335,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         contentType,
         lastModified: lastModified ? new Date(lastModified) : undefined,
       };
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] Head');
     } finally {
       await releaseDispatcher(dispatcher);
     }
@@ -388,6 +405,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         }
         if (!parsed.nextMarker) return files;
         marker = parsed.nextMarker;
+      } catch (err) {
+        throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] List');
       } finally {
         await releaseDispatcher(dispatcher);
       }
@@ -431,6 +450,8 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         });
       }
       return false;
+    } catch (err) {
+      throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] Delete');
     } finally {
       await releaseDispatcher(dispatcher);
     }

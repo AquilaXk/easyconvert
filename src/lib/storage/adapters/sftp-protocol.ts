@@ -150,6 +150,10 @@ export function sftpBatch(...lines: string[]): string {
 
 /** The directory every key lives under, normalised, or "/" for a server root. Relative paths stay relative to the login directory. */
 export function normalizeBasePath(basePath: string | undefined): string {
+  if (basePath === undefined) return '/';
+  if (typeof basePath !== 'string') {
+    throw new StorageInputError('The SFTP base path must be a string', PROVIDER);
+  }
   if (!basePath) return '/';
   if (hasForbiddenCharacter(basePath)) {
     throw new StorageInputError('The SFTP base path cannot hold a control character, a line break or a NUL byte', PROVIDER);
@@ -175,7 +179,7 @@ function isInside(root: string, candidate: string): boolean {
  * otherwise be read as an option by the getopt call of `ls`, `get` and `put` (sftp.c:407, :490).
  */
 export function resolveRemotePath(root: string, remotePath: string): string {
-  if (hasForbiddenCharacter(remotePath)) {
+  if (typeof remotePath !== 'string' || hasForbiddenCharacter(remotePath)) {
     throw new StorageInvalidKeyError('An SFTP path cannot hold a control character, a line break or a NUL byte', PROVIDER);
   }
   const key = posix.normalize(stripLeadingSlashes(remotePath));
@@ -198,8 +202,11 @@ function isHostname(host: string): boolean {
  * `hpdelim2` and `cleanhostname` read (misc.c:747, :796).
  */
 export function sftpDestination(host: string, username: string): string {
-  if (!USERNAME.test(username)) {
+  if (typeof username !== 'string' || !USERNAME.test(username)) {
     throw new StorageInputError('The SFTP user name has a character or a length the sftp client does not accept', PROVIDER);
+  }
+  if (typeof host !== 'string') {
+    throw new StorageInputError('The SFTP host must be a host name or an IP address', PROVIDER);
   }
   if (net.isIPv6(host)) {
     if (host.includes('%')) throw new StorageInputError('The SFTP host cannot carry an IPv6 zone', PROVIDER);
