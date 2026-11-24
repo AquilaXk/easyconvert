@@ -13,6 +13,7 @@ import {
   StorageServiceError,
   StorageSsrfError,
   StorageTimeoutError,
+  assertCredentialsObject,
 } from './adapter-interface';
 import {
   EMPTY_PAYLOAD_SHA256,
@@ -625,6 +626,7 @@ export class S3StorageAdapter implements IStorageAdapter {
   private readonly maxRequestDurationMs: number;
 
   constructor(credentials: S3Credentials, options: S3AdapterOptions = {}) {
+    assertCredentialsObject(credentials, PROVIDER);
     if (
       typeof credentials.bucket !== 'string' ||
       !credentials.bucket ||

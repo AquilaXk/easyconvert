@@ -18,6 +18,7 @@ import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import {
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertCredentialsObject,
   assertValidGcsBucketName,
   assertValidMaxFiles,
   assertValidUploadSize,
@@ -27,6 +28,8 @@ import {
   mapAdapterTransportError,
   parseCleanBaseEndpointUrl,
   parseGcsServiceAccountKeyJson,
+  parseNonNegativeInt,
+  parseValidDate,
   readBoundedBody,
   readErrorText,
   readJsonBody,
@@ -76,6 +79,60 @@ function signServiceAccountJwt(clientEmail: string, privateKey: string, provider
   }
 }
 
+export function validateGcsAuthFields(credentials: GcsCredentials, provider = 'gcs'): void {
+  assertCredentialsObject(credentials, provider);
+  assertValidGcsBucketName(credentials.bucket, provider);
+  if (credentials.projectId !== undefined && typeof credentials.projectId !== 'string') {
+    throw new StorageInputError('Invalid GCS projectId: expected string', provider);
+  }
+  if (credentials.clientEmail !== undefined && typeof credentials.clientEmail !== 'string') {
+    throw new StorageInputError('Invalid GCS clientEmail: expected string', provider);
+  }
+  if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
+    throw new StorageInputError('Invalid GCS privateKey: expected string', provider);
+  }
+  if (credentials.clientEmail !== undefined && credentials.clientEmail.length > 0 && !credentials.clientEmail.trim()) {
+    throw new StorageInputError('Invalid GCS clientEmail: expected non-whitespace string', provider);
+  }
+  if (credentials.privateKey !== undefined && credentials.privateKey.length > 0 && !credentials.privateKey.trim()) {
+    throw new StorageInputError('Invalid GCS privateKey: expected non-whitespace string', provider);
+  }
+  if (Boolean(credentials.clientEmail) !== Boolean(credentials.privateKey)) {
+    throw new StorageInputError('GCS service account requires both clientEmail and privateKey', provider);
+  }
+  if (credentials.serviceAccountKeyJson !== undefined) {
+    parseGcsServiceAccountKeyJson(credentials.serviceAccountKeyJson, provider);
+  }
+}
+
+function parseGcsListingPage(
+  text: string,
+  provider: string,
+  maxFiles: number,
+  files: Array<{ path: string; size: number }>
+): string | undefined {
+  let body: { items?: unknown; nextPageToken?: unknown };
+  try {
+    body = JSON.parse(text) as typeof body;
+  } catch (err) {
+    throw new StorageServiceError(`The ${provider} listing answer is not valid JSON`, provider, { retryable: false }, err);
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body) || (body.items !== undefined && !Array.isArray(body.items))) {
+    throw new StorageServiceError(`The ${provider} listing answer has an invalid JSON shape`, provider, { retryable: false });
+  }
+  for (const item of body.items ?? []) {
+    if (!item || typeof item !== 'object' || typeof (item as { name?: unknown }).name !== 'string') continue;
+    const name = (item as { name: string }).name;
+    if (!name || name.endsWith('/')) continue;
+    const size = parseNonNegativeInt((item as { size?: unknown }).size) ?? 0;
+    files.push({ path: name, size });
+    if (files.length > maxFiles) {
+      throw new StorageListingLimitError(maxFiles, provider);
+    }
+  }
+  return typeof body.nextPageToken === 'string' && body.nextPageToken ? body.nextPageToken : undefined;
+}
+
 export class GcsStorageAdapter implements IStorageAdapter {
   readonly providerName = 'gcs';
   private readonly endpoint: string;
@@ -84,22 +141,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
   private tokenExpiresAt = 0;
 
   constructor(private readonly credentials: GcsCredentials) {
-    assertValidGcsBucketName(credentials.bucket, this.providerName);
-    if (credentials.projectId !== undefined && typeof credentials.projectId !== 'string') {
-      throw new StorageInputError('Invalid GCS projectId: expected string', this.providerName);
-    }
-    if (credentials.clientEmail !== undefined && typeof credentials.clientEmail !== 'string') {
-      throw new StorageInputError('Invalid GCS clientEmail: expected string', this.providerName);
-    }
-    if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
-      throw new StorageInputError('Invalid GCS privateKey: expected string', this.providerName);
-    }
-    if (Boolean(credentials.clientEmail) !== Boolean(credentials.privateKey)) {
-      throw new StorageInputError('GCS service account requires both clientEmail and privateKey', this.providerName);
-    }
-    if (credentials.serviceAccountKeyJson !== undefined) {
-      parseGcsServiceAccountKeyJson(credentials.serviceAccountKeyJson, this.providerName);
-    }
+    validateGcsAuthFields(credentials, this.providerName);
     this.bucket = credentials.bucket;
     const rawEndpoint = credentials.endpoint !== undefined ? credentials.endpoint : 'https://storage.googleapis.com';
     const parsedEndpoint = parseCleanBaseEndpointUrl(rawEndpoint, this.providerName);
@@ -291,13 +333,13 @@ export class GcsStorageAdapter implements IStorageAdapter {
         });
       }
 
-      const data = await readJsonBody<{ size?: string; etag?: string; contentType?: string; updated?: string }>(res.body, this.providerName);
-      const size = data.size ? Number.parseInt(data.size, 10) : options?.size || 0;
+      const data = await readJsonBody<{ size?: unknown; etag?: unknown; contentType?: unknown; updated?: unknown }>(res.body, this.providerName);
+      const size = parseNonNegativeInt(data.size) ?? (options?.size ?? 0);
       return {
         size,
-        etag: data.etag,
-        contentType: data.contentType || options?.contentType,
-        lastModified: data.updated ? new Date(data.updated) : new Date(),
+        etag: typeof data.etag === 'string' ? data.etag : undefined,
+        contentType: typeof data.contentType === 'string' ? data.contentType : options?.contentType,
+        lastModified: parseValidDate(data.updated) ?? new Date(),
       };
     } catch (err) {
       throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] Upload');
@@ -337,12 +379,12 @@ export class GcsStorageAdapter implements IStorageAdapter {
         return null;
       }
 
-      const data = await readJsonBody<{ size?: string; etag?: string; contentType?: string; updated?: string }>(res.body, this.providerName);
+      const data = await readJsonBody<{ size?: unknown; etag?: unknown; contentType?: unknown; updated?: unknown }>(res.body, this.providerName);
       return {
-        size: data.size ? Number.parseInt(data.size, 10) : 0,
-        etag: data.etag,
-        contentType: data.contentType,
-        lastModified: data.updated ? new Date(data.updated) : undefined,
+        size: parseNonNegativeInt(data.size) ?? 0,
+        etag: typeof data.etag === 'string' ? data.etag : undefined,
+        contentType: typeof data.contentType === 'string' ? data.contentType : undefined,
+        lastModified: parseValidDate(data.updated),
       };
     } catch (err) {
       throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] Head');
@@ -392,22 +434,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
             retryable: false,
           });
         }
-        let body: { items?: Array<{ name?: unknown; size?: unknown }>; nextPageToken?: unknown };
-        try {
-          body = JSON.parse(text) as typeof body;
-        } catch (err) {
-          throw new StorageServiceError(`The ${this.providerName} listing answer is not valid JSON`, this.providerName, { retryable: false }, err);
-        }
-        for (const item of body.items ?? []) {
-          if (typeof item?.name !== 'string' || !item.name || item.name.endsWith('/')) continue;
-          const size = Number.parseInt(String(item.size ?? 0), 10);
-          files.push({ path: item.name, size: Number.isFinite(size) && size >= 0 ? size : 0 });
-          if (files.length > maxFiles) {
-            throw new StorageListingLimitError(maxFiles, this.providerName);
-          }
-        }
-        if (typeof body.nextPageToken !== 'string' || !body.nextPageToken) return files;
-        pageToken = body.nextPageToken;
+        const nextToken = parseGcsListingPage(text, this.providerName, maxFiles, files);
+        if (!nextToken) return files;
+        pageToken = nextToken;
       } catch (err) {
         throw mapAdapterTransportError(err, url, this.providerName, '[GcsAdapter] List');
       } finally {

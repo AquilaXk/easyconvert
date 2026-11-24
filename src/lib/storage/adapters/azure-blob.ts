@@ -16,8 +16,10 @@ import { remotePathProblem } from '../customer-storage-paths';
 import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import { parseAzureListBlobsXml } from './listing-xml';
 import {
+  CONTROL_OR_LINE_CHAR,
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertCredentialsObject,
   assertValidAzureContainerName,
   assertValidMaxFiles,
   assertValidUploadSize,
@@ -26,8 +28,11 @@ import {
   isRetryableHttpStatus,
   mapAdapterTransportError,
   parseCleanBaseEndpointUrl,
+  parseNonNegativeInt,
+  parseValidDate,
   readBoundedBody,
   readErrorText,
+  readHeaderString,
   releaseDispatcher,
   stripLeadingSlashes,
   stripTrailingSlashes,
@@ -59,6 +64,44 @@ function extractConnectionStringPart(connStr: string | undefined, key: string): 
 /** The naming rule of an Azure storage account: it becomes the host name of the default endpoint and part of the signed resource. */
 export const AZURE_STORAGE_ACCOUNT_PATTERN = /^[a-z0-9]{3,24}$/;
 
+function normalizeAzureSasToken(rawSas: string | undefined, provider: string): string | undefined {
+  if (rawSas === undefined || rawSas === '') return undefined;
+  if (!rawSas.isWellFormed() || CONTROL_OR_LINE_CHAR.test(rawSas)) {
+    throw new StorageInputError('Invalid Azure Blob sasToken: control characters or unpaired surrogates are not permitted', provider);
+  }
+  const cleaned = stripLeadingSlashes(rawSas.replace(/^\?/, ''));
+  if (!cleaned || /[\s#]/.test(cleaned)) {
+    throw new StorageInputError('Invalid Azure Blob sasToken: whitespace and fragments are not permitted', provider);
+  }
+  return cleaned;
+}
+
+export function resolveAzureBlobAuthFields(
+  credentials: AzureBlobCredentials,
+  provider = 'azure-blob'
+): { accountKey?: string; sasToken?: string } {
+  assertCredentialsObject(credentials, provider);
+  if (typeof credentials.storageAccount !== 'string' || !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount)) {
+    throw new StorageAdapterError('Invalid Azure Blob storageAccount: 3 to 24 lowercase letters and digits', provider);
+  }
+  assertValidAzureContainerName(credentials.containerName, provider);
+  if (credentials.accountKey !== undefined && typeof credentials.accountKey !== 'string') {
+    throw new StorageInputError('Invalid Azure Blob accountKey: expected string', provider);
+  }
+  if (credentials.accountKey !== undefined && credentials.accountKey.length > 0 && !credentials.accountKey.trim()) {
+    throw new StorageInputError('Invalid Azure Blob accountKey: expected non-whitespace string', provider);
+  }
+  if (credentials.sasToken !== undefined && typeof credentials.sasToken !== 'string') {
+    throw new StorageInputError('Invalid Azure Blob sasToken: expected string', provider);
+  }
+  if (credentials.connectionString !== undefined && typeof credentials.connectionString !== 'string') {
+    throw new StorageInputError('Invalid Azure Blob connectionString: expected string', provider);
+  }
+  const accountKey = (credentials.accountKey || undefined) ?? extractConnectionStringPart(credentials.connectionString, 'AccountKey');
+  const rawSas = (credentials.sasToken === '' ? undefined : credentials.sasToken) ?? extractConnectionStringPart(credentials.connectionString, 'SharedAccessSignature');
+  return { accountKey, sasToken: normalizeAzureSasToken(rawSas, provider) };
+}
+
 export class AzureBlobStorageAdapter implements IStorageAdapter {
   readonly providerName = 'azure-blob';
   private readonly storageAccount: string;
@@ -68,24 +111,11 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   private readonly baseUrl: string;
 
   constructor(credentials: AzureBlobCredentials) {
-    if (typeof credentials.storageAccount !== 'string' || !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount)) {
-      throw new StorageAdapterError('Invalid Azure Blob storageAccount: 3 to 24 lowercase letters and digits', this.providerName);
-    }
-    assertValidAzureContainerName(credentials.containerName, this.providerName);
-    if (credentials.accountKey !== undefined && typeof credentials.accountKey !== 'string') {
-      throw new StorageInputError('Invalid Azure Blob accountKey: expected string', this.providerName);
-    }
-    if (credentials.sasToken !== undefined && typeof credentials.sasToken !== 'string') {
-      throw new StorageInputError('Invalid Azure Blob sasToken: expected string', this.providerName);
-    }
-    if (credentials.connectionString !== undefined && typeof credentials.connectionString !== 'string') {
-      throw new StorageInputError('Invalid Azure Blob connectionString: expected string', this.providerName);
-    }
+    const auth = resolveAzureBlobAuthFields(credentials, this.providerName);
     this.storageAccount = credentials.storageAccount;
     this.containerName = credentials.containerName;
-    this.accountKey = (credentials.accountKey || undefined) ?? extractConnectionStringPart(credentials.connectionString, 'AccountKey');
-    const rawSas = (credentials.sasToken || undefined) ?? extractConnectionStringPart(credentials.connectionString, 'SharedAccessSignature');
-    this.sasToken = rawSas ? stripLeadingSlashes(rawSas.replace(/^\?/, '')) : undefined;
+    this.accountKey = auth.accountKey;
+    this.sasToken = auth.sasToken;
 
     if (credentials.customEndpoint !== undefined) {
       const parsedEndpoint = parseCleanBaseEndpointUrl(credentials.customEndpoint, this.providerName);
@@ -273,14 +303,14 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         });
       }
 
-      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-      const lastModifiedHeader = res.headers['last-modified'] as string | undefined;
+      const etag = readHeaderString(res.headers.etag)?.replace(/"/g, '');
+      const lastModifiedHeader = res.headers['last-modified'];
 
       return {
         size: options?.size || 0,
         etag,
         contentType: options?.contentType,
-        lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
+        lastModified: parseValidDate(lastModifiedHeader) ?? new Date(),
       };
     } catch (err) {
       throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] Upload');
@@ -323,17 +353,16 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
-      const lenStr = res.headers['content-length'] as string | undefined;
-      const size = lenStr ? Number.parseInt(lenStr, 10) : 0;
-      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-      const contentType = res.headers['content-type'] as string | undefined;
-      const lastModified = res.headers['last-modified'] as string | undefined;
+      const size = parseNonNegativeInt(res.headers['content-length']) ?? 0;
+      const etag = readHeaderString(res.headers.etag)?.replace(/"/g, '');
+      const contentType = readHeaderString(res.headers['content-type']);
+      const lastModified = res.headers['last-modified'];
 
       return {
         size,
         etag,
         contentType,
-        lastModified: lastModified ? new Date(lastModified) : undefined,
+        lastModified: parseValidDate(lastModified),
       };
     } catch (err) {
       throw mapAdapterTransportError(err, url, this.providerName, '[AzureBlobAdapter] Head');

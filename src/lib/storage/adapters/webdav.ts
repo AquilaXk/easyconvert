@@ -17,6 +17,7 @@ import {
   FORBIDDEN_PATH_CHAR,
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertCredentialsObject,
   assertValidMaxFiles,
   assertValidUploadSize,
   encodeSafePathSegments,
@@ -24,8 +25,11 @@ import {
   isRetryableHttpStatus,
   mapAdapterTransportError,
   parseCleanBaseEndpointUrl,
+  parseNonNegativeInt,
+  parseValidDate,
   readBoundedBody,
   readErrorText,
+  readHeaderString,
   releaseDispatcher,
   stripSlashes,
   stripTrailingSlashes,
@@ -99,6 +103,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   private readonly authHeader?: string;
 
   constructor(credentials: WebDavCredentials) {
+    assertCredentialsObject(credentials, this.providerName);
     const parsedUrl = parseCleanBaseEndpointUrl(credentials.url, this.providerName);
     let base = stripTrailingSlashes(parsedUrl.href);
     const encodedBasePath = encodeWebDavBasePath(credentials.basePath, this.providerName);
@@ -227,14 +232,14 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         });
       }
 
-      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-      const lastModifiedHeader = res.headers['last-modified'] as string | undefined;
+      const etag = readHeaderString(res.headers.etag)?.replace(/"/g, '');
+      const lastModifiedHeader = res.headers['last-modified'];
 
       return {
         size: options?.size || 0,
         etag,
         contentType: options?.contentType,
-        lastModified: lastModifiedHeader ? new Date(lastModifiedHeader) : new Date(),
+        lastModified: parseValidDate(lastModifiedHeader) ?? new Date(),
       };
     } catch (err) {
       throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] Upload');
@@ -268,17 +273,16 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
-      const lenStr = res.headers['content-length'] as string | undefined;
-      const size = lenStr ? Number.parseInt(lenStr, 10) : 0;
-      const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
-      const contentType = res.headers['content-type'] as string | undefined;
-      const lastModified = res.headers['last-modified'] as string | undefined;
+      const size = parseNonNegativeInt(res.headers['content-length']) ?? 0;
+      const etag = readHeaderString(res.headers.etag)?.replace(/"/g, '');
+      const contentType = readHeaderString(res.headers['content-type']);
+      const lastModified = res.headers['last-modified'];
 
       return {
         size,
         etag,
         contentType,
-        lastModified: lastModified ? new Date(lastModified) : undefined,
+        lastModified: parseValidDate(lastModified),
       };
     } catch (err) {
       throw mapAdapterTransportError(err, url, this.providerName, '[WebDavAdapter] Head');

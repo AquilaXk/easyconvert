@@ -13,8 +13,8 @@ import {
   StorageInputError,
   StorageSsrfError,
 } from './adapter-interface';
-import { GcsStorageAdapter } from './gcs';
-import { AZURE_STORAGE_ACCOUNT_PATTERN, AzureBlobStorageAdapter } from './azure-blob';
+import { GcsStorageAdapter, validateGcsAuthFields } from './gcs';
+import { AzureBlobStorageAdapter, resolveAzureBlobAuthFields } from './azure-blob';
 import { encodeWebDavBasePath, WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter, isSftpDevAllowlisted } from './sftp';
 import { assertSftpPort, normalizeBasePath, sftpDestination, sftpKnownHostsLine } from './sftp-protocol';
@@ -31,12 +31,9 @@ import {
 import { isPrivateOrRestrictedHost, validateUrlForSsrf } from '../../security/ssrf';
 import {
   assertTlsEndpoint,
-  assertValidAzureContainerName,
-  assertValidGcsBucketName,
   isDevAllowlistedEndpoint,
   isTrustedGcsOAuthEndpoint,
   parseCleanBaseEndpointUrl,
-  parseGcsServiceAccountKeyJson,
 } from './http-guard';
 
 /**
@@ -99,22 +96,7 @@ function validateS3Credentials(credentials: Extract<CustomerStorageCredentials, 
 }
 
 function validateGcsCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'gcs' }>): void {
-  assertValidGcsBucketName(credentials.bucket, 'gcs');
-  if (credentials.projectId !== undefined && typeof credentials.projectId !== 'string') {
-    throw new StorageInputError('Invalid GCS projectId: expected string', 'gcs');
-  }
-  if (credentials.clientEmail !== undefined && typeof credentials.clientEmail !== 'string') {
-    throw new StorageInputError('Invalid GCS clientEmail: expected string', 'gcs');
-  }
-  if (credentials.privateKey !== undefined && typeof credentials.privateKey !== 'string') {
-    throw new StorageInputError('Invalid GCS privateKey: expected string', 'gcs');
-  }
-  if (Boolean(credentials.clientEmail) !== Boolean(credentials.privateKey)) {
-    throw new StorageAdapterError('GCS service account requires both clientEmail and privateKey', 'gcs');
-  }
-  if (credentials.serviceAccountKeyJson !== undefined) {
-    parseGcsServiceAccountKeyJson(credentials.serviceAccountKeyJson, 'gcs');
-  }
+  validateGcsAuthFields(credentials, 'gcs');
   if (credentials.endpoint !== undefined) {
     validateExternalEndpointUrl(credentials.endpoint, 'gcs');
     const hasOAuth = Boolean(credentials.serviceAccountKeyJson || (credentials.clientEmail && credentials.privateKey));
@@ -125,19 +107,7 @@ function validateGcsCredentials(credentials: Extract<CustomerStorageCredentials,
 }
 
 function validateAzureBlobCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'azure-blob' }>): void {
-  if (typeof credentials.storageAccount !== 'string' || !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount)) {
-    throw new StorageAdapterError('Invalid Azure Blob storageAccount', 'azure-blob');
-  }
-  assertValidAzureContainerName(credentials.containerName, 'azure-blob');
-  if (credentials.accountKey !== undefined && typeof credentials.accountKey !== 'string') {
-    throw new StorageInputError('Invalid Azure Blob accountKey: expected string', 'azure-blob');
-  }
-  if (credentials.sasToken !== undefined && typeof credentials.sasToken !== 'string') {
-    throw new StorageInputError('Invalid Azure Blob sasToken: expected string', 'azure-blob');
-  }
-  if (credentials.connectionString !== undefined && typeof credentials.connectionString !== 'string') {
-    throw new StorageInputError('Invalid Azure Blob connectionString: expected string', 'azure-blob');
-  }
+  resolveAzureBlobAuthFields(credentials, 'azure-blob');
   if (credentials.customEndpoint !== undefined) {
     validateExternalEndpointUrl(credentials.customEndpoint, 'azure-blob');
   }
@@ -230,7 +200,7 @@ function validateHttpCredentials(credentials: Extract<CustomerStorageCredentials
 }
 
 export function validateCredentials(credentials: CustomerStorageCredentials): void {
-  if (!credentials || typeof credentials !== 'object') {
+  if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
     throw new StorageAdapterError('Invalid storage credentials payload', 'unknown');
   }
   switch (credentials.type) {

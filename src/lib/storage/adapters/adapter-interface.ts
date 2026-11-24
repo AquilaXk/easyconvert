@@ -37,6 +37,12 @@ export function assertValidUploadSize(size: number | undefined, provider: string
   }
 }
 
+export function assertCredentialsObject(credentials: unknown, provider: string): asserts credentials is Record<string, unknown> {
+  if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
+    throw new StorageInputError(`Invalid ${provider} credentials payload`, provider);
+  }
+}
+
 /** An object key the store cannot address safely (empty, or with "." / ".." path segments). */
 export class StorageInvalidKeyError extends StorageInputError {
   constructor(message: string, provider: string, cause?: unknown) {

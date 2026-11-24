@@ -6,17 +6,28 @@ import {
   StorageServiceError,
   StorageSsrfError,
   StorageTimeoutError,
+  assertCredentialsObject,
   assertValidMaxFiles,
   assertValidUploadSize,
 } from './adapter-interface';
 import { isSsrfBlockedError, ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
 import { redactText } from '../../security/redact';
 import { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS } from './http-limits';
-export { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS, assertValidMaxFiles, assertValidUploadSize };
+export {
+  ADAPTER_BODY_CAP_BYTES,
+  ADAPTER_HEADERS_TIMEOUT_MS,
+  ADAPTER_RESPONSE_TIMEOUT_MS,
+  assertCredentialsObject,
+  assertValidMaxFiles,
+  assertValidUploadSize,
+};
 
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR_MIN = 500;
 const HTTP_SERVER_ERROR_MAX = 599;
+
+/** Control characters and Unicode line/paragraph separators forbidden in adapter URLs/tokens. */
+export const CONTROL_OR_LINE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 /** Control characters, Unicode line/paragraph separators, and backslashes forbidden in adapter paths. */
 export const FORBIDDEN_PATH_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\\]/u;
@@ -84,7 +95,15 @@ export function parseGcsServiceAccountKeyJson(raw: unknown, provider = 'gcs'): {
     throw new StorageInputError('Invalid GCS serviceAccountKeyJson format', provider);
   }
   const obj = parsed as { client_email?: unknown; private_key?: unknown } | null;
-  if (!obj || typeof obj !== 'object' || typeof obj.client_email !== 'string' || !obj.client_email || typeof obj.private_key !== 'string' || !obj.private_key) {
+  if (
+    !obj ||
+    typeof obj !== 'object' ||
+    Array.isArray(obj) ||
+    typeof obj.client_email !== 'string' ||
+    !obj.client_email.trim() ||
+    typeof obj.private_key !== 'string' ||
+    !obj.private_key.trim()
+  ) {
     throw new StorageInputError('Invalid GCS serviceAccountKeyJson: missing client_email or private_key', provider);
   }
   return { clientEmail: obj.client_email, privateKey: obj.private_key };
@@ -143,7 +162,7 @@ export function assertTlsEndpoint(url: URL, provider: string): void {
 
 /** Parses a customer-supplied base endpoint URL and rejects embedded credentials, query strings, or fragments without echoing the raw URL. */
 export function parseCleanBaseEndpointUrl(rawUrl: string, provider: string, invalidMessage?: string): URL {
-  if (typeof rawUrl !== 'string' || rawUrl.length === 0) {
+  if (typeof rawUrl !== 'string' || rawUrl.length === 0 || !rawUrl.isWellFormed() || CONTROL_OR_LINE_CHAR.test(rawUrl)) {
     throw new StorageAdapterError(invalidMessage ?? `Invalid ${provider} endpoint URL`, provider);
   }
   let parsed: URL;
@@ -345,17 +364,54 @@ export async function readErrorText(body: Parameters<typeof readBoundedBody>[0],
   }
 }
 
-/** A JSON answer: a body past the cap or past the deadline is an error, never a partial document. */
-export async function readJsonBody<T>(body: Parameters<typeof readBoundedBody>[0], provider: string): Promise<T> {
-  const { text, truncated } = await readBoundedBody(body, provider);
+/** Extracts a single header string from an Undici response header value, avoiding TypeError on duplicate array headers. */
+export function readHeaderString(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    return value.find((entry): entry is string => typeof entry === 'string');
+  }
+  return undefined;
+}
+
+/** Parses a non-negative integer from a JSON field or HTTP Content-Length header; returns undefined on malformed values. */
+export function parseNonNegativeInt(raw: unknown): number | undefined {
+  if (typeof raw === 'number') {
+    return Number.isSafeInteger(raw) && raw >= 0 ? raw : undefined;
+  }
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+/** Parses a valid Date from a timestamp string; returns undefined on invalid or non-string values. */
+export function parseValidDate(raw: unknown): Date | undefined {
+  if (typeof raw !== 'string' || !raw.trim()) return undefined;
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+/** A JSON answer: a body past the cap, past the deadline, or not a JSON object is an error, never a partial document. */
+export async function readJsonBody<T>(
+  body: Parameters<typeof readBoundedBody>[0],
+  provider: string,
+  maxBytes = ADAPTER_BODY_CAP_BYTES
+): Promise<T> {
+  const { text, truncated } = await readBoundedBody(body, provider, maxBytes);
   if (truncated) {
-    throw new StorageServiceError(`The ${provider} answer is longer than ${ADAPTER_BODY_CAP_BYTES} bytes`, provider, {
+    throw new StorageServiceError(`The ${provider} answer is longer than ${maxBytes} bytes`, provider, {
       retryable: false,
     });
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(text) as T;
+    parsed = JSON.parse(text);
   } catch (err) {
     throw new StorageServiceError(`The ${provider} answer is not valid JSON`, provider, { retryable: false }, err);
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new StorageServiceError(`The ${provider} answer is not a JSON object`, provider, { retryable: false });
+  }
+  return parsed as T;
 }

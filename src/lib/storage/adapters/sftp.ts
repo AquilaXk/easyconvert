@@ -16,6 +16,7 @@ import {
   StorageAdapterError,
   StorageListingLimitError,
   StorageSizeLimitError,
+  assertCredentialsObject,
   assertValidMaxFiles,
   assertValidUploadSize,
 } from './adapter-interface';
@@ -258,6 +259,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
   private readonly knownHostsLine: string | undefined;
 
   constructor(private readonly credentials: SftpCredentials) {
+    assertCredentialsObject(credentials, this.providerName);
     this.port = assertSftpPort(credentials.port === undefined ? 22 : credentials.port);
     if (credentials.password !== undefined && typeof credentials.password !== 'string') {
       throw new StorageInputError('The SFTP password must be a string', this.providerName);
