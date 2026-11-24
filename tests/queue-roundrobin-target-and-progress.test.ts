@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type Redis from 'ioredis';
 import { Job, Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { conversionQueue, processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
+import { ensureQueueLuaLoaded, execPipelineEvalQueueLua, luaScriptSha1 } from '../src/lib/queue/eval-lua';
 import {
   dispatchSyncArchiveInspection,
   dispatchSyncRouteConversion,
@@ -236,6 +238,9 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     await job.updateProgress(49.6);
     await job.updateProgress(50.4);
     await job.updateProgress(50);
+    await job.updateProgress(Number.NaN);
+    await job.updateProgress(Number.POSITIVE_INFINITY);
+    await job.updateProgress(Number.NEGATIVE_INFINITY);
     await job.updateProgress(-5);
     await job.updateProgress(0.2);
     await job.updateProgress(100);
@@ -279,6 +284,106 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
       if (j.id === chain.id) chainWrites.push(p);
     });
     await processConversionJob(chain);
-    expect(chainWrites).toEqual([10, 35, 50, 80, 100]);
+    expect(chainWrites).toEqual([10, 35, 58, 80, 100]);
+
+    // Multi-stage chains with >=5 stages must stay strictly increasing above 35% rather than regressing backwards.
+    const longChain = await q.add('convert', {
+      jobId: 'j_long_chain_prog',
+      originalFilename: 'long.csv',
+      sourceFormat: 'csv',
+      targetFormat: 'yaml',
+      fileSize: 8,
+      options: {},
+      inputBufferBase64: Buffer.from('a,b\n1,2\n').toString('base64'),
+      tasks: [
+        { name: 's1', operation: 'convert', targetFormat: 'json' },
+        { name: 's2', operation: 'convert', targetFormat: 'yaml' },
+        { name: 's3', operation: 'convert', targetFormat: 'json' },
+        { name: 's4', operation: 'convert', targetFormat: 'yaml' },
+        { name: 's5', operation: 'convert', targetFormat: 'json' },
+        { name: 's6', operation: 'convert', targetFormat: 'yaml' },
+      ],
+    });
+    const longChainWrites: number[] = [];
+    q.on('progress', (j, p) => {
+      if (j.id === longChain.id) longChainWrites.push(p);
+    });
+    await processConversionJob(longChain);
+    expect(longChainWrites).toEqual([10, 35, 43, 50, 58, 65, 73, 80, 100]);
+    for (let i = 1; i < longChainWrites.length; i++) {
+      expect(longChainWrites[i]).toBeGreaterThan(longChainWrites[i - 1]);
+    }
+  });
+
+  it('loads Lua scripts across every Cluster master in ensureQueueLuaLoaded and fails closed on truncated EVALSHA pipelines', async () => {
+    const script = 'return 1';
+    const expectedSha = luaScriptSha1(script);
+    const masterCalls: unknown[][] = [];
+    const clusterClient = {
+      isCluster: true,
+      eval: vi.fn(),
+      evalsha: vi.fn(),
+      nodes: vi.fn().mockReturnValue([
+        { script: vi.fn(async (...args: unknown[]) => masterCalls.push(['m1', ...args])) },
+        { script: vi.fn(async (...args: unknown[]) => masterCalls.push(['m2', ...args])) },
+      ]),
+    } as unknown as Redis;
+
+    expect(await ensureQueueLuaLoaded(clusterClient, script)).toBe(expectedSha);
+    expect(await ensureQueueLuaLoaded(clusterClient, script)).toBe(expectedSha);
+    expect(masterCalls).toEqual([
+      ['m1', 'LOAD', script],
+      ['m2', 'LOAD', script],
+    ]);
+
+    const truncatedClient = {
+      eval: vi.fn(),
+      evalsha: vi.fn(),
+      script: vi.fn().mockResolvedValue(expectedSha),
+      pipeline: () => ({
+        evalsha: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([[null, 1]]),
+      }),
+    } as unknown as Redis;
+
+    await expect(
+      execPipelineEvalQueueLua(truncatedClient, {
+        script,
+        calls: [
+          { numKeys: 1, args: ['k1'] },
+          { numKeys: 1, args: ['k2'] },
+        ],
+      })
+    ).rejects.toThrow(/returned 1 replies for 2 commands/);
+
+    const truncatedRetryClient = {
+      eval: vi.fn(),
+      evalsha: vi.fn(),
+      script: vi.fn().mockResolvedValue(expectedSha),
+      pipeline: vi
+        .fn()
+        .mockReturnValueOnce({
+          evalsha: vi.fn().mockReturnThis(),
+          exec: vi.fn().mockResolvedValue([
+            [new Error('NOSCRIPT No matching script'), null],
+            [new Error('NOSCRIPT No matching script'), null],
+          ]),
+        })
+        .mockReturnValueOnce({
+          eval: vi.fn().mockReturnThis(),
+          evalsha: vi.fn().mockReturnThis(),
+          exec: vi.fn().mockResolvedValue([[null, 1]]),
+        }),
+    } as unknown as Redis;
+
+    await expect(
+      execPipelineEvalQueueLua(truncatedRetryClient, {
+        script,
+        calls: [
+          { numKeys: 1, args: ['k1'] },
+          { numKeys: 1, args: ['k2'] },
+        ],
+      })
+    ).rejects.toThrow(/retry pipeline returned 1 replies for 2 commands/);
   });
 });

@@ -483,6 +483,7 @@ Security
 432. [Isolate LibreOffice OSL_PIPE sockets in job directory and narrow ONNX OCR helper readDirs](#432-isolate-libreoffice-osl_pipe-sockets-in-job-directory-and-narrow-onnx-ocr-helper-readdirs)
 433. [Enforce active API key cap atomically in Lua and cap initial presigned part URLs in direct uploads](#433-enforce-active-api-key-cap-atomically-in-lua-and-cap-initial-presigned-part-urls-in-direct-uploads)
 434. [Switch queue Lua scripts to EVALSHA, round-robin popNextEligibleJob across queues, poll targetQueue directly in waitForQueuedJobResult, and drop duplicate progress writes](#434-switch-queue-lua-scripts-to-evalsha-round-robin-popnexteligiblejob-across-queues-poll-targetqueue-directly-in-waitforqueuedjobresult-and-drop-duplicate-progress-writes)
+435. [Scale multi-stage pipeline progress from 35 to 80 percent, guard non-finite progress writes, and harden EVALSHA pipeline replies and worker abort diagnostics](#435-scale-multi-stage-pipeline-progress-from-35-to-80-percent-guard-non-finite-progress-writes-and-harden-evalsha-pipeline-replies-and-worker-abort-diagnostics)
 
 ---
 
@@ -12762,3 +12763,30 @@ Security
   - **Dropping `await job.updateProgress(100)` inside `processNodeJob` itself**: breaks direct processor callers and tests outside `Worker` that assert in-memory progress reaches `100`.
 - **Verified by**: `tests/queue-roundrobin-target-and-progress.test.ts`, `tests/queue-evalsha-redis.test.ts`, `tests/job-lifecycle-redis.test.ts`, `tests/job-failure-redis.test.ts`, `tests/job-graph-redis-e2e.test.ts`, `tests/dead-letter-index-redis.test.ts`, `tests/ended-jobs-scan-redis.test.ts`, `tests/queue-lists-redis.test.ts`, `tests/queue-oldest-waiting-redis.test.ts`, `tests/user-job-list-redis.test.ts`, `tests/redis-query-paths-redis.test.ts`, `tests/adversarial-queue-storage-queries.test.ts`, `tests/graph-user-index-redis.test.ts`, `tests/wait-for-job-failure-fidelity.test.ts`, `tests/archive-inspect-keys-and-queue-only.test.ts`, `tests/job-pipeline-chaining-and-cancellation.test.ts`, `tests/redis-suites-registered.test.ts`, `tests/policy-decisions-numbering.test.ts`, live HTTP + worker + Redis E2E via `scripts/ec.sh`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells`, `npm run licenses:check`, `npm run sdk:check`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `scripts/ci-parity-families.mjs`.
 - **Revisit when**: Queue Lua execution adopts Redis Functions (`FUNCTION LOAD` / `FCALL`) or `Worker` introduces weighted deficit round-robin across resource classes.
+
+---
+
+## 435. Scale multi-stage pipeline progress from 35 to 80 percent, guard non-finite progress writes, and harden EVALSHA pipeline replies and worker abort diagnostics
+
+- **Status**: Implemented, decided 2026-11-25.
+- **Decision**:
+  1. Scale multi-stage `processNodeJob` pipeline stage progress (`src/lib/queue/node-processor.ts`) linearly from `PIPELINE_INPUT_LOADED_PROGRESS` (`35`) to `PIPELINE_STAGES_END_PROGRESS` (`80`), eliminating backward progress jumps (e.g. `35 -> 32` when `tasks.length >= 5`) and stage-1 duplicates (`35 -> 35` when `tasks.length === 4`).
+  2. Ignore non-finite numbers (`NaN`, `Infinity`, `-Infinity`) in `Job.updateProgress` (`src/lib/queue/bullmq-engine.ts`) instead of storing `NaN` or clamping `Infinity` to `100`.
+  3. Record conversion completion diagnostics (`logConversionDiagnostics`, guarded by `if (job.signal?.aborted) return;`) before `updateProgress(75)` on single-stage conversions and at the end of the pipeline branch, so conversion completion is logged while the active attempt still owns the job in Redis (`APPEND_JOB_LOG_LUA_SCRIPT` rejects writes once cancelled) and post-cancel abort handling discards the temporary output consistently across both in-memory and Redis queue engines.
+  4. Harden `src/lib/queue/eval-lua.ts`: load scripts across every master shard (`nodes('master')`) in `ensureQueueLuaLoaded` when `isClusterRedis(client)` is true, and fail closed in `execPipelineEvalQueueLua` when `pipeline.exec()` or its `NOSCRIPT` retry pipeline returns fewer reply tuples than commands sent.
+  5. Align `tests/oci-worker-abort.test.ts` with `INPUT_LOADED_PROGRESS = 35` and intercept `Job.prototype.updateProgress` by job ID while reading final job state, progress, and logs via `conversionQueue.getJob(job.id)` so the suite verifies abort safety under both in-memory `Queue` and `DistributedBullMQAdapter` (Redis) modes.
+- **Why**:
+  - Entry 434 removed the legacy `updateProgress(30)` tick before `35`, which exposed `tests/oci-worker-abort.test.ts` stalling on `pauseAt(..., 30)` and left `taskProgress = 20 + ((i + 1) / n) * 60` regressing below `35` on 5+ stage pipelines.
+  - Under real Redis, `APPEND_JOB_LOG_LUA_SCRIPT` enforces active-attempt state (`state == 'active'`), so logging diagnostics after `updateProgress(75)` raced with a cancel issued at the `75%` checkpoint; logging before `updateProgress(75)` aligns diagnostics with the input-loaded step (`log` then `updateProgress(35)`).
+  - Unchecked partial pipeline replies and single-node `SCRIPT LOAD` in Redis Cluster leave silent `undefined` slots or cold master shards.
+- **OSS & reference hierarchy (3-tier check)**:
+  1. **Permissive OSS packages**: Built on existing `ioredis` Cluster `.nodes('master')` and BullMQ `APPEND_JOB_LOG_LUA_SCRIPT` / `EVALSHA` semantics already present in the repo (`src/lib/redis/cluster-ops.ts`, `src/lib/queue/lua-scripts.ts`).
+  2. **Existing dependency reuse**: Reused `isClusterRedis` from `src/lib/redis/cluster-ops.ts` and existing `vitest` / `ioredis` test infrastructure.
+  3. **Custom implementation**: Updated `node-processor.ts`, `bullmq-engine.ts`, `eval-lua.ts`, and tests (`tests/oci-worker-abort.test.ts`, `tests/queue-roundrobin-target-and-progress.test.ts`).
+- **Trade-offs**:
+  - Two-stage pipelines emit `[10, 35, 58, 80, 100]` instead of `[10, 35, 50, 80, 100]` so every pipeline length `1..45` increases monotonically above `35%` without per-length special cases.
+- **Alternatives rejected**:
+  - **Clamping `taskProgress` with `Math.max(job.progress + 1, ...)` only**: collapses early stages in 6+ stage pipelines onto repeated `36`–`38` steps instead of spreading smoothly across `35..80`.
+  - **Skipping `tests/oci-worker-abort.test.ts` when `REDIS_URL` is set**: leaves distributed worker abort and Redis `APPEND_JOB_LOG_LUA_SCRIPT` interaction unverified.
+- **Verified by**: `tests/oci-worker-abort.test.ts`, `tests/queue-roundrobin-target-and-progress.test.ts`, `tests/queue-evalsha-redis.test.ts`, `tests/job-pipeline-chaining-and-cancellation.test.ts`, `tests/job-lifecycle-safety.test.ts`, `tests/policy-decisions-numbering.test.ts`, full `npm run test:redis` against ephemeral `redis-server`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells`, `npm run guard:code-smells -- --check-base`, `npm run licenses:check`, `npm run sdk:check`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, `npm run build:worker`, and `scripts/ci-parity-families.mjs`.
+- **Revisit when**: Pipeline stages report sub-stage conversion percentages inside `engine.convert`.

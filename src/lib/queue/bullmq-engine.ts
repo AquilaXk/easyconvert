@@ -224,7 +224,7 @@ export class Job<T = any, R = any> {
 
   async updateProgress(progress: number): Promise<void> {
     const next = Math.max(0, Math.min(100, Math.round(progress)));
-    if (next === this.progress) return;
+    if (!Number.isFinite(progress) || next === this.progress) return;
     this.progress = next;
     this.emitter.emit('progress', this, this.progress);
     if (this.onUpdateHook) {

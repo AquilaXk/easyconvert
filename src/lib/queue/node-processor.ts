@@ -150,6 +150,7 @@ async function logConversionDiagnostics(
   finalResult: EngineResult,
   startTime: number
 ): Promise<void> {
+  if (job.signal?.aborted) return;
   await job.log(
     `[${engineName}] Conversion completed via [${finalResult.engineUsed || engineName}] in ${finalResult.executionTimeMs || Date.now() - startTime}ms. Size: ${finalResult.size} bytes`
   );
@@ -238,6 +239,9 @@ function dispatchSpecializedNodeJob(
   return null;
 }
 
+const PIPELINE_INPUT_LOADED_PROGRESS = 35;
+const PIPELINE_STAGES_END_PROGRESS = 80;
+
 /**
  * Canonical unified node processor.
  * Routes graph node jobs, multi-stage task pipelines, and single conversions
@@ -318,7 +322,7 @@ export async function processNodeJob(
     }
 
     await job.log(`[${engine.name}] Loaded input context. Dispatching to conversion engine...`);
-    await job.updateProgress(35);
+    await job.updateProgress(PIPELINE_INPUT_LOADED_PROGRESS);
 
     // 2. Execute conversion (Pipeline tasks chaining or single-target conversion)
     let finalResult: EngineResult;
@@ -332,7 +336,10 @@ export async function processNodeJob(
       for (let i = 0; i < job.data.tasks.length; i++) {
         attemptSignal?.throwIfAborted();
         const task = job.data.tasks[i];
-        const taskProgress = Math.round(20 + ((i + 1) / job.data.tasks.length) * 60);
+        const taskProgress = Math.round(
+          PIPELINE_INPUT_LOADED_PROGRESS +
+            ((i + 1) / job.data.tasks.length) * (PIPELINE_STAGES_END_PROGRESS - PIPELINE_INPUT_LOADED_PROGRESS)
+        );
         const stageTarget = task.targetFormat || (
           task.operation === 'ocr'
             ? 'pdf'
@@ -394,6 +401,7 @@ export async function processNodeJob(
           fs.rmSync(p, { force: true });
         } catch {}
       }
+      await logConversionDiagnostics(job, engine.name, finalResult, startTime);
     } else {
       attemptSignal?.throwIfAborted();
       const conversionOptions: ConversionOptions & { signal?: AbortSignal } = {
@@ -408,10 +416,9 @@ export async function processNodeJob(
         job.data.originalFilename
       );
       lastProducedResult = finalResult;
+      await logConversionDiagnostics(job, engine.name, finalResult, startTime);
       await job.updateProgress(75);
     }
-
-    await logConversionDiagnostics(job, engine.name, finalResult, startTime);
 
     // 3. Save the output with the undelivered time as its lifetime: it is deleted soon after its first complete download.
     if (attemptSignal?.aborted) {

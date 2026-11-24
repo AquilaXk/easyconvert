@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type Redis from 'ioredis';
 import type { ChainableCommander } from 'ioredis';
+import { isClusterRedis } from '../redis/cluster-ops';
 
 const sha1ByScript = new Map<string, string>();
 const loadedByClient = new WeakMap<object, Set<string>>();
@@ -9,6 +10,10 @@ type EvalCapableClient = Pick<Redis, 'eval'> & {
   evalsha?: (...args: unknown[]) => Promise<unknown>;
   script?: (...args: unknown[]) => Promise<unknown>;
   pipeline?: () => ChainableCommander;
+};
+
+type ClusterCapableClient = EvalCapableClient & {
+  nodes?: (role: 'master' | 'slave' | 'all') => Redis[] | Promise<Redis[]>;
 };
 
 /**
@@ -82,14 +87,19 @@ export async function evalQueueLua(
  */
 export async function ensureQueueLuaLoaded(client: Redis, script: string): Promise<string> {
   const sha = luaScriptSha1(script);
-  const target = client as unknown as EvalCapableClient;
-  if (
-    !getLoadedShas(target)?.has(sha) &&
-    typeof target.evalsha === 'function' &&
-    typeof target.script === 'function'
-  ) {
-    await target.script('LOAD', script);
-    markLoadedSha(target, sha);
+  const target = client as unknown as ClusterCapableClient;
+  if (!getLoadedShas(target)?.has(sha) && typeof target.evalsha === 'function') {
+    if (isClusterRedis(client) && typeof target.nodes === 'function') {
+      const masters = await Promise.resolve(target.nodes('master'));
+      const loaders = masters.filter((node) => typeof (node as unknown as EvalCapableClient).script === 'function');
+      if (loaders.length > 0) {
+        await Promise.all(loaders.map((node) => (node as unknown as EvalCapableClient).script!('LOAD', script)));
+        markLoadedSha(target, sha);
+      }
+    } else if (typeof target.script === 'function') {
+      await target.script('LOAD', script);
+      markLoadedSha(target, sha);
+    }
   }
   return sha;
 }
@@ -137,6 +147,10 @@ export async function execPipelineEvalQueueLua(
   }
 
   const raw = (await pipeline.exec()) ?? [];
+  const expectedReplies = prefixCount + calls.length;
+  if (raw.length !== expectedReplies) {
+    throw new Error(`Redis EVALSHA pipeline returned ${raw.length} replies for ${expectedReplies} commands.`);
+  }
   for (let i = 0; i < prefixCount; i++) {
     const [err] = raw[i] ?? [];
     if (err) throw err;
@@ -169,6 +183,9 @@ export async function execPipelineEvalQueueLua(
       }
     });
     const retryRaw = (await retry.exec()) ?? [];
+    if (retryRaw.length !== missedIndices.length) {
+      throw new Error(`Redis EVALSHA retry pipeline returned ${retryRaw.length} replies for ${missedIndices.length} commands.`);
+    }
     missedIndices.forEach((callIdx, pos) => {
       const [err, reply] = retryRaw[pos] ?? [];
       if (err) throw err;
