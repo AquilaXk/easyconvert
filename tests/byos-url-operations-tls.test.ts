@@ -1,47 +1,57 @@
 import dns from 'node:dns';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo, Socket } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { credentialsVault, executeExportTask, executeImportTask, localFsStorage } from '../src/lib/storage';
+import { Agent, type Dispatcher } from 'undici';
+import type { Job } from '../src/lib/queue/bullmq-engine';
+import { exportArtifactToUrl } from '../src/lib/queue/graph/node-executor';
+import { importUrlWithinBudget } from '../src/lib/queue/graph/node-url-import';
+import { storageProvider } from '../src/lib/storage';
+import { validateStorageCredentials } from '../src/lib/storage/adapters';
 import { StorageSsrfError } from '../src/lib/storage/adapters/adapter-interface';
 import { BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/http-guard';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
- * import/url and export/url may fetch from and post to a plain-HTTP URL, but never with a credential attached: a bearer
- * token, a custom header or userinfo in the URL would cross the network in the clear. A local server is reachable only
- * through the server's development allowlist.
+ * BYOS http credentials may target plain http:// only without a credential attached (bearer token,
+ * custom headers, or URL userinfo), unless the host is in BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST under
+ * NODE_ENV=development. URL import and export nodes also drop unread endless HTTP 500 error bodies
+ * without hanging.
  */
+
+const connection = vi.hoisted(() => ({ current: null as Dispatcher | null }));
+vi.mock('../src/lib/security/ssrf', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/lib/security/ssrf')>();
+  const { Dispatcher: BaseDispatcher } = await import('undici');
+  class ForwardingDispatcher extends BaseDispatcher {
+    dispatch(opts: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean {
+      if (!connection.current) {
+        throw new Error('test did not install a dispatcher');
+      }
+      return connection.current.dispatch(opts, handler);
+    }
+  }
+  return { ...actual, createSsrfSafeAgent: vi.fn(() => new ForwardingDispatcher()) };
+});
 
 const PUBLIC_ADDRESS = [{ address: '93.184.216.34', family: 4 }];
 const BEARER = 'bt-0c1d2e3f4a5b6c7d';
 /** A call held by the body of an answer it does not read never ends; this is far above the time it takes. */
 const UNREAD_BODY_HANG_GUARD_MS = 10_000;
 
-interface Hit {
-  method: string;
-  url: string;
-  authorization?: string;
-  apiKey?: string;
-}
-
-describe('BYOS URL operations and credentials over plain HTTP', () => {
+describe('BYOS HTTP credentials TLS checks & URL endless error body cancellation', () => {
   let server: http.Server;
   let origin: string;
   let host: string;
-  let hits: Hit[];
+  let port: number;
   const sockets = new Set<Socket>();
   let sourceKey: string;
 
   beforeEach(async () => {
     vi.spyOn(dns.promises, 'lookup').mockResolvedValue(PUBLIC_ADDRESS as never);
-    hits = [];
+    connection.current = null;
     server = http.createServer((req, res) => {
-      hits.push({
-        method: req.method ?? '',
-        url: req.url ?? '',
-        authorization: req.headers.authorization,
-        apiKey: req.headers['x-api-key'] as string | undefined,
-      });
       req.resume();
       req.on('end', () => res.writeHead(200, { 'Content-Type': 'text/plain' }).end('payload'));
     });
@@ -50,20 +60,20 @@ describe('BYOS URL operations and credentials over plain HTTP', () => {
       socket.on('close', () => sockets.delete(socket));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address() as AddressInfo;
+    port = (server.address() as AddressInfo).port;
     host = `127.0.0.1:${port}`;
     origin = `http://${host}`;
-    const stored = await localFsStorage.putBuffer(`url-tls-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`, Buffer.from('payload'), {
-      contentType: 'text/plain',
-    });
-    sourceKey = stored.key;
+    sourceKey = `intermediate/url-tls/${Date.now()}-${Math.random().toString(36).slice(2)}/0/payload.txt`;
+    await storageProvider.saveObject(sourceKey, Buffer.from('payload'), 'text/plain', 'payload.txt');
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    connection.current = null;
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await storageProvider.deleteObject(sourceKey);
   });
 
   function allowLocalServer(): void {
@@ -71,80 +81,68 @@ describe('BYOS URL operations and credentials over plain HTTP', () => {
     vi.stubEnv(BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV, host);
   }
 
-  async function bearerRef(): Promise<string> {
-    return credentialsVault.store('tls-user', { type: 'http', bearerToken: BEARER });
-  }
+  describe('validateStorageCredentials for type: http', () => {
+    it('refuses plain http:// URLs carrying bearerToken, custom headers, or userinfo', async () => {
+      const bearerErr = await validateStorageCredentials({
+        type: 'http',
+        url: 'http://files.example.org/in.csv',
+        bearerToken: BEARER,
+      }).catch((err: unknown) => err);
+      expect(bearerErr).toBeInstanceOf(StorageSsrfError);
+      expect((bearerErr as Error).message).toMatch(/TLS is required/);
+      expect((bearerErr as Error).message).not.toContain(BEARER);
 
-  async function headerRef(): Promise<string> {
-    return credentialsVault.store('tls-user', { type: 'http', headers: { 'X-Api-Key': 'k-123' } });
-  }
+      const headerErr = await validateStorageCredentials({
+        type: 'http',
+        url: 'http://files.example.org/out',
+        headers: { 'X-Api-Key': 'k-123' },
+      }).catch((err: unknown) => err);
+      expect(headerErr).toBeInstanceOf(StorageSsrfError);
+      expect((headerErr as Error).message).toMatch(/TLS is required/);
+      expect((headerErr as Error).message).not.toContain('k-123');
 
-  describe('refused', () => {
-    it.each([
-      ['a bearer token', bearerRef],
-      ['a custom header', headerRef],
-    ])('import/url over http with %s, before any request', async (_label, makeRef) => {
-      const credentialRef = await makeRef();
-      const error = await executeImportTask({ operation: 'import/url', url: 'http://files.example.org/in.csv', credentialRef, userId: 'tls-user' }).catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(StorageSsrfError);
-      expect((error as Error).message).toMatch(/TLS is required/);
-      expect((error as Error).message).not.toContain(BEARER);
+      const userinfoErr = await validateStorageCredentials({
+        type: 'http',
+        url: 'http://user:pw-9@files.example.org/in.csv',
+      }).catch((err: unknown) => err);
+      expect(userinfoErr).toBeInstanceOf(StorageSsrfError);
+      expect((userinfoErr as Error).message).toMatch(/TLS is required/);
+      expect((userinfoErr as Error).message).not.toContain('pw-9');
     });
 
-    it.each([
-      ['a bearer token', bearerRef],
-      ['a custom header', headerRef],
-    ])('export/url over http with %s, before the source is opened', async (_label, makeRef) => {
-      const credentialRef = await makeRef();
-      const error = await executeExportTask({ operation: 'export/url', sourceKey, url: 'http://files.example.org/out', credentialRef, userId: 'tls-user' }).catch((err: unknown) => err);
-      expect(error).toBeInstanceOf(StorageSsrfError);
-      expect((error as Error).message).toMatch(/TLS is required/);
-    });
-
-    it('either operation over http with userinfo in the URL', async () => {
-      const importError = await executeImportTask({ operation: 'import/url', url: 'http://user:pw-9@files.example.org/in.csv' }).catch((err: unknown) => err);
-      expect(importError).toBeInstanceOf(StorageSsrfError);
-      expect((importError as Error).message).toMatch(/TLS is required/);
-      expect((importError as Error).message).not.toContain('pw-9');
-      const exportError = await executeExportTask({ operation: 'export/url', sourceKey, url: 'http://user:pw-9@files.example.org/out' }).catch((err: unknown) => err);
-      expect(exportError).toBeInstanceOf(StorageSsrfError);
-      expect((exportError as Error).message).toMatch(/TLS is required/);
-    });
-
-    it('a local http server that the allowlist does not name, whatever the environment', async () => {
-      const credentialRef = await bearerRef();
+    it('refuses a local http server in production even if listed in BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST', async () => {
       vi.stubEnv('NODE_ENV', 'production');
       vi.stubEnv(BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV, host);
-      await expect(executeImportTask({ operation: 'import/url', url: `${origin}/in.csv`, credentialRef, userId: 'tls-user' })).rejects.toThrow(StorageSsrfError);
-      await expect(executeExportTask({ operation: 'export/url', sourceKey, url: `${origin}/out`, credentialRef, userId: 'tls-user' })).rejects.toThrow(StorageSsrfError);
-      expect(hits).toHaveLength(0);
-    });
-  });
 
-  describe('allowed', () => {
-    it('plain http with no credential attached still imports and exports', async () => {
-      allowLocalServer();
-      const imported = await executeImportTask({ operation: 'import/url', url: `${origin}/in.csv` });
-      expect(imported.size).toBe(7);
-      const exported = await executeExportTask({ operation: 'export/url', sourceKey, url: `${origin}/out` });
-      expect(exported.success).toBe(true);
-      expect(hits.map((hit) => hit.method)).toEqual(['GET', 'POST']);
-      expect(hits.every((hit) => hit.authorization === undefined && hit.apiKey === undefined)).toBe(true);
+      await expect(
+        validateStorageCredentials({ type: 'http', url: `${origin}/in.csv`, bearerToken: BEARER })
+      ).rejects.toThrow(StorageSsrfError);
+      await expect(
+        validateStorageCredentials({ type: 'http', url: `${origin}/out` })
+      ).rejects.toThrow(StorageSsrfError);
     });
 
-    it('a server named in the development allowlist receives the credential over http', async () => {
+    it('allows plain http:// without credentials on a public host, and allows dev-allowlisted endpoints with credentials', async () => {
+      await expect(
+        validateStorageCredentials({ type: 'http', url: 'http://files.example.org/in.csv' })
+      ).resolves.toBeUndefined();
+
       allowLocalServer();
-      const credentialRef = await bearerRef();
-      await executeImportTask({ operation: 'import/url', url: `${origin}/in.csv`, credentialRef, userId: 'tls-user' });
-      await executeExportTask({ operation: 'export/url', sourceKey, url: `${origin}/out`, credentialRef, userId: 'tls-user' });
-      expect(hits.map((hit) => hit.authorization)).toEqual([`Bearer ${BEARER}`, `Bearer ${BEARER}`]);
+      await expect(
+        validateStorageCredentials({ type: 'http', url: `${origin}/in.csv`, bearerToken: BEARER })
+      ).resolves.toBeUndefined();
+      await expect(
+        validateStorageCredentials({ type: 'http', url: `${origin}/out`, headers: { 'X-Api-Key': 'k-123' } })
+      ).resolves.toBeUndefined();
     });
   });
 
   describe('a failed answer with an endless body', () => {
-    function endlessAnswer(status: number): void {
+    function endlessAnswer(status: number): { requests: string[] } {
+      const requests: string[] = [];
       server.removeAllListeners('request');
       server.on('request', (req, res) => {
+        requests.push(`${req.method} ${req.url}`);
         req.resume();
         res.writeHead(status, { 'Content-Type': 'text/plain' });
         const piece = Buffer.alloc(64 * 1024, 0x78);
@@ -157,15 +155,53 @@ describe('BYOS URL operations and credentials over plain HTTP', () => {
         res.on('close', () => res.removeAllListeners('drain'));
         pump();
       });
+      return { requests };
     }
 
-    it('does not hold import/url or export/url once the status is known', async () => {
-      allowLocalServer();
-      endlessAnswer(500);
+    it('cancels an endless HTTP 500 body on importUrlWithinBudget and exportArtifactToUrl without hanging', async () => {
+      const { requests } = endlessAnswer(500);
+      const agent = new Agent({
+        connect: ((_opts: unknown, cb: (err: Error | null, socket?: net.Socket) => void) => {
+          const socket = net.connect(port, '127.0.0.1');
+          socket.once('connect', () => cb(null, socket));
+          socket.once('error', (err) => cb(err));
+        }) as never,
+      });
+      connection.current = agent;
+
+      const job = {
+        id: 'g-endless:in',
+        data: {
+          jobId: 'g-endless:in',
+          graphId: 'g-endless',
+          graphNodeId: 'in',
+          userId: 'user-endless-500',
+          originalFilename: '',
+          sourceFormat: '',
+          targetFormat: '',
+          fileSize: 0,
+          options: {},
+        },
+        opts: { attempts: 1, timeout: 5000 },
+        attemptsMade: 1,
+        signal: new AbortController().signal,
+        log: async () => {},
+        updateProgress: async () => {},
+      } as unknown as Job<ConversionJobData, ConversionJobResult>;
+
       const started = Date.now();
-      await expect(executeImportTask({ operation: 'import/url', url: `${origin}/in.csv` })).rejects.toThrow(/HTTP 500/);
-      await expect(executeExportTask({ operation: 'export/url', sourceKey, url: `${origin}/out` })).rejects.toThrow(/HTTP 500/);
-      expect(Date.now() - started).toBeLessThan(UNREAD_BODY_HANG_GUARD_MS);
+      try {
+        await expect(
+          importUrlWithinBudget(job, storageProvider, 'http://files.example.org/in.csv', undefined)
+        ).rejects.toThrow(/HTTP 500/);
+        await expect(
+          exportArtifactToUrl(storageProvider, sourceKey, 'http://files.example.org/out', 'POST', undefined, new AbortController().signal)
+        ).rejects.toThrow(/HTTP 500/);
+        expect(requests).toEqual(['GET /in.csv', 'POST /out']);
+        expect(Date.now() - started).toBeLessThan(UNREAD_BODY_HANG_GUARD_MS);
+      } finally {
+        await agent.close();
+      }
     }, 3 * UNREAD_BODY_HANG_GUARD_MS);
   });
 });

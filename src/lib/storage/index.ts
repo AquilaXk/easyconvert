@@ -7,7 +7,6 @@ export * from './shared-store';
 export * from './errors';
 export * from './credentials-vault';
 export * from './adapters';
-export * from './byos-operations';
 export { RemoteStorageBackend } from './remote-storage-backend';
 export {
   isRemoteStorageConfig,

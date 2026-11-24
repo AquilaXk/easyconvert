@@ -5,8 +5,6 @@ import { POST as credentialsPost } from '../src/app/api/v1/storage/credentials/r
 import {
   credentialsVault,
   createStorageAdapter,
-  executeExportTask,
-  executeImportTask,
   localFsStorage,
   S3StorageAdapter,
   S3_DEV_ENDPOINT_ALLOWLIST_ENV,
@@ -18,10 +16,9 @@ import { s3EtagMd5, startS3StubServer, type S3StubServer } from './helpers/s3-st
 import testCredentials from './fixtures/sigv4/test-credentials.json';
 
 /**
- * Regression for the re-enabled s3 BYOS provider: registration, import/s3, and export/s3 run
- * end-to-end through the real route and executeImportTask/executeExportTask against a node:http
- * S3 stub that verifies every SigV4 signature independently (tests/helpers/sigv4-verifier.ts).
- * Before the S3 client existed, every one of these failed with StorageProviderUnavailableError.
+ * Regression for the s3 BYOS provider: registration, S3 adapter downloadStream -> localFsStorage.putStream,
+ * localFsStorage.getStream -> S3 adapter uploadStream (single PUT and 9 MiB multipart), missing-key error,
+ * and SSRF refusal run end-to-end against a node:http S3 stub that verifies every SigV4 signature independently.
  */
 
 const BUCKET = 'customer-bucket';
@@ -99,19 +96,19 @@ describe('s3 BYOS provider end-to-end', () => {
 
   it('imports an object from the customer bucket into local storage', async () => {
     const credentialRef = await registerViaRoute();
+    const creds = await credentialsVault.get(credentialRef, userId);
+    expect(creds?.type).toBe('s3');
+    const adapter = createStorageAdapter(creds!);
+
     const payload = Buffer.from('id,total\n1,99.50\n2,12.00\n', 'utf-8');
     stub.objects.set('reports/q3.csv', { body: payload, contentType: 'text/csv', etag: '"x"' });
 
-    const result = await executeImportTask({
-      operation: 'import/s3',
-      remotePath: 'reports/q3.csv',
-      credentialRef,
-      userId,
-      filename: 'q3.csv',
-    });
+    const remoteStream = await adapter.downloadStream('reports/q3.csv');
+    const targetKey = `byos-import-${Date.now()}.csv`;
+    const stored = await localFsStorage.putStream(targetKey, remoteStream, { filename: 'q3.csv' });
 
-    expect(result.size).toBe(payload.length);
-    expect((await localFsStorage.getBuffer(result.key))?.equals(payload)).toBe(true);
+    expect(stored.size).toBe(payload.length);
+    expect((await localFsStorage.getBuffer(stored.key))?.equals(payload)).toBe(true);
     const get = stub.requests.find((r) => r.method === 'GET');
     expect(get?.rawUrl).toBe(`/${BUCKET}/reports/q3.csv`);
     expect(get?.auth).toMatchObject({ ok: true, accessKeyId: ACCESS_KEY, region: 'us-west-2', service: 's3' });
@@ -119,18 +116,20 @@ describe('s3 BYOS provider end-to-end', () => {
 
   it('exports a local object to the customer bucket with a streamed signed PUT', async () => {
     const credentialRef = await credentialsVault.store(userId, s3Credentials());
+    const creds = await credentialsVault.get(credentialRef, userId);
+    const adapter = createStorageAdapter(creds!);
+
     const payload = Buffer.from('converted output body', 'utf-8');
     const source = await localFsStorage.putBuffer(`byos-export-${Date.now()}.txt`, payload, { contentType: 'text/plain' });
+    const readStream = await localFsStorage.getStream(source.key);
+    expect(readStream).not.toBeNull();
 
-    const result = await executeExportTask({
-      operation: 'export/s3',
-      sourceKey: source.key,
-      remotePath: 'out/payload.txt',
-      credentialRef,
-      userId,
+    const result = await adapter.uploadStream('out/payload.txt', readStream!.stream, {
+      contentType: readStream!.metadata.mimeType,
+      size: readStream!.metadata.size,
     });
 
-    expect(result).toMatchObject({ success: true, destination: 'out/payload.txt', size: payload.length });
+    expect(result.size).toBe(payload.length);
     expect(result.etag).toBe(s3EtagMd5(payload).toString('hex'));
     const stored = stub.objects.get('out/payload.txt');
     expect(stored?.body.equals(payload)).toBe(true);
@@ -140,10 +139,18 @@ describe('s3 BYOS provider end-to-end', () => {
 
   it('exports an object larger than one part as a multipart upload', async () => {
     const credentialRef = await credentialsVault.store(userId, s3Credentials());
+    const creds = await credentialsVault.get(credentialRef, userId);
+    const adapter = createStorageAdapter(creds!);
+
     const payload = crypto.randomBytes(9 * MIB);
     const source = await localFsStorage.putBuffer(`byos-export-big-${Date.now()}.bin`, payload);
+    const readStream = await localFsStorage.getStream(source.key);
+    expect(readStream).not.toBeNull();
 
-    await executeExportTask({ operation: 'export/s3', sourceKey: source.key, remotePath: 'out/big.bin', credentialRef, userId });
+    await adapter.uploadStream('out/big.bin', readStream!.stream, {
+      contentType: readStream!.metadata.mimeType,
+      size: readStream!.metadata.size,
+    });
 
     expect(sha256(stub.objects.get('out/big.bin')!.body)).toBe(sha256(payload));
     expect(stub.requests.filter((r) => r.query.has('partNumber')).map((r) => r.bodyLength)).toEqual([8 * MIB, MIB]);
@@ -152,16 +159,16 @@ describe('s3 BYOS provider end-to-end', () => {
 
   it('fails import/s3 with StorageNotFoundError for a missing remote object', async () => {
     const credentialRef = await credentialsVault.store(userId, s3Credentials());
-    await expect(
-      executeImportTask({ operation: 'import/s3', remotePath: 'missing.csv', credentialRef, userId })
-    ).rejects.toThrow(StorageNotFoundError);
+    const creds = await credentialsVault.get(credentialRef, userId);
+    const adapter = createStorageAdapter(creds!);
+
+    await expect(adapter.downloadStream('missing.csv')).rejects.toThrow(StorageNotFoundError);
   });
 
   it('refuses stored s3 credentials that point at a metadata endpoint', async () => {
     const credentialRef = await credentialsVault.store(userId, { ...s3Credentials(), endpoint: 'https://169.254.169.254' });
-    await expect(
-      executeImportTask({ operation: 'import/s3', remotePath: 'x', credentialRef, userId })
-    ).rejects.toThrow(StorageSsrfError);
+    const creds = await credentialsVault.get(credentialRef, userId);
+    expect(() => createStorageAdapter(creds!)).toThrow(StorageSsrfError);
     expect(stub.requests).toHaveLength(0);
   });
 });

@@ -13,6 +13,7 @@ import type { ConversionEnginePort, EngineResult, VfsPayload } from '../engine-p
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
+import { assertSafeCustomHeaders } from '../../security/http-headers';
 import { assertPublicOutboundUrl, safeFetch } from '../../security/safe-fetch';
 import { maskFailure } from '../../security/server-paths';
 import { refusalCodeList } from '../../refusal-codes';
@@ -1173,6 +1174,7 @@ export async function exportArtifactToUrl(
   customerHeaders: Record<string, string> | undefined,
   signal: AbortSignal
 ): Promise<void> {
+  assertSafeCustomHeaders(customerHeaders);
   const stat = await storage.stat(inputKey);
   if (!stat) {
     throw new GraphExportError(`Input artifact "${inputKey}" not found in storage`);

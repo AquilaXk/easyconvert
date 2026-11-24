@@ -16,7 +16,15 @@ import { AZURE_STORAGE_ACCOUNT_PATTERN, AzureBlobStorageAdapter } from './azure-
 import { WebDavStorageAdapter } from './webdav';
 import { SftpStorageAdapter, isSftpDevAllowlisted } from './sftp';
 import { S3StorageAdapter } from './s3';
-import { isPrivateOrRestrictedHost } from '../../security/ssrf';
+import {
+  CUSTOM_HEADER_VALUE_REGEX,
+  DEFAULT_MAX_CUSTOM_HEADERS,
+  DEFAULT_MAX_CUSTOM_HEADER_NAME_CHARS,
+  DEFAULT_MAX_CUSTOM_HEADER_VALUE_CHARS,
+  formatCustomHeaderIssue,
+  inspectCustomHeaders,
+} from '../../security/http-headers';
+import { isPrivateOrRestrictedHost, validateUrlForSsrf } from '../../security/ssrf';
 import { assertTlsEndpoint, isDevAllowlistedEndpoint, isTrustedGcsOAuthEndpoint, parseCleanBaseEndpointUrl } from './http-guard';
 
 /**
@@ -26,6 +34,7 @@ import { assertTlsEndpoint, isDevAllowlistedEndpoint, isTrustedGcsOAuthEndpoint,
 export const UNAVAILABLE_STORAGE_PROVIDERS: ReadonlySet<string> = new Set<string>();
 
 const GCS_BUCKET_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,220}[a-z0-9])?$/i;
+const MAX_HTTP_ENDPOINT_URL_CHARS = 8192;
 
 function validateHttpEndpointSyntax(rawUrl: string, provider: string, invalidMessage?: string): URL {
   const parsed = parseCleanBaseEndpointUrl(rawUrl, provider, invalidMessage);
@@ -98,6 +107,52 @@ function validateWebDavCredentials(credentials: Extract<CustomerStorageCredentia
   }
 }
 
+function validateHttpCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'http' }>): void {
+  if (credentials.bearerToken !== undefined) {
+    if (
+      typeof credentials.bearerToken !== 'string' ||
+      credentials.bearerToken.trim().length === 0 ||
+      credentials.bearerToken.length > DEFAULT_MAX_CUSTOM_HEADER_VALUE_CHARS ||
+      !CUSTOM_HEADER_VALUE_REGEX.test(credentials.bearerToken)
+    ) {
+      throw new StorageAdapterError('Invalid HTTP bearerToken', 'http');
+    }
+  }
+  if (credentials.headers !== undefined) {
+    const issues = inspectCustomHeaders(credentials.headers, {
+      maxHeaders: DEFAULT_MAX_CUSTOM_HEADERS,
+      maxNameChars: DEFAULT_MAX_CUSTOM_HEADER_NAME_CHARS,
+      maxValueChars: DEFAULT_MAX_CUSTOM_HEADER_VALUE_CHARS,
+    });
+    if (issues.length > 0) {
+      throw new StorageAdapterError(`Invalid HTTP credentials headers (${formatCustomHeaderIssue(issues[0])})`, 'http');
+    }
+  }
+  if (credentials.url !== undefined) {
+    if (typeof credentials.url !== 'string' || credentials.url.length === 0 || credentials.url.length > MAX_HTTP_ENDPOINT_URL_CHARS) {
+      throw new StorageAdapterError('Invalid HTTP endpoint URL', 'http');
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(credentials.url);
+    } catch {
+      throw new StorageAdapterError('Invalid HTTP endpoint URL', 'http');
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new StorageSsrfError(credentials.url, 'http');
+    }
+    if (!isDevAllowlistedEndpoint(parsed)) {
+      const hasHeaders = credentials.headers !== undefined && Object.keys(credentials.headers).length > 0;
+      if (Boolean(credentials.bearerToken) || hasHeaders || parsed.username !== '' || parsed.password !== '') {
+        assertTlsEndpoint(parsed, 'http');
+      }
+      if (isPrivateOrRestrictedHost(parsed.hostname)) {
+        throw new StorageSsrfError(credentials.url, 'http');
+      }
+    }
+  }
+}
+
 export function validateCredentials(credentials: CustomerStorageCredentials): void {
   if (!credentials || typeof credentials !== 'object') {
     throw new StorageAdapterError('Invalid storage credentials payload', 'unknown');
@@ -122,6 +177,9 @@ export function validateCredentials(credentials: CustomerStorageCredentials): vo
         throw new StorageSsrfError(credentials.host || '', 'sftp');
       }
       break;
+    case 'http':
+      validateHttpCredentials(credentials);
+      break;
     default:
       break;
   }
@@ -135,6 +193,12 @@ export async function validateStorageCredentials(credentials: CustomerStorageCre
   validateCredentials(credentials);
   if (credentials.type === 'webdav') {
     validateExternalEndpointUrl(credentials.url, 'webdav');
+  }
+  if (credentials.type === 'http' && credentials.url) {
+    const parsed = new URL(credentials.url);
+    if (!isDevAllowlistedEndpoint(parsed) && !(await validateUrlForSsrf(parsed))) {
+      throw new StorageSsrfError(credentials.url, 'http');
+    }
   }
   if (credentials.type === 's3') {
     await new S3StorageAdapter(credentials).verifyEndpoint();

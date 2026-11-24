@@ -5,6 +5,11 @@ import { fetch as undiciFetch } from 'undici';
 import { parse as parseContentDisposition } from 'content-disposition';
 import { getFormatByMimeType } from '@/lib/format-by-mime-type';
 import {
+  CUSTOM_HEADER_NAME_REGEX,
+  CUSTOM_HEADER_VALUE_REGEX,
+  isForbiddenCustomHeader,
+} from '@/lib/security/http-headers';
+import {
   MAX_REDIRECTS,
   validateUrlForSsrf,
   createSsrfSafeAgent,
@@ -79,37 +84,9 @@ async function classifySsrfOrDnsRefusal(url: URL): Promise<NextResponse> {
   return refusal(502, 'fetch_failed', 'Failed to resolve remote host.');
 }
 
-const FORBIDDEN_HEADERS = new Set([
-  'host',
-  'connection',
-  'content-length',
-  'transfer-encoding',
-  'keep-alive',
-  'te',
-  'upgrade',
-  'trailer',
-  'proxy-authorization',
-  'proxy-authenticate',
-  'cookie',
-  'set-cookie',
-  'origin',
-  'referer',
-  'x-real-ip',
-]);
-
-const HEADER_NAME_REGEX = /^[!#$%&'*+\-.^_`|~0-9a-zA-Z]+$/;
-const HEADER_VALUE_REGEX = /^[\t\x20-\x7E\x80-\xFF]*$/;
+const MAX_CUSTOM_HEADERS = 16;
 const MAX_HEADER_NAME_LENGTH = 64;
 const MAX_HEADER_VALUE_LENGTH = 2048;
-
-function isForbiddenCustomHeader(lowerKey: string): boolean {
-  return (
-    FORBIDDEN_HEADERS.has(lowerKey) ||
-    lowerKey.startsWith('proxy-') ||
-    lowerKey.startsWith('sec-') ||
-    lowerKey.startsWith('x-forwarded-')
-  );
-}
 
 function validateCustomHeaders(raw: unknown): { headers?: Record<string, string>; refusal?: NextResponse } {
   if (raw === undefined || raw === null) return {};
@@ -117,7 +94,7 @@ function validateCustomHeaders(raw: unknown): { headers?: Record<string, string>
     return { refusal: refusal(400, 'invalid_headers', 'Custom headers must be a JSON object.') };
   }
   const entries = Object.entries(raw as Record<string, unknown>);
-  if (entries.length > 16) {
+  if (entries.length > MAX_CUSTOM_HEADERS) {
     return { refusal: refusal(400, 'invalid_headers', 'At most 16 custom headers are allowed.') };
   }
   const sanitized: Record<string, string> = {};
@@ -126,10 +103,10 @@ function validateCustomHeaders(raw: unknown): { headers?: Record<string, string>
       return { refusal: refusal(400, 'invalid_headers', `Header "${key}" value must be a string.`) };
     }
     const lowerKey = key.toLowerCase().trim();
-    if (lowerKey.length === 0 || lowerKey.length > MAX_HEADER_NAME_LENGTH || !HEADER_NAME_REGEX.test(lowerKey)) {
+    if (lowerKey.length === 0 || lowerKey.length > MAX_HEADER_NAME_LENGTH || !CUSTOM_HEADER_NAME_REGEX.test(lowerKey)) {
       return { refusal: refusal(400, 'invalid_headers', `Invalid header name "${key}".`) };
     }
-    if (value.length > MAX_HEADER_VALUE_LENGTH || !HEADER_VALUE_REGEX.test(value)) {
+    if (value.length > MAX_HEADER_VALUE_LENGTH || !CUSTOM_HEADER_VALUE_REGEX.test(value)) {
       return { refusal: refusal(400, 'invalid_headers', `Invalid header value for "${key}".`) };
     }
     if (isForbiddenCustomHeader(lowerKey)) {

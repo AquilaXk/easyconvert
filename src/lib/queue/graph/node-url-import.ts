@@ -3,6 +3,7 @@ import { Readable, Transform, pipeline, type TransformCallback } from 'node:stre
 import type { Job } from '../bullmq-engine';
 import type { IStorageBackend } from '../../storage/types';
 import { ConversionFailedError, ImportBudgetExceededError, type ConversionJobData, type ConversionJobResult } from '../../types';
+import { assertSafeCustomHeaders } from '../../security/http-headers';
 import { safeFetch } from '../../security/safe-fetch';
 import { redactUrl } from '../../security/redact';
 import {
@@ -113,6 +114,7 @@ async function importUrlArtifact(request: {
   plan: Plan;
 }): Promise<string> {
   const { storage, graphId, nodeId, url, headers, signal, meter, limitBytes, plan } = request;
+  assertSafeCustomHeaders(headers);
   const response = await safeFetch(url, { headers, signal });
   if (!response.ok || !response.body) {
     await response.body?.cancel();

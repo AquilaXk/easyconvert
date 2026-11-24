@@ -1,13 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import type { ReadStream } from 'node:fs';
-import { credentialsVault, executeExportTask, localFsStorage } from '../src/lib/storage';
-import { StorageSsrfError } from '../src/lib/storage/adapters/adapter-interface';
+import type { Job } from '../src/lib/queue/bullmq-engine';
+import { exportArtifactToUrl } from '../src/lib/queue/graph/node-executor';
+import { exportToCustomerStorage } from '../src/lib/queue/graph/node-storage-io';
+import { InvalidCustomHeaderError } from '../src/lib/security/http-headers';
+import { OutboundRequestBlockedError } from '../src/lib/security/safe-fetch';
+import { credentialsVault, localFsStorage, storageProvider } from '../src/lib/storage';
+import { StorageEndpointBlockedError } from '../src/lib/storage/customer-storage-errors';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 /**
- * executeExportTask opened the source file before the destination could be refused, so every
- * refused export leaked a file descriptor. Oracle: the real fs.createReadStream calls made for the
- * source object's file; each one must be closed once the export rejects.
+ * Refused BYOS and URL exports must validate their destination and custom headers before opening
+ * the source file, or close the opened source stream on failure so no file descriptor leaks.
  */
 
 const CLOSE_TIMEOUT_MS = 1000;
@@ -23,18 +28,36 @@ async function waitForClose(stream: ReadStream): Promise<void> {
   });
 }
 
+function fakeExportJob(graphId: string, nodeId: string, userId: string): Job<ConversionJobData, ConversionJobResult> {
+  return {
+    id: `${graphId}:${nodeId}`,
+    data: {
+      jobId: `${graphId}:${nodeId}`,
+      graphId,
+      graphNodeId: nodeId,
+      userId,
+      originalFilename: '',
+      sourceFormat: '',
+      targetFormat: '',
+      fileSize: 0,
+      options: {},
+    },
+    opts: { attempts: 1, timeout: 10_000 },
+    attemptsMade: 1,
+    signal: new AbortController().signal,
+    log: async () => {},
+    updateProgress: async () => {},
+  } as unknown as Job<ConversionJobData, ConversionJobResult>;
+}
+
 describe('BYOS export releases the source stream on refusal', () => {
   let sourceKey: string;
   let sourcePath: string;
   let opened: ReadStream[];
 
   beforeEach(async () => {
-    const stored = await localFsStorage.putBuffer(
-      `byos-fd-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`,
-      Buffer.from('payload'),
-      { contentType: 'text/plain' }
-    );
-    sourceKey = stored.key;
+    sourceKey = `intermediate/byos-fd/${Date.now()}-${Math.random().toString(36).slice(2)}/0/payload.txt`;
+    await storageProvider.saveObject(sourceKey, Buffer.from('payload'), 'text/plain', 'payload.txt');
     sourcePath = localFsStorage.getPathsForKey(sourceKey).binPath;
     opened = [];
     const realCreateReadStream = fs.createReadStream;
@@ -45,8 +68,9 @@ describe('BYOS export releases the source stream on refusal', () => {
     }) as typeof fs.createReadStream);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.restoreAllMocks();
+    await storageProvider.deleteObject(sourceKey);
   });
 
   async function expectAllSourceStreamsClosed(): Promise<void> {
@@ -56,7 +80,7 @@ describe('BYOS export releases the source stream on refusal', () => {
     }
   }
 
-  it('does not leave the source open when the s3 endpoint is a restricted host', async () => {
+  it('does not open the source when the s3 endpoint is a restricted host', async () => {
     const credentialRef = await credentialsVault.store('fd-user', {
       type: 's3',
       bucket: 'customer-bucket',
@@ -66,27 +90,56 @@ describe('BYOS export releases the source stream on refusal', () => {
     });
 
     await expect(
-      executeExportTask({ operation: 'export/s3', sourceKey, remotePath: 'out/p.txt', credentialRef, userId: 'fd-user' })
-    ).rejects.toThrow(StorageSsrfError);
+      exportToCustomerStorage(
+        fakeExportJob('g-s3-fd', 'out', 'fd-user'),
+        storageProvider,
+        { op: 'export.s3', input: 'conv', credentialRef },
+        [sourceKey],
+        'g-s3-fd:out'
+      )
+    ).rejects.toThrow(StorageEndpointBlockedError);
+    expect(opened).toHaveLength(0);
     await expectAllSourceStreamsClosed();
   });
 
-  it('does not leave the source open when the export URL fails SSRF validation', async () => {
+  it('does not open the source when the export URL fails SSRF validation', async () => {
     await expect(
-      executeExportTask({ operation: 'export/url', sourceKey, url: 'http://127.0.0.1:9/upload' })
-    ).rejects.toThrow(StorageSsrfError);
+      exportArtifactToUrl(storageProvider, sourceKey, 'http://127.0.0.1:9/upload', 'PUT', {}, new AbortController().signal)
+    ).rejects.toThrow(OutboundRequestBlockedError);
+    expect(opened).toHaveLength(0);
     await expectAllSourceStreamsClosed();
   });
 
-  it('closes the source when the adapter refuses the upload after it was opened', async () => {
+  it('does not open the source when export.url carries a forbidden custom header', async () => {
+    await expect(
+      exportArtifactToUrl(
+        storageProvider,
+        sourceKey,
+        'https://93.184.215.14/upload',
+        'PUT',
+        { Host: 'evil.example' },
+        new AbortController().signal
+      )
+    ).rejects.toThrow(InvalidCustomHeaderError);
+    expect(opened).toHaveLength(0);
+    await expectAllSourceStreamsClosed();
+  });
+
+  it('closes the source when the webdav adapter refuses the upload after it was opened', async () => {
     const credentialRef = await credentialsVault.store('fd-user', {
       type: 'webdav',
       url: 'http://127.0.0.1:9/dav',
     });
 
     await expect(
-      executeExportTask({ operation: 'export/webdav', sourceKey, remotePath: 'out/p.txt', credentialRef, userId: 'fd-user' })
-    ).rejects.toThrow(StorageSsrfError);
+      exportToCustomerStorage(
+        fakeExportJob('g-dav-fd', 'out', 'fd-user'),
+        storageProvider,
+        { op: 'export.webdav', input: 'conv', credentialRef },
+        [sourceKey],
+        'g-dav-fd:out'
+      )
+    ).rejects.toThrow(StorageEndpointBlockedError);
     expect(opened.length).toBe(1);
     await expectAllSourceStreamsClosed();
   });

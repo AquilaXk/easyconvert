@@ -11,16 +11,15 @@ import {
   WebDavStorageAdapter,
   SftpStorageAdapter,
   createStorageAdapter,
-  executeImportTask,
-  executeExportTask,
-  localFsStorage,
-  globalSharedObjects,
+  storageProvider,
 } from '../src/lib/storage';
 import {
   StorageSsrfError,
-  StorageNotFoundError,
-  StorageAuthenticationError,
 } from '../src/lib/storage/adapters/adapter-interface';
+import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/queue/graph/node-storage-io';
+import { StorageCredentialNotFoundError } from '../src/lib/storage/customer-storage-errors';
+import type { Job } from '../src/lib/queue/bullmq-engine';
+import { ConversionFailedError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import type { User } from '../src/lib/auth/types';
@@ -218,33 +217,56 @@ describe('Phase 2-C: BYOS Credentials Vault & Storage Adapters', () => {
 
   });
 
-  describe('4. Streaming BYOS Task Operations (Import & Export)', () => {
+  describe('4. Streaming BYOS Graph Node Operations (Import & Export)', () => {
+    function fakeNodeJob(graphId: string, nodeId: string, userId: string): Job<ConversionJobData, ConversionJobResult> {
+      return {
+        id: `${graphId}:${nodeId}`,
+        data: {
+          jobId: `${graphId}:${nodeId}`,
+          graphId,
+          graphNodeId: nodeId,
+          userId,
+          originalFilename: '',
+          sourceFormat: '',
+          targetFormat: '',
+          fileSize: 0,
+          options: {},
+        },
+        opts: { attempts: 1, timeout: 10_000 },
+        attemptsMade: 1,
+        signal: new AbortController().signal,
+        log: async () => {},
+        updateProgress: async () => {},
+      } as unknown as Job<ConversionJobData, ConversionJobResult>;
+    }
+
     it('fails closed when export sourceKey does not exist', async () => {
       const gcsCredRef = await credentialsVault.store('user-alice', {
         type: 'gcs',
         bucket: 'dest-bucket',
       });
 
-      await expect(
-        executeExportTask({
-          operation: 'export/gcs',
-          sourceKey: 'non-existent-key-999',
-          remotePath: 'out.dat',
-          credentialRef: gcsCredRef,
-          userId: 'user-alice',
-        })
-      ).rejects.toThrow(StorageNotFoundError);
+      const err = await exportToCustomerStorage(
+        fakeNodeJob('g-missing-src', 'exp', 'user-alice'),
+        storageProvider,
+        { op: 'export.gcs', input: 'conv', credentialRef: gcsCredRef },
+        ['non-existent-key-999'],
+        'g-missing-src:exp'
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConversionFailedError);
+      expect((err as ConversionFailedError).refusalCode).toBe('conversion_failed');
+      expect((err as Error).message).toBe('Input artifact "non-existent-key-999" not found in storage');
     });
 
     it('fails closed when credentialRef is unauthorized or missing', async () => {
       await expect(
-        executeImportTask({
-          operation: 'import/gcs',
-          remotePath: 'file.txt',
-          credentialRef: 'cred_invalid1234567890123456789012',
-          userId: 'user-alice',
-        })
-      ).rejects.toThrow(StorageAuthenticationError);
+        importFromCustomerStorage(
+          fakeNodeJob('g-missing-cred', 'imp', 'user-alice'),
+          storageProvider,
+          { op: 'import.gcs', key: 'file.txt', credentialRef: 'cred_invalid1234567890123456789012' },
+          'g-missing-cred:imp'
+        )
+      ).rejects.toThrow(StorageCredentialNotFoundError);
     });
   });
 

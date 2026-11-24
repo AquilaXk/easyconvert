@@ -1,4 +1,5 @@
 import { redactForOutput } from '../../security/redact';
+import { inspectCustomHeaders } from '../../security/http-headers';
 import {
   MAX_SEALED_PLAINTEXT_BYTES,
   SecretSealError,
@@ -109,14 +110,15 @@ function parseHeaders(raw: unknown): Record<string, string> | undefined {
   if (raw === undefined) {
     return undefined;
   }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+  const issues = inspectCustomHeaders(raw, {
+    maxHeaders: MAX_SEALED_HEADERS,
+    maxNameChars: MAX_SEALED_HEADER_NAME_CHARS,
+    maxValueChars: MAX_SEALED_HEADER_VALUE_CHARS,
+  });
+  if (issues.length > 0) {
     throw malformedPayload();
   }
-  const entries = Object.entries(raw);
-  if (entries.length > MAX_SEALED_HEADERS || entries.some(([, value]) => typeof value !== 'string')) {
-    throw malformedPayload();
-  }
-  return Object.fromEntries(entries) as Record<string, string>;
+  return Object.fromEntries(Object.entries(raw as Record<string, string>));
 }
 
 /**
@@ -202,23 +204,13 @@ function credentialsProblems(credentials: unknown): SealedSecretProblem[] {
 }
 
 function headerProblems(headers: unknown): SealedSecretProblem[] {
-  if (typeof headers !== 'object' || headers === null || Array.isArray(headers)) {
-    return [{ path: 'headers', reason: 'headers must be an object of strings' }];
-  }
-  const entries = Object.entries(headers);
-  if (entries.length > MAX_SEALED_HEADERS) {
-    return [{ path: 'headers', reason: `more than ${MAX_SEALED_HEADERS} headers` }];
-  }
-  const problems: SealedSecretProblem[] = [];
-  for (const [name, value] of entries) {
-    const path = `headers.${name.slice(0, MAX_REPORTED_HEADER_NAME_CHARS)}`;
-    if (name.length > MAX_SEALED_HEADER_NAME_CHARS) {
-      problems.push({ path, reason: `header name is longer than ${MAX_SEALED_HEADER_NAME_CHARS} characters` });
-    } else if (typeof value !== 'string') {
-      problems.push({ path, reason: 'header value must be a string' });
-    } else if (value.length > MAX_SEALED_HEADER_VALUE_CHARS) {
-      problems.push({ path, reason: `header value is longer than ${MAX_SEALED_HEADER_VALUE_CHARS} characters` });
-    }
-  }
-  return problems;
+  return inspectCustomHeaders(headers, {
+    maxHeaders: MAX_SEALED_HEADERS,
+    maxNameChars: MAX_SEALED_HEADER_NAME_CHARS,
+    maxValueChars: MAX_SEALED_HEADER_VALUE_CHARS,
+    maxReportedNameChars: MAX_REPORTED_HEADER_NAME_CHARS,
+  }).map((issue) => ({
+    path: issue.headerName !== undefined ? `headers.${issue.headerName}` : 'headers',
+    reason: issue.reason,
+  }));
 }

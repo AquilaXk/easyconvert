@@ -69,6 +69,16 @@ export function checkSubmissionLimits(input: { graph?: unknown; tasks?: unknown 
   }
   if (Array.isArray(input.tasks)) {
     input.tasks.forEach((task: unknown, index) => {
+      const taskProblems = findSealedSecretProblems(task);
+      if (taskProblems.length > 0) {
+        for (const problem of taskProblems) {
+          problems.push({
+            name: problem.path ? `tasks.${index}.${problem.path}` : `tasks.${index}`,
+            reason: problem.reason,
+          });
+        }
+        return;
+      }
       const url = (task as { url?: unknown } | null)?.url;
       if (typeof url === 'string' && url.length > MAX_SEALED_URL_CHARS) {
         problems.push({ name: `tasks.${index}.url`, reason: `url is longer than ${MAX_SEALED_URL_CHARS} characters` });
