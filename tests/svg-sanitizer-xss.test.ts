@@ -1,3 +1,4 @@
+import { SaxesParser } from 'saxes';
 import { describe, expect, it } from 'vitest';
 import { sanitizeSvgString } from '../src/lib/security/svg-sanitizer';
 import { SvgSanitizationError } from '../src/lib/types';
@@ -34,36 +35,154 @@ interface ParsedTag {
   attrs: Array<{ name: string; value: string; quote: string }>;
 }
 
+const ORACLE_BREAKOUT_TAGS = new Set([
+  'b', 'big', 'blockquote', 'body', 'br', 'center', 'code', 'dd', 'div', 'dl', 'dt',
+  'em', 'embed', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'hr', 'i', 'img', 'li',
+  'listing', 'menu', 'meta', 'nobr', 'ol', 'p', 'pre', 'ruby', 'rp', 'rt', 'rtc', 's',
+  'small', 'span', 'strong', 'strike', 'sub', 'sup', 'table', 'tt', 'u', 'ul', 'var',
+  'math', 'annotation-xml',
+]);
+
+function readOracleTagEnd(markup: string, lt: number): { end: number; name: string; selfClosing: boolean; hasFontAttr: boolean } {
+  let i = lt + 1;
+  while (i < markup.length && !/[\s/>]/.test(markup[i])) i++;
+  const name = markup.slice(lt + 1, i).toLowerCase();
+  let hasFontAttr = false;
+  let lastAttrEnd = i;
+  for (;;) {
+    while (i < markup.length && /[\s/]/.test(markup[i])) i++;
+    if (i >= markup.length) return { end: markup.length, name, selfClosing: false, hasFontAttr };
+    if (markup[i] === '>') {
+      const selfClosing = markup[i - 1] === '/' && lastAttrEnd <= i - 1;
+      return { end: i + 1, name, selfClosing, hasFontAttr };
+    }
+    const attrStart = i;
+    i++;
+    while (i < markup.length && !/[\s/>=]/.test(markup[i])) i++;
+    const attrName = markup.slice(attrStart, i).toLowerCase();
+    if (attrName === 'color' || attrName === 'face' || attrName === 'size') hasFontAttr = true;
+    let k = i;
+    while (k < markup.length && /\s/.test(markup[k])) k++;
+    if (markup[k] !== '=') { lastAttrEnd = i; continue; }
+    k++;
+    while (k < markup.length && /\s/.test(markup[k])) k++;
+    if (markup[k] === '"' || markup[k] === "'") {
+      const close = markup.indexOf(markup[k], k + 1);
+      i = close === -1 ? markup.length : close + 1;
+    } else {
+      while (k < markup.length && !/[\s>]/.test(markup[k])) k++;
+      i = k;
+    }
+    lastAttrEnd = i;
+  }
+}
+
+function maskInertSvgCommentsAndCdata(markup: string): string {
+  const chunks: string[] = [];
+  let svgDepth = 0;
+  let integrationDepth = 0;
+  let htmlInIntegration = false;
+  let i = 0;
+  while (i < markup.length) {
+    const lt = markup.indexOf('<', i);
+    if (lt === -1) { chunks.push(markup.slice(i)); break; }
+    if (lt > i) chunks.push(markup.slice(i, lt));
+    if (markup.startsWith('<!--', lt) && !markup.startsWith('>', lt + 4) && !markup.startsWith('->', lt + 4)) {
+      const close = markup.indexOf('-->', lt + 4);
+      chunks.push(' ');
+      i = close === -1 ? markup.length : close + 3;
+    } else if (markup.startsWith('<![CDATA[', lt)) {
+      if (svgDepth > 0 && !htmlInIntegration) {
+        const close = markup.indexOf(']]>', lt + 9);
+        chunks.push(' ');
+        i = close === -1 ? markup.length : close + 3;
+      } else {
+        chunks.push(markup.slice(lt, lt + 9));
+        i = lt + 9;
+      }
+    } else if (markup.startsWith('<?', lt)) {
+      const close = markup.indexOf('?>', lt + 2);
+      const end = close === -1 ? markup.length : close + 2;
+      chunks.push(markup.slice(lt, end));
+      i = end;
+    } else if (markup[lt + 1] === '!') {
+      const gt = markup.indexOf('>', lt + 2);
+      const end = gt === -1 ? markup.length : gt + 1;
+      chunks.push(markup.slice(lt, end));
+      i = end;
+    } else if (markup[lt + 1] === '/') {
+      // HTML5 §13.2.5.7 treats `</` followed by anything outside ASCII letters (including non-ASCII) as a bogus comment ending at `>`.
+      if (!/[A-Za-z]/.test(markup[lt + 2] ?? '')) {
+        const gt = markup.indexOf('>', lt + 2);
+        const end = gt === -1 ? markup.length : gt + 1;
+        chunks.push(markup.slice(lt, end));
+        i = end;
+      } else {
+        const closed = readOracleTagEnd(markup, lt + 1);
+        if (svgDepth > 0 && (closed.name === 'p' || closed.name === 'br')) {
+          svgDepth = 0; integrationDepth = 0; htmlInIntegration = false;
+        } else if (closed.name === 'svg' && svgDepth > 0 && !htmlInIntegration && --svgDepth === 0) {
+          integrationDepth = 0;
+        } else if (integrationDepth > 0 && (closed.name === 'desc' || closed.name === 'title')) {
+          integrationDepth--;
+        }
+        chunks.push(markup.slice(lt, closed.end));
+        i = closed.end;
+      }
+    } else if (/[A-Za-z_\u0080-\uffff]/.test(markup[lt + 1] ?? '')) {
+      const open = readOracleTagEnd(markup, lt);
+      if (svgDepth === 0) {
+        if (open.name === 'svg' && !open.selfClosing) svgDepth = 1;
+      } else if (integrationDepth > 0) {
+        htmlInIntegration = true;
+      } else if (ORACLE_BREAKOUT_TAGS.has(open.name) || (open.name === 'font' && open.hasFontAttr)) {
+        svgDepth = 0; integrationDepth = 0; htmlInIntegration = false;
+      } else if ((open.name === 'desc' || open.name === 'title') && !open.selfClosing) {
+        integrationDepth++;
+      } else if (open.name === 'svg' && !open.selfClosing) {
+        svgDepth++;
+      }
+      chunks.push(markup.slice(lt, open.end));
+      i = open.end;
+    } else {
+      chunks.push('<');
+      i = lt + 1;
+    }
+  }
+  return chunks.join('');
+}
+
 function parseTags(markup: string): ParsedTag[] {
+  const scanText = maskInertSvgCommentsAndCdata(markup);
   const tags: ParsedTag[] = [];
-  const tagStart = /<([A-Za-z_][^\s/>]*)/g;
+  const tagStart = /<([A-Za-z_\u0080-\uffff][^\s/>]*)/g;
   let match: RegExpExecArray | null;
-  while ((match = tagStart.exec(markup)) !== null) {
+  while ((match = tagStart.exec(scanText)) !== null) {
     const attrs: ParsedTag['attrs'] = [];
     let i = match.index + match[0].length;
     for (;;) {
-      while (i < markup.length && /[\s/]/.test(markup[i])) i++;
-      if (i >= markup.length || markup[i] === '>') break;
+      while (i < scanText.length && /[\s/]/.test(scanText[i])) i++;
+      if (i >= scanText.length || scanText[i] === '>') break;
       const nameStart = i;
-      while (i < markup.length && !/[\s/>=]/.test(markup[i])) i++;
-      const name = markup.slice(nameStart, i);
+      while (i < scanText.length && !/[\s/>=]/.test(scanText[i])) i++;
+      const name = scanText.slice(nameStart, i);
       let value = '';
       let quote = '';
       let k = i;
-      while (k < markup.length && /\s/.test(markup[k])) k++;
-      if (markup[k] === '=') {
+      while (k < scanText.length && /\s/.test(scanText[k])) k++;
+      if (scanText[k] === '=') {
         k++;
-        while (k < markup.length && /\s/.test(markup[k])) k++;
-        if (markup[k] === '"' || markup[k] === "'") {
-          quote = markup[k];
-          const close = markup.indexOf(quote, k + 1);
-          const end = close === -1 ? markup.length : close;
-          value = markup.slice(k + 1, end);
-          i = Math.min(end + 1, markup.length);
+        while (k < scanText.length && /\s/.test(scanText[k])) k++;
+        if (scanText[k] === '"' || scanText[k] === "'") {
+          quote = scanText[k];
+          const close = scanText.indexOf(quote, k + 1);
+          const end = close === -1 ? scanText.length : close;
+          value = scanText.slice(k + 1, end);
+          i = Math.min(end + 1, scanText.length);
         } else {
           const valueStart = k;
-          while (k < markup.length && !/[\s>]/.test(markup[k])) k++;
-          value = markup.slice(valueStart, k);
+          while (k < scanText.length && !/[\s>]/.test(scanText[k])) k++;
+          value = scanText.slice(valueStart, k);
           i = k;
         }
       }
@@ -319,6 +438,9 @@ describe('known SVG XSS payload corpus', () => {
     ['nested style openers', '<svg><style><style><script>alert(1)</script></style></style></svg>'],
     ['doctype entity', '<!DOCTYPE svg [<!ENTITY x "<script>alert(1)</script>">]><svg>&x;</svg>'],
     ['meta refresh', '<svg><meta http-equiv="refresh" content="0;url=javascript:alert(1)"/></svg>'],
+    ['script after attributed end tag with comment', '<svg></foo <!-- ><script>alert(1)</script> --></svg>'],
+    ['handler after bogus declaration with comment', '<svg><!foo <!-- ><rect onload="alert(1)"/> --></svg>'],
+    ['decoy quote after script close tag', '<svg><script>/*</script"">*/alert(1)</script></svg>'],
   ];
 
   const HTML_ENTITY = /&#x([0-9a-f]+);|&#(\d+);/gi;
@@ -334,17 +456,30 @@ describe('known SVG XSS payload corpus', () => {
   for (const [label, payload] of corpus) {
     it(`leaves no executable construct: ${label}`, () => {
       const out = sanitizeSvgString(payload);
-      const lowered = out.toLowerCase();
+      const lowered = maskInertSvgCommentsAndCdata(out).toLowerCase();
       expect(lowered).not.toContain('<script');
       expect(lowered).not.toContain('<iframe');
       expect(lowered).not.toContain('<foreignobject');
-      expect(lowered).not.toMatch(/<\w+:(?:script|foreignobject|iframe|object|embed)/);
+      expect(lowered).not.toMatch(/<[^\s/>]+:(?:script|foreignobject|iframe|object|embed)/);
       expect(executableConstructs(out)).toEqual([]);
       for (const tag of parseTags(out)) {
         for (const attr of tag.attrs) {
           expect(decodedValue(attr.value)).not.toMatch(/^(?:javascript|vbscript|data:text\/html|data:image\/svg\+xml):/);
           if (/^(?:xlink:)?href$/i.test(attr.name)) expect(decodedValue(attr.value)).not.toMatch(/^(?:https?:|file:|ftp:|\/\/)/);
         }
+      }
+      if (label === 'script inside CDATA') {
+        const parser = new SaxesParser();
+        const openedTags: string[] = [];
+        parser.on('error', (err) => {
+          throw err;
+        });
+        parser.on('opentag', (node) => {
+          openedTags.push(node.name.toLowerCase());
+        });
+        parser.write(out).close();
+        expect(out).toBe('<svg><![CDATA[<script>alert(1)</script>]]></svg>');
+        expect(openedTags).toEqual(['svg']);
       }
       expect(sanitizeSvgString(out)).toBe(out);
     });

@@ -10,7 +10,9 @@ import type { HtmlResourcePolicy } from '../lib/conversions/html-omitted-resourc
 import { convertHwpDocument, parseHwpDocument, type HwpDocument } from '../lib/conversions/hwp';
 import { redrawAsPng } from '../lib/conversions/image-to-png';
 import { convertFile } from '../lib/conversions';
-import { sanitizeSvgString } from '../lib/security/svg-sanitizer';
+import { MAX_SVG_INPUT_CHARS } from '../lib/conversions/svg-geometry';
+import { isSvg, sanitizeSvgDocument } from '../lib/security/svg-sanitizer';
+import { SvgSanitizationError } from '../lib/types';
 import { readRawInputBuffer } from './worker-output';
 import type { WorkerVfsPayload } from './worker-types';
 import { escapeMarkupText } from '../lib/text/escape';
@@ -72,7 +74,14 @@ function textForPdfRouting(input: Buffer | WorkerVfsPayload, src: string): { tex
 async function normalizeHwpModelSvgImages(doc: HwpDocument): Promise<void> {
   for (const image of doc.model.images) {
     if (image.format !== 'svg') continue;
-    const cleanSvg = sanitizeSvgString(Buffer.from(image.data).toString('utf-8'));
+    if (image.data.byteLength > MAX_SVG_INPUT_CHARS * 4) {
+      throw new SvgSanitizationError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
+    }
+    const rawSvg = Buffer.from(image.data.buffer, image.data.byteOffset, image.data.byteLength).toString('utf-8');
+    const cleanSvg = sanitizeSvgDocument(rawSvg);
+    if (!isSvg(cleanSvg)) {
+      throw new SvgSanitizationError('Embedded HWP SVG is empty or invalid after sanitization.');
+    }
     image.data = await redrawAsPng(Buffer.from(cleanSvg, 'utf-8'), 'image/svg+xml');
     image.format = 'png';
   }

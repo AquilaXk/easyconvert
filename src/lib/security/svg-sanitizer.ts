@@ -30,24 +30,10 @@ const STYLE_ELEMENT = 'style';
 const ANIMATION_VALUE_SEPARATOR = ';';
 
 /** Lowercase, whitespace-free prefixes of URIs that execute or render active content. */
-const SCRIPT_URI_PREFIXES = [
-  'javascript:',
-  'vbscript:',
-  'data:text/html',
-  'data:image/svg+xml',
-  'data:application/javascript',
-] as const;
+const SCRIPT_URI_PREFIXES = ['javascript:', 'vbscript:', 'data:text/html', 'data:image/svg+xml', 'data:application/javascript'] as const;
 
 /** Lowercase, whitespace-free URI prefixes that are never allowed in href-like or animation values. */
-const DANGEROUS_URI_PREFIXES = [
-  ...SCRIPT_URI_PREFIXES,
-  'http:',
-  'https:',
-  'file:',
-  'ftp:',
-  '//',
-  '/',
-] as const;
+const DANGEROUS_URI_PREFIXES = [...SCRIPT_URI_PREFIXES, 'http:', 'https:', 'file:', 'ftp:', '//', '/'] as const;
 
 /**
  * The only `data:` URIs a link may carry (after normalization): a raster picture. Any other type is active content or markup that a
@@ -64,17 +50,17 @@ const ANIMATION_ELEMENTS = new Set(['set', 'animate', 'animatetransform', 'anima
 const ANIMATION_VALUE_ATTRIBUTES = new Set(['to', 'from', 'by', 'values']);
 const LINK_ATTRIBUTES = new Set(['href', 'src']);
 /** Presentation attributes whose value is a paint, filter, mask, marker or cursor reference that may fetch a URL. */
-const PRESENTATION_URL_ATTRIBUTES = new Set([
-  'fill',
-  'stroke',
-  'filter',
-  'clip-path',
-  'mask',
-  'marker-start',
-  'marker-mid',
-  'marker-end',
-  'cursor',
+const PRESENTATION_URL_ATTRIBUTES = new Set(['fill', 'stroke', 'filter', 'clip-path', 'mask', 'marker-start', 'marker-mid', 'marker-end', 'cursor']);
+/** HTML5 §13.2.6.5 foreign-content breakout tags (plus math integration) whose opening closes `<svg>` in HTML parsing. */
+const HTML_BREAKOUT_ELEMENTS = new Set([
+  'b', 'big', 'blockquote', 'body', 'br', 'center', 'code', 'dd', 'div', 'dl', 'dt',
+  'em', 'embed', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'head', 'hr', 'i', 'img', 'li',
+  'listing', 'menu', 'meta', 'nobr', 'ol', 'p', 'pre', 'ruby', 'rp', 'rt', 'rtc', 's',
+  'small', 'span', 'strong', 'strike', 'sub', 'sup', 'table', 'tt', 'u', 'ul', 'var',
+  'math', 'annotation-xml',
 ]);
+const HTML_FONT_BREAKOUT_ATTRS = new Set(['color', 'face', 'size']);
+const SVG_HTML_INTEGRATION_POINTS = new Set(['desc', 'title']);
 
 /** Elements removed together with their content when a matching close tag exists. */
 const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed', 'form'] as const;
@@ -122,14 +108,7 @@ const PI_OPEN = '<?';
 const PI_CLOSE = '?>';
 const XML_DECLARATION_OPEN = '<?xml';
 const BYTE_ORDER_MARK = 0xfeff;
-/** Predefined XML entities mapped to their code points. */
-const XML_PREDEFINED_ENTITIES = new Map<string, number>([
-  ['amp', 0x26],
-  ['lt', 0x3c],
-  ['gt', 0x3e],
-  ['quot', 0x22],
-  ['apos', 0x27],
-]);
+const XML_PREDEFINED_ENTITIES = new Map<string, number>([['amp', 0x26], ['lt', 0x3c], ['gt', 0x3e], ['quot', 0x22], ['apos', 0x27]]);
 const HEX_LETTER_OFFSET = 10;
 const CSS_ESCAPE_MAX_HEX_DIGITS = 6;
 const MAX_CODE_POINT = 0x10ffff;
@@ -151,13 +130,17 @@ function lowerKeepingLength(str: string): string {
   return str.replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + ASCII_CASE_OFFSET));
 }
 
+function isAsciiAlphaAt(str: string, index: number): boolean {
+  if (index >= str.length) return false;
+  const code = str.charCodeAt(index);
+  return (code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z) || (code >= CHAR_LOWER_A && code <= 0x7a);
+}
+
 function isWordCharAt(str: string, index: number): boolean {
   if (index >= str.length) return false;
   const code = str.charCodeAt(index);
-  const isDigit = code >= 0x30 && code <= 0x39;
-  const isUpper = code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z;
-  const isLower = code >= 0x61 && code <= 0x7a;
-  return isDigit || isUpper || isLower || code === 0x5f;
+  if (code >= 0x80) return !isWhitespaceAt(str, index);
+  return (code >= 0x30 && code <= 0x39) || isAsciiAlphaAt(str, index) || code === 0x5f;
 }
 
 /** Takes a URI after entity decoding, whitespace/control removal and lowercasing; true for script-capable URIs. */
@@ -183,21 +166,48 @@ function isWhitespaceAt(str: string, index: number): boolean {
   return /\s/.test(str.charAt(index));
 }
 
-/**
- * Returns the index just past the '>' closing the tag whose body starts at `from`, honouring quoted
- * attribute values, or -1 when the tag (or one of its quotes) is unterminated.
- */
-function findTagEnd(src: string, from: number): number {
-  for (let i = from; i < src.length; i++) {
-    const ch = src[i];
-    if (ch === '>') return i + 1;
-    if (ch === '"' || ch === "'") {
-      const closingQuote = src.indexOf(ch, i + 1);
-      if (closingQuote === -1) return -1;
-      i = closingQuote;
+function skipAttrToken(src: string, from: number, stopChars: string, stopOnLt: boolean): number {
+  let i = from;
+  while (i < src.length && !isWhitespaceAt(src, i) && !stopChars.includes(src[i]) && !(stopOnLt && src[i] === '<')) i++;
+  return i;
+}
+
+function findTailLtOrEnd(src: string, from: number): number {
+  const lt = src.indexOf('<', from);
+  return lt === -1 ? src.length : lt;
+}
+
+/** Scans tag attributes following `readTag`/HTML5 §13.2.5.33-38: quotes open only after `=` + whitespace. */
+function scanTagAttributesEnd(src: string, from: number, stopOnLt: boolean): { pos: number; closed: boolean } {
+  for (let i = from; i < src.length; ) {
+    while (i < src.length && (isWhitespaceAt(src, i) || src[i] === '/')) i++;
+    if (i >= src.length) return { pos: -1, closed: false };
+    if (src[i] === '>') return { pos: i + 1, closed: true };
+    if (stopOnLt && src[i] === '<') return { pos: i, closed: false };
+    i = skipAttrToken(src, i + 1, '/>=', stopOnLt);
+    const afterName = skipWhitespace(src, i);
+    if (src[afterName] !== '=') { i = afterName; continue; }
+    const valueStart = skipWhitespace(src, afterName + 1);
+    const quote = src[valueStart];
+    if (quote === '"' || quote === "'") {
+      const close = src.indexOf(quote, valueStart + 1);
+      if (close === -1) return { pos: stopOnLt ? findTailLtOrEnd(src, valueStart + 1) : -1, closed: false };
+      i = close + 1;
+    } else {
+      i = skipAttrToken(src, valueStart, '>', stopOnLt);
     }
   }
-  return -1;
+  return { pos: -1, closed: false };
+}
+
+/** Past `>` closing the tag whose body starts at `from`, honouring `=`-quoted values, or -1 if unterminated. */
+const findTagEnd = (src: string, from: number): number => scanTagAttributesEnd(src, from, false).pos;
+
+function advanceOtherTag(src: string, lt: number): { next: number; unclosed: boolean } {
+  const nameEnd = skipAttrToken(src, lt + 1, '/>', true);
+  if (nameEnd < src.length && src[nameEnd] === '<') return { next: nameEnd, unclosed: true };
+  const end = scanTagAttributesEnd(src, nameEnd, true);
+  return end.pos === -1 ? { next: src.length, unclosed: true } : { next: end.pos, unclosed: !end.closed };
 }
 
 function isPrefixCharAt(str: string, index: number): boolean {
@@ -205,12 +215,7 @@ function isPrefixCharAt(str: string, index: number): boolean {
   return isWordCharAt(str, index) || ch === '-' || ch === '.';
 }
 
-/**
- * Given the index of an element's local name, returns the index of the '<' that opens it, accepting an
- * optional `prefix:` between the '<' (or '</' when `closing`) and the name. Returns -1 when the name is not
- * at the start of a (possibly namespace-prefixed) tag name. The walk-back only crosses prefix characters, so
- * it stays linear over the whole input.
- */
+/** Given an element local name index, returns the opening `<` index accepting an optional `prefix:`, or -1. */
 function tagOpenBefore(src: string, nameIndex: number, closing: boolean): number {
   let nameStart = nameIndex;
   if (src[nameIndex - 1] === ':') {
@@ -223,225 +228,246 @@ function tagOpenBefore(src: string, nameIndex: number, closing: boolean): number
   return src[nameStart - 1] === '<' ? nameStart - 1 : -1;
 }
 
-/**
- * Finds `</name\s*>` (optionally namespace-prefixed) at or after `from` in the lowercase view.
- * Returns [start, end) or null.
- */
+function isTagEndDelimiterAt(src: string, index: number): boolean {
+  return index >= src.length || isWhitespaceAt(src, index) || src[index] === '/' || src[index] === '>';
+}
+
+function advanceScannerAtOtherLt(src: string, lt: number, currentlyUnclosed: boolean): { next: number; unclosed: boolean } {
+  if (isTagNameStart(src, lt + 1)) return advanceOtherTag(src, lt);
+  if (src[lt + 1] === '/') {
+    if (isAsciiAlphaAt(src, lt + 2)) return advanceOtherTag(src, lt + 1);
+    if (src[lt + 2] === '>') return { next: lt + 3, unclosed: false };
+    return { next: lt + 2, unclosed: true };
+  }
+  if (src[lt + 1] === '!') return { next: lt + 2, unclosed: true };
+  return { next: lt + 1, unclosed: currentlyUnclosed };
+}
+
+function skipClosingOrBogusMarkup(src: string, lt: number): number {
+  if (src[lt + 1] === '!') {
+    const gt = src.indexOf('>', lt + 2);
+    return gt === -1 ? src.length : gt + 1;
+  }
+  if (src[lt + 1] === '/') {
+    if (isAsciiAlphaAt(src, lt + 2)) return readTag(src, lt + 1).end;
+    const gt = src.indexOf('>', lt + 2);
+    return gt === -1 ? src.length : gt + 1;
+  }
+  return -1;
+}
+
+/** Finds `</name ...>` (optionally namespace-prefixed) at or after `from`, returning [start, end) or null. */
 function findCloseTag(lower: string, lowerName: string, from: number): [number, number] | null {
   let search = from;
   for (;;) {
     const nameIndex = lower.indexOf(lowerName, search);
     if (nameIndex === -1) return null;
     const start = tagOpenBefore(lower, nameIndex, true);
-    if (start >= from) {
-      let end = nameIndex + lowerName.length;
-      while (end < lower.length && isWhitespaceAt(lower, end)) end++;
-      if (lower[end] === '>') return [start, end + 1];
+    const afterName = nameIndex + lowerName.length;
+    if (start >= from && isTagEndDelimiterAt(lower, afterName)) {
+      const end = findTagEnd(lower, afterName);
+      return end === -1 ? null : [start, end];
     }
     search = nameIndex + 1;
   }
 }
 
-/**
- * Removes every `<name ...>` or `<prefix:name ...>` element in linear time. Paired elements match nested
- * openers and closers with an explicit stack so an inner close tag never terminates an outer element early,
- * orphan close tags are stripped, an opener without a close tag is removed alone, and an opening tag that never
- * terminates is removed through the end of input (fail closed).
- */
+/** Matches `<name`, `<prefix:name`, or closing `</...name` at `<` index `lt`; returns index right after name, or -1. */
+function matchQualifiedTagAt(src: string, lower: string, lt: number, lowerName: string, closing: boolean): number {
+  let pos = lt + 1;
+  if (closing) {
+    if (src[pos] !== '/') return -1;
+    pos++;
+  }
+  const endsHere = (afterIdx: number) => (closing ? isTagEndDelimiterAt(src, afterIdx) : !isWordCharAt(src, afterIdx));
+  if (lower.startsWith(lowerName, pos) && endsHere(pos + lowerName.length)) return pos + lowerName.length;
+  let colon = pos;
+  while (colon < src.length && isPrefixCharAt(src, colon)) colon++;
+  const afterPrefixed = colon + 1 + lowerName.length;
+  return colon > pos && src[colon] === ':' && lower.startsWith(lowerName, colon + 1) && endsHere(afterPrefixed) ? afterPrefixed : -1;
+}
+
+function collectElementSpans(src: string, lower: string, lowerName: string, paired: boolean): [number, number, boolean][] {
+  const spans: [number, number, boolean][] = [];
+  let search = 0;
+  let unclosedTag = false;
+  let cachedGt = -1;
+
+  while (search < src.length) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    if (unclosedTag) {
+      if (cachedGt < search) { const gt = src.indexOf('>', search); cachedGt = gt === -1 ? src.length : gt; }
+      if (cachedGt < lt) unclosedTag = false;
+    }
+    const skipTo = unclosedTag ? -1 : skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) { search = skipTo; continue; }
+    const openAfter = matchQualifiedTagAt(src, lower, lt, lowerName, false);
+    if (openAfter !== -1) {
+      unclosedTag = false;
+      const tagEnd = findTagEnd(src, openAfter);
+      spans.push([lt, tagEnd === -1 ? src.length : tagEnd, false]);
+      if (tagEnd === -1) break;
+      search = tagEnd; continue;
+    }
+    const closeAfter = paired ? matchQualifiedTagAt(src, lower, lt, lowerName, true) : -1;
+    if (closeAfter !== -1) {
+      const closeStep = scanTagAttributesEnd(src, closeAfter, true);
+      if (closeStep.closed) {
+        unclosedTag = false; spans.push([lt, closeStep.pos, true]); search = closeStep.pos; continue;
+      }
+      unclosedTag = true; search = closeStep.pos === -1 ? src.length : closeStep.pos; continue;
+    }
+    const step = advanceScannerAtOtherLt(src, lt, unclosedTag);
+    search = step.next; unclosedTag = step.unclosed;
+  }
+  return spans;
+}
+
+/** Removes `<name>` or `<prefix:name>` elements in linear time, skipping comments, CDATA, PIs, and quoted attributes. */
 function stripElement(src: string, name: string, paired: boolean): string {
   const lowerName = lowerKeepingLength(name);
   const lower = lowerKeepingLength(src);
+  if (!lower.includes(lowerName)) return src;
+  const spans = collectElementSpans(src, lower, lowerName, paired);
+  if (spans.length === 0) return src;
 
-  if (!paired) {
-    const parts: string[] = [];
-    let copied = 0;
-    let search = 0;
-    for (;;) {
-      const nameIndex = lower.indexOf(lowerName, search);
-      if (nameIndex === -1) break;
-      const start = tagOpenBefore(lower, nameIndex, false);
-      const afterName = nameIndex + lowerName.length;
-      if (start < copied || isWordCharAt(src, afterName)) {
-        search = nameIndex + 1;
-        continue;
-      }
-      parts.push(src.slice(copied, start));
-      const tagEnd = findTagEnd(src, afterName);
-      if (tagEnd === -1) {
-        copied = src.length;
-        break;
-      }
-      copied = tagEnd;
-      search = tagEnd;
-    }
-    if (copied === 0 && parts.length === 0) return src;
-    parts.push(src.slice(copied));
-    return parts.join('');
-  }
-
-  const tokenStarts: number[] = [];
-  const tokenEnds: number[] = [];
-  const tokenIsClose: boolean[] = [];
-  let search = 0;
-  let cursorBound = 0;
-
-  for (;;) {
-    const nameIndex = lower.indexOf(lowerName, search);
-    if (nameIndex === -1) break;
-    const afterName = nameIndex + lowerName.length;
-    const openStart = tagOpenBefore(lower, nameIndex, false);
-    if (openStart >= cursorBound && !isWordCharAt(src, afterName)) {
-      const tagEnd = findTagEnd(src, afterName);
-      if (tagEnd === -1) {
-        tokenStarts.push(openStart);
-        tokenEnds.push(src.length);
-        tokenIsClose.push(false);
-        break;
-      }
-      tokenStarts.push(openStart);
-      tokenEnds.push(tagEnd);
-      tokenIsClose.push(false);
-      cursorBound = tagEnd;
-      search = tagEnd;
-      continue;
-    }
-    const closeStart = tagOpenBefore(lower, nameIndex, true);
-    if (closeStart >= cursorBound) {
-      let end = afterName;
-      while (end < lower.length && isWhitespaceAt(lower, end)) end++;
-      if (lower[end] === '>') {
-        tokenStarts.push(closeStart);
-        tokenEnds.push(end + 1);
-        tokenIsClose.push(true);
-        cursorBound = end + 1;
-        search = end + 1;
-        continue;
-      }
-    }
-    search = nameIndex + 1;
-  }
-
-  if (tokenStarts.length === 0) return src;
-
-  const spanEnds = new Int32Array(tokenStarts.length).fill(-1);
+  const spanEnds = new Int32Array(spans.length).fill(-1);
   const openStack: number[] = [];
-  for (let t = 0; t < tokenStarts.length; t++) {
-    if (!tokenIsClose[t]) {
-      spanEnds[t] = tokenEnds[t];
-      if (tokenEnds[t] < src.length) openStack.push(t);
+  for (let t = 0; t < spans.length; t++) {
+    const [, end, isClose] = spans[t];
+    if (!paired || !isClose) {
+      spanEnds[t] = end;
+      if (paired && end < src.length) openStack.push(t);
     } else if (openStack.length > 0) {
-      const openerIdx = openStack.pop()!;
-      spanEnds[openerIdx] = tokenEnds[t];
+      spanEnds[openStack.pop()!] = end;
     } else {
-      spanEnds[t] = tokenEnds[t];
+      spanEnds[t] = end;
     }
   }
 
   const parts: string[] = [];
   let copied = 0;
-  for (let t = 0; t < tokenStarts.length; t++) {
-    const removeEnd = spanEnds[t];
-    if (removeEnd === -1 || tokenStarts[t] < copied) continue;
-    parts.push(src.slice(copied, tokenStarts[t]));
-    copied = removeEnd;
+  for (let t = 0; t < spans.length; t++) {
+    if (spanEnds[t] === -1 || spans[t][0] < copied) continue;
+    parts.push(src.slice(copied, spans[t][0]));
+    copied = spanEnds[t];
   }
   parts.push(src.slice(copied));
   return parts.join('');
 }
 
-/**
- * Removes DOCTYPE declarations including internal subsets in linear time. An unterminated declaration is
- * removed through the end of input.
- */
+/** Advances past a quoted literal, comment, or subset PI inside DOCTYPE; returns -1 if unterminated, null otherwise. */
+function skipDoctypeToken(src: string, pos: number, allowPi: boolean): number | null {
+  const ch = src[pos];
+  if (ch === '"' || ch === "'") {
+    const close = src.indexOf(ch, pos + 1);
+    return close === -1 ? -1 : close + 1;
+  }
+  if (src.startsWith(COMMENT_OPEN, pos)) {
+    const close = src.indexOf(COMMENT_CLOSE, pos + COMMENT_OPEN_LENGTH);
+    return close === -1 ? -1 : close + COMMENT_CLOSE.length;
+  }
+  if (allowPi && src.startsWith(PI_OPEN, pos)) {
+    const close = src.indexOf(PI_CLOSE, pos + PI_OPEN.length);
+    return close === -1 ? -1 : close + PI_CLOSE.length;
+  }
+  return null;
+}
+
+function findDoctypeEnd(src: string, afterName: number): number {
+  let pos = afterName;
+  let depth = 0;
+  while (pos < src.length) {
+    const jumped = skipDoctypeToken(src, pos, depth > 0);
+    if (jumped !== null) {
+      if (jumped === -1) return -1;
+      pos = jumped; continue;
+    }
+    const ch = src[pos];
+    if (ch === '[') depth++;
+    else if (depth > 0 && ch === ']' && --depth === 0) {
+      const k = skipWhitespace(src, pos + 1);
+      return src[k] === '>' ? k + 1 : -1;
+    } else if (depth === 0 && ch === '>') {
+      return pos + 1;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+/** Removes DOCTYPE declarations including quoted literals, comments, and internal subsets in linear time (fail closed on EOF). */
 function stripDoctype(src: string): string {
   const lower = lowerKeepingLength(src);
+  if (!lower.includes(DOCTYPE_OPEN)) return src;
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
-
-  for (;;) {
-    const start = lower.indexOf(DOCTYPE_OPEN, search);
-    if (start === -1) break;
-    const afterName = start + DOCTYPE_OPEN.length;
-    if (isWordCharAt(src, afterName)) {
-      search = start + 1;
-      continue;
+  let unclosedTag = false;
+  let cachedGt = -1;
+  while (search < src.length) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    if (unclosedTag) {
+      if (cachedGt < search) { const gt = src.indexOf('>', search); cachedGt = gt === -1 ? src.length : gt; }
+      if (cachedGt < lt) unclosedTag = false;
     }
-    parts.push(src.slice(copied, start));
-    let end = -1;
-    let i = afterName;
-    while (i < src.length && src[i] !== '>' && src[i] !== '[') i++;
-    if (src[i] === '>') {
-      end = i + 1;
-    } else if (src[i] === '[') {
-      let bracket = src.indexOf(']', i + 1);
-      while (bracket !== -1 && end === -1) {
-        let k = bracket + 1;
-        while (k < src.length && isWhitespaceAt(src, k)) k++;
-        if (src[k] === '>') end = k + 1;
-        else bracket = src.indexOf(']', bracket + 1);
-      }
+    const afterName = lt + DOCTYPE_OPEN.length;
+    if (lower.startsWith(DOCTYPE_OPEN, lt) && !isWordCharAt(src, afterName)) {
+      unclosedTag = false;
+      parts.push(src.slice(copied, lt));
+      const end = findDoctypeEnd(src, afterName);
+      if (end === -1) return parts.join('');
+      copied = end; search = end; continue;
     }
-    if (end === -1) {
-      copied = src.length;
-      break;
-    }
-    copied = end;
-    search = end;
+    const skipTo = unclosedTag ? -1 : skipNonTagMarkup(src, lt, false);
+    if (skipTo !== -1) { search = skipTo; continue; }
+    const step = advanceScannerAtOtherLt(src, lt, unclosedTag);
+    search = step.next; unclosedTag = step.unclosed;
   }
-
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
   return parts.join('');
 }
 
-/**
- * Removes every processing instruction in linear time, except an XML declaration at the very start of the document: a
- * `<?xml-stylesheet?>` makes a viewer load a style sheet, and no other instruction belongs in a picture. An unterminated
- * instruction is removed through the end of input. Comments, CDATA sections and tags are stepped over, so the text of an
- * attribute value or a comment that merely holds `<?` is left alone.
- */
+/** Removes processing instructions in linear time except a safe start XML declaration (BOM allowed); unterminated ones strip to EOF. */
 function stripProcessingInstructions(src: string): string {
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
-
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
     if (!src.startsWith(PI_OPEN, lt)) {
       const skipTo = skipNonTagMarkup(src, lt);
-      if (skipTo !== -1) {
-        search = skipTo;
-      } else {
-        search = isTagNameStart(src, lt + 1) ? readTag(src, lt).end : lt + 1;
-      }
+      if (skipTo !== -1) { search = skipTo; continue; }
+      const bogusEnd = skipClosingOrBogusMarkup(src, lt);
+      if (bogusEnd !== -1) search = bogusEnd;
+      else search = isTagNameStart(src, lt + 1) ? readTag(src, lt).end : lt + 1;
       continue;
     }
     const close = src.indexOf(PI_CLOSE, lt + PI_OPEN.length);
     const end = close === -1 ? src.length : close + PI_CLOSE.length;
-    if (!isXmlDeclarationAt(src, lt)) {
-      parts.push(src.slice(copied, lt));
-      copied = end;
-    }
+    if (!isXmlDeclarationAt(src, lt, close)) { parts.push(src.slice(copied, lt)); copied = end; }
     search = end;
   }
-
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
   return parts.join('');
 }
 
-/** True for `<?xml` followed by white space or the end of the instruction, at the start of the document (a byte order mark may come first). */
-function isXmlDeclarationAt(src: string, lt: number): boolean {
-  if (lt !== 0 && !(lt === 1 && src.charCodeAt(0) === BYTE_ORDER_MARK)) return false;
+/** True for `<?xml` followed by white space or `?>` at document start without embedded `<`/`>` (BOM may come first). */
+function isXmlDeclarationAt(src: string, lt: number, close: number): boolean {
+  if (close === -1 || (lt !== 0 && !(lt === 1 && src.charCodeAt(0) === BYTE_ORDER_MARK))) return false;
   const afterTarget = lt + XML_DECLARATION_OPEN.length;
-  return src.startsWith(XML_DECLARATION_OPEN, lt) && (isWhitespaceAt(src, afterTarget) || src.startsWith(PI_CLOSE, afterTarget));
+  if (!src.startsWith(XML_DECLARATION_OPEN, lt)) return false;
+  if (!isWhitespaceAt(src, afterTarget) && afterTarget !== close) return false;
+  const body = src.slice(afterTarget, close);
+  return !body.includes('<') && !body.includes('>');
 }
 
-/**
- * Removes XML comments in linear time; an unterminated comment is removed through the end of input.
- */
+/** Removes XML comments in linear time; an unterminated comment is removed through the end of input. */
 function stripComments(src: string): string {
   const parts: string[] = [];
   let copied = 0;
@@ -450,10 +476,7 @@ function stripComments(src: string): string {
     if (start === -1) break;
     parts.push(src.slice(copied, start));
     const close = src.indexOf(COMMENT_CLOSE, start + COMMENT_OPEN_LENGTH);
-    if (close === -1) {
-      copied = src.length;
-      break;
-    }
+    if (close === -1) { copied = src.length; break; }
     copied = close + COMMENT_CLOSE.length;
   }
   if (copied === 0 && parts.length === 0) return src;
@@ -981,8 +1004,10 @@ interface TagToken {
 }
 
 function isTagNameStart(src: string, index: number): boolean {
-  const ch = src.charAt(index);
-  return ch === '_' || ch === ':' || /[A-Za-z]/.test(ch);
+  if (index >= src.length) return false;
+  const code = src.charCodeAt(index);
+  if (code >= 0x80) return !isWhitespaceAt(src, index);
+  return code === 0x5f || code === 0x3a || isAsciiAlphaAt(src, index);
 }
 
 function skipWhitespace(src: string, from: number): number {
@@ -1043,10 +1068,10 @@ function readTag(src: string, lt: number): TagToken {
  * for anything else. The HTML-only shorthands `<!-->` and `<!--->` are parsed differently by XML and HTML
  * parsers, so they are rejected (fail closed).
  */
-function skipNonTagMarkup(src: string, lt: number): number {
+function skipNonTagMarkup(src: string, lt: number, rejectShorthand = true): number {
   if (src.startsWith(COMMENT_OPEN, lt)) {
     const bodyStart = lt + COMMENT_OPEN_LENGTH;
-    if (src.startsWith('>', bodyStart) || src.startsWith('->', bodyStart)) {
+    if (rejectShorthand && (src.startsWith('>', bodyStart) || src.startsWith('->', bodyStart))) {
       throw new SvgSanitizationError('SVG contains a malformed comment that parsers disagree on.');
     }
     const close = src.indexOf(COMMENT_CLOSE, bodyStart);
@@ -1087,11 +1112,7 @@ function isHostileStyleValue(raw: string): boolean {
     if (error instanceof SvgSanitizationError) return true;
     throw error;
   }
-  return (
-    hasCssReference ||
-    CSS_EXPRESSION_PROBE.test(text) ||
-    text.replace(/[\s\x00-\x1f]/g, '').toLowerCase().includes(SCRIPT_URI_PROBE)
-  );
+  return hasCssReference || CSS_EXPRESSION_PROBE.test(text) || text.replace(/[\s\x00-\x1f]/g, '').toLowerCase().includes(SCRIPT_URI_PROBE);
 }
 
 /** True when a value written into a presentation attribute holds an external url(), src() or image-set(). */
@@ -1104,34 +1125,22 @@ function hasExternalReference(raw: string): boolean {
   }
 }
 
-/**
- * True when any `;`-separated item of an animation value is a dangerous URI. Entities are decoded before
- * splitting so an encoded `;` (`&#59;`) cannot hide the item boundary.
- */
+/** True when any `;`-separated item of an animation value is a dangerous URI (entities decoded before split). */
 function hasDangerousUriItem(raw: string, isDangerous: (normalized: string) => boolean = isDangerousUri): boolean {
-  return decodeHtmlEntities(raw)
-    .split(ANIMATION_VALUE_SEPARATOR)
-    .some((item) => isDangerous(normalizeUriText(item)));
+  return decodeHtmlEntities(raw).split(ANIMATION_VALUE_SEPARATOR).some((item) => isDangerous(normalizeUriText(item)));
 }
 
 /** True when any `;`-separated item of an animation value is a script-capable URI, whatever attribute it targets. */
 function hasScriptUriItem(raw: string): boolean {
-  return decodeHtmlEntities(raw)
-    .split(ANIMATION_VALUE_SEPARATOR)
-    .some((item) => isScriptUri(normalizeUriText(item)));
+  return decodeHtmlEntities(raw).split(ANIMATION_VALUE_SEPARATOR).some((item) => isScriptUri(normalizeUriText(item)));
 }
 
 /** True when `isHostile` accepts the raw value of any to/from/by/values attribute. */
 function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean): boolean {
-  return tag.attributes.some(
-    (attribute) => ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) && isHostile(attribute.value)
-  );
+  return tag.attributes.some((attribute) => ANIMATION_VALUE_ATTRIBUTES.has(attribute.name.toLowerCase()) && isHostile(attribute.value));
 }
 
-/**
- * True for animation elements that would write an event handler or a dangerous URI into another
- * attribute (for example `<set attributeName="onclick" to="alert(1)"/>`).
- */
+/** True for animation elements targeting event handlers or dangerous URIs (e.g. `<set attributeName="onclick" to="alert(1)"/>`). */
 function isHostileAnimation(tag: TagToken): boolean {
   if (!ANIMATION_ELEMENTS.has(localNameOf(tag.name))) return false;
   const target = tag.attributes.find((attribute) => attribute.name.toLowerCase() === 'attributename');
@@ -1139,41 +1148,26 @@ function isHostileAnimation(tag: TagToken): boolean {
   const targetName = localNameOf(normalizeUriText(target.value));
   if (isForbiddenAttributeName(targetName)) return true;
   if (targetName === STYLE_ATTRIBUTE) return hasAnimationValue(tag, isHostileStyleValue);
-  if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) {
-    return hasAnimationValue(tag, (value) => hasExternalReference(value) || hasScriptUriItem(value));
-  }
+  if (PRESENTATION_URL_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, (v) => hasExternalReference(v) || hasScriptUriItem(v));
   if (LINK_ATTRIBUTES.has(targetName)) return hasAnimationValue(tag, (value) => hasDangerousUriItem(value, isDangerousLinkUri));
   return hasAnimationValue(tag, hasScriptUriItem);
 }
 
-/**
- * Removes every on* and form attribute (and every animation element retargeting one) from every tag in linear time, wherever the attribute sits in the tag
- * (after whitespace, '/', or the closing quote of the previous value). Text outside tags is untouched.
- */
+/** Removes every on* and form attribute and hostile animation element in linear time while leaving non-tag text untouched. */
 function stripEventHandlerAttributes(src: string): string {
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
-
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
     const skipTo = skipNonTagMarkup(src, lt);
-    if (skipTo !== -1) {
-      search = skipTo;
-      continue;
-    }
-    if (!isTagNameStart(src, lt + 1)) {
-      search = lt + 1;
-      continue;
-    }
+    if (skipTo !== -1) { search = skipTo; continue; }
+    const bogusEnd = skipClosingOrBogusMarkup(src, lt);
+    if (bogusEnd !== -1) { search = bogusEnd; continue; }
+    if (!isTagNameStart(src, lt + 1)) { search = lt + 1; continue; }
     const tag = readTag(src, lt);
-    if (isHostileAnimation(tag)) {
-      parts.push(src.slice(copied, lt));
-      copied = tag.end;
-      search = tag.end;
-      continue;
-    }
+    if (isHostileAnimation(tag)) { parts.push(src.slice(copied, lt)); copied = tag.end; search = tag.end; continue; }
     for (const attribute of tag.attributes) {
       if (!isForbiddenAttributeName(attribute.name)) continue;
       let removeStart = attribute.start;
@@ -1183,7 +1177,6 @@ function stripEventHandlerAttributes(src: string): string {
     }
     search = tag.end;
   }
-
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
   return parts.join('');
@@ -1222,20 +1215,10 @@ function decodeEmbeddedSvgPayload(rawValue: string): string | null {
   const params = suffix.split(';').filter(Boolean);
   if (params.includes('base64')) {
     const cleanBase64 = rawPayload.replace(/[\s\x00-\x1f]+/g, '');
-    if (
-      cleanBase64.length === 0 ||
-      cleanBase64.length > MAX_SVG_INPUT_CHARS * 2 ||
-      !BASE64_PAYLOAD_PATTERN.test(cleanBase64)
-    ) {
-      return null;
-    }
+    if (cleanBase64.length === 0 || cleanBase64.length > MAX_SVG_INPUT_CHARS * 2 || !BASE64_PAYLOAD_PATTERN.test(cleanBase64)) return null;
     return Buffer.from(cleanBase64, 'base64').toString('utf-8');
   }
-  try {
-    return rawPayload.includes('%') ? decodeURIComponent(rawPayload) : rawPayload;
-  } catch {
-    return null;
-  }
+  try { return rawPayload.includes('%') ? decodeURIComponent(rawPayload) : rawPayload; } catch { return null; }
 }
 
 /** Sanitizes an embedded `data:image/svg+xml` URI on an `<image>` element, or neutralizes it to `href="#"`. */
@@ -1243,13 +1226,7 @@ function sanitizeEmbeddedSvgHref(attribute: TagAttribute, depth: number, budget:
   if (budget.sanitizedValues.has(attribute.value)) return null;
   if (depth >= MAX_EMBEDDED_SVG_DEPTH || budget.count >= MAX_EMBEDDED_SVG_COUNT) return 'href="#"';
   const innerSvg = decodeEmbeddedSvgPayload(attribute.value);
-  if (
-    innerSvg === null ||
-    innerSvg.length === 0 ||
-    innerSvg.length > MAX_SVG_INPUT_CHARS ||
-    budget.totalChars + innerSvg.length > MAX_TOTAL_EMBEDDED_SVG_CHARS ||
-    !isSvg(innerSvg)
-  ) {
+  if (innerSvg === null || innerSvg.length === 0 || innerSvg.length > MAX_SVG_INPUT_CHARS || budget.totalChars + innerSvg.length > MAX_TOTAL_EMBEDDED_SVG_CHARS || !isSvg(innerSvg)) {
     return 'href="#"';
   }
   budget.count += 1;
@@ -1263,33 +1240,20 @@ function sanitizeEmbeddedSvgHref(attribute: TagAttribute, depth: number, budget:
 }
 
 /** Replacement for an attribute whose value is a dangerous URI, or null when it is left alone. */
-function neutralizedAttribute(
-  attribute: TagAttribute,
-  tagName: string,
-  depth: number,
-  originalText: string,
-  budget: EmbeddedSvgBudget
-): string | null {
+function neutralizedAttribute(attribute: TagAttribute, tagName: string, depth: number, originalText: string, budget: EmbeddedSvgBudget): string | null {
   const local = attributeLocalName(attribute.name);
   if (LINK_ATTRIBUTES.has(local)) {
     const normalizedUri = normalizeUriText(attribute.value);
-    if (
-      local === HREF_ATTRIBUTE &&
-      localNameOf(tagName) === IMAGE_ELEMENT &&
-      normalizedUri.startsWith(DATA_SVG_MIME_PREFIX)
-    ) {
+    if (local === HREF_ATTRIBUTE && localNameOf(tagName) === IMAGE_ELEMENT && normalizedUri.startsWith(DATA_SVG_MIME_PREFIX)) {
       const rewritten = sanitizeEmbeddedSvgHref(attribute, depth, budget);
       return rewritten === null || rewritten === originalText ? null : rewritten;
     }
     return isDangerousLinkUri(normalizedUri) ? 'href="#"' : null;
   }
-  if (ANIMATION_VALUE_ATTRIBUTES.has(local)) {
-    return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
-  }
+  if (ANIMATION_VALUE_ATTRIBUTES.has(local)) return hasDangerousUriItem(attribute.value) ? `${local}="#"` : null;
   if (PRESENTATION_URL_ATTRIBUTES.has(local)) {
     const sanitized = sanitizeCss(attribute.value, false);
-    if (sanitized === attribute.value) return null;
-    return `${attribute.name}="${sanitized.replace(/"/g, '&quot;')}"`;
+    return sanitized === attribute.value ? null : `${attribute.name}="${sanitized.replace(/"/g, '&quot;')}"`;
   }
   if (local === STYLE_ATTRIBUTE) {
     // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
@@ -1298,27 +1262,19 @@ function neutralizedAttribute(
   return null;
 }
 
-/**
- * Rewrites href/src, animation value, presentation and style attributes, but only where the tokenizer finds a real attribute
- * inside a real tag; text, comments and attribute values that merely mention them are left untouched.
- */
+/** Rewrites href/src, animation value, presentation and style attributes on real tags while leaving non-tag text untouched. */
 function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget): string {
   const parts: string[] = [];
   let copied = 0;
   let search = 0;
-
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
     const skipTo = skipNonTagMarkup(src, lt);
-    if (skipTo !== -1) {
-      search = skipTo;
-      continue;
-    }
-    if (!isTagNameStart(src, lt + 1)) {
-      search = lt + 1;
-      continue;
-    }
+    if (skipTo !== -1) { search = skipTo; continue; }
+    const bogusEnd = skipClosingOrBogusMarkup(src, lt);
+    if (bogusEnd !== -1) { search = bogusEnd; continue; }
+    if (!isTagNameStart(src, lt + 1)) { search = lt + 1; continue; }
     const tag = readTag(src, lt);
     for (const attribute of tag.attributes) {
       const replacement = neutralizedAttribute(attribute, tag.name, depth, src.slice(attribute.start, attribute.end), budget);
@@ -1328,10 +1284,79 @@ function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget
     }
     search = tag.end;
   }
-
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
   return parts.join('');
+}
+
+interface CdataHtmlState { svgDepth: number; integrationDepth: number; htmlInIntegration: boolean }
+
+function advanceCdataTagState(src: string, lt: number, state: CdataHtmlState): number {
+  const tag = readTag(src, lt);
+  const lower = tag.name.toLowerCase();
+  const lastEnd = tag.attributes.length > 0 ? tag.attributes[tag.attributes.length - 1].end : lt + 1 + tag.name.length;
+  const selfClosing = tag.terminated && src[tag.end - 2] === '/' && lastEnd <= tag.end - 2;
+  if (state.svgDepth === 0) {
+    if (lower === 'svg' && !selfClosing) state.svgDepth = 1;
+    return tag.end;
+  }
+  if (state.integrationDepth > 0) {
+    state.htmlInIntegration = true;
+    return tag.end;
+  }
+  const isFontBreakout = lower === 'font' && tag.attributes.some((a) => HTML_FONT_BREAKOUT_ATTRS.has(a.name.toLowerCase()));
+  if (HTML_BREAKOUT_ELEMENTS.has(lower) || isFontBreakout) {
+    state.svgDepth = 0; state.integrationDepth = 0; state.htmlInIntegration = false;
+  } else if (SVG_HTML_INTEGRATION_POINTS.has(lower) && !selfClosing) {
+    state.integrationDepth++;
+  } else if (lower === 'svg' && !selfClosing) {
+    state.svgDepth++;
+  }
+  return tag.end;
+}
+
+function advanceCdataCloseState(src: string, lt: number, state: CdataHtmlState): number {
+  if (!isAsciiAlphaAt(src, lt + 2)) {
+    const gt = src.indexOf('>', lt + 2);
+    return gt === -1 ? src.length : gt + 1;
+  }
+  const tag = readTag(src, lt + 1);
+  const lower = tag.name.toLowerCase();
+  if (state.svgDepth > 0 && (lower === 'p' || lower === 'br')) {
+    state.svgDepth = 0; state.integrationDepth = 0; state.htmlInIntegration = false;
+  } else if (lower === 'svg' && state.svgDepth > 0) {
+    if (!state.htmlInIntegration && --state.svgDepth === 0) state.integrationDepth = 0;
+  } else if (state.integrationDepth > 0 && SVG_HTML_INTEGRATION_POINTS.has(lower)) {
+    state.integrationDepth--;
+  }
+  return tag.end;
+}
+
+/** Rejects CDATA outside safe SVG foreign content (HTML5 §13.2.6.2, §13.2.6.5) so XML/HTML differentials fail closed. */
+function assertSafeCdataContext(src: string): void {
+  if (!src.includes(CDATA_OPEN)) return;
+  const state: CdataHtmlState = { svgDepth: 0, integrationDepth: 0, htmlInIntegration: false };
+  let search = 0;
+  while (search < src.length) {
+    const lt = src.indexOf('<', search);
+    if (lt === -1) break;
+    if (src.startsWith(CDATA_OPEN, lt)) {
+      if (state.svgDepth <= 0 || state.htmlInIntegration) {
+        throw new SvgSanitizationError('SVG contains a CDATA section outside safe SVG foreign content.');
+      }
+      const close = src.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length);
+      search = close === -1 ? src.length : close + CDATA_CLOSE.length;
+      continue;
+    }
+    const skipTo = skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) { search = skipTo; continue; }
+    if (src[lt + 1] === '!') {
+      const gt = src.indexOf('>', lt + 2);
+      search = gt === -1 ? src.length : gt + 1;
+    } else if (src[lt + 1] === '/') search = advanceCdataCloseState(src, lt, state);
+    else if (isAsciiAlphaAt(src, lt + 1)) search = advanceCdataTagState(src, lt, state);
+    else search = lt + 1;
+  }
 }
 
 /**
@@ -1341,33 +1366,20 @@ function stripDangerousMarkupPass(input: string): string {
   let result = stripProcessingInstructions(stripDoctype(input));
   for (const name of PAIRED_DANGEROUS_ELEMENTS) result = stripElement(result, name, true);
   for (const name of VOID_DANGEROUS_ELEMENTS) result = stripElement(result, name, false);
-  return stripEventHandlerAttributes(result);
+  result = stripEventHandlerAttributes(result);
+  assertSafeCdataContext(result);
+  return result;
 }
 
 const HTML_ENTITY_PATTERN = /&(?:#x([0-9a-fA-F]+);|#([0-9]+);|(quot|apos|lt|gt|amp);)/gi;
-const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = {
-  quot: '"',
-  apos: "'",
-  lt: '<',
-  gt: '>',
-  amp: '&',
-};
+const NAMED_HTML_ENTITIES: Readonly<Record<string, string>> = { quot: '"', apos: "'", lt: '<', gt: '>', amp: '&' };
 
-/**
- * Decodes standard and numerical HTML entities (hex and decimal) in a single linear pass.
- */
+/** Decodes standard and numerical HTML entities (hex and decimal) in a single linear pass. */
 export function decodeHtmlEntities(str: string): string {
   return str.replace(HTML_ENTITY_PATTERN, (full, hex?: string, dec?: string, named?: string) => {
-    if (named) {
-      return NAMED_HTML_ENTITIES[named.toLowerCase()] ?? full;
-    }
+    if (named) return NAMED_HTML_ENTITIES[named.toLowerCase()] ?? full;
     const codePoint = hex ? Number.parseInt(hex, 16) : Number.parseInt(dec!, 10);
-    if (
-      !Number.isFinite(codePoint) ||
-      codePoint <= 0 ||
-      codePoint > MAX_CODE_POINT ||
-      (codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX)
-    ) {
+    if (!Number.isFinite(codePoint) || codePoint <= 0 || codePoint > MAX_CODE_POINT || (codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX)) {
       return '\uFFFD';
     }
     return String.fromCodePoint(codePoint);
@@ -1377,7 +1389,6 @@ export function decodeHtmlEntities(str: string): string {
 /** How much of a payload `isSvg` inspects: large binary images must not be decoded into strings. */
 const SVG_SNIFF_BYTES = 256 * 1024;
 const SVG_SNIFF_CHARS = SVG_SNIFF_BYTES;
-
 /** Bytes decoded first to see whether a payload can be markup at all; a longer run of whitespace falls through to the full sniff. */
 const SVG_HEAD_BYTES = 64;
 
@@ -1388,54 +1399,39 @@ function startsWithRasterSignature(input: Buffer): boolean {
   return input.length >= 4 && input[0] === 0x47 && input[1] === 0x49 && input[2] === 0x46 && input[3] === 0x38; // GIF
 }
 
-/**
- * False when the first character after the whitespace is not `<`. The root element follows only an XML declaration,
- * comments and a doctype, which all start with `<`, so a payload that opens with anything else is not SVG; the head
- * is enough to see it, where the whole sniff window decoded as text cost milliseconds for a binary image.
- */
+/** False when the head after whitespace does not start with `<`: a raster or non-markup payload never decodes all 256 KiB. */
 function mayBeMarkup(input: Buffer): boolean {
   const head = input.toString('utf-8', 0, SVG_HEAD_BYTES).trim();
   return head === '' || head.startsWith('<');
 }
 
-/**
- * Checks whether the given buffer or text represents an SVG document.
- */
+/** Checks whether the given buffer or text represents an SVG document. */
 export function isSvg(input: string | Buffer): boolean {
   if (!input) return false;
   // Raster payloads are turned away from their signature and their first character, before any of them is decoded as text.
   if (typeof input !== 'string' && (startsWithRasterSignature(input) || !mayBeMarkup(input))) return false;
   // The root element follows only an XML declaration, comments and a doctype, so the start decides.
   const str = typeof input === 'string' ? input.slice(0, SVG_SNIFF_CHARS) : input.toString('utf-8', 0, SVG_SNIFF_BYTES);
-
   const trimmed = str.trim();
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) return false; // JSON
   if (trimmed.startsWith('GIF87a') || trimmed.startsWith('GIF89a')) return false;
-
-  // Strip XML declaration, comments, and doctypes (including internal subsets) to verify root element
-  const stripped = stripDoctype(stripComments(trimmed.replace(/^<\?xml[^>]*\?>/i, ''))).trim();
-
+  // Strip leading XML declaration, DOCTYPE/internal subsets, then comments so `"<!--"` in DOCTYPE doesn't mask the document.
+  const stripped = stripComments(stripDoctype(trimmed.replace(/^<\?xml(?:\s[^<>]*)?\?>/i, ''))).trim();
   return /^<svg\b/i.test(stripped);
 }
 
-/**
- * One full sanitation pass: dangerous markup removal followed by URI and style rewrites.
- */
+/** One full sanitation pass: dangerous markup removal followed by URI and style rewrites. */
 function sanitizePass(input: string, depth: number, budget: EmbeddedSvgBudget): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
   let result = stripDangerousMarkupPass(input);
-
   // 4-6. Rewrite href-like, animation value and style attributes of real tags against dangerous URIs, SSRF and
   // data exfiltration, then clean <style> element bodies.
   result = rewriteAttributes(result, depth, budget);
-  result = sanitizeStyleElements(result);
-
-  return result;
+  return sanitizeStyleElements(result);
 }
 
 function sanitizeSvgStringAtDepth(svg: string, depth: number, budget: EmbeddedSvgBudget): string {
   if (!svg || typeof svg !== 'string') return '';
-
   // Every pass strips dangerous markup and then rewrites URIs and styles. A rewrite can join fragments into
   // new dangerous markup (for example `<scr@import x;ipt>` inside <style>), so the pipeline repeats until its
   // output is a fixed point; payloads that need more passes than any real document are rejected (fail closed).
@@ -1443,24 +1439,16 @@ function sanitizeSvgStringAtDepth(svg: string, depth: number, budget: EmbeddedSv
   let stable = false;
   for (let pass = 0; pass < MAX_STRIP_PASSES; pass++) {
     const next = sanitizePass(result, depth, budget);
-    if (next === result) {
-      stable = true;
-      break;
-    }
+    if (next === result) { stable = true; break; }
     result = next;
   }
-  if (!stable) {
-    throw new SvgSanitizationError('SVG contains nested markup that cannot be sanitized safely.');
-  }
+  if (!stable) throw new SvgSanitizationError('SVG contains nested markup that cannot be sanitized safely.');
   return result.trim();
 }
 
-/**
- * Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors.
- */
+/** Sanitizes an SVG string by stripping dangerous tags, attributes, and script execution vectors. */
 export function sanitizeSvgString(svg: string): string {
-  const budget: EmbeddedSvgBudget = { count: 0, totalChars: 0, sanitizedValues: new Set() };
-  return sanitizeSvgStringAtDepth(svg, 0, budget);
+  return sanitizeSvgStringAtDepth(svg, 0, { count: 0, totalChars: 0, sanitizedValues: new Set() });
 }
 
 function sanitizeWithin(svg: string, maxChars: number): string {
@@ -1470,10 +1458,7 @@ function sanitizeWithin(svg: string, maxChars: number): string {
   return sanitizeSvgString(svg);
 }
 
-/**
- * Sanitizes an SVG document after enforcing the SVG input size cap. SVG entry points use this; callers that
- * run the sanitizer over arbitrary XML use {@link sanitizeSvgString}, which has no size cap.
- */
+/** Sanitizes an SVG document after enforcing `MAX_SVG_INPUT_CHARS`; generic XML callers use {@link sanitizeSvgString}. */
 export function sanitizeSvgDocument(svg: string): string {
   return sanitizeWithin(svg, MAX_SVG_INPUT_CHARS);
 }
@@ -1489,11 +1474,7 @@ export function sanitizeGeneratedSvg(svg: string): string {
   return sanitizeWithin(svg, MAX_GENERATED_SVG_CHARS);
 }
 
-/**
- * Sanitizes an SVG buffer and returns a sanitized Buffer.
- */
+/** Sanitizes an SVG buffer and returns a sanitized Buffer. */
 export function sanitizeSvgBuffer(buffer: Buffer): Buffer {
-  const svgText = buffer.toString('utf-8');
-  const cleanText = sanitizeSvgDocument(svgText);
-  return Buffer.from(cleanText, 'utf-8');
+  return Buffer.from(sanitizeSvgDocument(buffer.toString('utf-8')), 'utf-8');
 }
