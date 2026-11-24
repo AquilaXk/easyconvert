@@ -6,15 +6,15 @@ import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
-import { detectFormatFromFilename } from '@/lib/registry';
+import { detectFormatFromFilename, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
-import { ConversionOptions } from '@/lib/types';
+import { ConversionOptions, type FormatDefinition } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
 import { deleteResult } from '@/lib/storage/retention-service';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
-import { readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { deadlineErrorResponse } from '@/lib/api/sync-deadline';
 import { refusalCodeOf } from '@/lib/refusal-codes';
@@ -28,6 +28,7 @@ import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { queueErrorResponse, withQueueErrors } from '@/lib/api/queue-error-response';
 import { withoutEngineTrace } from '@/lib/api/engine-trace';
 import { redactText } from '@/lib/security/redact';
+import { validatePageRangeSyntax } from '@/lib/conversions';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { createProblemDetailsResponse, serverFault } from '@/lib/api/problem-details';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
@@ -42,6 +43,32 @@ import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 
 export const dynamic = 'force-dynamic';
 
+const MAX_NAME_OR_KEY_CHARS = 1024;
+const MAX_SOURCE_FORMAT_CHARS = 64;
+const MULTIPART_TEXT_FIELDS = ['targetFormat', 'storageKey', 'sourceFormat', 'options'] as const;
+
+/** Checks options schema, prototype keys, and page-range syntax before quota reservation. */
+function validateJobOptions(rawOptions: unknown, instanceUri: string): { options: ConversionOptions } | { refusal: Response } {
+  if (!isConversionOptionsObject(rawOptions)) {
+    return { refusal: failJson(400, 'The "options" field must be a JSON object.') };
+  }
+  const optionsProblem = legacyOptionsProblem(rawOptions, instanceUri);
+  if (optionsProblem) return { refusal: optionsProblem };
+
+  const options: ConversionOptions = rawOptions;
+  if (!options.pages && options.page !== undefined) {
+    options.pages = String(options.page);
+  }
+  if (options.pages) {
+    try {
+      validatePageRangeSyntax(options.pages);
+    } catch (err: unknown) {
+      return { refusal: failJson(400, err instanceof Error ? err.message : String(err), refusalCodeOf(err)) };
+    }
+  }
+  return { options };
+}
+
 /** The options object of a multipart `options` field, or the refusal for a malformed or unbounded field. */
 function parseOptionsField(raw: string, instanceUri: string): { options: ConversionOptions } | { refusal: Response } {
   const parsed = parseBoundedJsonField(raw);
@@ -53,27 +80,29 @@ function parseOptionsField(raw: string, instanceUri: string): { options: Convers
           : boundedJsonFieldProblem('options', parsed.kind, instanceUri),
     };
   }
-  return isConversionOptionsObject(parsed.value)
-    ? { options: parsed.value }
-    : { refusal: failJson(400, 'The "options" field must be a JSON object.') };
+  return validateJobOptions(parsed.value, instanceUri);
 }
 
-/** What a job request names: the input (a stored key, inline bytes or none yet), the target and the options. */
+/** What a job request names: the input (a stored key, inline base64, or a lazy multipart File), the target, and options. */
 interface JobRequest {
   originalFilename: string;
   targetFormat: string;
+  sourceFormat?: string;
   options: ConversionOptions;
   storageKey?: string;
   inputBufferBase64?: string;
+  inlineFile?: File;
   fileSize: number;
-  uploadedInline?: boolean;
 }
 
 type ParsedJobRequest = { request: JobRequest } | { refusal: Response };
 
-/** The bytes a base64 text decodes to, near enough to hold it to a limit (padding and line breaks ignored). */
+/** The bytes a base64 text decodes to, holding it to the inline payload limit without decoding. */
 function decodedBase64Bytes(text: string): number {
-  return Math.floor((text.length * 3) / 4);
+  let padding = 0;
+  if (text.endsWith('==')) padding = 2;
+  else if (text.endsWith('=')) padding = 1;
+  return Math.floor((text.length * 3) / 4) - padding;
 }
 
 const INLINE_PAYLOAD_DETAIL =
@@ -84,7 +113,7 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   const instanceUri = req.nextUrl?.pathname || '/api/queue/jobs';
 
   // The caller is authenticated without a unit: a repeat answered from its Idempotency-Key costs nothing, and a request
-  // that runs reserves its unit when it starts.
+  // that runs reserves its unit after admission validation passes.
   const auth = await validateApiAccess(req, {
     requiredUnits: 0,
     requiredScope: 'convert:write',
@@ -109,11 +138,49 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   }
 }));
 
-/** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */
+function queueJobErrorResponse(error: unknown, instanceUri: string): Response {
+  const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+  if (deadlineProblem) return deadlineProblem;
+  const limitStatus = payloadLimitStatus(error);
+  if (limitStatus !== null) {
+    return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
+      code: refusalCodeOf(error),
+    });
+  }
+  const queueProblem = queueErrorResponse(error, instanceUri);
+  if (queueProblem) return queueProblem;
+  const storageProblem = storageErrorResponse(error, instanceUri);
+  if (storageProblem) return storageProblem;
+  return serverFault('queue/jobs', error, 'Job enqueue error');
+}
+
+/** Validates concurrency, inputs, formats, size limits, and spoofing before reserving quota or persisting uploads. */
 async function startJob(req: NextRequest, user: User, instanceUri: string): Promise<Response> {
-  const unit = await reserveConversionUnit(user);
-  if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
-  return withReservedUnit(unit.reservationId, (reserved) => queueJob(req, user, reserved, instanceUri));
+  let spilledKey: string | undefined;
+  try {
+    // At most five conversions in flight (queued plus running) for an anonymous or free caller.
+    const room = await mayEnqueue(user.id, user.tier);
+    if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
+
+    const parsed = await readJobRequest(req, instanceUri);
+    if ('refusal' in parsed) return parsed.refusal;
+    const request = parsed.request;
+
+    const prepared = await prepareJobInput(user, request, instanceUri);
+    if ('refusal' in prepared) return prepared.refusal;
+
+    const unit = await reserveConversionUnit(user);
+    if (!unit.reserved) return conversionRefusalResponse(unit.refusal, instanceUri);
+
+    return await withReservedUnit(unit.reservationId, (reserved) =>
+      enqueuePreparedJob(user, reserved, request, prepared, instanceUri, (key) => {
+        spilledKey = key;
+      })
+    );
+  } catch (error: unknown) {
+    if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
+    return queueJobErrorResponse(error, instanceUri);
+  }
 }
 
 function failJson(status: number, error: string, code?: string): Response {
@@ -141,30 +208,33 @@ async function remoteObjectProblem(storageKey: string, sourceFormat: string, ori
 async function localObjectProblem(storageKey: string, sourceFormat: string, originalFilename: string): Promise<Response | null> {
   const stored = await storageProvider.getObject(storageKey);
   if (!stored) return failJson(404, STORAGE_OBJECT_NOT_FOUND);
-  if (stored.filePath && fs.existsSync(stored.filePath)) {
-    assertNotSpoofedFilePath(stored.filePath, sourceFormat, originalFilename);
-    return null;
+  try {
+    if (stored.filePath && fs.existsSync(stored.filePath)) {
+      assertNotSpoofedFilePath(stored.filePath, sourceFormat, originalFilename);
+      return null;
+    }
+    if (stored.buffer && stored.buffer.length > 0) {
+      assertNotSpoofedFile(stored.buffer, sourceFormat, originalFilename);
+      return null;
+    }
+    return failJson(400, 'Stored object is unavailable.');
+  } finally {
+    await stored.release?.().catch(() => undefined);
   }
-  if (stored.buffer && stored.buffer.length > 0) {
-    assertNotSpoofedFile(stored.buffer, sourceFormat, originalFilename);
-    return null;
-  }
-  return failJson(400, 'Stored object is unavailable.');
 }
 
-/** Holds inline bytes or a stored object to the format of its own name; null when it passes. A file stored by this request was checked on its way in. */
-async function inputSpoofProblem(request: JobRequest, sourceFormat: string): Promise<Response | null> {
-  const { inputBufferBase64, storageKey, originalFilename } = request;
+/** Holds inline bytes or a stored object to the format of its own name; null when it passes. */
+async function inputSpoofProblem(request: JobRequest, sourceFormat: string, inlineBuffer: Buffer | undefined): Promise<Response | null> {
+  const { storageKey, originalFilename } = request;
   try {
-    // Check storageKey first whenever present, matching queueJob(), so inline decoy bytes cannot hide a spoofed stored key.
+    // Check storageKey first whenever present, matching enqueue, so inline decoy bytes cannot hide a spoofed stored key.
     if (storageKey) {
-      if (request.uploadedInline) return null;
       return storageProvider.kind === 'remote'
         ? await remoteObjectProblem(storageKey, sourceFormat, originalFilename)
         : await localObjectProblem(storageKey, sourceFormat, originalFilename);
     }
-    if (inputBufferBase64) {
-      assertNotSpoofedFile(Buffer.from(inputBufferBase64, 'base64'), sourceFormat, originalFilename);
+    if (inlineBuffer) {
+      assertNotSpoofedFile(inlineBuffer, sourceFormat, originalFilename);
     }
     return null;
   } catch (err) {
@@ -173,7 +243,9 @@ async function inputSpoofProblem(request: JobRequest, sourceFormat: string): Pro
 }
 
 /** What the request resolves to once its input is authorized and checked. */
-type PreparedJobInput = { refusal: Response } | { sourceFormat: string; inputBytes: number | undefined };
+type PreparedJobInput =
+  | { refusal: Response }
+  | { sourceFormat: string; inputBytes: number | undefined; inlineUploadBuffer?: Buffer };
 
 async function readQueueJobXmlPrefix(request: JobRequest): Promise<Uint8Array | undefined> {
   if (request.storageKey) {
@@ -181,129 +253,151 @@ async function readQueueJobXmlPrefix(request: JobRequest): Promise<Uint8Array | 
       .then((header) => header?.subarray(0, ALTO_SNIFF_BYTES))
       .catch(() => undefined);
   }
+  if (request.inlineFile) {
+    return new Uint8Array(await request.inlineFile.slice(0, ALTO_SNIFF_BYTES).arrayBuffer());
+  }
   if (request.inputBufferBase64) return Buffer.from(request.inputBufferBase64.slice(0, 5600), 'base64');
   return undefined;
 }
 
-/** Authorizes the stored key, identifies the format, enforces the plan size limit and the spoof check. */
+function resolveSupportedTarget(detected: FormatDefinition, targetFormat: string): { targetFormat: string } | { refusal: Response } {
+  const tgt = targetFormat.toLowerCase().replace(/^\./, '').trim();
+  const targetDef = getFormatByExtension(tgt);
+  const availableDefs = getAvailableTargetFormats(detected.id);
+  if (!targetDef || !availableDefs.some((d) => d.id === targetDef.id || d.extension === tgt)) {
+    return {
+      refusal: failJson(400, `Cannot convert from ${detected.name} (.${detected.extension}) to target format .${tgt}.`, 'unsupported_pair'),
+    };
+  }
+  return { targetFormat: tgt };
+}
+
+async function resolveInlineBuffer(request: JobRequest, instanceUri: string): Promise<{ buffer?: Buffer } | { refusal: Response }> {
+  if (request.inputBufferBase64) {
+    const decoded = Buffer.from(request.inputBufferBase64, 'base64');
+    if (decoded.length === 0) {
+      return { refusal: failJson(400, 'Invalid "inputBufferBase64" parameter: decoded payload is empty.') };
+    }
+    if (decoded.length > INLINE_JOB_PAYLOAD_MAX_BYTES) {
+      return { refusal: inlinePayloadProblem(instanceUri) };
+    }
+    return { buffer: decoded };
+  }
+  if (!request.storageKey && request.inlineFile) {
+    const buffer = Buffer.from(await request.inlineFile.arrayBuffer());
+    if (buffer.length === 0) {
+      return { refusal: failJson(400, 'Conversion payload is empty. File buffer has 0 bytes.') };
+    }
+    if (buffer.length > INLINE_JOB_PAYLOAD_MAX_BYTES) {
+      return { refusal: inlinePayloadProblem(instanceUri) };
+    }
+    return { buffer };
+  }
+  return { buffer: undefined };
+}
+
+/** Authorizes the stored key, validates the format pair, enforces the plan size limit, and runs the spoof check. */
 async function prepareJobInput(user: User, request: JobRequest, instanceUri: string): Promise<PreparedJobInput> {
-  const { targetFormat, storageKey, inputBufferBase64 } = request;
-  if (storageKey && (typeof storageKey !== 'string' || !(await mayUseStorageKeyAsJobInput(storageKey, user.id)))) {
+  const { storageKey, inputBufferBase64 } = request;
+  if (storageKey && !(await mayUseStorageKeyAsJobInput(storageKey, user.id))) {
     return { refusal: failJson(404, STORAGE_OBJECT_NOT_FOUND) };
   }
   if (!request.originalFilename && storageKey) {
     request.originalFilename = storageKey.split('/').pop() || 'file';
-  }
-  if (!targetFormat) {
-    return { refusal: failJson(400, 'Missing required parameter: "targetFormat"') };
   }
 
   let detected = detectFormatFromFilename(request.originalFilename);
   if (!detected) return { refusal: unknownSourceProblem(request.originalFilename, instanceUri) };
   if (detected.id === 'xml') {
     const prefix = await readQueueJobXmlPrefix(request);
-    detected = promoteAltoXmlSource(detected, undefined, targetFormat, prefix) ?? detected;
+    detected = promoteAltoXmlSource(detected, undefined, request.targetFormat, prefix) ?? detected;
   }
 
-  const inputBytes = await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider);
+  const targetCheck = resolveSupportedTarget(detected, request.targetFormat);
+  if ('refusal' in targetCheck) return targetCheck;
+  request.targetFormat = targetCheck.targetFormat;
+
+  const inputBytes =
+    !storageKey && request.inlineFile
+      ? request.inlineFile.size
+      : await trustedInputBytes({ storageKey, inputBufferBase64 }, storageProvider);
   const oversize = fileSizeLimitProblem(user, inputBytes, instanceUri);
   if (oversize) return { refusal: oversize };
 
-  const spoofed = await inputSpoofProblem(request, detected.id);
+  const inline = await resolveInlineBuffer(request, instanceUri);
+  if ('refusal' in inline) return inline;
+
+  const spoofed = await inputSpoofProblem(request, detected.id, inline.buffer);
   if (spoofed) return { refusal: spoofed };
-  return { sourceFormat: detected.id, inputBytes };
+  const resolvedBytes = !storageKey && inline.buffer ? inline.buffer.length : inputBytes;
+  return { sourceFormat: detected.id, inputBytes: resolvedBytes, inlineUploadBuffer: inline.buffer };
 }
 
-/** Queues the job, which then owns the unit: the worker commits it or gives it back when the job ends. */
-async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instanceUri: string): Promise<Response> {
-  let spilledKey: string | undefined;
-  try {
-    // At most five conversions in flight (queued plus running) for an anonymous or free caller.
-    const room = await mayEnqueue(user.id, user.tier);
-    if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
+type EnqueuedPreparedJob = Exclude<PreparedJobInput, { refusal: Response }>;
 
-    const parsed = await readJobRequest(req, instanceUri, user.id);
-    if ('refusal' in parsed) return parsed.refusal;
-    const request = parsed.request;
-    if (request.uploadedInline && request.storageKey) spilledKey = request.storageKey;
+/** Holds pair credits, persists inline payloads if needed, and hands the job off to the target queue. */
+async function enqueuePreparedJob(
+  user: User,
+  unit: ReservedUnit,
+  request: JobRequest,
+  prepared: EnqueuedPreparedJob,
+  instanceUri: string,
+  onSpilledKey: (key: string) => void
+): Promise<Response> {
+  // The unit was reserved for one credit; the rest of the cost of this pair is held now.
+  const short = await holdBaseCredits(unit, user, baseCredits(prepared.sourceFormat, request.targetFormat));
+  if (short) return conversionRefusalResponse(short, instanceUri);
 
-    const prepared = await prepareJobInput(user, request, instanceUri);
-    if ('refusal' in prepared) {
-      if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
-      return prepared.refusal;
-    }
-
-    // The unit was reserved for one credit before the formats were known; the rest of the cost of this pair is held now.
-    const short = await holdBaseCredits(unit, user, baseCredits(prepared.sourceFormat, request.targetFormat));
-    if (short) {
-      if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
-      return conversionRefusalResponse(short, instanceUri);
-    }
-
-    let storageKey = request.storageKey;
-    if (!storageKey && request.inputBufferBase64) {
-      const decoded = Buffer.from(request.inputBufferBase64, 'base64');
-      const mimeType = detectFormatFromFilename(request.originalFilename)?.mimeType ?? 'application/octet-stream';
-      storageKey = await storeUploadedBuffer(
-        storageProvider,
-        decoded,
-        { name: request.originalFilename || 'input', type: mimeType, size: decoded.length },
-        user.id
-      );
-      spilledKey = storageKey;
-    }
-
-    const routedBytes = prepared.inputBytes ?? request.fileSize;
-    const cleanOptions = stripEngineControls(request.options);
-    const resClass = resolveResourceClass(prepared.sourceFormat, request.targetFormat, routedBytes, cleanOptions);
-    const targetQueue = getQueueForResourceClass(resClass);
-
-    const job = await handOffConversionJob(
-      unit,
-      targetQueue,
-      {
-        jobId: '',
-        originalFilename: request.originalFilename,
-        sourceFormat: prepared.sourceFormat,
-        targetFormat: request.targetFormat,
-        fileSize: routedBytes,
-        storageKey,
-        options: cleanOptions,
-        userId: user.id,
-        resourceClass: resClass,
-      },
-      {
-        attempts: 2,
-        backoff: { type: 'fixed', delay: 1500 },
-        priority: tierToPriority(user.tier),
-      },
-      { tier: user.tier, inputBytes: prepared.inputBytes }
+  let storageKey = request.storageKey;
+  if (!storageKey && prepared.inlineUploadBuffer) {
+    const mimeType =
+      request.inlineFile?.type ||
+      detectFormatFromFilename(request.originalFilename)?.mimeType ||
+      'application/octet-stream';
+    storageKey = await storeUploadedBuffer(
+      storageProvider,
+      prepared.inlineUploadBuffer,
+      { name: request.originalFilename || 'input', type: mimeType, size: prepared.inlineUploadBuffer.length },
+      user.id
     );
-
-    return NextResponse.json({
-      success: true,
-      jobId: job.id,
-      status: job.state,
-      progress: job.progress,
-      createdAt: job.timestamp,
-      queue: targetQueue.name,
-    });
-  } catch (error: unknown) {
-    if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
-    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
-    if (deadlineProblem) return deadlineProblem;
-    const limitStatus = payloadLimitStatus(error);
-    if (limitStatus !== null) {
-      return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
-        code: refusalCodeOf(error),
-      });
-    }
-    const queueProblem = queueErrorResponse(error, instanceUri);
-    if (queueProblem) return queueProblem;
-    const storageProblem = storageErrorResponse(error, instanceUri);
-    if (storageProblem) return storageProblem;
-    return serverFault('queue/jobs', error, 'Job enqueue error');
+    onSpilledKey(storageKey);
   }
+
+  const routedBytes = prepared.inputBytes ?? request.fileSize;
+  const cleanOptions = stripEngineControls(request.options);
+  const resClass = resolveResourceClass(prepared.sourceFormat, request.targetFormat, routedBytes, cleanOptions);
+  const targetQueue = getQueueForResourceClass(resClass);
+
+  const job = await handOffConversionJob(
+    unit,
+    targetQueue,
+    {
+      jobId: '',
+      originalFilename: request.originalFilename,
+      sourceFormat: prepared.sourceFormat,
+      targetFormat: request.targetFormat,
+      fileSize: routedBytes,
+      storageKey,
+      options: cleanOptions,
+      userId: user.id,
+      resourceClass: resClass,
+    },
+    {
+      attempts: 2,
+      backoff: { type: 'fixed', delay: 1500 },
+      priority: tierToPriority(user.tier),
+    },
+    { tier: user.tier, inputBytes: prepared.inputBytes }
+  );
+
+  return NextResponse.json({
+    success: true,
+    jobId: job.id,
+    status: job.state,
+    progress: job.progress,
+    createdAt: job.timestamp,
+    queue: targetQueue.name,
+  });
 }
 
 /** The 400 problem for a file name the registry has no format for. */
@@ -315,103 +409,182 @@ function inlinePayloadProblem(instanceUri: string): Response {
   return createProblemDetailsResponse(413, INLINE_PAYLOAD_DETAIL, instanceUri);
 }
 
-/** Stores an uploaded form file as the job's input, held to the inline limit and checked against its format; null when it passes. */
-async function storeFormFile(file: File, request: JobRequest, instanceUri: string, ownerUserId: string): Promise<Response | null> {
-  const detected = detectFormatFromFilename(file.name);
-  if (!detected) return unknownSourceProblem(file.name, instanceUri);
-  if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) return inlinePayloadProblem(instanceUri);
-  const buffer = Buffer.from(await file.arrayBuffer());
-  try {
-    assertNotSpoofedFile(buffer, detected.extension, file.name);
-  } catch (err) {
-    return spoofRefusalOrThrow(err);
+function validateInlineFormFile(file: File, instanceUri: string): Response | null {
+  if (file.size === 0) {
+    return failJson(400, 'Conversion payload is empty. File buffer has 0 bytes.');
   }
-  request.originalFilename = file.name;
-  request.fileSize = file.size;
-  request.storageKey = await storeUploadedBuffer(storageProvider, buffer, { name: file.name, type: file.type, size: file.size }, ownerUserId);
-  request.uploadedInline = true;
+  if (!detectFormatFromFilename(file.name)) {
+    return unknownSourceProblem(file.name, instanceUri);
+  }
+  if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) {
+    return inlinePayloadProblem(instanceUri);
+  }
   return null;
 }
 
-/** Reads the `options` form field into the request; a refusal when it is malformed or names a removed option. */
-function applyFormOptions(optionsRaw: string, request: JobRequest, instanceUri: string): Response | null {
-  const parsed = parseOptionsField(optionsRaw, instanceUri);
-  if ('refusal' in parsed) return parsed.refusal;
-  const optionsProblem = legacyOptionsProblem(parsed.options, instanceUri);
-  if (optionsProblem) return optionsProblem;
-  request.options = parsed.options;
-  return null;
-}
-
-/** A job request from a multipart form: a file in it is stored first and held to the inline limit. */
-async function readFormJobRequest(req: NextRequest, instanceUri: string, ownerUserId: string): Promise<ParsedJobRequest> {
+/** A job request from a multipart form: keeps the file lazy without buffering or writing to storage yet. */
+async function readFormJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
   const multipart = await readMultipartForm(req);
   if (multipart.malformed) {
     return { refusal: failJson(400, 'Invalid or malformed multipart/form-data body.') };
   }
   const formData = multipart.form;
-  const file = formData.get('file') as File | null;
-  const optionsRaw = formData.get('options') as string | null;
-  const request: JobRequest = {
-    originalFilename: '',
-    targetFormat: (formData.get('targetFormat') as string) || '',
-    options: {},
-    storageKey: (formData.get('storageKey') as string) || undefined,
-    fileSize: 0,
-  };
+  const sentAsFile = fileSentAsText(formData, MULTIPART_TEXT_FIELDS);
+  if (sentAsFile) {
+    return { refusal: failJson(400, `The "${sentAsFile}" field must be text, not a file.`) };
+  }
+  const rawFile = formData.get('file');
+  if (rawFile !== null && !(rawFile instanceof File)) {
+    return { refusal: failJson(400, 'Invalid "file" field: expected an uploaded file.') };
+  }
 
-  const optionsRefusal = optionsRaw ? applyFormOptions(optionsRaw, request, instanceUri) : null;
-  if (optionsRefusal) return { refusal: optionsRefusal };
-  const fileRefusal = file ? await storeFormFile(file, request, instanceUri, ownerUserId) : null;
-  if (fileRefusal) return { refusal: fileRefusal };
-  return { request };
+  let options: ConversionOptions = {};
+  const optionsRaw = formText(formData, 'options');
+  if (optionsRaw) {
+    const parsedOptions = parseOptionsField(optionsRaw, instanceUri);
+    if ('refusal' in parsedOptions) return parsedOptions;
+    options = parsedOptions.options;
+  }
+
+  const file = rawFile ?? undefined;
+  if (file) {
+    const fileProblem = validateInlineFormFile(file, instanceUri);
+    if (fileProblem) return { refusal: fileProblem };
+  }
+
+  const targetFormat = formText(formData, 'targetFormat')?.trim() || '';
+  if (!targetFormat) {
+    return { refusal: failJson(400, 'Missing required parameter: "targetFormat"') };
+  }
+
+  const storageKeyRaw = formText(formData, 'storageKey');
+  if (storageKeyRaw !== undefined && storageKeyRaw.length > MAX_NAME_OR_KEY_CHARS) {
+    return { refusal: failJson(400, 'Invalid "storageKey" parameter: must be a non-empty string.') };
+  }
+  const storageKey = storageKeyRaw?.trim() || undefined;
+
+  const sourceFormatRaw = formText(formData, 'sourceFormat');
+  if (sourceFormatRaw !== undefined && sourceFormatRaw.length > MAX_SOURCE_FORMAT_CHARS) {
+    return { refusal: failJson(400, 'Invalid "sourceFormat" parameter: must be a string.') };
+  }
+  const sourceFormat = sourceFormatRaw?.trim() || undefined;
+
+  if (!file && !storageKey) {
+    return { refusal: failJson(400, 'Missing required input: provide "file" or "storageKey".') };
+  }
+
+  return {
+    request: {
+      originalFilename: file ? file.name : '',
+      targetFormat,
+      sourceFormat,
+      options,
+      storageKey,
+      inlineFile: file,
+      fileSize: file ? file.size : 0,
+    },
+  };
 }
 
-/** The parsed JSON object of a request (null when the body is not valid JSON or not an object), or the 413 of a body that is too large. */
-async function readJsonObject(req: NextRequest, instanceUri: string): Promise<{ body: ReturnType<typeof JSON.parse> | null } | { refusal: Response }> {
+/** The parsed plain JSON object of a request (null when invalid JSON or non-object/array), or the 413 of a body that is too large. */
+async function readJsonObject(req: NextRequest, instanceUri: string): Promise<{ body: Record<string, unknown> | null } | { refusal: Response }> {
   const read = await readBoundedJsonText(req, INLINE_JSON_BODY_MAX_BYTES, instanceUri, INLINE_JOB_PAYLOAD_MAX_BYTES);
   if ('refusal' in read) return read;
   try {
-    const parsed = JSON.parse(read.text);
-    return { body: parsed && typeof parsed === 'object' ? parsed : null };
+    const parsed: unknown = JSON.parse(read.text);
+    const body = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+    return { body };
   } catch {
     return { body: null };
   }
 }
 
-/** A job request from a JSON body: inline bytes are held to the inline limit. */
-async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
-  const read = await readJsonObject(req, instanceUri);
-  if ('refusal' in read) return read;
-  const { body } = read;
-  if (!body) {
-    return { refusal: NextResponse.json({ success: false, error: 'Invalid JSON body provided in request.' }, { status: 400 }) };
+function isOptionalStringWithin(value: unknown, maxLength: number): value is string | undefined {
+  return value === undefined || (typeof value === 'string' && value.length <= maxLength);
+}
+
+function validateJsonTextFields(body: Record<string, unknown>): Response | null {
+  if (!isOptionalStringWithin(body.filename, MAX_NAME_OR_KEY_CHARS) || !isOptionalStringWithin(body.originalFilename, MAX_NAME_OR_KEY_CHARS)) {
+    return failJson(400, 'Invalid "filename" parameter: must be a string.');
   }
-  if (body.options !== undefined && !isConversionOptionsObject(body.options)) {
-    return { refusal: NextResponse.json({ success: false, error: 'The "options" field must be a JSON object.' }, { status: 400 }) };
+  if (typeof body.targetFormat !== 'string' || body.targetFormat.trim().length === 0) {
+    return failJson(400, 'Missing required parameter: "targetFormat"');
   }
-  const options: ConversionOptions = body.options ?? {};
-  const optionsProblem = legacyOptionsProblem(options, instanceUri);
-  if (optionsProblem) return { refusal: optionsProblem };
-  const inputBufferBase64: unknown = body.inputBufferBase64;
-  if (typeof inputBufferBase64 === 'string' && decodedBase64Bytes(inputBufferBase64) > INLINE_JOB_PAYLOAD_MAX_BYTES) {
-    return { refusal: inlinePayloadProblem(instanceUri) };
+  if (!isOptionalStringWithin(body.sourceFormat, MAX_SOURCE_FORMAT_CHARS)) {
+    return failJson(400, 'Invalid "sourceFormat" parameter: must be a string.');
   }
+  return null;
+}
+
+function validateJsonInputFields(body: Record<string, unknown>, instanceUri: string): Response | null {
+  if (
+    body.storageKey !== undefined &&
+    (typeof body.storageKey !== 'string' || body.storageKey.trim().length === 0 || body.storageKey.length > MAX_NAME_OR_KEY_CHARS)
+  ) {
+    return failJson(400, 'Invalid "storageKey" parameter: must be a non-empty string.');
+  }
+  if (body.inputBufferBase64 !== undefined && (typeof body.inputBufferBase64 !== 'string' || body.inputBufferBase64.length === 0)) {
+    return failJson(400, 'Invalid "inputBufferBase64" parameter: must be a non-empty base64 string.');
+  }
+  if (typeof body.inputBufferBase64 === 'string' && decodedBase64Bytes(body.inputBufferBase64) > INLINE_JOB_PAYLOAD_MAX_BYTES) {
+    return inlinePayloadProblem(instanceUri);
+  }
+  if (body.fileSize !== undefined && (typeof body.fileSize !== 'number' || !Number.isFinite(body.fileSize) || body.fileSize < 0)) {
+    return failJson(400, 'Invalid "fileSize" parameter: must be a non-negative number.');
+  }
+  return null;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseJsonJobFields(body: Record<string, unknown>, instanceUri: string): ParsedJobRequest {
+  let options: ConversionOptions = {};
+  if (body.options !== undefined) {
+    const checked = validateJobOptions(body.options, instanceUri);
+    if ('refusal' in checked) return checked;
+    options = checked.options;
+  }
+
+  const textRefusal = validateJsonTextFields(body);
+  if (textRefusal) return { refusal: textRefusal };
+
+  const inputRefusal = validateJsonInputFields(body, instanceUri);
+  if (inputRefusal) return { refusal: inputRefusal };
+
+  const storageKey = nonEmptyString(body.storageKey);
+  const inputBufferBase64 = typeof body.inputBufferBase64 === 'string' ? body.inputBufferBase64 : undefined;
+  if (!storageKey && !inputBufferBase64) {
+    return { refusal: failJson(400, 'Missing required input: provide "storageKey" or "inputBufferBase64".') };
+  }
+
+  const originalFilename = nonEmptyString(body.filename) ?? nonEmptyString(body.originalFilename) ?? '';
   return {
     request: {
-      originalFilename: body.filename || body.originalFilename || '',
-      targetFormat: body.targetFormat || '',
+      originalFilename,
+      targetFormat: (body.targetFormat as string).trim(),
+      sourceFormat: nonEmptyString(body.sourceFormat),
       options,
-      storageKey: body.storageKey,
-      inputBufferBase64: body.inputBufferBase64,
-      fileSize: body.fileSize || 0,
+      storageKey,
+      inputBufferBase64,
+      fileSize: typeof body.fileSize === 'number' ? body.fileSize : 0,
     },
   };
 }
 
-function readJobRequest(req: NextRequest, instanceUri: string, ownerUserId: string): Promise<ParsedJobRequest> {
-  const contentType = req.headers.get('content-type') || '';
-  return contentType.includes('multipart/form-data') ? readFormJobRequest(req, instanceUri, ownerUserId) : readJsonJobRequest(req, instanceUri);
+/** A job request from a JSON body: field types, options, and inline limits are checked before reserving quota. */
+async function readJsonJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+  const read = await readJsonObject(req, instanceUri);
+  if ('refusal' in read) return read;
+  if (!read.body) {
+    return { refusal: failJson(400, 'Invalid JSON body provided in request.') };
+  }
+  return parseJsonJobFields(read.body, instanceUri);
+}
+
+function readJobRequest(req: NextRequest, instanceUri: string): Promise<ParsedJobRequest> {
+  return isMultipartBody(req) ? readFormJobRequest(req, instanceUri) : readJsonJobRequest(req, instanceUri);
 }
 
 const LISTABLE_JOB_STATES: ReadonlySet<JobState> = new Set<JobState>(['waiting', 'active', 'completed', 'failed', 'delayed', 'cancelled']);

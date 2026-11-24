@@ -32,7 +32,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
-- Validate field types, required inputs, format pairs and options before reserving quota in POST /api/queue/jobs, and call stored.release() on errors.
 - Allow capability-owned upload keys in POST /api/v1/archives/inspect, release downloaded temp objects, and dispatch inspections to workers in queue-only mode.
 - Make tool job status transitions atomic against cancellation, wrap POST /api/tools/jobs in withinSingleRequest, return 404 on foreign /api/v1/jobs/[id], and harden /api/storage/bundle.
 - Isolate LibreOffice OSL_PIPE sockets inside the job directory and narrow ocr-onnx-helper.ts readDirs from process.cwd() to its bundle and node_modules.
