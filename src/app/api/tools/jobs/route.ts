@@ -11,6 +11,7 @@ import { STORAGE_OBJECT_NOT_FOUND, mayUseStorageKeyAsJobInput } from '@/lib/api-
 import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { isUploadKey, resultKey, stagedInputKey } from '@/lib/storage/key-namespace';
+import { JobCancelledError } from '@/lib/queue/bullmq-engine';
 import { JobTimeoutError, QueueUnavailableError } from '@/lib/types';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
 import { getQueueForResourceClass } from '@/lib/queue/conversion-queue';
@@ -28,8 +29,11 @@ import {
   deleteToolJob,
   getToolJob,
   registerLocalToolAbort,
+  registerLocalToolRun,
   saveToolJob,
+  toolResultStorageKeys,
   unregisterLocalToolAbort,
+  updateExistingToolJob,
   type StoredToolJobResult,
   type ToolJobState,
 } from '@/lib/tools/tool-job-store';
@@ -44,7 +48,7 @@ import {
   type WebToolOutput,
   type WebToolOptions,
 } from '@/lib/tools/web-tools';
-import { saveRetainedResult } from '@/lib/storage/retention-service';
+import { eraseOwnedFile, saveRetainedResult } from '@/lib/storage/retention-service';
 
 export const dynamic = 'force-dynamic';
 
@@ -216,6 +220,7 @@ async function cleanupTemporaryUploads(refs: readonly StoredInputFileRef[] | und
 interface QueuedToolDispatchInput {
   caller: User;
   jobId: string;
+  initialState: ToolJobState;
   parsed: ParsedToolJobInputs;
   options: WebToolOptions;
   reservationId: string | undefined;
@@ -225,7 +230,7 @@ interface QueuedToolDispatchInput {
 }
 
 async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<NextResponse> {
-  const { caller, jobId, parsed, options, reservationId, queueOnly, liveWorker, instanceUri } = input;
+  const { caller, jobId, initialState, parsed, options, reservationId, queueOnly, liveWorker, instanceUri } = input;
   const stagedInlineKeys: string[] = [];
   try {
     await withReservedUnit(reservationId, async (reserved) => {
@@ -244,6 +249,13 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
               return { key, name: file.name };
             })
           );
+
+      if (stagedInlineKeys.length > 0 || (parsed.storedRefs && parsed.storedRefs.length > 0)) {
+        const updated = await updateExistingToolJob({ ...initialState, inputKeys: storedRefs.map((ref) => ref.key) });
+        if (!updated) {
+          throw new JobCancelledError('Tool job was deleted before enqueue.');
+        }
+      }
 
       const cleanupKeys = [
         ...stagedInlineKeys,
@@ -296,19 +308,28 @@ interface LocalToolRunInput {
   releaseSlot: () => void;
 }
 
+async function discardToolOutputs(result: StoredToolJobResult): Promise<void> {
+  await Promise.all(
+    toolResultStorageKeys(result).map((key) => eraseOwnedFile(s3Storage, key).catch(() => undefined))
+  );
+}
+
 function launchLocalToolJob(input: LocalToolRunInput): void {
   const { caller, jobId, initialState, parsed, options, reservationId, releaseSlot } = input;
-  const abortController = registerLocalToolAbort(jobId);
-  void withReservedUnit(reservationId, async (reserved) => {
+  const abortController = registerLocalToolAbort(jobId, caller.id);
+  const runPromise = withReservedUnit(reservationId, async (reserved) => {
     let deadlineTimer: NodeJS.Timeout | undefined;
     let timedOut = false;
     try {
       const current = await getToolJob(jobId);
-      if (current?.status === 'cancelled' || abortController.signal.aborted) {
+      if (!current || current.status === 'cancelled' || abortController.signal.aborted) {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
-      await saveToolJob({ ...initialState, status: 'running', progress: 25 });
+      if (!(await updateExistingToolJob({ ...current, status: 'running', progress: 25 }))) {
+        await cleanupTemporaryUploads(parsed.storedRefs);
+        return;
+      }
       const stagedReleases: Array<() => Promise<void> | void> = [];
       let output: WebToolOutput;
       try {
@@ -338,23 +359,35 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
         await Promise.all(stagedReleases.map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
       }
       const afterRun = await getToolJob(jobId);
-      if (afterRun?.status === 'cancelled' || (abortController.signal.aborted && !timedOut)) {
+      if (!afterRun || afterRun.status === 'cancelled' || (abortController.signal.aborted && !timedOut)) {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
       const storedResult = await storeToolOutput(output, caller);
+      const latest = await getToolJob(jobId);
+      const saved =
+        latest && latest.status !== 'cancelled' && !(abortController.signal.aborted && !timedOut)
+          ? await updateExistingToolJob({ ...latest, status: 'completed', progress: 100, result: storedResult })
+          : false;
+      if (!saved) {
+        await discardToolOutputs(storedResult);
+        await cleanupTemporaryUploads(parsed.storedRefs);
+        return;
+      }
       await cleanupTemporaryUploads(parsed.storedRefs);
-      await saveToolJob({ ...initialState, status: 'completed', progress: 100, result: storedResult });
       await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });
     } catch (err: unknown) {
       await cleanupTemporaryUploads(parsed.storedRefs);
       const current = await getToolJob(jobId);
-      if (!timedOut && (current?.status === 'cancelled' || abortController.signal.aborted)) {
-        await saveToolJob({ ...initialState, status: 'cancelled' }).catch(() => undefined);
+      if (!current) {
         return;
       }
-      await saveToolJob({
-        ...initialState,
+      if (!timedOut && (current.status === 'cancelled' || abortController.signal.aborted)) {
+        await updateExistingToolJob({ ...current, status: 'cancelled' }).catch(() => undefined);
+        return;
+      }
+      await updateExistingToolJob({
+        ...current,
         status: 'failed',
         error: err instanceof Error ? err.message : String(err),
       }).catch(() => undefined);
@@ -363,6 +396,7 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
       releaseSlot();
     }
   });
+  registerLocalToolRun(jobId, caller.id, runPromise);
 }
 
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
@@ -439,12 +473,14 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   }
 
   const jobId = crypto.randomUUID();
+  const initialInputKeys = parsed.storedRefs?.map((ref) => ref.key);
   const initialState: ToolJobState = {
     id: jobId,
     userId: caller.id,
     tool: parsed.toolName,
     status: 'queued',
     progress: 0,
+    ...(initialInputKeys && initialInputKeys.length > 0 ? { inputKeys: initialInputKeys } : {}),
     createdAt: Date.now(),
   };
   try {
@@ -461,6 +497,7 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     return dispatchQueuedToolJob({
       caller,
       jobId,
+      initialState,
       parsed,
       options,
       reservationId: unit.reservationId,

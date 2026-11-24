@@ -36,6 +36,7 @@ import { createV1PreflightResponse } from '@/lib/api/v1-cors';
 import type { User } from '@/lib/auth/types';
 import type { UploadReservation } from '@/lib/api-keys/anonymous-upload-budget';
 import { storageErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
+import { multipartUploadKey } from '@/lib/storage/key-namespace';
 import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 import { closeSessionBudget, reserveSessionBudget, resumeActiveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
@@ -303,7 +304,10 @@ async function openLocalUpload(
     throw new Error('Multipart uploads need local storage or an object store that presigns part URLs.');
   }
   const safeFilename = path.basename(filename);
-  const uniqueKey = `uploads/${Date.now()}_${crypto.randomBytes(LOCAL_KEY_RANDOM_BYTES).toString('hex')}_${safeFilename}`;
+  const uniqueKey = multipartUploadKey(
+    userId,
+    `${Date.now()}_${crypto.randomBytes(LOCAL_KEY_RANDOM_BYTES).toString('hex')}_${safeFilename}`
+  );
   const session = await objectStorage.createMultipart(
     uniqueKey,
     { contentType: mimeType, filename: safeFilename },

@@ -3,7 +3,7 @@ import { validateApiAccess, authErrorHeaders } from './guard';
 import { conversionQueue } from '../queue/conversion-queue';
 import { graphScheduler } from '../queue/graph';
 import { storageProvider } from '../storage';
-import { classifyStorageKey, isUploadKey } from '../storage/key-namespace';
+import { classifyStorageKey } from '../storage/key-namespace';
 import { isResultDeleted } from '../storage/retention-service';
 import { QueueUnavailableError } from '../types';
 import { isAnonymousUserId } from '../auth/anonymous-identity';
@@ -82,7 +82,7 @@ export async function resolveObjectOwnership(key: string, deps?: OwnershipResolv
   if (classified.namespace === 'other') {
     return { resolved: false };
   }
-  if (classified.namespace === 'user-conversion') {
+  if (classified.namespace === 'user-conversion' || classified.namespace === 'user-upload') {
     return { resolved: true, ownerUserId: classified.userId };
   }
   const readJob = deps?.getJob ?? ((jobId: string) => conversionQueue.getJob(jobId));
@@ -113,18 +113,20 @@ export async function resolveObjectOwnership(key: string, deps?: OwnershipResolv
   }
   if (classified.namespace === 'intermediate') {
     const match = INTERMEDIATE_GRAPH_ID_PATTERN.exec(key);
-    if (match) {
-      try {
-        const graphState = await scheduler.getGraphState(match[1]);
-        if (graphState && (graphState.status === 'failed' || graphState.status === 'cancelled')) {
-          return { resolved: false };
-        }
-      } catch (err) {
-        if (err instanceof QueueUnavailableError) {
-          return { resolved: false };
-        }
-        throw err;
+    if (!match) {
+      return { resolved: false };
+    }
+    try {
+      const graphState = await scheduler.getGraphState(match[1]);
+      if (!graphState || graphState.status === 'failed' || graphState.status === 'cancelled') {
+        return { resolved: false };
       }
+      return { resolved: true, ownerUserId: graphState.ownerUserId };
+    } catch (err) {
+      if (err instanceof QueueUnavailableError) {
+        return { resolved: false };
+      }
+      throw err;
     }
   }
   return { resolved: true, ownerUserId: undefined };
@@ -141,10 +143,14 @@ export async function mayUseStorageKeyAsJobInput(
   callerUserId: string | undefined,
   statKey: (key: string) => unknown = (k) => storageProvider.stat(k)
 ): Promise<boolean> {
+  const classified = classifyStorageKey(key);
+  if (classified.namespace === 'other') {
+    return false;
+  }
   if (!(await statKey(key)) || (await isResultDeleted(key))) {
     return false;
   }
-  if (isUploadKey(key)) {
+  if (classified.namespace === 'upload') {
     return true;
   }
   const ownership = await resolveObjectOwnership(key);

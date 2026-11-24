@@ -10,9 +10,11 @@ import { conversionQueue } from '../queue/conversion-queue';
 import { graphScheduler } from '../queue/graph/scheduler';
 import { CANCELLABLE_JOB_STATES, HEARTBEAT_INTERVAL_MS, type JobState } from '../queue/bullmq-engine';
 import { storageProvider } from '../storage';
+import { userConversionPrefix, userUploadPrefix } from '../storage/key-namespace';
 import { tusEngine } from '../storage/tus-engine';
 import { credentialsVault } from '../storage/credentials-vault';
 import { getRetentionLedger } from '../storage/retention-ledger';
+import { abortLocalToolJobsOfUser, drainLocalToolJobsOfUser, eraseUserToolJobs } from '../tools/tool-job-store';
 import {
   accountStoredKeys,
   accountTaggedKeys,
@@ -52,7 +54,7 @@ export interface AccountErasureOptions {
 }
 
 export const MAX_ERASURE_JOBS_PER_RUN = 10_000;
-const WEBHOOK_JOB_STATES: readonly JobState[] = ['waiting', 'delayed', 'completed', 'failed', 'cancelled'];
+const WEBHOOK_JOB_STATES: readonly JobState[] = ['waiting', 'active', 'delayed', 'completed', 'failed', 'cancelled'];
 const DEFAULT_DRAIN_MS = HEARTBEAT_INTERVAL_MS * 2;
 const CANCEL_ROUNDS = 5;
 
@@ -141,11 +143,20 @@ async function cancelAllWork(plan: AccountErasurePlan, drainMs: number): Promise
   return { jobs: [...jobs.values()], graphIds: [...graphIds].sort((a, b) => a.localeCompare(b)) };
 }
 
-async function removeWebhookDeliveries(userId: string): Promise<void> {
+async function removeWebhookDeliveries(userId: string): Promise<string[]> {
   const queue = webhookDispatcher.getQueue();
+  const remaining: string[] = [];
   for (const job of await queue.getJobs([...WEBHOOK_JOB_STATES])) {
-    if (job.data.options?.ownerUserId === userId) await queue.remove(job.id);
+    if (job.data.options?.ownerUserId !== userId) continue;
+    if (job.state === 'active' && typeof queue.cancelJob === 'function') {
+      await queue.cancelJob(job.id, 'The account was deleted').catch(() => undefined);
+    }
+    const removed = await queue.remove(job.id);
+    if (!removed && typeof queue.getJob === 'function' && (await queue.getJob(job.id))) {
+      remaining.push(job.id);
+    }
   }
+  return remaining;
 }
 
 async function forgetFailedLogins(email: string): Promise<void> {
@@ -160,6 +171,7 @@ async function revokeStandingKeysAndSessions(plan: AccountErasurePlan): Promise<
     await getWebhookSecretStore().deleteSecretRecord(userId, keyId);
   }
   await redisUserStore.incrementSessionVersion(userId);
+  abortLocalToolJobsOfUser(userId);
   await tusEngine.terminateSessionsOfOwner(userId);
   for (const credentialId of new Set([...plan.credentialIds, ...(await credentialsVault.listByUser(userId))])) {
     await credentialsVault.delete(credentialId, userId);
@@ -176,24 +188,36 @@ async function purgeStoredArtifactsAndLedger(
     await storageProvider.deleteByPrefix?.(`results/${graphId}/`);
     await storageProvider.deleteByPrefix?.(`intermediate/${graphId}/`);
   }
+  const erasedTools = await eraseUserToolJobs(userId);
   const ledger = getRetentionLedger();
   const ledgerKeys = ledger.allKeys ? await ledger.allKeys() : (await ledger.liveRecords()).map((record) => record.key);
-  for (const key of await accountStoredKeys(userId, work.jobs.map((job) => job.id), work.graphIds, ledgerKeys)) {
+  const storedKeys = new Set([
+    ...(await accountStoredKeys(userId, work.jobs.map((job) => job.id), work.graphIds, ledgerKeys)),
+    ...erasedTools.storageKeys,
+  ]);
+  for (const key of storedKeys) {
     await Promise.resolve(storageProvider.deleteObject(key)).catch(() => false);
     await ledger.forget(key);
   }
   await forgetUploadCompletionReceipts(ledger, ledgerKeys, userId);
-  await storageProvider.deleteByPrefix?.(`conversions/${userId}/`);
+  await storageProvider.deleteByPrefix?.(userConversionPrefix(userId));
+  await storageProvider.deleteByPrefix?.(userUploadPrefix(userId));
 }
 
 /** Erases the account and every key, session, job, file, webhook, usage counter and subscription index tied to it. */
 export async function eraseAccount(plan: AccountErasurePlan, options: AccountErasureOptions = {}): Promise<AccountErasureOutcome> {
   const { userId } = plan;
+  const drainMs = options.drainMs ?? DEFAULT_DRAIN_MS;
   const keyIds = await revokeStandingKeysAndSessions(plan);
-  const work = await cancelAllWork(plan, options.drainMs ?? DEFAULT_DRAIN_MS);
+  const [work, runningLocalTools] = await Promise.all([
+    cancelAllWork(plan, drainMs),
+    drainLocalToolJobsOfUser(userId, drainMs),
+  ]);
   await storageProvider.abortUploadSessionsOfOwner?.(userId);
 
-  const stillActive = await removeEndedJobs(work.jobs.map((job) => job.id));
+  const queueStillActive = await removeEndedJobs(work.jobs.map((job) => job.id));
+  const webhookStillActive = await removeWebhookDeliveries(userId);
+  const stillActive = [...new Set([...queueStillActive, ...runningLocalTools, ...webhookStillActive])];
   if (stillActive.length > 0) return { runningJobIds: stillActive };
 
   await purgeStoredArtifactsAndLedger(userId, work);

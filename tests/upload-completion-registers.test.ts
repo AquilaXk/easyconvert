@@ -105,7 +105,16 @@ describe('every completion of an upload records it', () => {
     const done = await uploadsPost(json('/api/v1/uploads?action=complete', user, { uploadId: init.uploadId, parts: [{ partNumber: 1, etag: part.etag }] }), { params: Promise.resolve({}) });
 
     expect(done.status).toBe(200);
-    await expectRegisteredAsUpload((await done.json()).key, user, 'upload');
+    const completedKey = (await done.json()).key as string;
+    await expectRegisteredAsUpload(completedKey, user, 'account-upload');
+
+    const stranger = await createUser('action-stranger');
+    const encoded = encodeURIComponent(completedKey);
+    const strangerRes = await downloadRoute(
+      new NextRequest(`${BASE_URL}/api/storage/file/${encoded}`, { headers: asUser(stranger) }),
+      { params: Promise.resolve({ key: [encoded] }) }
+    );
+    expect(strangerRes.status).toBe(404);
   });
 
   it('registers a tus upload completed by its last PATCH', async () => {

@@ -13,6 +13,8 @@ import {
   attachInputCleanupOnCompletion,
 } from '../src/lib/queue/conversion-queue';
 import { Queue, Worker } from '../src/lib/queue/bullmq-engine';
+import { graphScheduler } from '../src/lib/queue/graph';
+import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { storageProvider } from '../src/lib/storage';
 import { FileRetentionLedger, getRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { restoreIsolatedRetentionLedger } from './helpers/isolated-retention-ledger';
@@ -291,6 +293,63 @@ describe('job submission authorizes caller-supplied storage keys (#249)', () => 
     expect(v1Res.status).toBe(202);
     const v1Body = await v1Res.json();
     expect((await conversionQueue.getJob(v1Body.jobId))?.data.storageKey).toBe(uploadKey);
+  });
+
+  it('restricts uploads/<userId>/... keys to their owning account', async () => {
+    const alice = await createUser('input_upload_alice');
+    const bob = await createUser('input_upload_bob');
+    const aliceUploadKey = storeCsv(`uploads/${alice.id}/${uniqueSuffix()}_scores.csv`);
+
+    const bobRes = await v1Submit(aliceUploadKey, await writeKeyHeaders(bob));
+    expect(bobRes.status).toBe(404);
+    expect((await bobRes.json()).detail).toBe(NOT_FOUND_DETAIL);
+
+    const anonLegacyRes = await legacySubmit(aliceUploadKey);
+    expect(anonLegacyRes.status).toBe(404);
+    expect(await anonLegacyRes.json()).toEqual({ success: false, error: NOT_FOUND_DETAIL });
+
+    const aliceRes = await v1Submit(aliceUploadKey, await writeKeyHeaders(alice));
+    expect(aliceRes.status).toBe(202);
+    const aliceBody = await aliceRes.json();
+    expect((await conversionQueue.getJob(aliceBody.jobId))?.data.storageKey).toBe(aliceUploadKey);
+  });
+
+  it('rejects traversal keys climbing out of uploads/ before touching storage stat', async () => {
+    const alice = await createUser('input_traversal_alice');
+    const secretKey = storeCsv(`conversions/${alice.id}/${uniqueSuffix()}_scores.csv`);
+    const statSpy = vi.spyOn(storageProvider, 'stat');
+    const climbingKey = `uploads/../${secretKey}`;
+
+    const res = await v1Submit(climbingKey, await writeKeyHeaders(alice));
+    expect(res.status).toBe(404);
+    expect((await res.json()).detail).toBe(NOT_FOUND_DETAIL);
+    expect(statSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts intermediate/<ownedGraphId>/... for its owner in a follow-up job and rejects strangers', async () => {
+    const alice = await createUser('input_inter_alice');
+    const bob = await createUser('input_inter_bob');
+    const graphId = `graph_${uniqueSuffix()}`;
+    await graphScheduler.initGraph(
+      graphId,
+      sealGraph(graphId, {
+        nodes: {
+          upload: { op: 'import.upload', storageKey: 'uploads/src.csv' },
+          conv: { op: 'convert', input: 'upload', targetFormat: 'json' },
+        },
+      }),
+      { ownerUserId: alice.id }
+    );
+    const interKey = storeCsv(`intermediate/${graphId}/conv/scores.csv`);
+
+    const bobRes = await v1Submit(interKey, await writeKeyHeaders(bob));
+    expect(bobRes.status).toBe(404);
+    expect((await bobRes.json()).detail).toBe(NOT_FOUND_DETAIL);
+
+    const aliceRes = await v1Submit(interKey, await writeKeyHeaders(alice));
+    expect(aliceRes.status).toBe(202);
+    const aliceBody = await aliceRes.json();
+    expect((await conversionQueue.getJob(aliceBody.jobId))?.data.storageKey).toBe(interKey);
   });
 });
 

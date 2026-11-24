@@ -62,6 +62,10 @@ async function authorizeAndStat(
   return { resolved: true, stored: await s3Storage.stat(key), ownerUserId: ownership.ownerUserId };
 }
 
+function canProbeLiteralKey(rawKey: string, fullKey: string, primaryResolved: boolean): boolean {
+  return rawKey !== fullKey && (primaryResolved || !fullKey.split('/').some((seg) => seg === '.' || seg === '..'));
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ key: string[] }> }
@@ -91,7 +95,7 @@ export async function GET(
     if (primary.denied) return primary.denied;
     ownershipResolved = primary.resolved;
     stored = primary.stored ?? null;
-    if (!stored && rawKey !== fullKey) {
+    if (!stored && canProbeLiteralKey(rawKey, fullKey, primary.resolved)) {
       const literal = await authorizeAndStat(req, rawKey, notFound);
       if (literal.denied) return literal.denied;
       if (literal.resolved) {
@@ -229,7 +233,7 @@ export async function DELETE(
     ownershipResolved = primary.resolved;
     stored = primary.stored ?? null;
     ownerUserId = primary.ownerUserId;
-    if (!stored && rawKey !== fullKey) {
+    if (!stored && canProbeLiteralKey(rawKey, fullKey, primary.resolved)) {
       const literal = await authorizeAndStat(req, rawKey, notFound);
       if (literal.denied) return literal.denied;
       if (literal.resolved) {

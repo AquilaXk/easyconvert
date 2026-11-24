@@ -5,12 +5,13 @@ import { isFinalFailure } from '../queue/job-failure';
 import { sanitizeNodeOutputFilename } from '../queue/graph/node-jobs';
 import { openPasswordOption } from '../queue/option-secrets';
 import type { IStorageBackend } from '../storage/oci-storage';
+import { ANONYMOUS_RESULT_OWNER } from '../auth/anonymous-identity';
 import { isUploadKey, resultKey } from '../storage/key-namespace';
-import { saveRetainedResult } from '../storage/retention-service';
+import { eraseOwnedFile, saveRetainedResult } from '../storage/retention-service';
 import { scopeStorageObjects } from '../storage/scoped-storage';
 import type { ConversionJobData, ConversionJobResult } from '../types';
 import type { WebTool, WebToolOptions } from './tool-names';
-import { getToolJob, saveToolJob, type StoredToolJobResult, type ToolJobState } from './tool-job-store';
+import { getToolJob, toolResultStorageKeys, updateExistingToolJob, type StoredToolJobResult } from './tool-job-store';
 import { assertToolInput, runWebTool, type WebToolFile, type WebToolOutput } from './web-tools';
 
 export async function storeQueuedToolOutput(
@@ -64,17 +65,19 @@ export async function cleanupQueuedToolUploads(
 async function markToolJobRunningOrThrow(
   job: Job<ConversionJobData, ConversionJobResult>,
   rootStorage: IStorageBackend,
-  baseState: ToolJobState,
   cleanupKeys: readonly string[],
   isTransientWait: boolean
 ): Promise<void> {
   if (isTransientWait) return;
   const current = await getToolJob(job.id);
-  if (current?.status === 'cancelled' || job.signal?.aborted) {
+  if (!current || current.status === 'cancelled' || job.signal?.aborted) {
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     throw new JobCancelledError('Tool job cancelled before execution');
   }
-  await saveToolJob({ ...(current ?? baseState), status: 'running', progress: 25 });
+  if (!(await updateExistingToolJob({ ...current, status: 'running', progress: 25 }))) {
+    await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
+    throw new JobCancelledError('Tool job cancelled before execution');
+  }
 }
 
 async function loadQueuedToolFiles(
@@ -101,7 +104,7 @@ async function assertNotCancelledAfterRun(
     return;
   }
   const afterRun = await getToolJob(job.id);
-  if (afterRun?.status === 'cancelled' || job.signal?.aborted) {
+  if (!afterRun || afterRun.status === 'cancelled' || job.signal?.aborted) {
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     throw new JobCancelledError('Tool job cancelled');
   }
@@ -145,7 +148,6 @@ async function handleQueuedToolFailure(
   err: unknown,
   job: Job<ConversionJobData, ConversionJobResult>,
   rootStorage: IStorageBackend,
-  baseState: ToolJobState,
   cleanupKeys: readonly string[],
   isTransientWait: boolean
 ): Promise<never> {
@@ -155,7 +157,7 @@ async function handleQueuedToolFailure(
     if (!isTransientWait) {
       const latest = await getToolJob(job.id);
       if (latest && latest.status !== 'completed') {
-        await saveToolJob({ ...latest, status: 'cancelled' }).catch(() => undefined);
+        await updateExistingToolJob({ ...latest, status: 'cancelled' }).catch(() => undefined);
       }
     }
     throw err instanceof JobCancelledError ? err : new JobCancelledError('Tool job cancelled');
@@ -165,11 +167,13 @@ async function handleQueuedToolFailure(
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     if (!isTransientWait) {
       const latest = await getToolJob(job.id);
-      await saveToolJob({
-        ...(latest ?? baseState),
-        status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      }).catch(() => undefined);
+      if (latest) {
+        await updateExistingToolJob({
+          ...latest,
+          status: 'failed',
+          error: err instanceof Error ? err.message : String(err),
+        }).catch(() => undefined);
+      }
     }
   }
   throw err;
@@ -185,21 +189,12 @@ export async function processQueuedToolJob(
 ): Promise<ConversionJobResult> {
   const payload = job.data.toolJob!;
   const toolName = payload.tool as WebTool;
-  const ownerUserId = job.data.userId || 'anonymous';
+  const ownerUserId = job.data.userId || ANONYMOUS_RESULT_OWNER;
   const isTransientWait = job.data.transientSyncWait === true;
   const startedAt = Date.now();
   const cleanupKeys = payload.cleanupUploadKeys ?? payload.storedRefs.map((ref) => ref.key);
 
-  const baseState: ToolJobState = {
-    id: job.id,
-    userId: ownerUserId,
-    tool: toolName,
-    status: 'queued',
-    progress: 0,
-    createdAt: job.timestamp || startedAt,
-  };
-
-  await markToolJobRunningOrThrow(job, rootStorage, baseState, cleanupKeys, isTransientWait);
+  await markToolJobRunningOrThrow(job, rootStorage, cleanupKeys, isTransientWait);
 
   const scope = scopeStorageObjects(rootStorage);
   try {
@@ -211,15 +206,24 @@ export async function processQueuedToolJob(
     await assertNotCancelledAfterRun(job, rootStorage, cleanupKeys, isTransientWait);
 
     const storedResult = await storeQueuedToolOutput(rootStorage, output, ownerUserId);
-    await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
-
     if (!isTransientWait) {
       const latest = await getToolJob(job.id);
-      await saveToolJob({ ...(latest ?? baseState), status: 'completed', progress: 100, result: storedResult });
+      const saved =
+        latest && latest.status !== 'cancelled' && !job.signal?.aborted
+          ? await updateExistingToolJob({ ...latest, status: 'completed', progress: 100, result: storedResult })
+          : false;
+      if (!saved) {
+        await Promise.all(
+          toolResultStorageKeys(storedResult).map((key) => eraseOwnedFile(rootStorage, key).catch(() => undefined))
+        );
+        await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
+        throw new JobCancelledError('Tool job cancelled before completion');
+      }
     }
+    await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     return buildQueuedToolConversionResult(job.id, toolName, output, storedResult, startedAt);
   } catch (err: unknown) {
-    return await handleQueuedToolFailure(err, job, rootStorage, baseState, cleanupKeys, isTransientWait);
+    return await handleQueuedToolFailure(err, job, rootStorage, cleanupKeys, isTransientWait);
   } finally {
     await scope.releaseAll();
   }

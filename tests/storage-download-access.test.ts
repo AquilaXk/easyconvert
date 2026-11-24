@@ -11,6 +11,7 @@ import { conversionQueue } from '../src/lib/queue/conversion-queue';
 import { graphScheduler } from '../src/lib/queue/graph';
 import { nodeOutputKey, sanitizeNodeOutputFilename, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
@@ -110,7 +111,18 @@ describe('/api/storage/file owner access (#249)', () => {
 
   it('serves an intermediate/<graph>/<node>/ key to whoever holds its URL, as the downloadUrl of a graph node advertises', async () => {
     const stranger = await createUser('dl_stranger');
-    const key = storeObject(`intermediate/graph_${uniqueSuffix()}/node_1/out.txt`);
+    const graphId = `graph_${uniqueSuffix()}`;
+    await graphScheduler.initGraph(
+      graphId,
+      sealGraph(graphId, {
+        nodes: {
+          upload: { op: 'import.upload', storageKey: 'uploads/src.txt' },
+          conv: { op: 'convert', input: 'upload', targetFormat: 'json' },
+        },
+      }),
+      { ownerUserId: anonymousUserId('203.0.113.10') }
+    );
+    const key = storeObject(`intermediate/${graphId}/node_1/out.txt`);
 
     const anonymous = await download(key);
     const signedIn = await download(key, sessionHeaders(stranger));
@@ -121,12 +133,13 @@ describe('/api/storage/file owner access (#249)', () => {
     }
   });
 
-  it('resolves the keys the server writes and no other, and keeps an intermediate key out of the inputs of a job as before', async () => {
+  it('resolves the keys the server writes and no other, and fails closed on unregistered intermediate keys', async () => {
     const stranger = await createUser('dl_job_input');
-    const key = storeObject(`intermediate/graph_${uniqueSuffix()}/node_1/out.txt`);
+    const key = storeObject(`intermediate/graph_missing_${uniqueSuffix()}/node_1/out.txt`);
 
     expect(classifyStorageKey(key)).toEqual({ namespace: 'intermediate' });
-    expect(await resolveObjectOwnership(key)).toEqual({ resolved: true, ownerUserId: undefined });
+    expect(await resolveObjectOwnership(key)).toEqual({ resolved: false });
+    expect((await download(key)).status).toBe(404);
     expect(await mayUseStorageKeyAsJobInput(key, stranger.id)).toBe(false);
     for (const unknown of ['intermediate/graph/out.txt', 'intermediate/graph/node', 'tus:session:abc', 'uploads', '.retention/record.json']) {
       expect(classifyStorageKey(unknown), unknown).toEqual({ namespace: 'other' });
@@ -144,11 +157,15 @@ describe('/api/storage/file owner access (#249)', () => {
     const encodedSlash = await downloadRoute(new NextRequest(`${BASE_URL}/api/storage/file/${climbing.replace(/\//g, '%2F')}`), {
       params: Promise.resolve({ key: [climbing.replace(/\//g, '%2F')] }),
     });
+    const encodedDots = await downloadRoute(new NextRequest(`${BASE_URL}/api/storage/file/uploads/%2e%2e/${secret}`), {
+      params: Promise.resolve({ key: ['uploads', '%2e%2e', ...secret.split('/')] }),
+    });
 
-    for (const res of [plain, encodedSlash]) {
+    for (const res of [plain, encodedSlash, encodedDots]) {
       expect(res.status).toBe(404);
     }
     expect(stat.mock.calls.map(([asked]) => asked)).not.toContain(secret);
+    expect(stat).not.toHaveBeenCalled();
   });
 
   it('answers other users and anonymous callers with the missing-object 404 body', async () => {
@@ -282,6 +299,83 @@ describe('/api/storage/file owner access (#249)', () => {
     const anonymousRes = await download(key);
     expect(anonymousRes.status).toBe(404);
     expect(await anonymousRes.json()).toEqual(notFoundBody(key));
+  });
+
+  it('restricts uploads/<userId>/... keys to their owner while preserving capability uploads', async () => {
+    const alice = await createUser('dl_upload_alice');
+    const bob = await createUser('dl_upload_bob');
+    const uuidUploadKey = storeObject(`uploads/${alice.id}/${uniqueSuffix()}_staged.txt`);
+    const syntheticUserId = `user_${uniqueSuffix()}`;
+    const syntheticUploadKey = storeObject(`uploads/${syntheticUserId}/staged.txt`);
+    const capabilityKeys = [
+      storeObject(`uploads/${uniqueSuffix()}_cap.txt`),
+      storeObject('uploads/x/in.txt'),
+      storeObject('uploads/u1/scan.txt'),
+    ];
+
+    expect((await download(uuidUploadKey, sessionHeaders(alice))).status).toBe(200);
+    expect((await download(uuidUploadKey, sessionHeaders(bob))).status).toBe(404);
+    expect((await download(uuidUploadKey)).status).toBe(404);
+    expect(classifyStorageKey(`uploads/${alice.id}/line1\nline2.txt`)).toEqual({
+      namespace: 'user-upload',
+      userId: alice.id,
+    });
+    expect(await resolveObjectOwnership(syntheticUploadKey)).toEqual({ resolved: true, ownerUserId: syntheticUserId });
+    expect(await mayUseStorageKeyAsJobInput(syntheticUploadKey, syntheticUserId)).toBe(true);
+    expect(await mayUseStorageKeyAsJobInput(syntheticUploadKey, bob.id)).toBe(false);
+    expect(await mayUseStorageKeyAsJobInput(syntheticUploadKey, undefined)).toBe(false);
+
+    for (const capKey of capabilityKeys) {
+      expect((await download(capKey)).status).toBe(200);
+      expect((await download(capKey, sessionHeaders(bob))).status).toBe(200);
+    }
+  });
+
+  it('enforces graph ownership on intermediate/<graphId>/<nodeId>/... for downloads and follow-up job inputs', async () => {
+    const alice = await createUser('dl_inter_alice');
+    const bob = await createUser('dl_inter_bob');
+    const ownedGraphId = `graph_owned_${uniqueSuffix()}`;
+    await graphScheduler.initGraph(
+      ownedGraphId,
+      sealGraph(ownedGraphId, {
+        nodes: {
+          upload: { op: 'import.upload', storageKey: 'uploads/src.txt' },
+          conv: { op: 'convert', input: 'upload', targetFormat: 'json' },
+        },
+      }),
+      { ownerUserId: alice.id }
+    );
+    const ownedInterKey = storeObject(`intermediate/${ownedGraphId}/conv/out.txt`);
+
+    expect((await download(ownedInterKey, sessionHeaders(alice))).status).toBe(200);
+    expect((await download(ownedInterKey, sessionHeaders(bob))).status).toBe(404);
+    expect((await download(ownedInterKey)).status).toBe(404);
+    expect(await mayUseStorageKeyAsJobInput(ownedInterKey, alice.id)).toBe(true);
+    expect(await mayUseStorageKeyAsJobInput(ownedInterKey, bob.id)).toBe(false);
+    expect(await mayUseStorageKeyAsJobInput(ownedInterKey, undefined)).toBe(false);
+
+    await graphScheduler.cancelGraph(ownedGraphId, 'cancelled for test');
+    expect(await resolveObjectOwnership(ownedInterKey)).toEqual({ resolved: false });
+    expect((await download(ownedInterKey, sessionHeaders(alice))).status).toBe(404);
+    expect(await mayUseStorageKeyAsJobInput(ownedInterKey, alice.id)).toBe(false);
+
+    const anonGraphId = `graph_anon_${uniqueSuffix()}`;
+    await graphScheduler.initGraph(
+      anonGraphId,
+      sealGraph(anonGraphId, {
+        nodes: {
+          upload: { op: 'import.upload', storageKey: 'uploads/src.txt' },
+          conv: { op: 'convert', input: 'upload', targetFormat: 'json' },
+        },
+      }),
+      { ownerUserId: anonymousUserId('203.0.113.40') }
+    );
+    const anonInterKey = storeObject(`intermediate/${anonGraphId}/conv/out.txt`);
+
+    expect((await download(anonInterKey)).status).toBe(200);
+    expect((await download(anonInterKey, sessionHeaders(bob))).status).toBe(200);
+    expect(await mayUseStorageKeyAsJobInput(anonInterKey, anonymousUserId('198.51.100.1'))).toBe(true);
+    expect(await mayUseStorageKeyAsJobInput(anonInterKey, bob.id)).toBe(true);
   });
 });
 

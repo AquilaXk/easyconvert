@@ -1,6 +1,11 @@
 import crypto from 'node:crypto';
+import { PDFDocument } from 'pdf-lib';
+import { NextRequest } from 'next/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deleteKeysInBatches, eraseAccount, planAccountErasure } from '../scripts/erase-account';
+import { POST as toolJobsPost } from '../src/app/api/tools/jobs/route';
+import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { accountTaggedKeys } from '../src/lib/auth/erase-account-keys';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
@@ -9,6 +14,11 @@ import { enqueueConversionJob } from '../src/lib/queue/enqueue';
 import { removeStoredJob } from '../src/lib/queue/ended-jobs';
 import { graphScheduler } from '../src/lib/queue/graph/scheduler';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
+import {
+  registerLiveWorkerHeartbeat,
+  resetLocalLiveWorkersForTests,
+  unregisterLiveWorkerHeartbeat,
+} from '../src/lib/queue/worker-presence';
 import { checkLoginRateLimit, LOGIN_MAX_FAILED_ATTEMPTS_PER_EMAIL, recordFailedLogin } from '../src/lib/auth/login-rate-limiter';
 import { issueAuthToken } from '../src/lib/auth/auth-email-token-store';
 import { storageProvider } from '../src/lib/storage';
@@ -16,6 +26,19 @@ import { credentialsVault } from '../src/lib/storage/credentials-vault';
 import { getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { registerCompletedUpload, saveRetainedResult } from '../src/lib/storage/retention-service';
 import { tusEngine } from '../src/lib/storage/tus-engine';
+import {
+  deleteToolJob,
+  eraseUserToolJobs,
+  getToolJob,
+  registerLocalToolAbort,
+  saveToolJob,
+  updateExistingToolJob,
+  userToolJobsKey,
+} from '../src/lib/tools/tool-job-store';
+import { processQueuedToolJob } from '../src/lib/tools/queued-tool-runner';
+import * as webToolsMod from '../src/lib/tools/web-tools';
+import { JobCancelledError, type Job } from '../src/lib/queue/bullmq-engine';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { TERMS_VERSION } from '../src/lib/legal/documents';
 import type { WebhookDlqEntry } from '../src/lib/api-keys/types';
 import type { WebhookJobData } from '../src/lib/api-keys/webhook-dispatcher';
@@ -397,6 +420,25 @@ describe.skipIf(!process.env.REDIS_URL)('erasing an account that owns a record o
     const uploadKey = `conversions/${user.id}/everything.csv`;
     await storageProvider.saveObject(uploadKey, Buffer.from('a\n1\n'), 'text/csv', 'everything.csv');
     await registerCompletedUpload(storageProvider, uploadKey);
+    const stagedUploadKey = `uploads/${user.id}/everything-staged.csv`;
+    await storageProvider.saveObject(stagedUploadKey, Buffer.from('a\n1\n'), 'text/csv', 'everything-staged.csv');
+    await registerCompletedUpload(storageProvider, stagedUploadKey, { jobInput: true });
+    const toolJobId = `tool_${crypto.randomUUID()}`;
+    needles.push(toolJobId);
+    const toolInputKey = `uploads/${user.id}/tool_${toolJobId}_in.pdf`;
+    const toolResultKey = `conversions/${user.id}/tool_${toolJobId}_out.pdf`;
+    await storageProvider.saveObject(toolInputKey, Buffer.from('%PDF-1.4\n'), 'application/pdf', 'in.pdf');
+    await saveRetainedResult(storageProvider, toolResultKey, Buffer.from('%PDF-1.4\n'), 'application/pdf', 'out.pdf');
+    await saveToolJob({
+      id: toolJobId,
+      userId: user.id,
+      tool: 'merge',
+      status: 'completed',
+      progress: 100,
+      inputKeys: [toolInputKey],
+      result: { kind: 'file', file: { name: 'out.pdf', size: 9, key: toolResultKey, url: `/api/storage/file/${encodeURIComponent(toolResultKey)}` } },
+      createdAt: Date.now(),
+    });
     const graphId = await runningGraph(user.id);
     needles.push(graphId);
     const graphResult = `results/${graphId}/convert/0/out.json`;
@@ -458,6 +500,11 @@ describe.skipIf(!process.env.REDIS_URL)('erasing an account that owns a record o
 
     expect(await recordsNaming(needles)).toEqual([]);
     expect(await storageProvider.getObject(uploadKey)).toBeUndefined();
+    expect(await storageProvider.getObject(stagedUploadKey)).toBeUndefined();
+    expect(await storageProvider.getObject(toolInputKey)).toBeUndefined();
+    expect(await storageProvider.getObject(toolResultKey)).toBeUndefined();
+    expect(await getRetentionLedger().get(stagedUploadKey)).toBeUndefined();
+    expect(await getToolJob(toolJobId)).toBeNull();
     expect(await storageProvider.getObject(graphResult)).toBeUndefined();
   }, 60_000);
 });
@@ -477,10 +524,16 @@ describe('the webhook deliveries of an erased account', () => {
     };
   }
 
-  it('removes the waiting and delayed ones and leaves the deliveries of other accounts', async () => {
+  it('removes waiting, active and delayed deliveries of the erased account and leaves other accounts intact', async () => {
     const gone = await newAccount('hooks-gone');
     const kept = await newAccount('hooks-kept');
     const queue = webhookDispatcher.getQueue();
+    const activeCandidate = await queue.add('webhook:delivery', delivery(gone.id));
+    let popped = await queue._popNextWaiting?.();
+    for (let taken = 0; popped && popped.id !== activeCandidate.id && taken < 500; taken++) popped = await queue._popNextWaiting?.();
+    expect(popped?.id).toBe(activeCandidate.id);
+    if (popped && popped.state !== 'active') popped.state = 'active';
+    expect((await queue.getJob(activeCandidate.id))?.state).toBe('active');
     const waiting = await queue.add('webhook:delivery', delivery(gone.id));
     const delayed = await queue.add('webhook:delivery', delivery(gone.id), { delay: 60 * 60 * 1000 });
     const others = await queue.add('webhook:delivery', delivery(kept.id));
@@ -489,9 +542,558 @@ describe('the webhook deliveries of an erased account', () => {
 
       expect(await queue.getJob(waiting.id)).toBeUndefined();
       expect(await queue.getJob(delayed.id)).toBeUndefined();
+      expect(await queue.getJob(activeCandidate.id)).toBeUndefined();
       expect(await queue.getJob(others.id)).toBeDefined();
     } finally {
-      await queue.remove(others.id);
+      await queue.remove(waiting.id).catch(() => undefined);
+      await queue.remove(delayed.id).catch(() => undefined);
+      await queue.remove(activeCandidate.id).catch(() => undefined);
+      await queue.remove(others.id).catch(() => undefined);
+    }
+  });
+});
+
+describe('staged uploads and tool_job records of an erased account', () => {
+  it('deletes uploads/<userId>/... staged objects and ledger records while preserving another account', async () => {
+    const gone = await newAccount('staged-gone');
+    const kept = await newAccount('staged-kept');
+    const goneStaged = `uploads/${gone.id}/sync_staged.csv`;
+    const goneLedgerStaged = `uploads/${gone.id}/direct_staged.csv`;
+    const keptStaged = `uploads/${kept.id}/sync_staged.csv`;
+
+    await storageProvider.saveObject(goneStaged, Buffer.from('a,b\n1,2\n'), 'text/csv', 'sync_staged.csv');
+    await storageProvider.saveObject(goneLedgerStaged, Buffer.from('c,d\n3,4\n'), 'text/csv', 'direct_staged.csv');
+    await registerCompletedUpload(storageProvider, goneLedgerStaged, { jobInput: true });
+    await storageProvider.saveObject(keptStaged, Buffer.from('e,f\n5,6\n'), 'text/csv', 'sync_staged.csv');
+    await registerCompletedUpload(storageProvider, keptStaged, { jobInput: true });
+
+    try {
+      const plan = (await planAccountErasure(gone.id))!;
+      expect(plan.storedKeys).toContain(goneLedgerStaged);
+      await eraseAccount(plan, { drainMs: 0 });
+
+      expect(await storageProvider.getObject(goneStaged)).toBeUndefined();
+      expect(await storageProvider.getObject(goneLedgerStaged)).toBeUndefined();
+      expect(await getRetentionLedger().get(goneLedgerStaged)).toBeUndefined();
+      expect(await storageProvider.getObject(keptStaged)).toBeDefined();
+      expect(await getRetentionLedger().get(keptStaged)).toBeDefined();
+    } finally {
+      await storageProvider.deleteObject(keptStaged);
+      await getRetentionLedger().forget(keptStaged);
+    }
+  });
+
+  it('aborts local tool jobs, deletes tool_job state, index, inputs and outputs while preserving another account', async () => {
+    const gone = await newAccount('tool-gone');
+    const kept = await newAccount('tool-kept');
+    const goneId = `tool_${crypto.randomUUID()}`;
+    const keptId = `tool_${crypto.randomUUID()}`;
+    const goneInput = `uploads/${gone.id}/tool_${goneId}_0_a.pdf`;
+    const goneEntry = `conversions/${gone.id}/tool_${goneId}_page1.png`;
+    const keptInput = `uploads/${kept.id}/tool_${keptId}_0_b.pdf`;
+    const keptResult = `conversions/${kept.id}/tool_${keptId}_out.pdf`;
+
+    await storageProvider.saveObject(goneInput, Buffer.from('%PDF-1.4\n'), 'application/pdf', 'a.pdf');
+    await saveRetainedResult(storageProvider, goneEntry, Buffer.from('png'), 'image/png', 'page1.png');
+    await storageProvider.saveObject(keptInput, Buffer.from('%PDF-1.4\n'), 'application/pdf', 'b.pdf');
+    await saveRetainedResult(storageProvider, keptResult, Buffer.from('%PDF-1.4\n'), 'application/pdf', 'out.pdf');
+
+    const abortController = registerLocalToolAbort(goneId);
+    await saveToolJob({
+      id: goneId,
+      userId: gone.id,
+      tool: 'archive-extract',
+      status: 'running',
+      progress: 50,
+      inputKeys: [goneInput],
+      result: { kind: 'entries', entries: [{ name: 'page1.png', size: 3, mimeType: 'image/png', key: goneEntry, url: `/api/storage/file/${encodeURIComponent(goneEntry)}` }] },
+      createdAt: Date.now(),
+    });
+    await saveToolJob({
+      id: keptId,
+      userId: kept.id,
+      tool: 'merge',
+      status: 'completed',
+      progress: 100,
+      inputKeys: [keptInput],
+      result: { kind: 'file', file: { name: 'out.pdf', size: 9, key: keptResult, url: `/api/storage/file/${encodeURIComponent(keptResult)}` } },
+      createdAt: Date.now(),
+    });
+
+    try {
+      await eraseAccount((await planAccountErasure(gone.id))!, { drainMs: 0 });
+
+      expect(abortController.signal.aborted).toBe(true);
+      expect(await getToolJob(goneId)).toBeNull();
+      expect(await storageProvider.getObject(goneInput)).toBeUndefined();
+      expect(await storageProvider.getObject(goneEntry)).toBeUndefined();
+      expect(await getRetentionLedger().get(goneEntry)).toBeUndefined();
+
+      const redis = redisKeyStore.getRedisClient();
+      if (redis) {
+        const prefix = redisKeyStore.getPrefix();
+        expect(await redis.smembers(`${prefix}user:tool_jobs:${gone.id}`)).toEqual([]);
+        expect(await redis.get(`${prefix}tool_job:${goneId}`)).toBeNull();
+        expect(await redis.smembers(`${prefix}user:tool_jobs:${kept.id}`)).toContain(keptId);
+      }
+
+      expect(await getToolJob(keptId)).toMatchObject({ id: keptId, userId: kept.id });
+      expect(await storageProvider.getObject(keptInput)).toBeDefined();
+      expect(await storageProvider.getObject(keptResult)).toBeDefined();
+    } finally {
+      await storageProvider.deleteObject(keptInput);
+      await storageProvider.deleteObject(keptResult);
+      await getRetentionLedger().forget(keptResult);
+    }
+  });
+
+  it('maintains per-user Redis tool_job set indices for saveToolJob, deleteToolJob, accountTaggedKeys and eraseUserToolJobs', async () => {
+    const kv = new Map<string, string>();
+    const sets = new Map<string, Set<string>>();
+    const ttls = new Map<string, number>();
+
+    const fakeRedis = {
+      get: async (key: string) => kv.get(key) ?? null,
+      set: async (key: string, val: string, _ex?: string, ttl?: number, flag?: string) => {
+        if (flag === 'XX' && !kv.has(key)) {
+          return null;
+        }
+        kv.set(key, val);
+        if (ttl !== undefined) ttls.set(key, ttl);
+        return 'OK';
+      },
+      sadd: async (key: string, member: string) => {
+        const set = sets.get(key) ?? new Set<string>();
+        const before = set.size;
+        set.add(member);
+        sets.set(key, set);
+        return set.size - before;
+      },
+      srem: async (key: string, member: string) => {
+        const set = sets.get(key);
+        return set && set.delete(member) ? 1 : 0;
+      },
+      smembers: async (key: string) => [...(sets.get(key) ?? [])],
+      expire: async (key: string, ttl: number) => {
+        ttls.set(key, ttl);
+        return 1;
+      },
+      exists: async (key: string) => (kv.has(key) || sets.has(key) ? 1 : 0),
+      del: async (...keys: string[]) => {
+        let removed = 0;
+        for (const key of keys) {
+          if (kv.delete(key)) removed++;
+          if (sets.delete(key)) removed++;
+        }
+        return removed;
+      },
+      zrange: async () => [],
+      pipeline: () => {
+        const ops: Array<() => Promise<unknown>> = [];
+        const pipe = {
+          set: (key: string, val: string, ex?: string, ttl?: number) => {
+            ops.push(() => fakeRedis.set(key, val, ex, ttl));
+            return pipe;
+          },
+          sadd: (key: string, member: string) => {
+            ops.push(() => fakeRedis.sadd(key, member));
+            return pipe;
+          },
+          expire: (key: string, ttl: number) => {
+            ops.push(() => fakeRedis.expire(key, ttl));
+            return pipe;
+          },
+          exists: (key: string) => {
+            ops.push(() => fakeRedis.exists(key));
+            return pipe;
+          },
+          exec: async () => {
+            const results: Array<[null, unknown]> = [];
+            for (const op of ops) results.push([null, await op()]);
+            return results;
+          },
+        };
+        return pipe;
+      },
+    };
+
+    const clientSpy = vi.spyOn(redisKeyStore, 'getRedisClient').mockReturnValue(fakeRedis as never);
+    const listKeysSpy = vi.spyOn(redisKeyStore, 'listApiKeys').mockResolvedValue([]);
+    const listFilesSpy = vi.spyOn(redisKeyStore, 'listUserFiles').mockResolvedValue([]);
+    try {
+      const aliceId = `user_${crypto.randomUUID()}`;
+      const anonId = anonymousUserId('203.0.113.50');
+      const prefix = redisKeyStore.getPrefix();
+      const job1 = `tool_${crypto.randomUUID()}`;
+      const job2 = `tool_${crypto.randomUUID()}`;
+      const anonJob = `tool_${crypto.randomUUID()}`;
+
+      await saveToolJob({
+        id: job1,
+        userId: aliceId,
+        tool: 'merge',
+        status: 'completed',
+        progress: 100,
+        inputKeys: [`uploads/${aliceId}/a.pdf`],
+        result: { kind: 'file', file: { name: 'out.pdf', size: 1, key: `conversions/${aliceId}/out.pdf`, url: '/x' } },
+        createdAt: Date.now(),
+      });
+      await saveToolJob({
+        id: job2,
+        userId: aliceId,
+        tool: 'split',
+        status: 'queued',
+        progress: 0,
+        createdAt: Date.now(),
+      });
+      await saveToolJob({
+        id: anonJob,
+        userId: anonId,
+        tool: 'merge',
+        status: 'queued',
+        progress: 0,
+        createdAt: Date.now(),
+      });
+
+      const indexKey = userToolJobsKey(aliceId);
+      expect(sets.get(indexKey)).toEqual(new Set([job1, job2]));
+      expect(ttls.get(indexKey)).toBe(3600);
+      expect(sets.has(userToolJobsKey(anonId))).toBe(false);
+
+      const tagged = await accountTaggedKeys(aliceId);
+      expect(tagged).toContain(indexKey);
+      expect(tagged).toContain(`${prefix}tool_job:${job1}`);
+      expect(tagged).toContain(`${prefix}tool_job:${job2}`);
+
+      await deleteToolJob(job2);
+      expect(sets.get(indexKey)).toEqual(new Set([job1]));
+      expect(kv.has(`${prefix}tool_job:${job2}`)).toBe(false);
+
+      const current1 = (await getToolJob(job1))!;
+      expect(
+        await updateExistingToolJob({
+          ...current1,
+          status: 'running',
+          progress: 50,
+        })
+      ).toBe(true);
+      expect(JSON.parse(kv.get(`${prefix}tool_job:${job1}`)!)).toMatchObject({ status: 'running', progress: 50 });
+
+      const erased = await eraseUserToolJobs(aliceId);
+      expect(erased.jobIds).toEqual([job1]);
+      expect(erased.storageKeys.sort()).toEqual([`conversions/${aliceId}/out.pdf`, `uploads/${aliceId}/a.pdf`]);
+      expect(kv.has(`${prefix}tool_job:${job1}`)).toBe(false);
+      expect(sets.has(indexKey)).toBe(false);
+
+      expect(
+        await updateExistingToolJob({
+          id: job1,
+          userId: aliceId,
+          tool: 'merge',
+          status: 'completed',
+          progress: 100,
+          createdAt: Date.now(),
+        })
+      ).toBe(false);
+      expect(kv.has(`${prefix}tool_job:${job1}`)).toBe(false);
+      expect(sets.has(indexKey)).toBe(false);
+    } finally {
+      listFilesSpy.mockRestore();
+      listKeysSpy.mockRestore();
+      clientSpy.mockRestore();
+    }
+  });
+
+  it('records staged inputKeys on queued POST /api/tools/jobs and deletes them on account erasure', async () => {
+    const user = await redisUserStore.createUser({
+      email: `queued-tool_${crypto.randomUUID()}@complete.test`,
+      name: 'queued-tool',
+      emailVerified: true,
+      acceptedTermsVersion: TERMS_VERSION,
+    });
+    createdUsers.push(user.id);
+    const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'queued tool key', {
+      scopes: ['convert:write', 'convert:read'],
+    });
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    const pdfBytes = new Uint8Array(await doc.save());
+
+    await registerLiveWorkerHeartbeat('erase-queued-tool-worker');
+    try {
+      const form = new FormData();
+      form.set('tool', 'merge');
+      form.append('files', new File([pdfBytes], 'first.pdf', { type: 'application/pdf' }));
+      form.append('files', new File([pdfBytes], 'second.pdf', { type: 'application/pdf' }));
+
+      const res = await toolJobsPost(
+        new NextRequest('http://localhost:3000/api/tools/jobs', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${secretKey}` },
+          body: form,
+        })
+      );
+      expect(res.status).toBe(201);
+      const { id: toolJobId } = (await res.json()) as { id: string };
+
+      const saved = await getToolJob(toolJobId);
+      expect(saved?.inputKeys?.length).toBe(2);
+      for (const key of saved?.inputKeys ?? []) {
+        expect(key).toMatch(new RegExp(`^uploads/${user.id}/tool_${toolJobId}_`));
+        expect(await storageProvider.getObject(key)).toBeDefined();
+      }
+
+      await eraseAccount((await planAccountErasure(user.id))!, { drainMs: 0 });
+
+      expect(await getToolJob(toolJobId)).toBeNull();
+      for (const key of saved?.inputKeys ?? []) {
+        expect(await storageProvider.getObject(key)).toBeUndefined();
+      }
+    } finally {
+      await unregisterLiveWorkerHeartbeat('erase-queued-tool-worker');
+      resetLocalLiveWorkersForTests();
+    }
+  });
+
+  it('aborts and drains running launchLocalToolJob and discards late outputs if tool_job was already erased', async () => {
+    const user = await redisUserStore.createUser({
+      email: `local-drain_${crypto.randomUUID()}@complete.test`,
+      name: 'local-drain',
+      emailVerified: true,
+      acceptedTermsVersion: TERMS_VERSION,
+    });
+    createdUsers.push(user.id);
+    const { secretKey } = await redisKeyStore.generateApiKey(user.id, 'local drain key', {
+      scopes: ['convert:write', 'convert:read'],
+    });
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    const pdfBytes = new Uint8Array(await doc.save());
+
+    // 1) Normal abort + drain: eraseAccount aborts the local run and waits for it to settle.
+    let markStarted!: () => void;
+    const runStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let runSettled = false;
+    const runSpy = vi.spyOn(webToolsMod, 'runWebTool').mockImplementation((async (_tool, _files, _opts, signal) => {
+      markStarted();
+      await new Promise<void>((_, reject) => {
+        signal?.addEventListener(
+          'abort',
+          () => {
+            setTimeout(() => {
+              runSettled = true;
+              reject(new Error('aborted'));
+            }, 30);
+          },
+          { once: true }
+        );
+      });
+      return webToolsMod.fileOutput('unreachable.pdf', 'application/pdf', Buffer.from('%PDF-1.4\n'));
+    }) as typeof webToolsMod.runWebTool);
+
+    const form = new FormData();
+    form.set('tool', 'merge');
+    form.append('files', new File([pdfBytes], 'a.pdf', { type: 'application/pdf' }));
+    form.append('files', new File([pdfBytes], 'b.pdf', { type: 'application/pdf' }));
+
+    const res1 = await toolJobsPost(
+      new NextRequest('http://localhost:3000/api/tools/jobs', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secretKey}` },
+        body: form,
+      })
+    );
+    expect(res1.status).toBe(201);
+    const { id: drainedJobId } = (await res1.json()) as { id: string };
+    await runStarted;
+
+    const outcome1 = await eraseAccount((await planAccountErasure(user.id))!, { drainMs: 500 });
+    expect(outcome1).toEqual({ runningJobIds: [] });
+    expect(runSettled).toBe(true);
+    expect(await getToolJob(drainedJobId)).toBeNull();
+    runSpy.mockRestore();
+
+    // 2) Late completion after tool_job deletion must not resurrect tool_job or leak output in conversions/<userId>/...
+    const user2 = await redisUserStore.createUser({
+      email: `local-late_${crypto.randomUUID()}@complete.test`,
+      name: 'local-late',
+      emailVerified: true,
+      acceptedTermsVersion: TERMS_VERSION,
+    });
+    createdUsers.push(user2.id);
+    const { secretKey: secretKey2 } = await redisKeyStore.generateApiKey(user2.id, 'local late key', {
+      scopes: ['convert:write', 'convert:read'],
+    });
+    const realSaveObject = storageProvider.saveObject.bind(storageProvider);
+    const savedKeysBefore = vi.spyOn(storageProvider, 'saveObject');
+    let markStarted2!: () => void;
+    const runStarted2 = new Promise<void>((resolve) => {
+      markStarted2 = resolve;
+    });
+    let releaseLateRun!: (val: webToolsMod.WebToolOutput) => void;
+    const lateOutputPromise = new Promise<webToolsMod.WebToolOutput>((resolve) => {
+      releaseLateRun = resolve;
+    });
+    const runSpy2 = vi.spyOn(webToolsMod, 'runWebTool').mockImplementation((async () => {
+      markStarted2();
+      return lateOutputPromise;
+    }) as typeof webToolsMod.runWebTool);
+
+    const form2 = new FormData();
+    form2.set('tool', 'merge');
+    form2.append('files', new File([pdfBytes], 'c.pdf', { type: 'application/pdf' }));
+    form2.append('files', new File([pdfBytes], 'd.pdf', { type: 'application/pdf' }));
+
+    const res2 = await toolJobsPost(
+      new NextRequest('http://localhost:3000/api/tools/jobs', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secretKey2}` },
+        body: form2,
+      })
+    );
+    expect(res2.status).toBe(201);
+    const { id: lateJobId } = (await res2.json()) as { id: string };
+    await runStarted2;
+
+    const pendingOutcome = await eraseAccount((await planAccountErasure(user2.id))!, { drainMs: 10 });
+    expect(pendingOutcome.runningJobIds).toContain(lateJobId);
+    expect(await redisUserStore.findById(user2.id)).not.toBeNull();
+
+    // Release the late local run after abort was already triggered: afterRun check stops before writing outputs.
+    releaseLateRun(webToolsMod.fileOutput('late-local.pdf', 'application/pdf', Buffer.from('%PDF-1.4\n')));
+    await vi.waitFor(async () => {
+      expect((await eraseAccount((await planAccountErasure(user2.id))!, { drainMs: 20 }))).toEqual({ runningJobIds: [] });
+    });
+    expect(
+      savedKeysBefore.mock.calls.filter(([k]) => String(k).startsWith(`conversions/${user2.id}/`))
+    ).toEqual([]);
+    expect(await getToolJob(lateJobId)).toBeNull();
+    savedKeysBefore.mockRestore();
+    runSpy2.mockRestore();
+
+    // 3) If tool_job is erased after afterRun passes and while storeToolOutput writes, discardToolOutputs removes the output.
+    const user3 = await redisUserStore.createUser({
+      email: `local-race_${crypto.randomUUID()}@complete.test`,
+      name: 'local-race',
+      emailVerified: true,
+      acceptedTermsVersion: TERMS_VERSION,
+    });
+    createdUsers.push(user3.id);
+    const { secretKey: secretKey3 } = await redisKeyStore.generateApiKey(user3.id, 'local race key', {
+      scopes: ['convert:write', 'convert:read'],
+    });
+    let erasedDuringStore = false;
+    const raceSaveSpy = vi.spyOn(storageProvider, 'saveObject').mockImplementation((async (...args) => {
+      const key = String(args[0]);
+      const res = await realSaveObject(...args);
+      if (!erasedDuringStore && key.startsWith(`conversions/${user3.id}/`)) {
+        erasedDuringStore = true;
+        await eraseUserToolJobs(user3.id);
+      }
+      return res;
+    }) as typeof storageProvider.saveObject);
+    vi.spyOn(webToolsMod, 'runWebTool').mockResolvedValue(
+      webToolsMod.fileOutput('race-local.pdf', 'application/pdf', Buffer.from('%PDF-1.4\n'))
+    );
+
+    const form3 = new FormData();
+    form3.set('tool', 'merge');
+    form3.append('files', new File([pdfBytes], 'e.pdf', { type: 'application/pdf' }));
+    form3.append('files', new File([pdfBytes], 'f.pdf', { type: 'application/pdf' }));
+
+    const res3 = await toolJobsPost(
+      new NextRequest('http://localhost:3000/api/tools/jobs', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${secretKey3}` },
+        body: form3,
+      })
+    );
+    expect(res3.status).toBe(201);
+    const { id: raceJobId } = (await res3.json()) as { id: string };
+
+    await vi.waitFor(async () => {
+      expect(erasedDuringStore).toBe(true);
+      const savedOutputKeys = raceSaveSpy.mock.calls
+        .map(([k]) => String(k))
+        .filter((k) => k.startsWith(`conversions/${user3.id}/`));
+      expect(savedOutputKeys.length).toBeGreaterThan(0);
+      for (const outKey of savedOutputKeys) {
+        expect(await storageProvider.getObject(outKey)).toBeUndefined();
+        expect(await getRetentionLedger().get(outKey)).toBeUndefined();
+      }
+    });
+    expect(await getToolJob(raceJobId)).toBeNull();
+    expect(await eraseAccount((await planAccountErasure(user3.id))!, { drainMs: 50 })).toEqual({ runningJobIds: [] });
+  });
+
+  it('discards queued tool outputs and avoids resurrecting tool_job when processQueuedToolJob finishes after erasure', async () => {
+    const user = await newAccount('queued-runner-erased');
+    const jobId = `tool_${crypto.randomUUID()}`;
+    const inputKey = `uploads/${user.id}/tool_${jobId}_0_a.pdf`;
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    const pdfBytes = Buffer.from(await doc.save());
+    await storageProvider.saveObject(inputKey, pdfBytes, 'application/pdf', 'a.pdf');
+    await saveToolJob({
+      id: jobId,
+      userId: user.id,
+      tool: 'rotate',
+      status: 'queued',
+      progress: 0,
+      inputKeys: [inputKey],
+      createdAt: Date.now(),
+    });
+
+    const realSaveObject = storageProvider.saveObject.bind(storageProvider);
+    let erasedDuringQueuedStore = false;
+    const saveSpy = vi.spyOn(storageProvider, 'saveObject').mockImplementation((async (...args) => {
+      const key = String(args[0]);
+      const res = await realSaveObject(...args);
+      if (!erasedDuringQueuedStore && key.startsWith(`conversions/${user.id}/`)) {
+        erasedDuringQueuedStore = true;
+        await eraseUserToolJobs(user.id);
+      }
+      return res;
+    }) as typeof storageProvider.saveObject);
+    vi.spyOn(webToolsMod, 'runWebTool').mockResolvedValue(
+      webToolsMod.fileOutput('late-queued.pdf', 'application/pdf', pdfBytes)
+    );
+
+    const fakeJob = {
+      id: jobId,
+      name: 'convert',
+      data: {
+        jobId,
+        originalFilename: 'rotate',
+        sourceFormat: 'pdf',
+        targetFormat: 'pdf',
+        fileSize: pdfBytes.length,
+        options: {},
+        userId: user.id,
+        toolJob: {
+          tool: 'rotate',
+          options: { angle: 90 },
+          storedRefs: [{ key: inputKey, name: 'a.pdf' }],
+          cleanupUploadKeys: [inputKey],
+        },
+      } as ConversionJobData,
+      timestamp: Date.now(),
+      attemptsMade: 0,
+      opts: { attempts: 1 },
+      progress: 0,
+    } as unknown as Job<ConversionJobData, ConversionJobResult>;
+
+    await expect(processQueuedToolJob(fakeJob, storageProvider)).rejects.toBeInstanceOf(JobCancelledError);
+    expect(erasedDuringQueuedStore).toBe(true);
+    expect(await getToolJob(jobId)).toBeNull();
+    expect(await storageProvider.getObject(inputKey)).toBeUndefined();
+    const outputKeys = saveSpy.mock.calls.map(([k]) => String(k)).filter((k) => k.startsWith(`conversions/${user.id}/`));
+    expect(outputKeys.length).toBeGreaterThan(0);
+    for (const outKey of outputKeys) {
+      expect(await storageProvider.getObject(outKey)).toBeUndefined();
+      expect(await getRetentionLedger().get(outKey)).toBeUndefined();
     }
   });
 });

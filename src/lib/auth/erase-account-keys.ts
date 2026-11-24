@@ -5,6 +5,7 @@ import { allConversionQueues } from '../queue/conversion-queue';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../queue/bullmq-engine';
 import { userByStateKeys } from '../queue/user-job-list';
 import { storageProvider } from '../storage';
+import { userConversionPrefix, userUploadPrefix } from '../storage/key-namespace';
 import { getRetentionLedger } from '../storage/retention-ledger';
 
 const DELETE_BATCH = 500;
@@ -192,6 +193,13 @@ export async function accountTaggedKeys(userId: string, context: TaggedKeyContex
   candidates.add(`${prefix}rate:${userId}`);
   candidates.add(`${prefix}user_keys:${userId}`);
   candidates.add(`${prefix}user_graphs:{${userId}}`);
+  const userToolJobsIndexKey = `${prefix}user:tool_jobs:${userId}`;
+  candidates.add(userToolJobsIndexKey);
+  if (typeof maybeClient.smembers === 'function') {
+    for (const toolJobId of await maybeClient.smembers(userToolJobsIndexKey)) {
+      candidates.add(`${prefix}tool_job:${toolJobId}`);
+    }
+  }
   addQueueIndexCandidates(candidates, prefix, userId);
 
   return filterExistingKeys(client, candidates);
@@ -208,7 +216,8 @@ export async function accountStoredKeys(
   ledgerKeys?: readonly string[]
 ): Promise<string[]> {
   const prefixes = [
-    `conversions/${userId}/`,
+    userConversionPrefix(userId),
+    userUploadPrefix(userId),
     ...jobIds.map((id) => `results/${id}/`),
     ...graphIds.map((id) => `results/${id}/`),
   ];
