@@ -1,6 +1,7 @@
+import fs from 'node:fs';
 import { getFormatByExtension } from '../../registry';
 import { UnsupportedOptionError, type ConversionOptions } from '../../types';
-import type { ConversionEnginePort } from '../engine-port';
+import type { ConversionEnginePort, VfsPayload } from '../engine-port';
 
 /** The longest edge of a thumbnail that names no width or height. */
 export const DEFAULT_THUMBNAIL_EDGE_PX = 256;
@@ -16,15 +17,16 @@ const MAX_EDGE_PX = 7680;
 
 /** What a thumbnail node asks of the engine for one input. */
 export interface ThumbnailSource {
-  buffer: Buffer;
+  payload: Buffer | VfsPayload;
   srcExt: string;
   /** The options of the conversion to the target. */
   options: ConversionOptions;
+  tempFilePaths?: string[];
 }
 
 export interface ThumbnailPlan {
   /** The picture of `input` that the target conversion reads, and the options of that conversion. */
-  prepare(input: { buffer: Buffer; srcExt: string; name: string }): Promise<ThumbnailSource>;
+  prepare(input: { payload: Buffer | VfsPayload; srcExt: string; name: string }): Promise<ThumbnailSource>;
 }
 
 /**
@@ -57,17 +59,23 @@ export function thumbnailPlan(
     fit: thumbnail?.fit ?? 'inside',
   };
   return {
-    async prepare({ buffer, srcExt, name }) {
+    async prepare({ payload, srcExt, name }) {
       const category = getFormatByExtension(srcExt)?.category;
       if (category === IMAGE_CATEGORY) {
-        return { buffer, srcExt, options: { ...scaling, page: thumbnail?.page, multiPageOutput: 'first' } };
+        return { payload, srcExt, options: { ...scaling, page: thumbnail?.page, multiPageOutput: 'first' } };
       }
       const options: ConversionOptions =
         category === VIDEO_CATEGORY
           ? { thumbnail: { at: [frames[0] ?? DEFAULT_FRAME_TIME], format: PICTURE_FORMAT, accurate: thumbnail?.accurate }, signal }
           : { page: thumbnail?.page, multiPageOutput: 'first', signal };
-      const picture = await engine.convert(buffer, srcExt, PICTURE_FORMAT, options, name);
-      return { buffer: picture.buffer, srcExt: PICTURE_FORMAT, options: scaling };
+      const picture = await engine.convert(payload, srcExt, PICTURE_FORMAT, options, name);
+      const hasFile = Boolean(picture.filePath && fs.existsSync(picture.filePath));
+      return {
+        payload: hasFile ? { inputPath: picture.filePath! } : picture.buffer,
+        srcExt: PICTURE_FORMAT,
+        options: scaling,
+        tempFilePaths: picture.filePath ? [picture.filePath] : undefined,
+      };
     },
   };
 }

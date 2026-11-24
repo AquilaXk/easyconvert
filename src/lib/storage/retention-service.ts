@@ -1,8 +1,11 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { StorageNotFoundError } from './adapters/adapter-interface';
+import { PayloadTooLargeForMemoryError, StoredObjectMissingError, getMaxInMemoryBytes } from './errors';
 import { classifyStorageKey, isUploadKey } from './key-namespace';
-import type { IStorageBackend } from './types';
+import type { IStorageBackend, StoredObject } from './types';
+import { assertRegularFile, stagedOutputPath } from './temp-file';
 import { withRedisLeaderLock } from '../redis/leader-lock';
 import { getRetentionLedger } from './retention-ledger';
 import {
@@ -46,6 +49,10 @@ export type SweptStorage = DeletableStorage & Partial<Pick<IStorageBackend, 'kin
 
 /** A storage backend that can store a result, and remove it again when it cannot be registered. */
 export type ResultStorage = Pick<IStorageBackend, 'saveObject' | 'deleteObject'>;
+
+/** A storage backend that can store a result from a file path or stream without buffering large payloads. */
+export type FileResultStorage = ResultStorage &
+  Partial<Pick<IStorageBackend, 'kind' | 'saveObjectFromFile' | 'saveObjectFromStream' | 'getObjectStream' | 'deleteObjectIfUnchanged'>>;
 
 const SWEEP_INTERVAL_MS = 60_000;
 /** How long a sweep may run before it is reported as slow; the next one starts only when it ends. */
@@ -191,6 +198,97 @@ export async function saveRetainedResult(
 ): Promise<void> {
   await storage.saveObject(key, buffer, mimeType, filename, resolveRetentionPolicy().undeliveredTtlMs);
   await registerStoredResult(storage, key);
+}
+
+/** Destination fields for copying or moving an already-stored regular file into storage. */
+export interface StoredFileSaveTarget {
+  sourceFilePath: string;
+  targetKey: string;
+  mimeType: string;
+  filename: string;
+  ttlMs: number;
+}
+
+/**
+ * Persists an existing stored file under `targetKey` via `saveObjectFromFile` without deleting `sourceFilePath` when
+ * `storage.kind === 'local'` (whose `saveObjectFromFile` moves its input path), and removes the target object if `signal` aborts.
+ */
+export async function saveStoredObjectFromFile(
+  storage: FileResultStorage,
+  target: StoredFileSaveTarget,
+  signal?: AbortSignal
+): Promise<StoredObject> {
+  const { sourceFilePath, targetKey, mimeType, filename, ttlMs } = target;
+  let written: StoredObject;
+  if (storage.kind === 'local') {
+    await assertRegularFile(sourceFilePath);
+    signal?.throwIfAborted();
+    const ext = path.extname(filename).replace(/^\./, '') || 'bin';
+    const stagedCopy = stagedOutputPath(ext);
+    await fs.promises.copyFile(sourceFilePath, stagedCopy, fs.constants.COPYFILE_EXCL);
+    try {
+      written = await storage.saveObjectFromFile!(targetKey, stagedCopy, mimeType, filename, ttlMs, signal);
+    } finally {
+      await fs.promises.rm(stagedCopy, { force: true }).catch(() => undefined);
+    }
+  } else {
+    written = await storage.saveObjectFromFile!(targetKey, sourceFilePath, mimeType, filename, ttlMs, signal);
+  }
+  if (signal?.aborted) {
+    await storage.deleteObjectIfUnchanged?.(targetKey, written);
+    signal.throwIfAborted();
+  }
+  return written;
+}
+
+/**
+ * Stores a result from an already-stored object without loading files larger than the in-memory budget into the V8 heap:
+ * uses `saveObjectFromFile` when a backing file exists, streams `getObjectStream` -> `saveObjectFromStream` when a remote
+ * object exceeds `getMaxInMemoryBytes()`, and falls back to `saveRetainedResult` with `stored.buffer` otherwise.
+ */
+export async function saveRetainedResultFromStored(
+  storage: FileResultStorage,
+  sourceKey: string,
+  stored: StoredObject,
+  targetKey: string,
+  filename: string,
+  signal?: AbortSignal
+): Promise<void> {
+  const ttlMs = resolveRetentionPolicy().undeliveredTtlMs;
+  if (stored.filePath && fs.existsSync(stored.filePath) && typeof storage.saveObjectFromFile === 'function') {
+    await saveStoredObjectFromFile(
+      storage,
+      { sourceFilePath: stored.filePath, targetKey, mimeType: stored.mimeType, filename, ttlMs },
+      signal
+    );
+    await registerStoredResult(storage, targetKey);
+    return;
+  }
+  if (stored.size > getMaxInMemoryBytes() && typeof storage.getObjectStream === 'function' && typeof storage.saveObjectFromStream === 'function') {
+    const stream = await storage.getObjectStream(sourceKey);
+    if (!stream) throw new StoredObjectMissingError(undefined, { key: sourceKey });
+    if (signal?.aborted) {
+      (stream as { destroy?: () => void }).destroy?.();
+      signal.throwIfAborted();
+    }
+    const written = await storage.saveObjectFromStream(
+      targetKey,
+      stream,
+      { filename, mimeType: stored.mimeType, size: stored.size },
+      ttlMs
+    );
+    if (signal?.aborted) {
+      await storage.deleteObjectIfUnchanged?.(targetKey, written);
+      signal.throwIfAborted();
+    }
+    await registerStoredResult(storage, targetKey);
+    return;
+  }
+  if (stored.size > getMaxInMemoryBytes()) {
+    throw new PayloadTooLargeForMemoryError(undefined, { size: stored.size, limit: getMaxInMemoryBytes() });
+  }
+  signal?.throwIfAborted();
+  await saveRetainedResult(storage, targetKey, stored.buffer, stored.mimeType, filename);
 }
 
 /** What a client can be told about a result: the job API reports it next to the result. */

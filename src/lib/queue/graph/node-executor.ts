@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { baseCredits, minuteSurcharge } from '../../billing/credits';
 import { Readable } from 'node:stream';
@@ -5,9 +6,10 @@ import JSZip from 'jszip';
 import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
 import { storageProvider } from '../../storage';
+import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../../storage/errors';
 import { scopeStorageObjects } from '../../storage/scoped-storage';
-import type { IStorageBackend } from '../../storage/types';
-import type { ConversionEnginePort, EngineResult } from '../engine-port';
+import type { IStorageBackend, StoredObject } from '../../storage/types';
+import type { ConversionEnginePort, EngineResult, VfsPayload } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';
 import { isFinalFailure } from '../job-failure';
@@ -89,7 +91,7 @@ import { thumbnailPlan } from './thumbnail-node';
 import { captureWebsite } from '../../capture/website-capture';
 import { holdUnitsForInputs } from './node-reservation';
 import type { ExportUrlNode, GraphNode } from './types';
-import { saveRetainedResult } from '../../storage/retention-service';
+import { saveRetainedResultFromStored, saveStoredObjectFromFile } from '../../storage/retention-service';
 import { heldGraphInput } from './input-cleanup';
 import { deadlineBoundEngine, jobDeadlineAt } from '../job-deadline';
 import { JOB_DEADLINE_AT, remainingJobMs, stripEngineControls } from '../../conversions/job-time';
@@ -164,13 +166,20 @@ async function describePrimaryOutput(
   key: string,
   isArchiveEntry: boolean
 ): Promise<{ mimeType: string; size: number }> {
-  const stat = await storage.stat(key);
-  if (!stat) {
+  let meta: { filename?: string; size: number } | null | undefined;
+  if (typeof storage.stat === 'function') {
+    meta = await storage.stat(key);
+  } else {
+    const stored = await storage.getObject(key);
+    meta = stored;
+    await stored?.release?.().catch(() => undefined);
+  }
+  if (!meta) {
     throw new WorkerOutputMissingError(path.basename(key));
   }
-  const filename = stat.filename || path.basename(key);
+  const filename = meta.filename || path.basename(key);
   const mimeType = isArchiveEntry ? archiveEntryMimeType(filename) : registryMimeTypeOfFilename(filename);
-  return { mimeType, size: stat.size };
+  return { mimeType, size: meta.size };
 }
 
 async function processIntermediatePdfArtifacts(
@@ -230,6 +239,52 @@ interface NodeContext {
   fileDurations?: number[];
 }
 
+function resolveNodeInputPayload(stored: StoredObject, engineName: string): Buffer | VfsPayload {
+  const streamsFromDisk = Boolean(stored.filePath && fs.existsSync(stored.filePath));
+  if ((engineName === 'ts-engine' || !streamsFromDisk) && stored.size > getMaxInMemoryBytes()) {
+    throw new PayloadTooLargeForMemoryError(undefined, { size: stored.size, limit: getMaxInMemoryBytes() });
+  }
+  return streamsFromDisk ? { inputPath: stored.filePath! } : stored.buffer;
+}
+
+function discardEngineOutputFile(filePath: string | undefined, keptPath?: string): void {
+  if (!filePath || filePath === keptPath) return;
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // Best-effort cleanup of temporary engine output.
+  }
+}
+
+async function saveIntermediateEngineOutput(
+  storage: IStorageBackend,
+  location: { graphId: string; nodeId: string; index: number },
+  convRes: EngineResult,
+  spec: { mimeTypeOverride?: string; outputFilenameOverride?: string; fallbackFilename: string },
+  signal: AbortSignal
+): Promise<string> {
+  const mimeType = spec.mimeTypeOverride ?? convRes.mimeType;
+  const safeName = sanitizeNodeOutputFilename(spec.outputFilenameOverride ?? convRes.filename, spec.fallbackFilename);
+  const outKey = nodeOutputKey('intermediate', location.graphId, location.nodeId, location.index, safeName);
+  let keptPath: string | undefined;
+  try {
+    if (convRes.filePath && fs.existsSync(convRes.filePath) && typeof storage.saveObjectFromFile === 'function') {
+      const written = await storage.saveObjectFromFile(outKey, convRes.filePath, mimeType, safeName, INTERMEDIATE_TTL_MS, signal);
+      if (signal.aborted) {
+        await storage.deleteObjectIfUnchanged?.(outKey, written);
+        signal.throwIfAborted();
+      }
+      keptPath = written.filePath;
+    } else {
+      signal.throwIfAborted();
+      await storage.saveObject(outKey, convRes.buffer, mimeType, safeName, INTERMEDIATE_TTL_MS);
+    }
+  } finally {
+    discardEngineOutputFile(convRes.filePath, keptPath);
+  }
+  return outKey;
+}
+
 async function convertGraphNodeInputs(
   context: NodeContext,
   spec: {
@@ -238,8 +293,13 @@ async function convertGraphNodeInputs(
     fallbackFilename: string;
     outputFilenameOverride?: string;
     mimeTypeOverride?: string;
-    /** Turns an input into the bytes and options the conversion reads, as the input's own format says (a video into the picture of its frame). */
-    prepare?: (input: { buffer: Buffer; srcExt: string; name: string }) => Promise<{ buffer: Buffer; srcExt: string; options: Parameters<ConversionEnginePort['convert']>[3] }>;
+    /** Turns an input into the payload and options the conversion reads, as the input's own format says (a video into the picture of its frame). */
+    prepare?: (input: { payload: Buffer | VfsPayload; srcExt: string; name: string }) => Promise<{
+      payload: Buffer | VfsPayload;
+      srcExt: string;
+      options: Parameters<ConversionEnginePort['convert']>[3];
+      tempFilePaths?: string[];
+    }>;
   }
 ): Promise<string[]> {
   const keys: string[] = [];
@@ -249,24 +309,41 @@ async function convertGraphNodeInputs(
     if (!stored) {
       throw new Error(`Input artifact "${inputKey}" not found in storage`);
     }
-    const srcExt = artifactExtension(stored.filename, inputKey);
-    const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `input.${srcExt}`);
-    const source = spec.prepare ? await spec.prepare({ buffer: stored.buffer, srcExt, name: safeInputName }) : { buffer: stored.buffer, srcExt, options: spec.options };
-    const fileStart = Date.now();
-    const convRes = await context.engine.convert(source.buffer, source.srcExt, spec.targetFormat, source.options, safeInputName);
-    context.fileDurations?.push(Date.now() - fileStart);
-    keys.push(
-      await saveIntermediateNodeOutput(
-        context.storage,
-        { graphId: context.graphId, nodeId: context.nodeId, index },
-        {
-          buffer: convRes.buffer,
-          mimeType: spec.mimeTypeOverride ?? convRes.mimeType,
-          filename: spec.outputFilenameOverride ?? convRes.filename,
-          fallbackFilename: spec.fallbackFilename,
+    let tempFilePaths: string[] | undefined;
+    let convRes: EngineResult | undefined;
+    let saved = false;
+    try {
+      const srcExt = artifactExtension(stored.filename, inputKey);
+      const safeInputName = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `input.${srcExt}`);
+      const payload = resolveNodeInputPayload(stored, context.engine.name);
+      const source = spec.prepare
+        ? await spec.prepare({ payload, srcExt, name: safeInputName })
+        : { payload, srcExt, options: { ...spec.options, signal: context.attemptSignal } };
+      tempFilePaths = source.tempFilePaths;
+      const fileStart = Date.now();
+      convRes = await context.engine.convert(source.payload, source.srcExt, spec.targetFormat, source.options, safeInputName);
+      context.fileDurations?.push(Date.now() - fileStart);
+      keys.push(
+        await saveIntermediateEngineOutput(
+          context.storage,
+          { graphId: context.graphId, nodeId: context.nodeId, index },
+          convRes,
+          spec,
+          context.attemptSignal
+        )
+      );
+      saved = true;
+    } finally {
+      if (!saved) {
+        discardEngineOutputFile(convRes?.filePath, stored.filePath);
+      }
+      if (tempFilePaths) {
+        for (const tempPath of tempFilePaths) {
+          discardEngineOutputFile(tempPath, stored.filePath);
         }
-      )
-    );
+      }
+      await stored.release?.().catch(() => undefined);
+    }
   }
   return keys;
 }
@@ -298,7 +375,7 @@ async function runThumbnailNode(context: NodeContext, node: { options?: Conversi
     options: {},
     prepare: async (input) => {
       const source = await plan.prepare(input);
-      return { ...source, options: { ...(node.options || {}), thumbnail: undefined, ...source.options } };
+      return { ...source, options: { ...(node.options || {}), thumbnail: undefined, ...source.options, signal: context.attemptSignal } };
     },
     outputFilenameOverride: `thumbnail.${targetFormat}`,
     fallbackFilename: `thumbnail.${targetFormat}`,
@@ -565,8 +642,13 @@ async function nodeCharge(
         let filename: string | undefined;
         if (storage) {
           try {
-            const stored = await storage.getObject(key);
-            filename = stored?.filename;
+            if (typeof storage.stat === 'function') {
+              filename = (await storage.stat(key))?.filename;
+            } else {
+              const stored = await storage.getObject(key);
+              filename = stored?.filename;
+              await stored?.release?.().catch(() => undefined);
+            }
           } catch {
             filename = undefined;
           }
@@ -579,6 +661,64 @@ async function nodeCharge(
   const durations = perFileDurations && perFileDurations.length > 0 ? perFileDurations : [processingMs];
   const surcharge = product.outputs > 0 ? durations.reduce((sum, ms) => sum + minuteSurcharge(ms), 0) : 0;
   return graphNodeCharge(node.op, product, { inputClassCredits, processingMs: 0 }) + surcharge;
+}
+
+async function runOptimizeNode(
+  context: NodeContext,
+  node: GraphNode & { op: 'optimize' },
+  job: Pick<Job<ConversionJobData, ConversionJobResult>, 'log' | 'opts'>,
+  optimizers: OptimizerRegistry
+): Promise<{ outputKeys: string[]; optimizations: NonNullable<ConversionJobResult['optimizations']> }> {
+  const outputKeys: string[] = [];
+  const optimizations: NonNullable<ConversionJobResult['optimizations']> = [];
+  const deadlineAt = jobDeadlineAt({ signal: context.attemptSignal, opts: job.opts });
+  for (const [index, inputKey] of context.inputArtifacts.entries()) {
+    context.attemptSignal.throwIfAborted();
+    const stored = await context.storage.getObject(inputKey);
+    if (!stored) {
+      throw new Error(`Input artifact "${inputKey}" not found in storage`);
+    }
+    try {
+      if (stored.size > getMaxInMemoryBytes()) {
+        throw new PayloadTooLargeForMemoryError(undefined, { size: stored.size, limit: getMaxInMemoryBytes() });
+      }
+      const inputBuffer = stored.buffer;
+      const srcExt = artifactExtension(stored.filename, inputKey);
+      const optimizer = getOptimizer(srcExt, optimizers);
+      const optRes = await raceAbort(
+        optimizer(inputBuffer, node.options || {}, {
+          signal: context.attemptSignal,
+          remainingMs: remainingJobMs({ [JOB_DEADLINE_AT]: deadlineAt }),
+        }),
+        context.attemptSignal
+      ); // NOSONAR S9382 sequential: one artifact in memory at a time
+      // An output that is not smaller is not an optimisation: the input is kept and said to be unchanged.
+      const gained = optRes.optimized && optRes.buffer.length < inputBuffer.length;
+      const outFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `optimized.${srcExt}`);
+      const outKey = nodeOutputKey('intermediate', context.graphId, context.nodeId, index, outFilename);
+      if (gained) {
+        await context.storage.saveObject(outKey, optRes.buffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
+      } else if (stored.filePath && fs.existsSync(stored.filePath) && typeof context.storage.saveObjectFromFile === 'function') {
+        await saveStoredObjectFromFile(
+          context.storage,
+          { sourceFilePath: stored.filePath, targetKey: outKey, mimeType: stored.mimeType, filename: outFilename, ttlMs: INTERMEDIATE_TTL_MS },
+          context.attemptSignal
+        );
+      } else {
+        await context.storage.saveObject(outKey, inputBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
+      }
+      outputKeys.push(outKey);
+      optimizations.push({ key: outKey, optimized: gained, inputBytes: inputBuffer.length, outputBytes: optRes.buffer.length });
+      await job.log(
+        gained
+          ? `Node "${context.nodeId}" optimized "${outFilename}" from ${inputBuffer.length} to ${optRes.buffer.length} bytes`
+          : `Node "${context.nodeId}" kept "${outFilename}" unchanged: the optimiser produced ${optRes.buffer.length} bytes from ${inputBuffer.length} and did not make it smaller`
+      );
+    } finally {
+      await stored.release?.().catch(() => undefined);
+    }
+  }
+  return { outputKeys, optimizations };
 }
 
 export async function processGraphNodeJob(
@@ -651,36 +791,9 @@ export async function processGraphNodeJob(
       }
 
       case 'optimize': {
-        for (const [index, inputKey] of inputArtifacts.entries()) {
-          attemptSignal.throwIfAborted();
-          const stored = await effectiveStorage.getObject(inputKey);
-          if (!stored) {
-            throw new Error(`Input artifact "${inputKey}" not found in storage`);
-          }
-          const srcExt = artifactExtension(stored.filename, inputKey);
-          const optimizer = getOptimizer(srcExt, optimizers);
-          const deadlineAt = jobDeadlineAt(job);
-          const optRes = await raceAbort(
-            optimizer(stored.buffer, node.options || {}, {
-              signal: attemptSignal,
-              remainingMs: remainingJobMs({ [JOB_DEADLINE_AT]: deadlineAt }),
-            }),
-            attemptSignal
-          ); // NOSONAR S9382 sequential: one artifact in memory at a time
-          // An output that is not smaller is not an optimisation: the input is kept and said to be unchanged.
-          const gained = optRes.optimized && optRes.buffer.length < stored.buffer.length;
-          const outBuffer = gained ? optRes.buffer : stored.buffer;
-          const outFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `optimized.${srcExt}`);
-          const outKey = nodeOutputKey('intermediate', graphId, nodeId, index, outFilename);
-          await effectiveStorage.saveObject(outKey, outBuffer, stored.mimeType, outFilename, INTERMEDIATE_TTL_MS);
-          outputKeys.push(outKey);
-          optimizations.push({ key: outKey, optimized: gained, inputBytes: stored.buffer.length, outputBytes: optRes.buffer.length });
-          await job.log(
-            gained
-              ? `Node "${nodeId}" optimized "${outFilename}" from ${stored.buffer.length} to ${optRes.buffer.length} bytes`
-              : `Node "${nodeId}" kept "${outFilename}" unchanged: the optimiser produced ${optRes.buffer.length} bytes from ${stored.buffer.length} and did not make it smaller`
-          );
-        }
+        const result = await runOptimizeNode(nodeContext, node, job, optimizers);
+        outputKeys = result.outputKeys;
+        optimizations.push(...result.optimizations);
         break;
       }
 
@@ -1015,10 +1128,14 @@ async function promoteResults(
     const stored = await storage.getObject(inputKey);
     if (!stored) continue;
 
-    const safeFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `export_${index}.bin`);
-    const promotedKey = nodeOutputKey('results', node.graphId, node.nodeId, index, safeFilename);
-    await saveRetainedResult(storage, promotedKey, stored.buffer, stored.mimeType, safeFilename);
-    keys.push(promotedKey);
+    try {
+      const safeFilename = sanitizeNodeOutputFilename(stored.filename || path.basename(inputKey), `export_${index}.bin`);
+      const promotedKey = nodeOutputKey('results', node.graphId, node.nodeId, index, safeFilename);
+      await saveRetainedResultFromStored(storage, inputKey, stored, promotedKey, safeFilename, node.signal);
+      keys.push(promotedKey);
+    } finally {
+      await stored.release?.().catch(() => undefined);
+    }
   }
   return keys;
 }

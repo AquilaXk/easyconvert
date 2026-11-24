@@ -1593,14 +1593,14 @@
     "rule": "complexity",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 75
+    "maxValue": 68
   },
   {
     "file": "src/lib/queue/graph/node-executor.ts",
     "rule": "max-lines-per-function",
     "function": "processGraphNodeJob",
     "count": 1,
-    "maxValue": 363
+    "maxValue": 337
   },
   {
     "file": "src/lib/queue/node-processor.ts",
