@@ -30,6 +30,7 @@ import { maskTaskRecords } from './sealed-nodes';
 import { maskServerText } from '../../security/server-paths';
 import { sealWebhookSecret } from '../../security/sealed-webhook-secret';
 import { DEFAULT_QUEUE_KEY_PREFIX } from '../bullmq-engine';
+import { evalQueueLua, isNoScriptError } from '../eval-lua';
 import { GraphStateCorruptError, QueueUnavailableError } from '../../types';
 import { finishGraph, type EndedGraph, type GraphEnd, type ReservationEnd } from './graph-end';
 import {
@@ -54,7 +55,20 @@ export interface RedisGraphSchedulerOptions {
 }
 
 /** The Redis commands this scheduler sends. */
-const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set(['eval', 'hgetall', 'hmget', 'lrange', 'lrem', 'del', 'hget', 'scan', 'zrevrange', 'zrem']);
+const SCHEDULER_REDIS_COMMANDS: ReadonlySet<PropertyKey> = new Set([
+  'eval',
+  'evalsha',
+  'script',
+  'hgetall',
+  'hmget',
+  'lrange',
+  'lrem',
+  'del',
+  'hget',
+  'scan',
+  'zrevrange',
+  'zrem',
+]);
 const SCHEDULER_QUEUE_NAME = 'graph-scheduler';
 const GRAPH_STATUS_COUNT = 4;
 
@@ -72,7 +86,7 @@ function failClosedRedis(client: Redis): Redis {
       }
       return (...args: unknown[]) =>
         Promise.resolve(value.apply(target, args)).catch((err: unknown) => {
-          if (err instanceof ReplyError) {
+          if (err instanceof ReplyError || isNoScriptError(err)) {
             throw err;
           }
           throw new QueueUnavailableError(SCHEDULER_QUEUE_NAME, err instanceof Error ? err.message : String(err));
@@ -119,7 +133,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
    */
   private async indexGraph(graphId: string, ownerUserId: string | undefined, createdAt: number): Promise<void> {
     if (!ownerUserId || isAnonymousUserId(ownerUserId)) return;
-    await this.redisClient.eval(
+    await evalQueueLua(
+      this.redisClient,
       INDEX_USER_GRAPH_LUA_SCRIPT,
       1,
       this.userGraphsKey(ownerUserId),
@@ -165,7 +180,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
       graph: JSON.stringify(graph),
     };
 
-    await this.redisClient.eval(
+    await evalQueueLua(
+      this.redisClient,
       INIT_GRAPH_LUA_SCRIPT,
       6,
       k.graph,
@@ -262,7 +278,7 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
 
   async onNodeStarted(graphId: string, nodeId: NodeId): Promise<boolean> {
     const k = this.graphKeys(graphId);
-    return Number(await this.redisClient.eval(NODE_STARTED_LUA_SCRIPT, 2, k.graph, k.nodes, nodeId, String(Date.now()))) === 1;
+    return Number(await evalQueueLua(this.redisClient, NODE_STARTED_LUA_SCRIPT, 2, k.graph, k.nodes, nodeId, String(Date.now()))) === 1;
   }
 
   async onNodeCompleted(
@@ -272,7 +288,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
     actualUnits: number = 1
   ): Promise<NodeCompletionResult> {
     const k = this.graphKeys(graphId);
-    const raw = (await this.redisClient.eval(
+    const raw = (await evalQueueLua(
+      this.redisClient,
       NODE_COMPLETED_LUA_SCRIPT,
       6,
       k.graph,
@@ -316,14 +333,15 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
   /** Empties the webhook secret of the ended graph `graphId` and sets every key of it to expire `endedJobRetentionMs` from now. */
   async forgetEndedGraph(graphId: string): Promise<void> {
     const k = this.graphKeys(graphId);
-    await this.redisClient.eval(FORGET_ENDED_GRAPH_LUA_SCRIPT, 6, k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox, String(endedJobRetentionMs()));
+    await evalQueueLua(this.redisClient, FORGET_ENDED_GRAPH_LUA_SCRIPT, 6, k.graph, k.deps, k.children, k.nodes, k.outputs, k.outbox, String(endedJobRetentionMs()));
   }
 
   async onNodeFailed(graphId: string, nodeId: NodeId, reportedError: string, errorCode = ''): Promise<NodeFailureResult> {
     // The reason is stored, returned by the job API and sent in webhooks: credentials and server paths are masked here, on write.
     const error = maskServerText(reportedError);
     const k = this.graphKeys(graphId);
-    const raw = (await this.redisClient.eval(
+    const raw = (await evalQueueLua(
+      this.redisClient,
       NODE_FAILED_LUA_SCRIPT,
       4,
       k.graph,
@@ -379,7 +397,8 @@ export class RedisGraphScheduler implements IGraphScheduler, StartingGraphSchedu
 
   async cancelGraph(graphId: string, reason: string = 'Cancelled by user'): Promise<boolean> {
     const k = this.graphKeys(graphId);
-    const raw = (await this.redisClient.eval(
+    const raw = (await evalQueueLua(
+      this.redisClient,
       CANCEL_GRAPH_LUA_SCRIPT,
       3,
       k.graph,

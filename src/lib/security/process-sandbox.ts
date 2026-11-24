@@ -60,8 +60,9 @@ function fileScopeOf(options: SandboxFileScope): SandboxFileScope {
   return { workDir: options.workDir, writeDirs: options.writeDirs, readDirs: options.readDirs, socketDirs: options.socketDirs, fileConfinementOff: options.fileConfinementOff };
 }
 
-/** Preload library built by native/osl-pipe-redirect that redirects LibreOffice /tmp/OSL_PIPE_* paths into TMPDIR. */
-export const OSL_PIPE_REDIRECT_LIBRARY = '/usr/local/lib/libeasyconvert-osl-pipe.so';
+/** Preload library built by native/osl-pipe-redirect that redirects LibreOffice /tmp/OSL_PIPE_* paths into TMPDIR.
+ * Lives under /usr/lib so both pid-init confinement (/usr) and Ubuntu's libreoffice-xpdfimport AppArmor abstraction (<abstractions/base>) allow preloading it without stderr errors. */
+export const OSL_PIPE_REDIRECT_LIBRARY = '/usr/lib/libeasyconvert-osl-pipe.so';
 
 export interface LibreOfficePipeScopeOptions {
   usesDefaultExecutor?: boolean;

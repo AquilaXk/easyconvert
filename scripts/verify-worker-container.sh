@@ -373,10 +373,10 @@ if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
   printf '%s\n' "$MARKER_TEXT" > "$work_dir/document.txt"
   lo_work="$work_dir/lo-work"
   mkdir -p "$lo_work"
-  if [ -s /usr/local/lib/libeasyconvert-osl-pipe.so ] \
-    && unshare -r -n -- pid-init --confine --require --write "$lo_work" --read "$work_dir/document.txt" --read /usr/local/lib/libeasyconvert-osl-pipe.so \
+  if [ -s /usr/lib/libeasyconvert-osl-pipe.so ] \
+    && unshare -r -n -- pid-init --confine --require --write "$lo_work" --read "$work_dir/document.txt" --read /usr/lib/libeasyconvert-osl-pipe.so \
       -- prlimit --as="$ADDRESS_SPACE_LIMIT_BYTES" -- timeout "$CONVERSION_TIMEOUT_SECONDS" \
-      env HOME="$lo_work" TMPDIR="$lo_work" LD_PRELOAD=/usr/local/lib/libeasyconvert-osl-pipe.so \
+      env HOME="$lo_work" TMPDIR="$lo_work" LD_PRELOAD=/usr/lib/libeasyconvert-osl-pipe.so \
       soffice --headless --norestore --nofirststartwizard --nologo \
       "-env:UserInstallation=file://$lo_work/lo-profile" --convert-to pdf --outdir "$lo_work" "$work_dir/document.txt" \
       >"$work_dir/soffice.out" 2>&1 \

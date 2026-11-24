@@ -1,6 +1,7 @@
 import type Redis from 'ioredis';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import type { JobCounts, JobState } from './bullmq-engine';
+import { evalQueueLua } from './eval-lua';
 import { OLDEST_WAITING_SINCE_LUA_SCRIPT } from './lua-scripts';
 import { userByStateKeys } from './user-job-list';
 
@@ -198,7 +199,8 @@ export async function readOldestWaitingSince(
 ): Promise<number | undefined> {
   const now = Date.now();
   if (typeof redis.eval === 'function') {
-    const longestWait = await redis.eval(
+    const longestWait = await evalQueueLua(
+      redis,
       OLDEST_WAITING_SINCE_LUA_SCRIPT,
       1,
       waitingKey,

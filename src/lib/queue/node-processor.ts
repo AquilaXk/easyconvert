@@ -318,7 +318,6 @@ export async function processNodeJob(
     }
 
     await job.log(`[${engine.name}] Loaded input context. Dispatching to conversion engine...`);
-    await job.updateProgress(30);
     await job.updateProgress(35);
 
     // 2. Execute conversion (Pipeline tasks chaining or single-target conversion)
@@ -409,9 +408,9 @@ export async function processNodeJob(
         job.data.originalFilename
       );
       lastProducedResult = finalResult;
+      await job.updateProgress(75);
     }
 
-    await job.updateProgress(75);
     await logConversionDiagnostics(job, engine.name, finalResult, startTime);
 
     // 3. Save the output with the undelivered time as its lifetime: it is deleted soon after its first complete download.

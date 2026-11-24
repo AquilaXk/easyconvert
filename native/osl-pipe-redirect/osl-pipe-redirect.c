@@ -1,6 +1,10 @@
 // osl-pipe-redirect: a preload library that redirects LibreOffice OSL_PIPE sockets into $TMPDIR.
 //
-//   LD_PRELOAD=/usr/local/lib/libeasyconvert-osl-pipe.so soffice ...
+//   LD_PRELOAD=/usr/lib/libeasyconvert-osl-pipe.so soffice ...
+//
+// Installed under /usr/lib rather than /usr/local/lib so Ubuntu's libreoffice-xpdfimport AppArmor profile
+// (<abstractions/base>: /{usr/,}lib{,32,64}/**.so* mr) permits ld.so to map the library instead of writing
+// an LD_PRELOAD open failure onto xpdfimport's stderr protocol stream.
 //
 // LibreOffice's sal/osl/unx/pipe.cxx (osl_psz_createPipe) probes access("/tmp", W_OK) and then access("/var/tmp", W_OK)
 // before checking OSL_SOCKET_PATH. Because Linux Landlock does not restrict directory access(2) checks on writable sticky

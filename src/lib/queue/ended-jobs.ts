@@ -1,6 +1,7 @@
 import type Redis from 'ioredis';
 import { pipelineReplies } from '../redis/pipeline-replies';
 import { deadLetterKeys, trimDeadLettersBefore } from './dead-letters';
+import { evalQueueLua, execPipelineEvalQueueLua } from './eval-lua';
 import {
   KEEP_NEWEST_ENDED_LUA_SCRIPT,
   REMOVE_AGED_ENDED_LUA_SCRIPT,
@@ -219,7 +220,8 @@ async function removeSetEntriesBefore(
     let synced = true;
     while (removed.length < limit) {
       const stepLimit = Math.min(ENDED_ZSET_STEP, limit - removed.length);
-      const reply = await client.eval(
+      const reply = await evalQueueLua(
+        client,
         REMOVE_AGED_ENDED_LUA_SCRIPT,
         2,
         stateKey,
@@ -333,7 +335,8 @@ export async function keepNewestEnded(client: Redis, keys: QueueKeySpace, stateK
   }
   if (typeof (client as { eval?: unknown }).eval === 'function') {
     const trimmed = Number(
-      await client.eval(
+      await evalQueueLua(
+        client,
         KEEP_NEWEST_ENDED_LUA_SCRIPT,
         2,
         stateKey,
@@ -365,7 +368,7 @@ export async function dropEndedData(client: Redis, keys: QueueKeySpace, id: stri
   if (!removeDataOnFinish?.length) return;
   const stored = parsedData(await client.hget(keys.jobKey(id), 'data'));
   if (typeof stored !== 'object' || stored === null || !removeDataOnFinish.some((key) => key in stored)) return;
-  await client.eval(REPLACE_ENDED_JOB_DATA_LUA_SCRIPT, 1, keys.jobKey(id), JSON.stringify(finishedData(stored, removeDataOnFinish)));
+  await evalQueueLua(client, REPLACE_ENDED_JOB_DATA_LUA_SCRIPT, 1, keys.jobKey(id), JSON.stringify(finishedData(stored, removeDataOnFinish)));
 }
 
 /**
@@ -375,7 +378,7 @@ export async function dropEndedData(client: Redis, keys: QueueKeySpace, id: stri
 export async function removeStoredJob(client: Redis, keys: QueueKeySpace, id: string, removeDlq: boolean = false): Promise<boolean> {
   const userJobsKey = keys.userJobsKey(ownerOf(parsedData(await client.hget(keys.jobKey(id), 'data'))));
   const scriptKeys = removeDlq ? [keys.jobKey(id), ...keys.stateKeys, userJobsKey, keys.dlqKey] : [keys.jobKey(id), ...keys.stateKeys, userJobsKey];
-  return Number(await client.eval(REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
+  return Number(await evalQueueLua(client, REMOVE_JOB_LUA_SCRIPT, scriptKeys.length, ...scriptKeys, id)) === 1;
 }
 
 /** The ids of one pipeline that `forgetUserJobs` sends: the jobs it reads or removes together, and the dead letters it checks or removes together. */
@@ -405,14 +408,22 @@ async function removeProcessedJobs(
     else if (processed.has(id)) toRemove.push({ id, unknownState: rows[at][1] === null });
     else staying.add(id);
   });
-  const removal = client.pipeline();
-  if (foreign.length > 0) {
-    removal.zrem(index, ...foreign);
-    for (const bk of userByStateKeys(index)) removal.zrem(bk, ...foreign);
-  }
-  for (const { id } of toRemove) removal.eval(REMOVE_JOB_LUA_SCRIPT, keys.stateKeys.length + 2, keys.jobKey(id), ...keys.stateKeys, index, id);
-  const prefixReplies = foreign.length > 0 ? 1 + ALL_JOB_STATES.length : 0;
-  const answers = (await pipelineReplies(removal)).slice(prefixReplies);
+  const byState = foreign.length > 0 ? userByStateKeys(index) : [];
+  const answers = await execPipelineEvalQueueLua(client, {
+    script: REMOVE_JOB_LUA_SCRIPT,
+    prefix:
+      foreign.length > 0
+        ? (removal) => {
+            removal.zrem(index, ...foreign);
+            for (const bk of byState) removal.zrem(bk, ...foreign);
+            return 1 + ALL_JOB_STATES.length;
+          }
+        : undefined,
+    calls: toRemove.map(({ id }) => ({
+      numKeys: keys.stateKeys.length + 2,
+      args: [keys.jobKey(id), ...keys.stateKeys, index, id],
+    })),
+  });
   const cleared: string[] = [];
   toRemove.forEach(({ id, unknownState }, at) => {
     if (Number(answers[at]) === 1 || unknownState) cleared.push(id);
@@ -509,7 +520,7 @@ async function removeIndexedLetters(client: Redis, keys: QueueKeySpace, userId: 
   const userKey = `${byUserPrefix}${userId}`;
   const cleared = [...clearedJobIds];
   for (let at = 0; at < cleared.length; at += FORGET_BATCH) {
-    await client.eval(REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, ...cleared.slice(at, at + FORGET_BATCH));
+    await evalQueueLua(client, REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, ...cleared.slice(at, at + FORGET_BATCH));
   }
   const ids = await client.smembers(userKey);
   const candidates: DeadLetterCandidate[] = [];
@@ -528,7 +539,7 @@ async function removeIndexedLetters(client: Redis, keys: QueueKeySpace, userId: 
   const gone = [...stale, ...(await doomedLetters(client, keys, processed, clearedJobIds, candidates))];
   for (let at = 0; at < gone.length; at += FORGET_BATCH) {
     const batch = gone.slice(at, at + FORGET_BATCH);
-    await client.eval(REMOVE_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, ...batch);
+    await evalQueueLua(client, REMOVE_DEAD_LETTERS_LUA_SCRIPT, 1, keys.dlqKey, ...batch);
     await client.srem(userKey, ...batch);
   }
 }

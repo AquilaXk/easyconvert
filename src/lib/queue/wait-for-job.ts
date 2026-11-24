@@ -26,7 +26,7 @@ import {
 } from '../types';
 import type { Job, JobState } from './bullmq-engine';
 import { sanitizeNodeOutputFilename } from './graph/node-jobs';
-import { cancelJobAcrossQueues, conversionQueue, getQueueForResourceClass } from './conversion-queue';
+import { conversionQueue, getQueueForResourceClass } from './conversion-queue';
 import { resolveResourceClass, tierToPriority } from './resource-class';
 import {
   failedTelemetryFieldsFromPayload,
@@ -44,9 +44,9 @@ import { runWebTool, type WebToolFile, type WebToolOptions, type WebToolOutput }
  * Stateless Web control-plane wait helper (`WEB_EXECUTION_MODE=queue-only`, Reference Service `wait=true` model).
  *
  * When `WEB_EXECUTION_MODE=queue-only`, Web replicas never execute native conversion engines or heavy tool buffers
- * in-process: they stage inputs into shared storage, enqueue onto the Worker fleet via `enqueueConversionJob`,
- * subscribe to completion/failure events (backed by bounded Redis polling), and propagate request/deadline aborts
- * via `cancelJobAcrossQueues`.
+ * in-process: they stage inputs into shared storage, enqueue onto `targetQueue` via `enqueueConversionJob`,
+ * subscribe to completion/failure events on `targetQueue` (backed by bounded Redis polling), and propagate request/deadline
+ * aborts directly to `targetQueue.cancelJob`.
  */
 
 /** Resolves the format family used to select a resource-class queue for a web tool run. */
@@ -149,25 +149,16 @@ export function rehydrateQueuedJobFailure(info: RehydrateQueuedFailureInfo): Err
   return err;
 }
 
-async function readJobAcrossQueues(
-  targetQueue: QueueEngine,
-  jobId: string
-): Promise<Job<ConversionJobData, ConversionJobResult> | undefined> {
-  const direct = await targetQueue.getJob(jobId);
-  if (direct || targetQueue === conversionQueue) return direct;
-  return conversionQueue.getJob(jobId);
-}
-
 async function jobStateOf(job: Job<ConversionJobData, ConversionJobResult>): Promise<JobState> {
   return typeof job.getState === 'function' ? await job.getState() : job.state;
 }
 
-async function tryReadJobAcrossQueues(
+async function tryReadTargetJob(
   targetQueue: QueueEngine,
   jobId: string
 ): Promise<{ ok: true; job: Job<ConversionJobData, ConversionJobResult> | undefined } | { ok: false }> {
   try {
-    return { ok: true, job: await readJobAcrossQueues(targetQueue, jobId) };
+    return { ok: true, job: await targetQueue.getJob(jobId) };
   } catch {
     return { ok: false };
   }
@@ -185,10 +176,10 @@ async function settleQueueOnlyCleanup(params: {
   if (aborted) {
     await (
       pendingCancel ??
-      cancelJobAcrossQueues(jobId, 'Synchronous caller disconnected or timed out').catch(() => undefined)
+      targetQueue.cancelJob(jobId, 'Synchronous caller disconnected or timed out').catch(() => undefined)
     );
     for (let step = 0; step < MAX_CANCEL_SETTLE_STEPS; step++) {
-      const probe = await tryReadJobAcrossQueues(targetQueue, jobId);
+      const probe = await tryReadTargetJob(targetQueue, jobId);
       if (probe.ok && (!probe.job || (await jobStateOf(probe.job)) !== 'active')) {
         break;
       }
@@ -196,7 +187,7 @@ async function settleQueueOnlyCleanup(params: {
     }
   }
 
-  const finalProbe = await tryReadJobAcrossQueues(targetQueue, jobId);
+  const finalProbe = await tryReadTargetJob(targetQueue, jobId);
   const settledNotActive = finalProbe.ok
     ? !finalProbe.job || (await jobStateOf(finalProbe.job)) !== 'active'
     : !aborted;
@@ -272,17 +263,14 @@ async function waitForQueuedJobResult(
     };
 
     const onAbort = (): void => {
-      const cancelPromise = cancelJobAcrossQueues(jobId, 'Synchronous caller disconnected or timed out').catch(
-        () => undefined
-      );
+      const cancelPromise = targetQueue
+        .cancelJob(jobId, 'Synchronous caller disconnected or timed out')
+        .catch(() => undefined);
       onCancelStarted?.(cancelPromise);
       finishReject(signal?.reason ?? new Error('The operation was aborted.'));
     };
 
     unsubscribers.push(subscribeToJobTelemetry(targetQueue, jobId, onTelemetryEvent));
-    if (targetQueue !== conversionQueue) {
-      unsubscribers.push(subscribeToJobTelemetry(conversionQueue, jobId, onTelemetryEvent));
-    }
     if (signal) {
       signal.addEventListener('abort', onAbort, { once: true });
     }
@@ -290,7 +278,7 @@ async function waitForQueuedJobResult(
     const pollOnce = async (): Promise<void> => {
       if (settled) return;
       try {
-        const job = await readJobAcrossQueues(targetQueue, jobId);
+        const job = await targetQueue.getJob(jobId);
         if (!job) return;
         const state = await jobStateOf(job);
         if (state === 'completed' && job.returnvalue) {

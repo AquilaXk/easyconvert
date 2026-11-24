@@ -5,6 +5,7 @@ import type { UserTier } from '../auth/types';
 import { createProblemDetailsResponse } from '../api/problem-details';
 import { DEFAULT_FREE_CONCURRENCY, PLAN_CONCURRENCY, isUserTier } from '../plan-limits';
 import { conversionQueue } from './conversion-queue';
+import { evalQueueLua } from './eval-lua';
 import { currentJobDeadlineSettings, readIntegerSetting } from './job-deadline';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
@@ -131,7 +132,8 @@ export async function acquireSyncSlot(
     const key = syncSlotKey(userId);
 
     try {
-      const res = (await redis.eval(
+      const res = (await evalQueueLua(
+        redis,
         ACQUIRE_SYNC_SLOT_LUA,
         1,
         key,

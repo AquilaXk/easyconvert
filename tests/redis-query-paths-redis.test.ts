@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RedisIdempotencyStore } from '../src/lib/api/idempotency';
 import { DistributedBullMQAdapter } from '../src/lib/queue/bullmq-engine';
 import { forgetUserJobs, keepNewestEnded, removeStoredJob, scanEndedBefore, type QueueKeySpace } from '../src/lib/queue/ended-jobs';
+import { ensureQueueLuaLoaded } from '../src/lib/queue/eval-lua';
+import { POP_NEXT_WAITING_JOB_LUA_SCRIPT, REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT, REMOVE_JOB_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
 import { ownerOf } from '../src/lib/queue/stored-job';
 import { RedisGraphScheduler, type GraphNode, type JobGraph } from '../src/lib/queue/graph';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
@@ -58,7 +60,7 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
     vi.spyOn(prototype, 'sendCommand').mockImplementation(function (this: unknown, command, stream, node) {
       if (this !== admin) {
         tally.names.push(command.name);
-        if (command.name === 'eval') tally.evalKeyCounts.push(Number(command.args[1]));
+        if (command.name === 'eval' || command.name === 'evalsha') tally.evalKeyCounts.push(Number(command.args[1]));
         if (stream === undefined) tally.trips += 1;
         else if (!seen.has(stream)) {
           seen.add(stream);
@@ -251,6 +253,8 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
       const keys = keySpace(`${prefix}scripts:`);
       await seed(keys, { jobs, letters: [letter('job1', USER)] });
       const client = connect();
+      await ensureQueueLuaLoaded(client, REMOVE_JOB_LUA_SCRIPT);
+      await ensureQueueLuaLoaded(client, REMOVE_JOB_DEAD_LETTERS_LUA_SCRIPT);
       const trips = countTrips();
 
       await forgetUserJobs(client, keys, USER, new Set(jobs.map((job) => job.id)));
@@ -389,6 +393,7 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
         keyPrefix: prefix,
       });
       try {
+        await ensureQueueLuaLoaded(client, POP_NEXT_WAITING_JOB_LUA_SCRIPT);
         const delayed = await adapter.add('convert', { userId: 'u_fast', graphId: 'g_1', tag: 'd1' }, { delay: 15, jobId: 'g_1:n1' });
         const rawHash = await admin.hgetall(`${prefix}{q1}:job:${delayed.id}`);
         expect(rawHash.userId).toBe('u_fast');
@@ -399,7 +404,8 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
         const trips = countTrips();
         const popped = await adapter._popNextWaiting();
         expect(popped?.id).toBe(delayed.id);
-        expect(trips.names.filter((name) => name === 'eval')).toHaveLength(1);
+        expect(trips.names.filter((name) => name === 'evalsha')).toHaveLength(1);
+        expect(trips.names.filter((name) => name === 'eval')).toHaveLength(0);
         vi.restoreAllMocks();
 
         await adapter._onJobCompleted(popped!, 'ok');

@@ -20,6 +20,7 @@ import { DistributedBullMQAdapter, STALLED_SWEEP_INTERVAL_MS, Worker } from '../
 import { attachJobLifecycleListeners } from '../src/lib/queue/conversion-queue';
 import { RedisGraphScheduler } from '../src/lib/queue/graph/redis-scheduler';
 import { CANCEL_GRAPH_LUA_SCRIPT } from '../src/lib/queue/graph/lua-scripts';
+import { luaScriptSha1 } from '../src/lib/queue/eval-lua';
 import { withReservedUnit } from '../src/lib/api-keys/guard';
 import { POST as batchRoute } from '../src/app/api/convert/batch/route';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
@@ -645,13 +646,17 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
           cancelledNodeJobs: () => cancelled,
           loseTheNextCancelReply: () => {
             const evaluate = admin.eval.bind(admin) as (...args: unknown[]) => Promise<unknown>;
+            const evaluateSha = admin.evalsha.bind(admin) as (...args: unknown[]) => Promise<unknown>;
+            const cancelSha = luaScriptSha1(CANCEL_GRAPH_LUA_SCRIPT);
             let lost = 0;
-            vi.spyOn(admin, 'eval').mockImplementation((async (...args: unknown[]) => {
-              const reply = await evaluate(...args);
-              if (lost > 0 || args[0] !== CANCEL_GRAPH_LUA_SCRIPT) return reply;
+            const intercept = (isSha: boolean) => async (...args: unknown[]) => {
+              const reply = await (isSha ? evaluateSha : evaluate)(...args);
+              if (lost > 0 || args[0] !== (isSha ? cancelSha : CANCEL_GRAPH_LUA_SCRIPT)) return reply;
               lost++;
               throw new Error('the connection dropped before the reply');
-            }) as never);
+            };
+            vi.spyOn(admin, 'evalsha').mockImplementation(intercept(true) as never);
+            vi.spyOn(admin, 'eval').mockImplementation(intercept(false) as never);
             return () => lost;
           },
         };

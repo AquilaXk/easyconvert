@@ -656,7 +656,7 @@ describe('P1-08: POST /api/v1/archives/inspect key authorization, object release
       await workerStarted;
 
       // Simulate distributed worker remaining 'active' past CANCEL_SETTLE_MAX_MS while abort signal reaches active attempt
-      const cancelSpy = vi.spyOn(conversionQueue, 'cancelJob').mockImplementation(async (_id, reason) => {
+      const cancelSpy = vi.spyOn(resourceQueues.cpu, 'cancelJob').mockImplementation(async (_id, reason) => {
         activeJob?._abortAttempt(new JobCancelledError(reason || 'cancelled'));
         return true;
       });

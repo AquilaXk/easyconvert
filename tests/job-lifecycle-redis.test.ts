@@ -13,6 +13,7 @@ import {
   COMPLETION_COMMIT_MAX_ATTEMPTS,
 } from '../src/lib/queue/bullmq-engine';
 import { COMPLETE_JOB_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
+import { luaScriptSha1 } from '../src/lib/queue/eval-lua';
 import {
   processConversionJob,
   attachJobLifecycleListeners,
@@ -76,20 +77,24 @@ describe.skipIf(!REDIS_URL)('Job lifecycle safety on a real Redis server', () =>
   ): { commitCalls: () => number } {
     const client = adapter.getRedisClient() as Redis;
     const realEval = client.eval.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    const realEvalsha = client.evalsha.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    const completeSha = luaScriptSha1(COMPLETE_JOB_LUA_SCRIPT);
     let calls = 0;
-    vi.spyOn(client, 'eval').mockImplementation((async (...args: unknown[]) => {
-      if (args[0] !== COMPLETE_JOB_LUA_SCRIPT) {
-        return realEval(...args);
+    const handleCall = async (isSha: boolean, ...args: unknown[]): Promise<unknown> => {
+      if (args[0] !== (isSha ? completeSha : COMPLETE_JOB_LUA_SCRIPT)) {
+        return isSha ? realEvalsha(...args) : realEval(...args);
       }
-      calls++;
+      if (isSha) calls++;
       if (!plan.failures()) {
-        return realEval(...args);
+        return isSha ? realEvalsha(...args) : realEval(...args);
       }
       if (plan.runBeforeFailing) {
-        await realEval(...args);
+        await realEval(COMPLETE_JOB_LUA_SCRIPT, ...args.slice(1));
       }
       throw new Error('Connection is closed.');
-    }) as never);
+    };
+    vi.spyOn(client, 'evalsha').mockImplementation(((...args: unknown[]) => handleCall(true, ...args)) as never);
+    vi.spyOn(client, 'eval').mockImplementation(((...args: unknown[]) => handleCall(false, ...args)) as never);
     return { commitCalls: () => calls };
   }
 

@@ -49,6 +49,7 @@ import {
   type KeepJobs, type QueueKeySpace,
 } from './ended-jobs';
 import { failedTelemetryFieldsFromPayload } from './job-telemetry';
+import { evalQueueLua } from './eval-lua';
 import { JobTimeoutError, QueueUnavailableError } from '../types';
 
 export type { KeepJobs } from './ended-jobs';
@@ -222,7 +223,9 @@ export class Job<T = any, R = any> {
   }
 
   async updateProgress(progress: number): Promise<void> {
-    this.progress = Math.max(0, Math.min(100, Math.round(progress)));
+    const next = Math.max(0, Math.min(100, Math.round(progress)));
+    if (next === this.progress) return;
+    this.progress = next;
     this.emitter.emit('progress', this, this.progress);
     if (this.onUpdateHook) {
       try {
@@ -847,17 +850,25 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
 
   private isProcessing: boolean = false;
   private hasPendingCheck: boolean = false;
+  private nextQueueCursor: number = 0;
 
   private async popNextEligibleJob(): Promise<{ job: Job<T, R>; queue: IQueueEngine<T, R>; isHeavy: boolean } | undefined> {
-    const useOwnPop = this.queues.length > 1;
-    for (const q of this.queues) {
+    const len = this.queues.length;
+    const useOwnPop = len > 1;
+    const start = useOwnPop ? this.nextQueueCursor % len : 0;
+    for (let offset = 0; offset < len; offset++) {
+      const idx = (start + offset) % len;
+      const q = this.queues[idx];
       const isHeavy = this.heavyQueueNames?.has(q.name) ?? false;
       if (isHeavy && this.heavyActiveCount >= this.maxHeavyConcurrency) continue;
       const pop = useOwnPop && q._popOwnWaiting ? q._popOwnWaiting.bind(q) : q._popNextWaiting?.bind(q);
       if (!pop) continue;
       try {
         const job = await pop();
-        if (job) return { job, queue: q, isHeavy };
+        if (job) {
+          if (useOwnPop) this.nextQueueCursor = (idx + 1) % len;
+          return { job, queue: q, isHeavy };
+        }
       } catch {
         continue;
       }
@@ -1467,10 +1478,12 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
 
   private readonly persistProgressHook = async (j: Job<T, R>): Promise<void> => {
     if (!this.redisClient || !this.redisConnected) return;
+    if ((j.data as { transientSyncWait?: boolean } | undefined)?.transientSyncWait) return;
+    if (j._attemptToken && j.progress >= 100) return;
     try {
       const jobKey = this.getJobKey(j.id);
       if (typeof this.redisClient.eval === 'function' && j._attemptToken) {
-        await this.redisClient.eval(UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT, 1, jobKey, j._attemptToken, String(j.progress));
+        await evalQueueLua(this.redisClient, UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT, 1, jobKey, j._attemptToken, String(j.progress));
       } else if (typeof this.redisClient.eval === 'function') {
         await this.redisClient.hset(jobKey, 'progress', String(j.progress));
       } else {
@@ -1485,7 +1498,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     try {
       const jobKey = this.getJobKey(j.id);
       if (typeof this.redisClient.eval === 'function') {
-        await this.redisClient.eval(APPEND_JOB_LOG_LUA_SCRIPT, 2, jobKey, `${jobKey}:logs`, j._attemptToken ?? '', entry, String(MAX_JOB_LOGS));
+        await evalQueueLua(this.redisClient, APPEND_JOB_LOG_LUA_SCRIPT, 2, jobKey, `${jobKey}:logs`, j._attemptToken ?? '', entry, String(MAX_JOB_LOGS));
       } else {
         await this.redisClient.hset(jobKey, 'progress', String(j.progress), 'logs', JSON.stringify(j.logs));
       }
@@ -1542,7 +1555,8 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         }
 
         const res = (await this.redisOp(() =>
-          redis.eval(
+          evalQueueLua(
+            redis,
             ADD_JOB_LUA_SCRIPT,
             4,
             this.getJobKey(id),
@@ -1756,19 +1770,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     const finishedOn = Date.now();
     const logEntry = `[${new Date(finishedOn).toISOString()}] Job cancelled: ${reason}`;
     const outcome = await this.redisOp(() =>
-      client.eval(
-        CANCEL_JOB_LUA_SCRIPT,
-        6,
-        this.getJobKey(id),
-        this.waitingKey,
-        this.delayedKey,
-        this.activeKey,
-        this.cancelledKey,
-        this.getHeartbeatKey(id),
-        id,
-        reason,
-        String(finishedOn),
-        logEntry
+      evalQueueLua(
+        client, CANCEL_JOB_LUA_SCRIPT, 6,
+        this.getJobKey(id), this.waitingKey, this.delayedKey, this.activeKey, this.cancelledKey, this.getHeartbeatKey(id),
+        id, reason, String(finishedOn), logEntry
       )
     );
     if (!Array.isArray(outcome)) {
@@ -1880,18 +1885,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         // and start its heartbeat in one round trip.
         const now = Date.now();
         const attemptToken = this.nextAttemptToken();
-        const popped = await this.redisClient.eval(
-          POP_NEXT_WAITING_JOB_LUA_SCRIPT,
-          5,
-          this.waitingKey,
-          this.activeKey,
-          this.jobKeyPrefix,
-          this.heartbeatKeyPrefix,
-          this.delayedKey,
-          String(now),
-          String(STALL_TIMEOUT_MS),
-          attemptToken,
-          '50'
+        const popped = await evalQueueLua(
+          this.redisClient, POP_NEXT_WAITING_JOB_LUA_SCRIPT, 5,
+          this.waitingKey, this.activeKey, this.jobKeyPrefix, this.heartbeatKeyPrefix, this.delayedKey,
+          String(now), String(STALL_TIMEOUT_MS), attemptToken, '50'
         );
         if (!Array.isArray(popped) || popped.length === 0) {
           return undefined;
@@ -1938,7 +1935,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       return candidateAt;
     }
     try {
-      const recorded = Number(await this.redisClient.eval(CLAIM_DEADLINE_LUA_SCRIPT, 1, this.getJobKey(job.id), String(candidateAt)));
+      const recorded = Number(await evalQueueLua(this.redisClient, CLAIM_DEADLINE_LUA_SCRIPT, 1, this.getJobKey(job.id), String(candidateAt)));
       if (recorded === CLAIM_DEADLINE_NO_JOB) return undefined;
       return Number.isFinite(recorded) && recorded > 0 ? recorded : candidateAt;
     } catch (err) {
@@ -1956,21 +1953,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     try {
       const now = Date.now();
       const priorityScore = calculateJobPriorityScore(job.opts?.priority, now);
-      const moved = await this.redisClient.eval(
-        REQUEUE_JOB_LUA_SCRIPT,
-        5,
-        this.getJobKey(job.id),
-        this.activeKey,
-        this.waitingKey,
-        this.delayedKey,
-        this.getHeartbeatKey(job.id),
-        job.id,
-        String(job.attemptsMade),
-        job.failedReason || '',
-        String(Math.max(0, delayMs)),
-        String(now),
-        job._attemptToken ?? '',
-        String(priorityScore)
+      const moved = await evalQueueLua(
+        this.redisClient, REQUEUE_JOB_LUA_SCRIPT, 5,
+        this.getJobKey(job.id), this.activeKey, this.waitingKey, this.delayedKey, this.getHeartbeatKey(job.id),
+        job.id, String(job.attemptsMade), job.failedReason || '', String(Math.max(0, delayMs)), String(now), job._attemptToken ?? '', String(priorityScore)
       );
       if (Number(moved) !== 1) {
         return false;
@@ -2006,19 +1992,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
       try {
-        const committed = await client.eval(
-          COMPLETE_JOB_LUA_SCRIPT,
-          4,
-          this.getJobKey(job.id),
-          this.activeKey,
-          this.completedKey,
-          this.getHeartbeatKey(job.id),
-          job.id,
-          finishedOn,
-          returnValue,
-          String(job.attemptsMade),
-          keep.count === 0 ? '1' : '0',
-          job._attemptToken ?? ''
+        const committed = await evalQueueLua(
+          client, COMPLETE_JOB_LUA_SCRIPT, 4,
+          this.getJobKey(job.id), this.activeKey, this.completedKey, this.getHeartbeatKey(job.id),
+          job.id, finishedOn, returnValue, String(job.attemptsMade), keep.count === 0 ? '1' : '0', job._attemptToken ?? ''
         );
         if (Number(committed) !== 1) {
           console.warn(
@@ -2047,23 +2024,12 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     }
     const keep = keepJobsOf(job.opts?.removeOnFail);
     try {
-      const committed = await this.redisClient.eval(
-        FAIL_JOB_LUA_SCRIPT,
-        4,
-        this.getJobKey(job.id),
-        this.activeKey,
-        this.failedKey,
-        this.getHeartbeatKey(job.id),
-        job.id,
-        String(job.finishedOn || Date.now()),
-        job.failedReason ?? '',
-        JSON.stringify(job.stacktrace || []),
-        String(job.attemptsMade),
-        keep.count === 0 ? '1' : '0',
-        job._attemptToken ?? '',
-        job.failedCode ?? '',
-        String(job.failedStatus ?? ''),
-        job.failedRefusalCode ?? ''
+      const committed = await evalQueueLua(
+        this.redisClient, FAIL_JOB_LUA_SCRIPT, 4,
+        this.getJobKey(job.id), this.activeKey, this.failedKey, this.getHeartbeatKey(job.id),
+        job.id, String(job.finishedOn || Date.now()), job.failedReason ?? '', JSON.stringify(job.stacktrace || []),
+        String(job.attemptsMade), keep.count === 0 ? '1' : '0', job._attemptToken ?? '',
+        job.failedCode ?? '', String(job.failedStatus ?? ''), job.failedRefusalCode ?? ''
       );
       if (Number(committed) !== 1) {
         console.warn(
@@ -2115,14 +2081,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
       return;
     }
     try {
-      const reply = (await client.eval(
-        REFRESH_HEARTBEAT_LUA_SCRIPT,
-        2,
-        this.getJobKey(job.id),
-        this.getHeartbeatKey(job.id),
-        String(Date.now()),
-        String(STALL_TIMEOUT_MS),
-        job._attemptToken ?? ''
+      const reply = (await evalQueueLua(
+        client, REFRESH_HEARTBEAT_LUA_SCRIPT, 2,
+        this.getJobKey(job.id), this.getHeartbeatKey(job.id),
+        String(Date.now()), String(STALL_TIMEOUT_MS), job._attemptToken ?? ''
       )) as [string, string];
       const [outcome, detail] = reply;
       if (outcome === 'cancelled') {
@@ -2147,16 +2109,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     if (!client || !this.redisConnected) {
       return [];
     }
-    const [requeuedIds, failedIds] = (await client.eval(
-      RECOVER_STALLED_JOBS_LUA_SCRIPT,
-      5,
-      this.activeKey,
-      this.waitingKey,
-      this.failedKey,
-      this.jobKeyPrefix,
-      this.heartbeatKeyPrefix,
-      String(Date.now()),
-      STALLED_JOB_FAILURE_REASON
+    const [requeuedIds, failedIds] = (await evalQueueLua(
+      client, RECOVER_STALLED_JOBS_LUA_SCRIPT, 5,
+      this.activeKey, this.waitingKey, this.failedKey, this.jobKeyPrefix, this.heartbeatKeyPrefix,
+      String(Date.now()), STALLED_JOB_FAILURE_REASON
     )) as [string[], string[]];
 
     if (requeuedIds.length > 0) {

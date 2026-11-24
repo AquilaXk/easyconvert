@@ -1,5 +1,6 @@
 import type Redis from 'ioredis';
 import type { DlqEntry } from './bullmq-engine';
+import { evalQueueLua } from './eval-lua';
 import {
   ADD_DEAD_LETTER_LUA_SCRIPT,
   MIGRATE_DEAD_LETTERS_LUA_SCRIPT,
@@ -57,14 +58,14 @@ function parseLetter(raw: string): unknown {
 /** Stores a letter and indexes it in one step. */
 export async function addDeadLetter(client: Redis, dlqKey: string, entry: DlqEntry): Promise<void> {
   const { jobId, userId, timestamp } = fieldsOf(entry);
-  await client.eval(ADD_DEAD_LETTER_LUA_SCRIPT, 1, dlqKey, JSON.stringify(entry), String(timestamp), jobId, userId);
+  await evalQueueLua(client, ADD_DEAD_LETTER_LUA_SCRIPT, 1, dlqKey, JSON.stringify(entry), String(timestamp), jobId, userId);
 }
 
 /** Removes every letter, of both layouts, in bounded steps so large DLQs never block Redis; answers how many there were. */
 export async function purgeDeadLetters(client: Redis, dlqKey: string): Promise<number> {
   let total = 0;
   for (;;) {
-    const reply = await client.eval(PURGE_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, String(TRIM_STEP));
+    const reply = await evalQueueLua(client, PURGE_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, String(TRIM_STEP));
     if (!Array.isArray(reply)) {
       return total + (Number(reply) || 0);
     }
@@ -79,7 +80,7 @@ export async function purgeDeadLetters(client: Redis, dlqKey: string): Promise<n
 /** Removes the letters recorded at or before `cutoff` (milliseconds), a bounded step at a time. */
 export async function trimDeadLettersBefore(client: Redis, dlqKey: string, cutoff: number): Promise<void> {
   let removed: number;
-  do removed = Number(await client.eval(TRIM_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, String(cutoff), String(TRIM_STEP)));
+  do removed = Number(await evalQueueLua(client, TRIM_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, String(cutoff), String(TRIM_STEP)));
   while (removed >= TRIM_STEP);
 }
 
@@ -128,7 +129,7 @@ export async function migrateDeadLetters(client: Redis, dlqKey: string, apply: b
       const { jobId, userId, timestamp } = fieldsOf(parseLetter(raw));
       return [raw, String(timestamp), jobId, userId];
     });
-    const moved = Number(await client.eval(MIGRATE_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, ...args));
+    const moved = Number(await evalQueueLua(client, MIGRATE_DEAD_LETTERS_LUA_SCRIPT, 1, dlqKey, ...args));
     found.moved += moved;
     // A whole batch that is not moved was removed by someone else, or is a text that does not come back from Redis as it went in.
     idle = moved === 0 ? idle + 1 : 0;

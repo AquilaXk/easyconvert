@@ -521,12 +521,12 @@ describe.skipIf(!REDIS_URL)('the dead letters by id on a real Redis server', () 
       const dlqKey = `${prefix}{trim-steps}:dlq`;
       for (let n = 0; n < 2_300; n += 1) await addDeadLetter(client, dlqKey, JSON.parse(letter(`job${n}`, `user_${n % 7}`, '', 10 + n)) as DlqEntry);
       await addDeadLetter(client, dlqKey, JSON.parse(letter('fresh', USER, '', 4_000_000_000_000)) as DlqEntry);
-      const scripts = await serverCalls('eval');
+      const scripts = (await serverCalls('evalsha')) + (await serverCalls('eval'));
 
       await adapter.clean(60_000, 100, 'failed');
 
       expect((await adapter.getDlqEntries()).map((entry) => entry.jobId)).toEqual(['fresh']);
-      expect((await serverCalls('eval')) - scripts).toBe(3);
+      expect((await serverCalls('evalsha')) + (await serverCalls('eval')) - scripts).toBe(3);
       await expectConsistent(dlqKey);
     });
 
@@ -686,12 +686,12 @@ describe.skipIf(!REDIS_URL)('the dead letters by id on a real Redis server', () 
       const dlqKey = `${prefix}{legacy-steps}:dlq`;
       for (let at = 0; at < 1300; at += 100) await admin.rpush(dlqKey, ...Array.from({ length: 100 }, (_, n) => letter(`job${at + n}`, `user_${n % 5}`, '', at + n + 1)));
       const { client } = await adapterOn('legacy-steps');
-      const realEval = client.eval.bind(client) as (...args: unknown[]) => Promise<unknown>;
+      const realEvalsha = client.evalsha.bind(client) as (...args: unknown[]) => Promise<unknown>;
       let steps = 0;
-      vi.spyOn(client, 'eval').mockImplementation(((...args: unknown[]) => {
+      vi.spyOn(client, 'evalsha').mockImplementation(((...args: unknown[]) => {
         steps += 1;
         if (steps === 2) return Promise.reject(new Error('connection lost'));
-        return realEval(...args);
+        return realEvalsha(...args);
       }) as never);
 
       await expect(migrateDeadLetters(client, dlqKey, true)).rejects.toThrow('connection lost');

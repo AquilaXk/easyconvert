@@ -21,12 +21,15 @@ function interleaved(connection: Redis): { client: Redis; arm: (nth: number, bet
       return (...args: unknown[]) => {
         const answer: unknown = (value as (...a: unknown[]) => unknown).apply(target, args);
         if (!armed || !(answer instanceof Promise)) return answer;
-        armed.left -= 1;
-        if (armed.left > 0) return answer;
-        const { between } = armed;
-        armed = undefined;
         return answer.then(async (result: unknown) => {
-          await between();
+          if (armed && armed.left > 0) {
+            armed.left -= 1;
+            if (armed.left === 0) {
+              const { between } = armed;
+              armed = undefined;
+              await between();
+            }
+          }
           return result;
         });
       };

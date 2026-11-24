@@ -538,7 +538,7 @@ describe('wait-for-job failure fidelity, targetQueue polling, and abort settleme
         return job;
       });
       const getJobSpy = vi.spyOn(resourceQueues.cpu, 'getJob').mockResolvedValue(fakeJob);
-      const cancelSpy = vi.spyOn(conversionQueue, 'cancelJob').mockImplementation(async () => {
+      const cancelSpy = vi.spyOn(resourceQueues.cpu, 'cancelJob').mockImplementation(async () => {
         setTimeout(() => {
           jobState = 'cancelled';
           fakeJob.state = 'cancelled';
@@ -610,7 +610,7 @@ describe('wait-for-job failure fidelity, targetQueue polling, and abort settleme
         return job;
       });
       const getJobSpy = vi.spyOn(resourceQueues.cpu, 'getJob').mockResolvedValue(stuckJob);
-      const cancelSpy = vi.spyOn(conversionQueue, 'cancelJob').mockResolvedValue(true);
+      const cancelSpy = vi.spyOn(resourceQueues.cpu, 'cancelJob').mockResolvedValue(true);
 
       let listenerReady!: () => void;
       const readyPromise = new Promise<void>((resolve) => {

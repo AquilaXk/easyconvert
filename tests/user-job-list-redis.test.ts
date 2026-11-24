@@ -87,9 +87,15 @@ describe.skipIf(!REDIS_URL)('the windowed list of a user\'s jobs in Redis', () =
     await seed(Array.from({ length: 120 }, (_, n) => ({ name: `j${n}`, state: 'completed', graph: n % 3 !== 0 ? 'node' : undefined })));
     const replies: number[] = [];
     const evalOf = client.eval.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    const evalshaOf = client.evalsha.bind(client) as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(client, 'evalsha').mockImplementation(async (...args: unknown[]) => {
+      const reply = (await evalshaOf(...args)) as unknown[];
+      if (Array.isArray(reply)) replies.push(reply.length);
+      return reply as never;
+    });
     vi.spyOn(client, 'eval').mockImplementation(async (...args: unknown[]) => {
       const reply = (await evalOf(...args)) as unknown[];
-      replies.push(reply.length);
+      if (Array.isArray(reply)) replies.push(reply.length);
       return reply as never;
     });
 
@@ -104,25 +110,28 @@ describe.skipIf(!REDIS_URL)('the windowed list of a user\'s jobs in Redis', () =
 
   it('reads the ids once and one window of jobs for a page that fits in it, and sends no job of another state', async () => {
     await seed(Array.from({ length: 300 }, (_, n) => ({ name: `j${n}`, state: n % 10 === 0 ? 'waiting' : 'completed' })));
+    // Warm both LIST_USER_JOBS scripts so the read-trip check measures steady-state EVALSHA execution.
+    await queue.getJobsByUser(user, undefined, 1, 0);
+    await queue.getJobsByUser(user, ['waiting', 'completed'], 1, 0);
     const names: string[] = [];
     const evalArgs: unknown[][] = [];
     const prototype = Redis.prototype as unknown as { sendCommand: (this: unknown, command: { name: string; args: unknown[] }, ...rest: unknown[]) => unknown };
     const real = prototype.sendCommand;
     vi.spyOn(prototype, 'sendCommand').mockImplementation(function (this: unknown, command, ...rest) {
       names.push(command.name);
-      if (command.name === 'eval') evalArgs.push(command.args);
+      if (command.name === 'evalsha' || command.name === 'eval') evalArgs.push(command.args);
       return real.call(this, command, ...rest);
     });
 
     const page = await queue.getJobsByUser(user, undefined, 5, 0);
     expect(page).toHaveLength(5);
-    expect(names.filter((name) => name !== 'hgetall')).toEqual(['zrevrange', 'eval']);
+    expect(names.filter((name) => name !== 'hgetall')).toEqual(['zrevrange', 'evalsha']);
     expect(evalArgs[0].length).toBeLessThan(70);
 
     names.length = 0;
     const waiting = await queue.getJobsByUser(user, ['waiting'], 5, 0);
     expect(waiting).toHaveLength(5);
-    expect(names).toEqual(['zrevrange', 'eval']);
+    expect(names).toEqual(['zrevrange', 'evalsha']);
   });
 
   it('never lists the job of another user, not even one that a damaged index names', async () => {

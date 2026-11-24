@@ -1,4 +1,5 @@
 import type Redis from 'ioredis';
+import { evalQueueLua } from './eval-lua';
 
 export const ALL_JOB_STATES = ['waiting', 'delayed', 'active', 'completed', 'failed', 'cancelled'] as const;
 
@@ -479,7 +480,8 @@ async function readZsetWindowed<J>(
 
     let flatsCount = 0;
     if (chunk.length > 0) {
-      const flats = (await redis.eval(
+      const flats = (await evalQueueLua(
+        redis,
         LIST_USER_JOBS_LUA_SCRIPT,
         2,
         zsetKey,
@@ -530,7 +532,8 @@ async function readViaByStateOrFallback<J>(
   );
 
   while (matched.length < wanted) {
-    const reply = (await redis.eval(
+    const reply = (await evalQueueLua(
+      redis,
       LIST_USER_JOBS_BY_STATE_LUA_SCRIPT,
       2,
       options.indexKey,
@@ -596,7 +599,8 @@ export async function countUserJobs(redis: Redis, options: UserJobCountOptions):
   if (unknownOnly) return 0;
 
   const statesArg = filtered && known.length < ALL_JOB_STATES.length ? known : [];
-  const raw = await redis.eval(
+  const raw = await evalQueueLua(
+    redis,
     COUNT_USER_JOBS_LUA_SCRIPT,
     2,
     options.indexKey,

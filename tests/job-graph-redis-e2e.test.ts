@@ -256,11 +256,14 @@ describe.skipIf(!REDIS_URL)('Job graph execution on a real Redis server', () => 
       const calls: string[][] = [];
       const recording = new Proxy(redis, {
         get(target, prop, receiver) {
-          if (prop === 'eval') {
-            return (script: string, numKeys: number, ...args: string[]) => {
-              calls.push(args.slice(0, numKeys));
-              return target.eval(script, numKeys, ...args);
-            };
+          if (prop === 'eval' || prop === 'evalsha') {
+            return (scriptOrSha: string, numKeys: number, ...args: string[]) =>
+              (prop === 'evalsha' ? target.evalsha(scriptOrSha, numKeys, ...args) : target.eval(scriptOrSha, numKeys, ...args)).then(
+                (res) => {
+                  calls.push(args.slice(0, numKeys));
+                  return res;
+                }
+              );
           }
           const value = Reflect.get(target, prop, receiver);
           return typeof value === 'function' ? value.bind(target) : value;
