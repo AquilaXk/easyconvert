@@ -21,6 +21,10 @@ export const dynamic = 'force-dynamic';
 
 const JOBS_PATH = '/api/v1/jobs';
 
+function jobNotFoundResponse(jobId: string, instanceUri: string): NextResponse {
+  return createProblemDetailsResponse(404, `Job with ID "${jobId}" not found.`, instanceUri, 'Not Found');
+}
+
 /** Stored text is masked again on the way out: rows written by older versions may still quote a secret. */
 function maskedText(text: string | undefined): string | undefined {
   return text === undefined ? undefined : redactText(text);
@@ -84,23 +88,13 @@ async function readJobAuthorized(jobId: string, userId: string, instanceUri: str
   const job = await conversionQueue.getJob(jobId);
   const graphState = await graphScheduler.getGraphState(jobId);
   if (!job && !graphState) {
-    return createProblemDetailsResponse(
-      404,
-      `Job with ID "${jobId}" not found.`,
-      instanceUri,
-      'Not Found'
-    );
+    return jobNotFoundResponse(jobId, instanceUri);
   }
 
-  // Enforce tenant boundary: user can only inspect their own jobs
+  // Enforce tenant boundary: foreign jobs return 404 so job IDs cannot be probed.
   const ownerId = job ? job.data?.userId : graphState?.ownerUserId;
   if (!ownerId || ownerId !== userId) {
-    return createProblemDetailsResponse(
-      403,
-      'Access denied to this conversion job.',
-      instanceUri,
-      'Forbidden'
-    );
+    return jobNotFoundResponse(jobId, instanceUri);
   }
 
   const nodesResponse = graphState
@@ -205,14 +199,9 @@ async function cancelJobAuthorized(jobId: string, userId: string, instanceUri: s
     return cancelGraphJob(jobId, userId, instanceUri);
   }
 
-  // Enforce tenant boundary: user can only cancel their own jobs
+  // Enforce tenant boundary: foreign jobs return 404 so job IDs cannot be probed.
   if (!job.data?.userId || job.data.userId !== userId) {
-    return createProblemDetailsResponse(
-      403,
-      'Access denied to cancel this conversion job.',
-      instanceUri,
-      'Forbidden'
-    );
+    return jobNotFoundResponse(jobId, instanceUri);
   }
 
   const nodeRefusal = nodeJobCancelRefusal(job.data);
@@ -253,11 +242,8 @@ async function cancelJobAuthorized(jobId: string, userId: string, instanceUri: s
 /** Cancels a graph job, which has no queue job of its own. */
 async function cancelGraphJob(jobId: string, userId: string, instanceUri: string) {
   const state = await graphScheduler.getGraphState(jobId);
-  if (!state) {
-    return createProblemDetailsResponse(404, `Job with ID "${jobId}" not found.`, instanceUri, 'Not Found');
-  }
-  if (state.ownerUserId !== userId) {
-    return createProblemDetailsResponse(403, 'Access denied to cancel this conversion job.', instanceUri, 'Forbidden');
+  if (!state || state.ownerUserId !== userId) {
+    return jobNotFoundResponse(jobId, instanceUri);
   }
   // cancelSingleGraphJob cancels every node job and refunds the graph's quota reservation.
   if (state.status !== 'running' || !(await cancelSingleGraphJob(jobId, 'Cancelled by user'))) {

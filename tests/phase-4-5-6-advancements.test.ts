@@ -516,17 +516,17 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       expect(postRes.status).toBe(202);
       const { jobId: jobAId } = await postRes.json();
 
-      // User B attempts to access User A's job details -> must receive 403 Forbidden
+      // User B attempts to access User A's job details -> must receive 404 Not Found
       const unauthorizedGetReq = new NextRequest(`http://localhost/api/v1/jobs/${jobAId}`, {
         headers: { 'x-api-key': keyB },
       });
       const unauthorizedRes = await jobDetailHandler(unauthorizedGetReq, {
         params: Promise.resolve({ id: jobAId }),
       });
-      expect(unauthorizedRes.status).toBe(403);
+      expect(unauthorizedRes.status).toBe(404);
       const unauthorizedData = await unauthorizedRes.json();
       expect(unauthorizedData.success).toBe(false);
-      expect(unauthorizedData.error).toContain('Access denied');
+      expect(unauthorizedData.error).toContain('not found');
 
       // User B lists jobs -> User A's job must NOT appear in User B's list
       const listReqB = new NextRequest('http://localhost/api/v1/jobs', {

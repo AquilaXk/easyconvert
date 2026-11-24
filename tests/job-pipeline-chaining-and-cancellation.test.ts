@@ -179,9 +179,9 @@ describe('Phase 3: Job Pipeline Chaining, Cancellation, and API DX', () => {
         headers: { Authorization: `Bearer ${userBKey.secretKey}` },
       });
       const res = await cancelJobHandler(crossTenantReq, { params: Promise.resolve({ id: job.id }) });
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       const json = await res.json();
-      expect(json.detail).toContain('Access denied');
+      expect(json.detail).toContain('not found');
     });
 
     it('cancels job, refunds reserved quota unit, and returns 200', async () => {

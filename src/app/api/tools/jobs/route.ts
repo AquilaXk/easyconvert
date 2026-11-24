@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
-import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { deadlineErrorResponse } from '@/lib/api/sync-deadline';
 import { readBoundedJsonText } from '@/lib/api/json-body-bounds';
@@ -28,15 +28,20 @@ import { assertNotSpoofedObject } from '@/lib/security/file-guard';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { MAX_TOOL_FILES, WEB_TOOLS, type WebTool } from '@/lib/tools/tool-names';
+import { loadQueuedToolFiles } from '@/lib/tools/queued-tool-runner';
 import {
+  attachToolJobInputs,
+  cancelToolJob,
+  completeToolJob,
   deleteToolJob,
+  failToolJob,
   getToolJob,
   registerLocalToolAbort,
   registerLocalToolRun,
   saveToolJob,
+  startToolJob,
   toolResultStorageKeys,
   unregisterLocalToolAbort,
-  updateExistingToolJob,
   type StoredToolJobResult,
   type ToolJobState,
 } from '@/lib/tools/tool-job-store';
@@ -254,9 +259,9 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
           );
 
       if (stagedInlineKeys.length > 0 || (parsed.storedRefs && parsed.storedRefs.length > 0)) {
-        const updated = await updateExistingToolJob({ ...initialState, inputKeys: storedRefs.map((ref) => ref.key) });
+        const updated = await attachToolJobInputs(jobId, storedRefs.map((ref) => ref.key));
         if (!updated) {
-          throw new JobCancelledError('Tool job was deleted before enqueue.');
+          throw new JobCancelledError('Tool job was cancelled or deleted before enqueue.');
         }
       }
 
@@ -296,7 +301,9 @@ async function dispatchQueuedToolJob(input: QueuedToolDispatchInput): Promise<Ne
     return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
   } catch (err: unknown) {
     await Promise.all(stagedInlineKeys.map((key) => Promise.resolve().then(() => s3Storage.deleteObject(key)).catch(() => undefined)));
-    await deleteToolJob(jobId).catch(() => undefined);
+    if (!(err instanceof JobCancelledError)) {
+      await deleteToolJob(jobId).catch(() => undefined);
+    }
     return typedFailureProblem(err, instanceUri);
   }
 }
@@ -324,29 +331,20 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
     let deadlineTimer: NodeJS.Timeout | undefined;
     let timedOut = false;
     try {
-      const current = await getToolJob(jobId);
-      if (!current || current.status === 'cancelled' || abortController.signal.aborted) {
+      if (abortController.signal.aborted) {
+        await cancelToolJob(jobId).catch(() => undefined);
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
-      if (!(await updateExistingToolJob({ ...current, status: 'running', progress: 25 }))) {
+      if (!(await startToolJob(jobId, 25))) {
         await cleanupTemporaryUploads(parsed.storedRefs);
         return;
       }
-      const stagedReleases: Array<() => Promise<void> | void> = [];
       let output: WebToolOutput;
       try {
         const files: WebToolFile[] = parsed.inlineFiles
           ? parsed.inlineFiles
-          : await Promise.all(
-              (parsed.storedRefs ?? []).map(async (ref) => {
-                const stored = await s3Storage.getObject(ref.key);
-                if (!stored) throw new Error('Input storage object missing.');
-                const maybeRelease = (stored as { release?: () => Promise<void> | void }).release;
-                if (typeof maybeRelease === 'function') stagedReleases.push(() => maybeRelease.call(stored));
-                return { name: ref.name, buffer: stored.buffer };
-              })
-            );
+          : await loadQueuedToolFiles(s3Storage, parsed.storedRefs ?? []);
         if (!parsed.inlineFiles) assertToolInput(parsed.toolName, files);
         const totalBytes = files.reduce((sum, file) => sum + file.buffer.length, 0);
         const sourceFormat = webToolResourceFormat(parsed.toolName);
@@ -359,7 +357,6 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
         output = await runWebTool(parsed.toolName, files, options, abortController.signal);
       } finally {
         if (deadlineTimer) clearTimeout(deadlineTimer);
-        await Promise.all(stagedReleases.map((fn) => Promise.resolve().then(fn).catch(() => undefined)));
       }
       const afterRun = await getToolJob(jobId);
       if (!afterRun || afterRun.status === 'cancelled' || (abortController.signal.aborted && !timedOut)) {
@@ -367,11 +364,8 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
         return;
       }
       const storedResult = await storeToolOutput(output, caller);
-      const latest = await getToolJob(jobId);
       const saved =
-        latest && latest.status !== 'cancelled' && !(abortController.signal.aborted && !timedOut)
-          ? await updateExistingToolJob({ ...latest, status: 'completed', progress: 100, result: storedResult })
-          : false;
+        !(abortController.signal.aborted && !timedOut) && (await completeToolJob(jobId, storedResult));
       if (!saved) {
         await discardToolOutputs(storedResult);
         await cleanupTemporaryUploads(parsed.storedRefs);
@@ -381,19 +375,11 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
       await reserved.commit({ from: parsed.toolName, base: 1, processingMs: Date.now() - initialState.createdAt });
     } catch (err: unknown) {
       await cleanupTemporaryUploads(parsed.storedRefs);
-      const current = await getToolJob(jobId);
-      if (!current) {
+      if (!timedOut && abortController.signal.aborted) {
+        await cancelToolJob(jobId).catch(() => undefined);
         return;
       }
-      if (!timedOut && (current.status === 'cancelled' || abortController.signal.aborted)) {
-        await updateExistingToolJob({ ...current, status: 'cancelled' }).catch(() => undefined);
-        return;
-      }
-      await updateExistingToolJob({
-        ...current,
-        status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
-      }).catch(() => undefined);
+      await failToolJob(jobId, err instanceof Error ? err.message : String(err)).catch(() => undefined);
     } finally {
       unregisterLocalToolAbort(jobId);
       releaseSlot();
@@ -417,7 +403,7 @@ function toolJobInputErrorResponse(err: unknown, instanceUri: string): NextRespo
   throw err;
 }
 
-export const POST = admittingNewFiles(async function POST(req: NextRequest) {
+export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/tools/jobs';
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write', allowAnonymous: true });
   if (!auth.authorized || !auth.user) {
@@ -536,4 +522,4 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   } finally {
     await releaseMultipartForm(req);
   }
-});
+}));

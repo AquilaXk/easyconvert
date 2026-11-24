@@ -11,7 +11,15 @@ import { eraseOwnedFile, saveRetainedResult } from '../storage/retention-service
 import { scopeStorageObjects } from '../storage/scoped-storage';
 import type { ConversionJobData, ConversionJobResult } from '../types';
 import type { WebTool, WebToolOptions } from './tool-names';
-import { getToolJob, toolResultStorageKeys, updateExistingToolJob, type StoredToolJobResult } from './tool-job-store';
+import {
+  cancelToolJob,
+  completeToolJob,
+  failToolJob,
+  getToolJob,
+  startToolJob,
+  toolResultStorageKeys,
+  type StoredToolJobResult,
+} from './tool-job-store';
 import { assertToolInput, runWebTool, type WebToolFile, type WebToolOutput } from './web-tools';
 
 export async function storeQueuedToolOutput(
@@ -69,28 +77,33 @@ async function markToolJobRunningOrThrow(
   isTransientWait: boolean
 ): Promise<void> {
   if (isTransientWait) return;
-  const current = await getToolJob(job.id);
-  if (!current || current.status === 'cancelled' || job.signal?.aborted) {
+  if (job.signal?.aborted) {
+    await cancelToolJob(job.id).catch(() => undefined);
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     throw new JobCancelledError('Tool job cancelled before execution');
   }
-  if (!(await updateExistingToolJob({ ...current, status: 'running', progress: 25 }))) {
+  if (!(await startToolJob(job.id, 25))) {
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     throw new JobCancelledError('Tool job cancelled before execution');
   }
 }
 
-async function loadQueuedToolFiles(
+export async function loadQueuedToolFiles(
   storage: IStorageBackend,
   storedRefs: ReadonlyArray<{ key: string; name: string }>
 ): Promise<WebToolFile[]> {
-  return Promise.all(
-    storedRefs.map(async (ref) => {
-      const stored = await storage.getObject(ref.key);
-      if (!stored) throw new Error(`Input storage object missing for key "${ref.key}".`);
-      return { name: ref.name, buffer: stored.buffer };
-    })
-  );
+  const scope = scopeStorageObjects(storage);
+  try {
+    return await Promise.all(
+      storedRefs.map(async (ref) => {
+        const stored = await scope.storage.getObject(ref.key);
+        if (!stored) throw new Error(`Input storage object missing for key "${ref.key}".`);
+        return { name: ref.name, buffer: stored.buffer };
+      })
+    );
+  } finally {
+    await scope.releaseAll();
+  }
 }
 
 async function assertNotCancelledAfterRun(
@@ -155,10 +168,7 @@ async function handleQueuedToolFailure(
   if (aborted) {
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     if (!isTransientWait) {
-      const latest = await getToolJob(job.id);
-      if (latest && latest.status !== 'completed') {
-        await updateExistingToolJob({ ...latest, status: 'cancelled' }).catch(() => undefined);
-      }
+      await cancelToolJob(job.id).catch(() => undefined);
     }
     throw err instanceof JobCancelledError ? err : new JobCancelledError('Tool job cancelled');
   }
@@ -166,14 +176,7 @@ async function handleQueuedToolFailure(
   if (isFinalFailure(job, err)) {
     await cleanupQueuedToolUploads(rootStorage, cleanupKeys);
     if (!isTransientWait) {
-      const latest = await getToolJob(job.id);
-      if (latest) {
-        await updateExistingToolJob({
-          ...latest,
-          status: 'failed',
-          error: err instanceof Error ? err.message : String(err),
-        }).catch(() => undefined);
-      }
+      await failToolJob(job.id, err instanceof Error ? err.message : String(err)).catch(() => undefined);
     }
   }
   throw err;
@@ -196,10 +199,9 @@ export async function processQueuedToolJob(
 
   await markToolJobRunningOrThrow(job, rootStorage, cleanupKeys, isTransientWait);
 
-  const scope = scopeStorageObjects(rootStorage);
   try {
     job.signal?.throwIfAborted();
-    const files = await loadQueuedToolFiles(scope.storage, payload.storedRefs);
+    const files = await loadQueuedToolFiles(rootStorage, payload.storedRefs);
     assertToolInput(toolName, files);
     const openedOptions = openPasswordOption(payload.options, job.id) as WebToolOptions;
     const output = await runWebTool(toolName, files, openedOptions, job.signal);
@@ -207,11 +209,7 @@ export async function processQueuedToolJob(
 
     const storedResult = await storeQueuedToolOutput(rootStorage, output, ownerUserId);
     if (!isTransientWait) {
-      const latest = await getToolJob(job.id);
-      const saved =
-        latest && latest.status !== 'cancelled' && !job.signal?.aborted
-          ? await updateExistingToolJob({ ...latest, status: 'completed', progress: 100, result: storedResult })
-          : false;
+      const saved = !job.signal?.aborted && (await completeToolJob(job.id, storedResult));
       if (!saved) {
         await Promise.all(
           toolResultStorageKeys(storedResult).map((key) => eraseOwnedFile(rootStorage, key).catch(() => undefined))
@@ -224,7 +222,5 @@ export async function processQueuedToolJob(
     return buildQueuedToolConversionResult(job.id, toolName, output, storedResult, startedAt);
   } catch (err: unknown) {
     return await handleQueuedToolFailure(err, job, rootStorage, cleanupKeys, isTransientWait);
-  } finally {
-    await scope.releaseAll();
   }
 }

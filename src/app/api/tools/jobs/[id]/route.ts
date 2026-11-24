@@ -5,7 +5,13 @@ import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { eraseOwnedFile } from '@/lib/storage/retention-service';
 import { cancelJobAcrossQueues, conversionQueue } from '@/lib/queue/conversion-queue';
-import { cancelToolJob, deleteToolJob, getToolJob, type StoredToolJobResult, type ToolJobState } from '@/lib/tools/tool-job-store';
+import {
+  cancelToolJob,
+  deleteToolJob,
+  getToolJob,
+  toolResultStorageKeys,
+  type ToolJobState,
+} from '@/lib/tools/tool-job-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,13 +56,6 @@ export async function GET(req: NextRequest, context: RouteContext) {
   });
 }
 
-function resultKeysOf(result: StoredToolJobResult | undefined): string[] {
-  if (!result) return [];
-  if (result.kind === 'file') return result.file.key ? [result.file.key] : [];
-  if (result.kind === 'entries') return result.entries.map((entry) => entry.key);
-  return [];
-}
-
 export async function DELETE(req: NextRequest, context: RouteContext) {
   const resolvedParams = await context.params;
   const jobId = resolvedParams.id;
@@ -80,7 +79,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
   }
 
   if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
-    await Promise.all(resultKeysOf(job.result).map((key) => eraseOwnedFile(s3Storage, key).catch(() => undefined)));
+    await Promise.all(toolResultStorageKeys(job.result).map((key) => eraseOwnedFile(s3Storage, key).catch(() => undefined)));
     await deleteToolJob(jobId);
     await conversionQueue.remove(jobId).catch(() => undefined);
     return NextResponse.json({ success: true, message: 'Job deleted.' });
