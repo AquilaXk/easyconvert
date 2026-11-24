@@ -21,11 +21,11 @@ interface PregeneratedPartEntry {
   expiresAtMs?: number;
 }
 
-interface MultipartPartDescriptor {
-  partNumber: number;
-  uploadUrl?: string;
-  url?: string;
-  expiresAt?: number;
+function validateMultipartPartSize(partSize: unknown): number {
+  if (typeof partSize !== 'number' || !Number.isSafeInteger(partSize) || partSize <= 0) {
+    throw new Error(`Invalid multipart partSize: ${String(partSize)}`);
+  }
+  return partSize;
 }
 
 function normalizePresignExpiryMs(expiresAt: unknown): number | undefined {
@@ -50,7 +50,7 @@ function resolveValidatedTotalParts(
   }
   if (
     typeof declaredTotalParts !== 'number' ||
-    !Number.isInteger(declaredTotalParts) ||
+    !Number.isSafeInteger(declaredTotalParts) ||
     declaredTotalParts < 1 ||
     declaredTotalParts > MAX_MULTIPART_PARTS
   ) {
@@ -59,22 +59,61 @@ function resolveValidatedTotalParts(
   return declaredTotalParts;
 }
 
+function collectValidatedPregeneratedParts(
+  rawParts: readonly unknown[],
+  declaredTotalParts: number | undefined
+): Map<number, PregeneratedPartEntry> {
+  const pregeneratedUrls = new Map<number, PregeneratedPartEntry>();
+  for (const rawEntry of rawParts) {
+    if (typeof rawEntry !== 'object' || rawEntry === null || Array.isArray(rawEntry)) {
+      throw new Error('Invalid multipart part entry');
+    }
+    const entry = rawEntry as Record<string, unknown>;
+    const partNumber = entry.partNumber;
+    if (
+      typeof partNumber !== 'number' ||
+      !Number.isSafeInteger(partNumber) ||
+      partNumber < 1 ||
+      partNumber > MAX_MULTIPART_PARTS
+    ) {
+      throw new Error(`Invalid multipart partNumber: ${String(partNumber)}`);
+    }
+    if (declaredTotalParts !== undefined && partNumber > declaredTotalParts) {
+      throw new Error(`Multipart partNumber ${partNumber} exceeds totalParts ${declaredTotalParts}`);
+    }
+    if (pregeneratedUrls.has(partNumber)) {
+      throw new Error(`Duplicate multipart partNumber: ${partNumber}`);
+    }
+    const rawUrl = entry.uploadUrl ?? entry.url;
+    if (rawUrl !== undefined && rawUrl !== null && typeof rawUrl !== 'string') {
+      throw new Error(`Invalid upload URL for multipart part ${partNumber}`);
+    }
+    pregeneratedUrls.set(partNumber, {
+      url: typeof rawUrl === 'string' ? rawUrl : undefined,
+      expiresAtMs: normalizePresignExpiryMs(entry.expiresAt),
+    });
+  }
+  if (declaredTotalParts === undefined) {
+    for (let partNumber = 1; partNumber <= rawParts.length; partNumber += 1) {
+      if (!pregeneratedUrls.has(partNumber)) {
+        throw new Error(`Multipart parts list is missing contiguous partNumber ${partNumber}`);
+      }
+    }
+  }
+  return pregeneratedUrls;
+}
+
 function isPregeneratedPartExpired(entry: PregeneratedPartEntry): boolean {
   return entry.expiresAtMs !== undefined && Date.now() >= entry.expiresAtMs - PRESIGN_EXPIRY_LEEWAY_MS;
 }
 
 function* iterMultipartPartNumbers(
-  partList: readonly MultipartPartDescriptor[],
+  partListLength: number,
   declaredTotalParts: number | undefined
 ): IterableIterator<number> {
-  if (declaredTotalParts !== undefined && declaredTotalParts > partList.length) {
-    for (let partNumber = 1; partNumber <= declaredTotalParts; partNumber += 1) {
-      yield partNumber;
-    }
-    return;
-  }
-  for (const partInfo of partList) {
-    yield partInfo.partNumber;
+  const totalParts = declaredTotalParts ?? partListLength;
+  for (let partNumber = 1; partNumber <= totalParts; partNumber += 1) {
+    yield partNumber;
   }
 }
 
@@ -370,9 +409,9 @@ export class EasyConvertClient {
       const problem = (await presignRes.json().catch(() => undefined)) as ProblemDetails | undefined;
       throw new EasyConvertApiError(presignRes.status, problem);
     }
-    const presignData = (await presignRes.json()) as { url?: string; uploadUrl?: string };
-    const targetUrl = presignData.url ?? presignData.uploadUrl;
-    if (!targetUrl) {
+    const presignData = (await presignRes.json()) as { url?: unknown; uploadUrl?: unknown };
+    const targetUrl = presignData?.url ?? presignData?.uploadUrl;
+    if (typeof targetUrl !== 'string' || !targetUrl) {
       throw new Error(`Missing upload URL for multipart part ${partNumber}`);
     }
     return targetUrl;
@@ -383,6 +422,9 @@ export class EasyConvertClient {
     file: Blob,
     options: { filename?: string; mimeType?: string; partSize?: number } = {},
   ): Promise<{ storageKey: string; uploadId: string }> {
+    if (options.partSize !== undefined) {
+      validateMultipartPartSize(options.partSize);
+    }
     const filename = options.filename ?? (file instanceof File ? file.name : 'upload.bin');
     const mimeType = options.mimeType ?? (file.type || undefined);
     const initRes = await this.fetchImpl(new URL('/api/v1/uploads/direct', this.baseUrl), {
@@ -404,36 +446,39 @@ export class EasyConvertClient {
       throw new EasyConvertApiError(initRes.status, problem);
     }
     const initData = (await initRes.json()) as {
-      uploadId: string;
-      key?: string;
-      storageKey?: string;
-      partSize: number;
-      totalParts?: number;
-      parts?: MultipartPartDescriptor[];
-      partUrls?: MultipartPartDescriptor[];
+      uploadId?: unknown;
+      key?: unknown;
+      storageKey?: unknown;
+      partSize?: unknown;
+      totalParts?: unknown;
+      parts?: unknown;
+      partUrls?: unknown;
     };
 
-    if (typeof initData.partSize !== 'number' || !Number.isFinite(initData.partSize) || initData.partSize <= 0) {
-      throw new Error(`Invalid multipart partSize: ${String(initData.partSize)}`);
+    if (typeof initData !== 'object' || initData === null || Array.isArray(initData)) {
+      throw new Error('Invalid multipart upload initialization response');
     }
+    if (typeof initData.uploadId !== 'string' || initData.uploadId.length === 0) {
+      throw new Error('Missing or invalid multipart uploadId');
+    }
+    const uploadId = initData.uploadId;
+    const partSize = validateMultipartPartSize(initData.partSize);
 
-    const storageKey = initData.key ?? initData.storageKey;
-    const partList = initData.parts ?? initData.partUrls ?? [];
-    const declaredTotalParts = resolveValidatedTotalParts(initData.totalParts, partList.length);
-    if (declaredTotalParts === undefined && partList.length === 0 && file.size > 0) {
+    const rawKey = initData.key ?? initData.storageKey;
+    const storageKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : undefined;
+    const rawParts: unknown = initData.parts ?? initData.partUrls ?? [];
+    if (!Array.isArray(rawParts)) {
+      throw new Error('Invalid multipart parts list');
+    }
+    const declaredTotalParts = resolveValidatedTotalParts(initData.totalParts, rawParts.length);
+    if (declaredTotalParts === undefined && rawParts.length === 0 && file.size > 0) {
       throw new Error('Multipart upload initialization returned no parts');
     }
 
-    const pregeneratedUrls = new Map<number, PregeneratedPartEntry>();
-    for (const partInfo of partList) {
-      pregeneratedUrls.set(partInfo.partNumber, {
-        url: partInfo.uploadUrl ?? partInfo.url,
-        expiresAtMs: normalizePresignExpiryMs(partInfo.expiresAt),
-      });
-    }
+    const pregeneratedUrls = collectValidatedPregeneratedParts(rawParts, declaredTotalParts);
 
     const parts: Array<{ partNumber: number; etag: string }> = [];
-    for (const partNumber of iterMultipartPartNumbers(partList, declaredTotalParts)) {
+    for (const partNumber of iterMultipartPartNumbers(rawParts.length, declaredTotalParts)) {
       const pregenerated = pregeneratedUrls.get(partNumber);
       let targetUrl: string;
       if (pregenerated && !isPregeneratedPartExpired(pregenerated)) {
@@ -442,10 +487,10 @@ export class EasyConvertClient {
         }
         targetUrl = pregenerated.url;
       } else {
-        targetUrl = await this.presignMultipartPart(initData.uploadId, storageKey, partNumber);
+        targetUrl = await this.presignMultipartPart(uploadId, storageKey, partNumber);
       }
-      const start = (partNumber - 1) * initData.partSize;
-      const end = Math.min(start + initData.partSize, file.size);
+      const start = (partNumber - 1) * partSize;
+      const end = Math.min(start + partSize, file.size);
       const chunk = file.slice(start, end);
       const putRes = await this.fetchImpl(new URL(targetUrl, this.baseUrl), {
         method: 'PUT',
@@ -469,7 +514,7 @@ export class EasyConvertClient {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        uploadId: initData.uploadId,
+        uploadId,
         parts,
       }),
       signal: AbortSignal.timeout(this.timeoutMs),
@@ -480,8 +525,8 @@ export class EasyConvertClient {
     }
     const completeData = (await completeRes.json()) as { storageKey?: string; key?: string };
     return {
-      storageKey: completeData.storageKey ?? completeData.key ?? initData.key ?? initData.storageKey ?? '',
-      uploadId: initData.uploadId,
+      storageKey: completeData.storageKey ?? completeData.key ?? storageKey ?? '',
+      uploadId,
     };
   }
 

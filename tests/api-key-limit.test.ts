@@ -136,11 +136,27 @@ describe('the number of active API keys of an account', () => {
   it('enforces the cap in Redis fallback mode without calling Lua when cluster prefix lacks a hash tag', async () => {
     const hashes = new Map<string, Record<string, string>>();
     const sets = new Map<string, Set<string>>();
-    const evalCalls: string[] = [];
+    const evalCalls: Array<{ script: string; numKeys: number }> = [];
+    const multiKeyDelCalls: string[][] = [];
     const clusterNoTag = {
       isCluster: true,
-      eval: async (script: string) => {
-        evalCalls.push(script);
+      pipeline: () => {
+        throw new Error('All keys in the pipeline should belong to the same slots allocation group');
+      },
+      eval: async (script: string, numKeys: number, ...args: unknown[]) => {
+        evalCalls.push({ script, numKeys });
+        if (numKeys > 1) {
+          throw new Error('CROSSSLOT Keys in request do not hash to the same slot');
+        }
+        if (script.includes("return 'REVOKED'")) {
+          const keyHashKey = String(args[0]);
+          const ownerId = String(args[1]);
+          const entry = hashes.get(keyHashKey);
+          if (!entry) return 'MISSING';
+          if (entry.userId && entry.userId !== ownerId) return 'FORBIDDEN';
+          entry.status = 'revoked';
+          return 'REVOKED';
+        }
         return 'CREATED';
       },
       hset: async (key: string, fieldOrObj: Record<string, string> | string, val?: string) => {
@@ -154,13 +170,31 @@ describe('the number of active API keys of an account', () => {
         return 1;
       },
       hgetall: async (key: string) => ({ ...(hashes.get(key) ?? {}) }),
-      sadd: async (key: string, member: string) => {
-        const set = sets.get(key) ?? new Set<string>();
-        set.add(member);
-        sets.set(key, set);
+      hdel: async (key: string, field: string) => {
+        const entry = hashes.get(key);
+        if (!entry || !(field in entry)) return 0;
+        delete entry[field];
         return 1;
       },
+      sadd: async (key: string, member: string) => {
+        const set = sets.get(key) ?? new Set<string>();
+        const added = set.has(member) ? 0 : 1;
+        set.add(member);
+        sets.set(key, set);
+        return added;
+      },
+      srem: async (key: string, member: string) => {
+        const set = sets.get(key);
+        return set && set.delete(member) ? 1 : 0;
+      },
       smembers: async (key: string) => [...(sets.get(key) ?? [])],
+      del: async (...keys: string[]) => {
+        if (keys.length > 1) {
+          multiKeyDelCalls.push(keys);
+          throw new Error('CROSSSLOT Keys in request do not hash to the same slot');
+        }
+        return hashes.delete(keys[0]!) ? 1 : 0;
+      },
     } as unknown as Redis;
 
     const store = new RedisKeyStore({ keyPrefix: 'nohashtag:', isolated: true, redisClient: clusterNoTag });
@@ -170,6 +204,110 @@ describe('the number of active API keys of an account', () => {
     await expect(store.generateApiKey('u_notag', 'k20')).rejects.toBeInstanceOf(ApiKeyLimitError);
     expect(evalCalls).toHaveLength(0);
     expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT);
+
+    // listApiKeys must avoid pipeline() on Cluster and succeed across slots
+    const listedBeforeRevoke = await store.listApiKeys('u_notag', { decryptSecrets: false });
+    expect(listedBeforeRevoke).toHaveLength(EXPECTED_LIMIT);
+    expect(listedBeforeRevoke.every((entry) => entry.status === 'active')).toBe(true);
+
+    // revokeApiKey uses single-key Lua + srem on active index without multi-key eval
+    const firstKeyId = listedBeforeRevoke[0]!.id;
+    expect(await store.revokeApiKey('u_notag', firstKeyId)).toBe(true);
+    expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT - 1);
+    const listedAfterRevoke = await store.listApiKeys('u_notag', { decryptSecrets: false });
+    expect(listedAfterRevoke.find((entry) => entry.id === firstKeyId)?.status).toBe('revoked');
+
+    const replacementAfterRevoke = await store.generateApiKey('u_notag', 'k_after_revoke');
+    expect(replacementAfterRevoke.key.status).toBe('active');
+    expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT);
+
+    // deleteApiKey falls back to single-key deletes and srem without calling multi-key Lua
+    const secondKeyId = listedBeforeRevoke[1]!.id;
+    expect(await store.deleteApiKey('u_notag', secondKeyId)).toBe(true);
+    expect(multiKeyDelCalls).toHaveLength(0);
+    expect(evalCalls.filter((call) => call.numKeys > 1)).toHaveLength(0);
+    expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT - 1);
+
+    const replacementAfterDelete = await store.generateApiKey('u_notag', 'k_after_delete');
+    expect(replacementAfterDelete.key.status).toBe('active');
+    const finalList = await store.listApiKeys('u_notag', { decryptSecrets: false });
+    expect(finalList.filter((entry) => entry.status === 'active')).toHaveLength(EXPECTED_LIMIT);
+    expect(finalList.some((entry) => entry.id === secondKeyId)).toBe(false);
+  });
+
+  it('retries SYNC_ACTIVE_API_KEYS_LUA_SCRIPT when concurrent deleteApiKey causes RETRY before succeeding', async () => {
+    let currentUserKeys = ['k_old_1', 'k_old_2'];
+    let syncAttempts = 0;
+    let createAttempts = 0;
+    const syncRetryClient = {
+      get: async () => null,
+      hgetall: async () => ({}),
+      smembers: async () => [...currentUserKeys],
+      eval: async (script: string, numKeys: number, ...args: unknown[]) => {
+        if (script.includes('NEEDS_SYNC')) {
+          createAttempts += 1;
+          return createAttempts === 1 ? 'NEEDS_SYNC' : 'CREATED';
+        }
+        if (script.includes("'SYNCED'")) {
+          syncAttempts += 1;
+          const passedIds = args.slice(numKeys).map(String);
+          if (syncAttempts === 1) {
+            expect(passedIds).toEqual(['k_old_1', 'k_old_2']);
+            // Simulate concurrent deleteApiKey removing k_old_1 between smembers and eval
+            currentUserKeys = ['k_old_2'];
+            return 'RETRY';
+          }
+          expect(passedIds).toEqual(['k_old_2']);
+          return 'SYNCED';
+        }
+        return 'OK';
+      },
+    } as unknown as Redis;
+
+    const store = new RedisKeyStore({ keyPrefix: 'easyconvert:{keys}:', isolated: true, redisClient: syncRetryClient });
+    const created = await store.generateApiKey('u_sync_retry', 'after-retry', { maxActiveKeys: EXPECTED_LIMIT });
+    expect(syncAttempts).toBe(2);
+    expect(createAttempts).toBe(2);
+    expect(created.key.name).toBe('after-retry');
+    expect(created.key.status).toBe('active');
+  });
+
+  it('fails closed with 503 Retry-After when SYNC_ACTIVE_API_KEYS_LUA_SCRIPT exhausts all 16 RETRY attempts', async () => {
+    const { cookie, id } = await accountCookie('sync-exhaust@example.com');
+    let syncEvalCalls = 0;
+    const alwaysRetrySyncClient = {
+      get: async () => null,
+      hgetall: async () => ({}),
+      smembers: async () => ['k_old'],
+      eval: async (script: string) => {
+        if (!script.includes('user_active_keys')) return [0, 0];
+        if (script.includes('NEEDS_SYNC')) return 'NEEDS_SYNC';
+        if (script.includes("'SYNCED'")) {
+          syncEvalCalls += 1;
+          return 'RETRY';
+        }
+        return 'OK';
+      },
+    } as unknown as Redis;
+
+    redisKeyStore.setRedisClient(alwaysRetrySyncClient);
+    try {
+      const err = await redisKeyStore
+        .generateApiKey(id, 'sync-exhausted', { maxActiveKeys: EXPECTED_LIMIT })
+        .catch((cause: unknown) => cause);
+      expect(err).toBeInstanceOf(AuthStoreUnavailableError);
+      expect((err as AuthStoreUnavailableError).status).toBe(503);
+      expect(syncEvalCalls).toBe(16);
+
+      syncEvalCalls = 0;
+      const res = await create(cookie);
+      expect(syncEvalCalls).toBe(16);
+      expect(res.status).toBe(503);
+      expect(res.headers.get('retry-after')).toBe('5');
+      expect(await res.json()).toMatchObject({ success: false });
+    } finally {
+      redisKeyStore.setRedisClient(null);
+    }
   });
 
   it('places every key passed to CREATE, SYNC, REVOKE, and DELETE scripts in one Redis Cluster hash slot', async () => {

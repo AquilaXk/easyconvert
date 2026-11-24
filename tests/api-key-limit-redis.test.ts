@@ -6,6 +6,8 @@ import { POST as createKeyRoute } from '../src/app/api/keys/route';
 import { DELETE as revokeKeyRoute } from '../src/app/api/keys/[id]/route';
 import { ApiKeyLimitError, MAX_ACTIVE_API_KEYS } from '../src/lib/api-keys/types';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { setWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
+import { AuthStoreUnavailableError } from '../src/lib/auth/store-unavailable';
 import { accountTaggedKeys } from '../src/lib/auth/erase-account-keys';
 import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import { createSessionToken } from '../src/lib/auth/session';
@@ -150,14 +152,27 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
     const routePrefix = `keycap:{keys}:route-${crypto.randomBytes(4).toString('hex')}:`;
     const userStoreClient = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
     const keyStoreClient = new Redis(REDIS_URL as string, { maxRetriesPerRequest: 1 });
+    const routeKeyStore = new RedisKeyStore({ keyPrefix: routePrefix, isolated: true, redisClient: keyStoreClient });
     redisUserStore.setRedisClient(userStoreClient);
     redisKeyStore.setRedisClient(keyStoreClient);
+    vi.spyOn(redisKeyStore, 'getPrefix').mockReturnValue(routePrefix);
+    vi.spyOn(redisKeyStore, 'getRedisClient').mockReturnValue(keyStoreClient);
+    vi.spyOn(redisKeyStore, 'generateApiKey').mockImplementation((...args) => routeKeyStore.generateApiKey(...args));
+    vi.spyOn(redisKeyStore, 'revokeApiKey').mockImplementation((...args) => routeKeyStore.revokeApiKey(...args));
+    vi.spyOn(redisKeyStore, 'deleteApiKey').mockImplementation((...args) => routeKeyStore.deleteApiKey(...args));
+    vi.spyOn(redisKeyStore, 'listApiKeys').mockImplementation((...args) => routeKeyStore.listApiKeys(...args));
+    vi.spyOn(redisKeyStore, 'listUserFiles').mockImplementation((...args) => routeKeyStore.listUserFiles(...args));
+    vi.spyOn(redisKeyStore, 'withCreditTier').mockImplementation((...args) => routeKeyStore.withCreditTier(...args));
+
     const createdKeysToClean: string[] = [];
+    const createdHashesToClean: string[] = [];
+    let createdUserId: string | null = null;
 
     try {
       const user = redisUserStore.sanitizeUser(
         await redisUserStore.createUser({ email: `lua-route-${crypto.randomBytes(4).toString('hex')}@test.local`, name: 'Lua Route User' })
       );
+      createdUserId = user.id;
       const cookie = `easyconvert_session=${createSessionToken(user)}`;
       const postReq = () =>
         new NextRequest(`${ORIGIN}/api/keys`, {
@@ -198,10 +213,18 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
 
       expect((await createKeyRoute(postReq())).status).toBe(409);
 
+      const listed = await routeKeyStore.listApiKeys(user.id, { decryptSecrets: false });
+      for (const entry of listed) {
+        if (entry.keyHash) createdHashesToClean.push(entry.keyHash);
+      }
+      expect(await admin.hlen(`${routePrefix}apikey_hashes`)).toBe(EXPECTED_LIMIT + 1);
+      expect(await admin.exists(`easyconvert:user_active_keys:${user.id}`)).toBe(0);
+
       const tagged = await accountTaggedKeys(user.id, { apiKeyIds: createdKeysToClean });
       const activePrefix = redisKeyStore.getPrefix();
-      expect(tagged).toContain(`${activePrefix}user_active_keys:${user.id}`);
-      expect(tagged).toContain(`${activePrefix}user_active_keys_init:${user.id}`);
+      expect(activePrefix).toBe(routePrefix);
+      expect(tagged).toContain(`${routePrefix}user_active_keys:${user.id}`);
+      expect(tagged).toContain(`${routePrefix}user_active_keys_init:${user.id}`);
 
       // Verify cluster slot alignment on real key names under a cluster prefix.
       const clusterKeys = [
@@ -215,9 +238,19 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
       expect(new Set(clusterKeys.map(clusterKeySlot)).size).toBe(1);
 
       if (tagged.length > 0) await admin.del(...tagged);
+      if (createdHashesToClean.length > 0) await admin.hdel(`${routePrefix}apikey_hashes`, ...createdHashesToClean);
+      await admin.del(`${routePrefix}apikey_hashes`);
       await redisUserStore.deleteUser(user.id);
-      expect(await admin.exists(`${activePrefix}user_active_keys:${user.id}`, `${activePrefix}user_active_keys_init:${user.id}`)).toBe(0);
+      createdUserId = null;
+      expect(await admin.exists(`${routePrefix}user_active_keys:${user.id}`, `${routePrefix}user_active_keys_init:${user.id}`)).toBe(0);
+      expect(await admin.keys(`${routePrefix}*`)).toEqual([]);
     } finally {
+      const leftover = await admin.keys(`${routePrefix}*`);
+      if (leftover.length > 0) await admin.del(...leftover);
+      if (createdUserId) {
+        await redisUserStore.deleteUser(createdUserId).catch(() => undefined);
+      }
+      setWebhookSecretStore(null);
       redisKeyStore.setRedisClient(null);
       redisUserStore.setRedisClient(null);
       await Promise.all([userStoreClient.quit(), keyStoreClient.quit()]);
@@ -313,5 +346,54 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
     expect(await admin.get(`${keyPrefix}user_active_keys_init:${userId}`)).toBe('1');
     expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT);
     expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(45);
+  });
+
+  it('recovers from SYNC RETRY in real Redis Lua when deleteApiKey mutates user_keys mid-sync', async () => {
+    await seedLegacyUnindexedKeys(19, 5);
+    const store0 = storeOf(clients[0]!);
+    const store1 = storeOf(clients[1]!);
+
+    const origSmembers = clients[0]!.smembers.bind(clients[0]!);
+    let smembersCalls = 0;
+    vi.spyOn(clients[0]!, 'smembers').mockImplementation(async (key) => {
+      smembersCalls += 1;
+      const members = await origSmembers(key);
+      if (smembersCalls === 1 && String(key) === `${keyPrefix}user_keys:${userId}`) {
+        // Delete legacy-0 after smembers snapshots 24 keys so SYNC_ACTIVE_API_KEYS_LUA_SCRIPT sees SCARD 23 != 24 and returns RETRY.
+        expect(await store1.deleteApiKey(userId, 'legacy-0')).toBe(true);
+      }
+      return members;
+    });
+
+    const created = await store0.generateApiKey(userId, 'after-delete-sync-retry');
+    expect(smembersCalls).toBe(2);
+    expect(created.key.status).toBe('active');
+    expect(await admin.get(`${keyPrefix}user_active_keys_init:${userId}`)).toBe('1');
+    expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT - 1);
+    expect(await admin.sismember(`${keyPrefix}user_active_keys:${userId}`, 'legacy-0')).toBe(0);
+
+    await store0.generateApiKey(userId, 'fill-twentieth');
+    await expect(store0.generateApiKey(userId, 'over-cap')).rejects.toBeInstanceOf(ApiKeyLimitError);
+  });
+
+  it('fails closed with 503 AuthStoreUnavailableError against real Redis when SYNC exhausts all 16 RETRY attempts', async () => {
+    await seedLegacyUnindexedKeys(2, 0);
+    const store0 = storeOf(clients[0]!);
+    let smembersCalls = 0;
+    vi.spyOn(clients[0]!, 'smembers').mockImplementation(async (key) => {
+      if (String(key) === `${keyPrefix}user_keys:${userId}`) {
+        smembersCalls += 1;
+        // Return stale 1-key snapshot while real user_keys holds 2 keys so SYNC Lua returns RETRY every attempt.
+        return ['legacy-0'];
+      }
+      return [];
+    });
+
+    const err = await store0.generateApiKey(userId, 'never-created').catch((cause: unknown) => cause);
+    expect(err).toBeInstanceOf(AuthStoreUnavailableError);
+    expect((err as AuthStoreUnavailableError).status).toBe(503);
+    expect(smembersCalls).toBe(16);
+    expect(await admin.exists(`${keyPrefix}user_active_keys_init:${userId}`)).toBe(0);
+    expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(2);
   });
 });

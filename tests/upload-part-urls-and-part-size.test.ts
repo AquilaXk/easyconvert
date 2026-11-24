@@ -195,4 +195,31 @@ describe('the part size and initial presigned part URL cap of POST /api/v1/uploa
     expect(body.parts).toHaveLength(100);
     expect(presignSpy).toHaveBeenCalledTimes(100);
   });
+
+  it('preserves full initial parts at totalParts 99 and 100, and caps at 100 when totalParts is 101', async () => {
+    const presignSpy = vi.spyOn(storageProvider, 'generatePresignedUploadPartUrl');
+
+    for (const [totalParts, expectedInitialCount] of [
+      [99, 99],
+      [100, 100],
+      [101, 100],
+    ] as const) {
+      presignSpy.mockClear();
+      const res = await initiate({
+        totalSize: totalParts * EXPECTED_MIN_PART_BYTES,
+        partSize: EXPECTED_MIN_PART_BYTES,
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        totalParts: number;
+        parts: Array<{ partNumber: number }>;
+      };
+      expect(body.totalParts).toBe(totalParts);
+      expect(body.parts).toHaveLength(expectedInitialCount);
+      expect(body.parts.map((part) => part.partNumber)).toEqual(
+        Array.from({ length: expectedInitialCount }, (_, idx) => idx + 1)
+      );
+      expect(presignSpy).toHaveBeenCalledTimes(expectedInitialCount);
+    }
+  });
 });

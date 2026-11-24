@@ -35,6 +35,12 @@ _PRESIGN_EXPIRY_LEEWAY_MS = 10_000
 _EXPIRY_SECONDS_THRESHOLD = 1_000_000_000_000
 
 
+def _validate_multipart_part_size(part_size: Any, label: str = "partSize") -> int:
+    if isinstance(part_size, bool) or not isinstance(part_size, int) or part_size <= 0:
+        raise ValueError(f"Invalid multipart {label}: {part_size!r}")
+    return part_size
+
+
 def _normalize_presign_expiry_ms(expires_at: Any) -> float | None:
     if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
         return None
@@ -66,6 +72,46 @@ def _resolve_declared_total_parts(declared_total_parts: Any, part_list_len: int)
     ):
         raise ValueError(f"Invalid multipart totalParts: {declared_total_parts!r}")
     return declared_total_parts
+
+
+def _collect_pregenerated_parts(
+    raw_parts: list[Any],
+    declared_total_parts: int | None,
+) -> dict[int, tuple[str | None, float | None]]:
+    pregenerated_urls: dict[int, tuple[str | None, float | None]] = {}
+    for part_info in raw_parts:
+        if not isinstance(part_info, Mapping):
+            raise ValueError(f"Invalid multipart part entry: {part_info!r}")
+        p_num = part_info.get("partNumber")
+        if (
+            isinstance(p_num, bool)
+            or not isinstance(p_num, int)
+            or p_num < 1
+            or p_num > _MAX_MULTIPART_PARTS
+        ):
+            raise ValueError(f"Invalid multipart partNumber: {p_num!r}")
+        if declared_total_parts is not None and p_num > declared_total_parts:
+            raise ValueError(
+                f"Multipart partNumber {p_num} exceeds totalParts {declared_total_parts}"
+            )
+        if p_num in pregenerated_urls:
+            raise ValueError(f"Duplicate multipart partNumber: {p_num}")
+        raw_url = part_info.get("uploadUrl")
+        if raw_url is None:
+            raw_url = part_info.get("url")
+        if raw_url is not None and not isinstance(raw_url, str):
+            raise ValueError(f"Invalid upload URL for multipart part {p_num}: {raw_url!r}")
+        pregenerated_urls[p_num] = (
+            raw_url,
+            _normalize_presign_expiry_ms(part_info.get("expiresAt")),
+        )
+    if declared_total_parts is None:
+        for expected_part in range(1, len(raw_parts) + 1):
+            if expected_part not in pregenerated_urls:
+                raise ValueError(
+                    f"Multipart parts list is missing contiguous partNumber {expected_part}"
+                )
+    return pregenerated_urls
 
 
 class EasyConvertApiError(Exception):
@@ -357,10 +403,14 @@ class EasyConvertClient:
         if presign_res.status_code >= HTTP_ERROR_FLOOR:
             raise EasyConvertApiError(presign_res.status_code, _problem(presign_res))
         presign_data = presign_res.json()
-        raw_url = presign_data.get("url") or presign_data.get("uploadUrl")
-        if not raw_url:
+        if not isinstance(presign_data, Mapping):
             raise ValueError(f"Missing upload URL for multipart part {part_number}")
-        return str(raw_url)
+        raw_url = presign_data.get("url")
+        if raw_url is None:
+            raw_url = presign_data.get("uploadUrl")
+        if not isinstance(raw_url, str) or not raw_url:
+            raise ValueError(f"Missing upload URL for multipart part {part_number}")
+        return raw_url
 
     def upload_multipart(
         self,
@@ -376,42 +426,43 @@ class EasyConvertClient:
         init_payload: dict[str, Any] = {"filename": filename, "totalSize": total_size}
         if mime_type:
             init_payload["mimeType"] = mime_type
-        if part_size:
-            init_payload["partSize"] = part_size
+        if part_size is not None:
+            init_payload["partSize"] = _validate_multipart_part_size(part_size, "part_size")
 
         init_res = client.post("/api/v1/uploads/direct", json=init_payload)
         if init_res.status_code >= HTTP_ERROR_FLOOR:
             raise EasyConvertApiError(init_res.status_code, _problem(init_res))
 
         init_data = init_res.json()
-        upload_id = init_data["uploadId"]
+        if not isinstance(init_data, Mapping):
+            raise ValueError("Invalid multipart upload initialization response")
+        upload_id = init_data.get("uploadId")
+        if not isinstance(upload_id, str) or not upload_id:
+            raise ValueError("Missing or invalid multipart uploadId")
         storage_key = init_data.get("key") or init_data.get("storageKey")
-        part_size_actual = init_data.get("partSize", 5 * 1024 * 1024)
-        if (
-            isinstance(part_size_actual, bool)
-            or not isinstance(part_size_actual, int)
-            or part_size_actual <= 0
-        ):
-            raise ValueError(f"Invalid multipart partSize: {part_size_actual!r}")
-
-        part_list = init_data.get("parts") or init_data.get("partUrls") or []
-        declared_total_parts = _resolve_declared_total_parts(
-            init_data.get("totalParts"), len(part_list)
+        part_size_actual = _validate_multipart_part_size(
+            init_data.get("partSize", 5 * 1024 * 1024), "partSize"
         )
-        if declared_total_parts is None and not part_list and total_size > 0:
+
+        raw_parts = init_data.get("parts")
+        if raw_parts is None:
+            raw_parts = init_data.get("partUrls")
+        if raw_parts is None:
+            raw_parts = []
+        if not isinstance(raw_parts, list):
+            raise ValueError(f"Invalid multipart parts list: {raw_parts!r}")
+
+        declared_total_parts = _resolve_declared_total_parts(
+            init_data.get("totalParts"), len(raw_parts)
+        )
+        if declared_total_parts is None and not raw_parts and total_size > 0:
             raise ValueError("Multipart upload initialization returned no parts")
 
-        pregenerated_urls = {
-            part_info["partNumber"]: (
-                part_info.get("uploadUrl") or part_info.get("url"),
-                _normalize_presign_expiry_ms(part_info.get("expiresAt")),
-            )
-            for part_info in part_list
-        }
-        if declared_total_parts is not None and declared_total_parts > len(part_list):
-            part_numbers = range(1, declared_total_parts + 1)
-        else:
-            part_numbers = (part_info["partNumber"] for part_info in part_list)
+        pregenerated_urls = _collect_pregenerated_parts(raw_parts, declared_total_parts)
+        total_parts_to_upload = (
+            declared_total_parts if declared_total_parts is not None else len(raw_parts)
+        )
+        part_numbers = range(1, total_parts_to_upload + 1)
 
         parts = []
         for p_num in part_numbers:
@@ -445,8 +496,10 @@ class EasyConvertClient:
             raise EasyConvertApiError(comp_res.status_code, _problem(comp_res))
 
         comp_data = comp_res.json()
+        if not isinstance(comp_data, Mapping):
+            raise ValueError("Invalid multipart upload completion response")
         return {
-            "storageKey": comp_data.get("storageKey") or comp_data.get("key") or init_data.get("key") or init_data.get("storageKey"),
+            "storageKey": comp_data.get("storageKey") or comp_data.get("key") or storage_key,
             "uploadId": upload_id,
         }
 

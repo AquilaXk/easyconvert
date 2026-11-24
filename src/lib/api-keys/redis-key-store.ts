@@ -1187,7 +1187,7 @@ export class RedisKeyStore extends KeyStore {
       const keyIds = await this.redisClient.smembers(`${this.keyPrefix}user_keys:${userId}`);
       if (keyIds.length === 0) return [];
       const records: Array<Record<string, string> | null> = [];
-      if (typeof (this.redisClient as { pipeline?: unknown }).pipeline === 'function') {
+      if (!isClusterRedis(this.redisClient) && typeof (this.redisClient as { pipeline?: unknown }).pipeline === 'function') {
         const pipeline = this.redisClient.pipeline();
         for (const id of keyIds) {
           pipeline.hgetall(`${this.keyPrefix}apikeys:${id}`);
@@ -1198,9 +1198,10 @@ export class RedisKeyStore extends KeyStore {
           records.push((data as Record<string, string>) ?? null);
         }
       } else {
-        for (const id of keyIds) {
-          records.push(await this.redisClient.hgetall(`${this.keyPrefix}apikeys:${id}`));
-        }
+        const fetched = await Promise.all(
+          keyIds.map((id) => this.redisClient!.hgetall(`${this.keyPrefix}apikeys:${id}`))
+        );
+        records.push(...fetched);
       }
       const keys: ApiKey[] = [];
       for (const record of records) {
