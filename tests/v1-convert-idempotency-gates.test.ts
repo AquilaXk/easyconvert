@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import Redis from 'ioredis';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
+import * as multipartBodyMod from '../src/lib/api/multipart-body';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import {
   buildScopedKey,
@@ -307,11 +308,13 @@ describe.each([
   it('parses multipart FormData at most once during a valid Idempotency-Key conversion', async () => {
     const key = trackKey(`single-parse-${crypto.randomUUID()}`);
     const formDataSpy = vi.spyOn(Request.prototype, 'formData');
+    const readSpy = vi.spyOn(multipartBodyMod, 'readMultipartForm');
 
     const first = await buildStreamMultipartRequest(key, CSV_A);
     const res1 = await v1ConvertPost(first.req);
     expect(res1.status).toBe(200);
-    expect(formDataSpy).toHaveBeenCalledTimes(1);
+    expect(formDataSpy).not.toHaveBeenCalled();
+    expect(readSpy).toHaveBeenCalledTimes(1);
     expect(syncSlotsInUse()).toBe(0);
   });
 

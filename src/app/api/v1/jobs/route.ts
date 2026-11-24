@@ -71,7 +71,10 @@ import {
   JobGraphSchema,
 } from '@/lib/api/contracts';
 import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
-import { readMultipartForm } from '@/lib/api/multipart-body';
+import { readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { deadlineErrorResponse } from '@/lib/api/sync-deadline';
+import { refusalCodeOf } from '@/lib/refusal-codes';
 import { isInlineInputKey } from '@/lib/storage/key-namespace';
 import { tusEngine } from '@/lib/storage/tus-engine';
 
@@ -410,7 +413,37 @@ async function verifyAllStoredInputs(
   return { primarySize };
 }
 
-export const POST = withinSingleRequest(admittingNewFiles(async function POST(req: NextRequest) {
+function withMultipartRelease(handler: (req: NextRequest) => Promise<Response>) {
+  return async (req: NextRequest): Promise<Response> => {
+    try {
+      return await handler(req);
+    } finally {
+      await releaseMultipartForm(req);
+    }
+  };
+}
+
+function unhandledJobErrorResponse(
+  error: unknown,
+  instanceUri: string,
+  rateLimit: Parameters<typeof withRateLimitHeaders>[1]
+): NextResponse {
+  const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+  if (deadlineProblem) return withRateLimitHeaders(deadlineProblem, rateLimit);
+  const limitStatus = payloadLimitStatus(error);
+  if (limitStatus !== null) {
+    return withRateLimitHeaders(
+      createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, 'Payload Too Large', undefined, undefined, undefined, {
+        code: refusalCodeOf(error),
+      }),
+      rateLimit
+    );
+  }
+  console.error('[Jobs] Unhandled job enqueue error:', error);
+  return withRateLimitHeaders(createProblemDetailsResponse(500, 'Internal server error', instanceUri, 'Internal Server Error'), rateLimit);
+}
+
+export const POST = withinSingleRequest(admittingNewFiles(withMultipartRelease(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/v1/jobs';
 
   // 1. Guard check: Authenticate API key or user session with 'convert:write' scope
@@ -823,10 +856,10 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
       console.error('[Jobs] Invalid deadline setting or input:', error);
       return fail(500, 'Internal server error', 'Internal Server Error');
     }
-    console.error('[Jobs] Unhandled job enqueue error:', error);
-    return fail(500, 'Internal server error', 'Internal Server Error');
+    const fallback = unhandledJobErrorResponse(error, instanceUri, auth.rateLimit);
+    return fallback;
   }
-}));
+})));
 
 /** Stores an input that came in the request body as an upload, and answers its key. */
 function storeRequestInput(buffer: Buffer, file: { name: string; type: string; size: number }, ownerUserId: string): Promise<string> {

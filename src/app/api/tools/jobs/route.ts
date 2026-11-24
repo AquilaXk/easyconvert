@@ -3,10 +3,13 @@ import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { fileSizeLimitProblem } from '@/lib/api/file-size-limit';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { deadlineErrorResponse } from '@/lib/api/sync-deadline';
 import { readBoundedJsonText } from '@/lib/api/json-body-bounds';
 import { SMALL_REQUEST_BODY_MAX_BYTES } from '@/lib/api/request-body-limit';
-import { isMultipartBody, readMultipartForm, formText } from '@/lib/api/multipart-body';
+import { isMultipartBody, readMultipartForm, releaseMultipartForm, formText } from '@/lib/api/multipart-body';
 import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { refusalCodeOf } from '@/lib/refusal-codes';
 import { STORAGE_OBJECT_NOT_FOUND, mayUseStorageKeyAsJobInput } from '@/lib/api-keys/owner-access';
 import type { User } from '@/lib/auth/types';
 import { storageProvider as s3Storage } from '@/lib/storage';
@@ -399,6 +402,21 @@ function launchLocalToolJob(input: LocalToolRunInput): void {
   registerLocalToolRun(jobId, caller.id, runPromise);
 }
 
+function toolJobInputErrorResponse(err: unknown, instanceUri: string): NextResponse {
+  if (err instanceof WebToolRefusal) {
+    return codedRefusal(err.status, err.code, err.message);
+  }
+  const deadlineProblem = deadlineErrorResponse(err, instanceUri);
+  if (deadlineProblem) return deadlineProblem;
+  const limitStatus = payloadLimitStatus(err);
+  if (limitStatus !== null) {
+    return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, undefined, undefined, {
+      code: refusalCodeOf(err),
+    });
+  }
+  throw err;
+}
+
 export const POST = admittingNewFiles(async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/tools/jobs';
   const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: 'convert:write', allowAnonymous: true });
@@ -418,103 +436,104 @@ export const POST = admittingNewFiles(async function POST(req: NextRequest) {
     return codedRefusal(415, 'unsupported_media_type', 'Expected application/json or multipart/form-data.');
   }
 
-  let parsed: ParsedToolJobInputs | NextResponse;
   try {
-    parsed = isMultipartBody(req)
-      ? await parseMultipartJobInputs(req, caller, instanceUri)
-      : await parseJsonJobInputs(req, caller, instanceUri);
-  } catch (err: unknown) {
-    if (err instanceof WebToolRefusal) {
-      return codedRefusal(err.status, err.code, err.message);
+    let parsed: ParsedToolJobInputs | NextResponse;
+    try {
+      parsed = isMultipartBody(req)
+        ? await parseMultipartJobInputs(req, caller, instanceUri)
+        : await parseJsonJobInputs(req, caller, instanceUri);
+    } catch (err: unknown) {
+      return toolJobInputErrorResponse(err, instanceUri);
     }
-    throw err;
-  }
-  if (parsed instanceof NextResponse) return parsed;
+    if (parsed instanceof NextResponse) return parsed;
 
-  let options: ReturnType<typeof parseToolOptions>;
-  try {
-    options = parseToolOptions(parsed.toolName, parsed.rawOptions);
-  } catch (err: unknown) {
-    if (err instanceof WebToolRefusal) {
-      return codedRefusal(err.status, err.code, err.message);
-    }
-    throw err;
-  }
-
-  const queueOnly = isQueueOnlyWebMode();
-  const liveWorker = await hasLiveQueueWorker();
-  let releaseSlotOnce: (() => void) | undefined;
-  if (queueOnly || liveWorker) {
-    const room = await mayEnqueue(caller.id, caller.tier);
-    if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
-  } else {
-    const sourceFormat = webToolResourceFormat(parsed.toolName);
-    const localLeaseMs =
-      conversionDeadlineMs({
-        tier: caller.tier,
-        sourceFormat,
-        targetFormat: sourceFormat,
-        inputBytes: parsed.totalBytes,
-      }) + 15_000;
-    const slot = await acquireSyncSlot(caller.id, caller.tier, localLeaseMs);
-    if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
-    let released = false;
-    releaseSlotOnce = () => {
-      if (released) return;
-      released = true;
-      slot.release();
-    };
-  }
-
-  const unit = await reserveConversionUnit(caller, 1);
-  if (!unit.reserved) {
-    releaseSlotOnce?.();
-    return conversionRefusalResponse(unit.refusal, instanceUri);
-  }
-
-  const jobId = crypto.randomUUID();
-  const initialInputKeys = parsed.storedRefs?.map((ref) => ref.key);
-  const initialState: ToolJobState = {
-    id: jobId,
-    userId: caller.id,
-    tool: parsed.toolName,
-    status: 'queued',
-    progress: 0,
-    ...(initialInputKeys && initialInputKeys.length > 0 ? { inputKeys: initialInputKeys } : {}),
-    createdAt: Date.now(),
-  };
-  try {
-    await saveToolJob(initialState);
-  } catch (err) {
-    releaseSlotOnce?.();
-    await withReservedUnit(unit.reservationId, async () => {
+    let options: ReturnType<typeof parseToolOptions>;
+    try {
+      options = parseToolOptions(parsed.toolName, parsed.rawOptions);
+    } catch (err: unknown) {
+      if (err instanceof WebToolRefusal) {
+        return codedRefusal(err.status, err.code, err.message);
+      }
       throw err;
-    });
-  }
+    }
 
-  if (queueOnly || liveWorker) {
-    releaseSlotOnce?.();
-    return dispatchQueuedToolJob({
+    const queueOnly = isQueueOnlyWebMode();
+    const liveWorker = await hasLiveQueueWorker();
+    let releaseSlotOnce: (() => void) | undefined;
+    if (queueOnly || liveWorker) {
+      const room = await mayEnqueue(caller.id, caller.tier);
+      if (!room.allowed) return concurrencyLimitResponse(room.limit, instanceUri);
+    } else {
+      const sourceFormat = webToolResourceFormat(parsed.toolName);
+      const localLeaseMs =
+        conversionDeadlineMs({
+          tier: caller.tier,
+          sourceFormat,
+          targetFormat: sourceFormat,
+          inputBytes: parsed.totalBytes,
+        }) + 15_000;
+      const slot = await acquireSyncSlot(caller.id, caller.tier, localLeaseMs);
+      if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
+      let released = false;
+      releaseSlotOnce = () => {
+        if (released) return;
+        released = true;
+        slot.release();
+      };
+    }
+
+    const unit = await reserveConversionUnit(caller, 1);
+    if (!unit.reserved) {
+      releaseSlotOnce?.();
+      return conversionRefusalResponse(unit.refusal, instanceUri);
+    }
+
+    const jobId = crypto.randomUUID();
+    const initialInputKeys = parsed.storedRefs?.map((ref) => ref.key);
+    const initialState: ToolJobState = {
+      id: jobId,
+      userId: caller.id,
+      tool: parsed.toolName,
+      status: 'queued',
+      progress: 0,
+      ...(initialInputKeys && initialInputKeys.length > 0 ? { inputKeys: initialInputKeys } : {}),
+      createdAt: Date.now(),
+    };
+    try {
+      await saveToolJob(initialState);
+    } catch (err) {
+      releaseSlotOnce?.();
+      await withReservedUnit(unit.reservationId, async () => {
+        throw err;
+      });
+    }
+
+    if (queueOnly || liveWorker) {
+      releaseSlotOnce?.();
+      return await dispatchQueuedToolJob({
+        caller,
+        jobId,
+        initialState,
+        parsed,
+        options,
+        reservationId: unit.reservationId,
+        queueOnly,
+        liveWorker,
+        instanceUri,
+      });
+    }
+
+    launchLocalToolJob({
       caller,
       jobId,
       initialState,
       parsed,
       options,
       reservationId: unit.reservationId,
-      queueOnly,
-      liveWorker,
-      instanceUri,
+      releaseSlot: releaseSlotOnce ?? (() => undefined),
     });
+    return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
+  } finally {
+    await releaseMultipartForm(req);
   }
-
-  launchLocalToolJob({
-    caller,
-    jobId,
-    initialState,
-    parsed,
-    options,
-    reservationId: unit.reservationId,
-    releaseSlot: releaseSlotOnce ?? (() => undefined),
-  });
-  return NextResponse.json({ success: true, id: jobId, status: 'queued' }, { status: 201 });
 });

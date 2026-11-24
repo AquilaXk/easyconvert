@@ -41,7 +41,7 @@ export const WORKER_SANDBOX_DIR_NAME = new RegExp(`^(?:easyconvert_worker_sandbo
 
 /** Per-invocation temporary scratch directories written under `os.tmpdir()` by tools/converters when SIGKILL prevents `finally` cleanup. */
 const STALE_SCRATCH_DIR_NAME =
-  /^(?:easyconvert-(?:ocr-(?:pages-)?|onnx-ocr-|qpdf_|avif-|avifenc-|decode-|decoder-|spool-|sftp-(?:down|up|run)-)|easyconvert_(?:media|verapdf|metadata)_)/;
+  /^(?:easyconvert-(?:multipart-|ocr-(?:pages-)?|onnx-ocr-|qpdf_|avif-|avifenc-|decode-|decoder-|spool-|sftp-(?:down|up|run)-)|easyconvert_(?:media|verapdf|metadata)_)/;
 
 export interface SandboxSweepOptions {
   directory?: string;

@@ -34,7 +34,7 @@ import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { isConversionOptionsObject } from '@/lib/conversions/options-guard';
 import { legacyOptionsProblem } from '@/lib/api/legacy-request-validation';
 import { boundedJsonFieldProblem, parseBoundedJsonField } from '@/lib/api/json-body-bounds';
-import { isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { isMultipartBody, readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
 
 export const dynamic = 'force-dynamic';
 
@@ -281,6 +281,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('conve
     if (releaseSlot) {
       void running.then(releaseSlot, releaseSlot);
     }
+    await releaseMultipartForm(req);
   }
 })));
 

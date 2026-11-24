@@ -51,6 +51,7 @@
     "sdk:check": "tsx scripts/generate-sdk.ts --check"
   },
   "dependencies": {
+    "@fastify/busboy": "3.2.6",
     "@floating-ui/dom": "1.8.0",
     "@formulajs/formulajs": "^4.6.1",
     "@paddle/paddle-js": "^1.6.6",

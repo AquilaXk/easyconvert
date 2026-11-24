@@ -10,7 +10,7 @@ import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
-import { formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { formText, isMultipartBody, readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
 import { refusalCodeOf } from '@/lib/refusal-codes';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
 import { codedRefusal, createProblemDetailsResponse } from '@/lib/api/problem-details';
@@ -154,6 +154,7 @@ async function runTool(req: NextRequest, caller: User, tool: WebTool, unit: Rese
   } finally {
     // A caller cannot stack work behind its slots: they come back when the work has ended, not when the answer has gone.
     void running.then(releaseSlot);
+    await releaseMultipartForm(req);
   }
 }
 

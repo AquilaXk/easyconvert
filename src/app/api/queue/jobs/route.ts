@@ -14,7 +14,10 @@ import { deleteResult } from '@/lib/storage/retention-service';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
-import { readMultipartForm } from '@/lib/api/multipart-body';
+import { readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
+import { payloadLimitStatus } from '@/lib/api/payload-limit';
+import { deadlineErrorResponse } from '@/lib/api/sync-deadline';
+import { refusalCodeOf } from '@/lib/refusal-codes';
 import { validateApiAccess, authErrorHeaders, holdBaseCredits, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
@@ -99,7 +102,11 @@ export const POST = withinSingleRequest(admittingNewFiles(async function POST(re
   // An Idempotency-Key makes the request safe to send again: a repeat answers with the job the first one queued. Keys
   // are scoped to the caller, an account or the address bucket of an anonymous caller. When the answer cannot be recorded
   // the lock stays: a repeat gets 409 until it ends, since running the request again would queue a second job.
-  return respondOnce(req, user.id, instanceUri, () => startJob(req, user, instanceUri), { afterFailedRecord: 'keep-lock' });
+  try {
+    return await respondOnce(req, user.id, instanceUri, () => startJob(req, user, instanceUri), { afterFailedRecord: 'keep-lock' });
+  } finally {
+    await releaseMultipartForm(req);
+  }
 }));
 
 /** Reserves the caller's conversion unit and queues the job; the unit is given back whenever no job was queued. */
@@ -283,6 +290,14 @@ async function queueJob(req: NextRequest, user: User, unit: ReservedUnit, instan
     });
   } catch (error: unknown) {
     if (spilledKey) await deleteResult(storageProvider, spilledKey).catch(() => undefined);
+    const deadlineProblem = deadlineErrorResponse(error, instanceUri);
+    if (deadlineProblem) return deadlineProblem;
+    const limitStatus = payloadLimitStatus(error);
+    if (limitStatus !== null) {
+      return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
+        code: refusalCodeOf(error),
+      });
+    }
     const queueProblem = queueErrorResponse(error, instanceUri);
     if (queueProblem) return queueProblem;
     const storageProblem = storageErrorResponse(error, instanceUri);

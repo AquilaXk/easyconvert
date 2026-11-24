@@ -14,6 +14,7 @@ import { JOB_STAGING_MAX_AGE_MS } from '../src/lib/storage/temp-file';
 import { LocalFsStorage, localFsStorage } from '../src/lib/storage/local-fs-storage';
 import { serializeTusMetadata, TusEngine } from '../src/lib/storage/tus-engine';
 import { POST as jobsPostHandler } from '../src/app/api/v1/jobs/route';
+import * as multipartBodyMod from '../src/lib/api/multipart-body';
 import { PUT as directPartPutHandler } from '../src/app/api/v1/uploads/direct/part/route';
 import { POST as uploadsPostHandler } from '../src/app/api/v1/uploads/[[...id]]/route';
 import { POST as directInitHandler } from '../src/app/api/v1/uploads/direct/route';
@@ -246,6 +247,7 @@ describe('Batch 2: Storage Lifecycle, Adapter SSRF/Credential Guards & Auth Hygi
       const idemKey = `idem-low03-${crypto.randomUUID()}`;
 
       const formDataSpy = vi.spyOn(Request.prototype, 'formData');
+      const readSpy = vi.spyOn(multipartBodyMod, 'readMultipartForm');
       const form1 = new FormData();
       form1.set('file', new File([Buffer.from('hello world\n')], 'note.txt', { type: 'text/plain' }));
       form1.set('targetFormat', 'md');
@@ -255,10 +257,13 @@ describe('Batch 2: Storage Lifecycle, Adapter SSRF/Credential Guards & Auth Hygi
         headers: { Cookie: cookie, 'Idempotency-Key': idemKey },
         body: form1,
       });
+      const bodyReaderSpy = vi.spyOn(req1.body!, 'getReader');
 
       const res1 = await jobsPostHandler(req1);
       expect(res1.status).toBe(202);
-      expect(formDataSpy).toHaveBeenCalledTimes(1);
+      expect(formDataSpy).not.toHaveBeenCalled();
+      expect(bodyReaderSpy).toHaveBeenCalledTimes(1);
+      expect(readSpy).toHaveBeenCalledTimes(2);
 
       // Replaying same Idempotency-Key with different file bytes must return 422 conflict
       const form2 = new FormData();

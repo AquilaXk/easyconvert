@@ -47,6 +47,7 @@ import { readMp4Layout } from './mp4-layout';
 import { readWavPcmInfo } from './wav-header';
 import { assertBmpHeaderWithinLimit, isBmp } from './bmp';
 import { InputPixelLimitError, assertEncodedImageWithinLimit, assertInputPixels } from './image-input-limits';
+import { readPictureFileHead } from './picture-file';
 import {
   decodeAudioBuffer,
   decodeWav,
@@ -255,6 +256,11 @@ export async function assertMediaImageWithinLimit(input: Buffer): Promise<void> 
     return;
   }
   await assertEncodedImageWithinLimit(input);
+}
+
+/** Validates image dimension limits from a bounded disk header prefix and file-backed metadata without reading whole files. */
+export async function assertMediaImageFileWithinLimit(inputPath: string): Promise<void> {
+  await assertMediaImageWithinLimit(await readPictureFileHead(inputPath));
 }
 
 /**

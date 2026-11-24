@@ -54,7 +54,7 @@ import {
   computePackagingTimeoutMs,
   plannedRungCount,
   DEFAULT_MEDIA_TIER_MAX_MS,
-  assertMediaImageWithinLimit, isEncodedImageMediaSource,
+  assertMediaImageFileWithinLimit, isEncodedImageMediaSource,
 } from '../lib/conversions/media';
 import { describeAudioProcessing, measureLoudnessStage } from '../lib/conversions/media-audio-run';
 import { describeDroppedStreams } from '../lib/conversions/media-dropped-streams';
@@ -387,7 +387,7 @@ export async function convertWithNativeFfmpeg(
   try {
     return await withSandboxDir('easyconvert-ffmpeg-', async (tempDir) => {
       const { inputPath } = resolveInputContext(input, src, tempDir);
-      if (isEncodedImageMediaSource(src)) await assertMediaImageWithinLimit(fs.readFileSync(inputPath));
+      if (isEncodedImageMediaSource(src)) await assertMediaImageFileWithinLimit(inputPath);
       const media = openMediaInput(inputPath, src);
       const tempOutputPath = path.join(tempDir, `output.${tgt}`);
 

@@ -6,7 +6,7 @@ import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
-import { fileSentAsText, formText, isMultipartBody, readMultipartForm, type MultipartRead } from '@/lib/api/multipart-body';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm, releaseMultipartForm, type MultipartRead } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
 import type { QuotaUsage } from '@/lib/api-keys/types';
 import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
@@ -453,6 +453,7 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     return errorResponseForConvert(err, instanceUri, state.rateLimitHeaders);
   } finally {
     state.releaseSlot?.();
+    await releaseMultipartForm(req);
   }
 })));
 

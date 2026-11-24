@@ -4,7 +4,7 @@ import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders, withRateLimitHeaders } from '@/lib/api/rate-limit';
 import { createProblemDetailsResponse } from '@/lib/api/problem-details';
 import { readJsonObject } from '@/lib/api/json-body';
-import { readMultipartForm } from '@/lib/api/multipart-body';
+import { readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
@@ -219,5 +219,6 @@ async function postInspectAuthorized(req: NextRequest, instanceUri: string, user
     return inspectErrorResponse(err, instanceUri);
   } finally {
     slot.release();
+    await releaseMultipartForm(req);
   }
 }

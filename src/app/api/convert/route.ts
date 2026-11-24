@@ -27,7 +27,7 @@ import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
-import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
 import { validatePageRangeSyntax } from '@/lib/conversions';
 import {
@@ -62,6 +62,18 @@ function serverFaultAnswer(status = HTTP_INTERNAL_SERVER_ERROR): NextResponse {
   return codedRefusal(status, undefined, UNCLASSIFIED_FAILURE);
 }
 
+function payloadLimitProblemResponse(error: unknown, instanceUri: string): NextResponse | undefined {
+  const limitStatus = payloadLimitStatus(error);
+  if (limitStatus === null) return undefined;
+  return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
+    code: refusalCodeOf(error),
+  });
+}
+
+function outerConvertErrorResponse(error: unknown, instanceUri: string): NextResponse {
+  return deadlineErrorResponse(error, instanceUri) ?? payloadLimitProblemResponse(error, instanceUri) ?? serverFaultAnswer();
+}
+
 /** The answer for an error a conversion threw: its problem type, or the status and code its class declares. */
 function conversionErrorResponse(error: unknown, instanceUri: string): NextResponse {
   const deadlineProblem = deadlineErrorResponse(error, instanceUri);
@@ -69,12 +81,10 @@ function conversionErrorResponse(error: unknown, instanceUri: string): NextRespo
   if (error instanceof PdfPostprocessError) {
     return createPdfPostprocessResponse(error, instanceUri);
   }
-  const limitStatus = payloadLimitStatus(error);
-  if (limitStatus !== null) {
+  const limitProblem = payloadLimitProblemResponse(error, instanceUri);
+  if (limitProblem) {
     // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
-    return createProblemDetailsResponse(limitStatus, error instanceof Error ? error.message : String(error), instanceUri, undefined, undefined, undefined, undefined, {
-      code: refusalCodeOf(error),
-    });
+    return limitProblem;
   }
   if (error instanceof WorkerOutputMissingError) {
     // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
@@ -307,8 +317,9 @@ async function convertFile(req: NextRequest, caller: User, unit: ReservedUnit, i
     return answer;
   } catch (error: unknown) {
     trace.cause = error;
-    return deadlineErrorResponse(error, instanceUri) ?? serverFaultAnswer();
+    return outerConvertErrorResponse(error, instanceUri);
   } finally {
     releaseSlot?.();
+    await releaseMultipartForm(req);
   }
 }
