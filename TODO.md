@@ -17,7 +17,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Add a corpus of real bordered tables with human transcriptions (entry 394 measured the cell rule on 16 drawn tables and three real scans only).
 - Run the test shards and the pull request parity job on LibreOffice 26.8 too (entry 386 covers the nightly rows only): they install the runner's 24.2, and the 169 test files that use the suite meet 26.8 only in the container job's one text file.
 - PDF to DOCX extra pages left after entries 390 and 405: `govdocs1-000341` (`7` for `6`, unequal columns beside floating tables) and remaining multi-page spills (`govdocs1-000163`, `000166`, `001383`, `004507`); the pdf2docx translation on branch `feat/pdf-docx-pdf2docx` stays unwired (entry 390), to look at again when the writer sets a paragraph beside a table or the reader gives glyph advances.
-- Enforce MAX_DOCUMENT_INFLATE_BYTES when rewriting packages in stripOfficeMacros and ooxmlVariantAsPlainPackage instead of calling unbounded JSZip.generateAsync.
 - Replace synchronous full-file fs.readFileSync in convertWithNativeFfmpeg image-header checks with a bounded header read (>= 256 bytes for BMP V5) and pictureFileHead, and move multipart upload routes to streaming parsing.
 - Create encrypted 7-Zip archives asynchronously after path normalisation with 0700 staging permissions so worker heartbeats never stall.
 - Disable the global libvips operation cache (sharp.cache(false)) in pinBaseImageThreads for one-shot conversions.

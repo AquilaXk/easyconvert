@@ -1,10 +1,11 @@
 import JSZip from 'jszip';
-import { InflateBudget } from './bounded-inflate';
+import { InflateBudget, MAX_DOCUMENT_INFLATE_BYTES } from './bounded-inflate';
 import { declaredPackageEntries, startsWithBytes, ZIP_LOCAL_HEADER_SIGNATURE } from './package-access';
 import { newRelationshipAllowance, forEachRelationship } from './office/opc-parts';
 import { resolveZipPath } from './office/zip-path';
 import { SafeXmlDepthExceededError, safeExtractXmlElements, type SafeXmlElement } from './safe-xml-scanner';
-import { readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { MAX_ZIP_MEDIA_BYTES, readZipEntryBytes, readZipEntryText } from './zip-entry-reader';
+import { ZipWriter } from './zip-writer';
 import { ConversionFailedError } from '../types';
 
 /**
@@ -59,6 +60,12 @@ export interface MacroStripResult {
   buffer: Buffer;
   /** Whether a macro part was found and removed. */
   droppedMacros: boolean;
+}
+
+export interface OfficePackageEdits {
+  rewritten: Map<string, Buffer>;
+  removed: Set<string>;
+  storeFirst?: string;
 }
 
 /** A change to a text: the characters from `start` to `end` become `replacement`. */
@@ -204,12 +211,94 @@ function withoutRemovedSheets(workbook: string, removedIds: ReadonlySet<string>)
   return applyEdits(workbook, edits);
 }
 
-async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<StripOutcome> {
+function markRemoved(edits: OfficePackageEdits, name: string): void {
+  edits.removed.add(name);
+  edits.rewritten.delete(name);
+}
+
+function markRewritten(edits: OfficePackageEdits, name: string, text: string): void {
+  if (!edits.removed.has(name)) {
+    edits.rewritten.set(name, Buffer.from(text, 'utf8'));
+  }
+}
+
+async function readCurrentEntryText(
+  entry: JSZip.JSZipObject,
+  edits: OfficePackageEdits,
+  budget: InflateBudget
+): Promise<string | undefined> {
+  if (edits.removed.has(entry.name)) return undefined;
+  const rewritten = edits.rewritten.get(entry.name);
+  if (rewritten !== undefined) return rewritten.toString('utf8');
+  return readZipEntryText(entry, { budget });
+}
+
+function rewriteContentTypesXml(
+  typeElements: readonly SafeXmlElement[],
+  types: string,
+  macroParts: ReadonlySet<string>
+): string {
+  const typeEdits: Edit[] = [];
+  for (const element of typeElements) {
+    const { ContentType: contentType, PartName: partName, Extension: extension } = element.attrs;
+    if (contentType === undefined) continue;
+    const macroDefault = extension !== undefined && OOXML_MACRO_CONTENT_TYPE.test(contentType);
+    if (OOXML_MACRO_CONTENT_TYPE.test(contentType) || macroDefault || (partName !== undefined && macroParts.has(normalizePartName(partName)))) {
+      typeEdits.push({ start: element.startIndex, end: element.endIndex, replacement: '' });
+      continue;
+    }
+    const plain = MACRO_ENABLED_MAIN_TYPES.get(contentType.toLowerCase());
+    if (plain !== undefined) typeEdits.push({ start: element.startIndex, end: element.endIndex, replacement: element.raw.replace(contentType, plain) });
+  }
+  return applyEdits(types, typeEdits);
+}
+
+/**
+ * Serializes `zip` with declarative `edits` into one ZIP buffer while enforcing {@link MAX_DOCUMENT_INFLATE_BYTES} across all emitted entries
+ * and streaming one decoded entry at a time through {@link ZipWriter}.
+ */
+export async function serializeBoundedOfficePackage(zip: JSZip, edits: OfficePackageEdits): Promise<Buffer> {
+  const budget = new InflateBudget(MAX_DOCUMENT_INFLATE_BYTES);
+  const chunks: Uint8Array[] = [];
+  const writer = new ZipWriter((chunk) => {
+    chunks.push(chunk);
+  });
+
+  const emitEntry = async (entry: JSZip.JSZipObject, method?: 'store' | 'deflate' | 'auto'): Promise<void> => {
+    const data = edits.rewritten.get(entry.name);
+    if (data !== undefined) {
+      budget.charge(data.length, `ZIP entry '${entry.name}'`);
+      await writer.addEntry({ name: entry.name, data, method: method === 'store' ? 'store' : 'deflate' });
+      return;
+    }
+    const decoded = await readZipEntryBytes(entry, { maxBytes: MAX_ZIP_MEDIA_BYTES, budget });
+    await writer.addEntry({ name: entry.name, data: decoded, ...(method ? { method } : {}) });
+  };
+
+  const firstEntry =
+    edits.storeFirst !== undefined && Object.prototype.hasOwnProperty.call(zip.files, edits.storeFirst)
+      ? zip.files[edits.storeFirst]
+      : undefined;
+  if (firstEntry && !firstEntry.dir && !edits.removed.has(firstEntry.name)) {
+    await emitEntry(firstEntry, 'store');
+  }
+
+  for (const entry of Object.values(zip.files)) {
+    if (entry.dir || entry.name === edits.storeFirst || edits.removed.has(entry.name)) continue;
+    await emitEntry(entry);
+  }
+
+  await writer.finish();
+  return Buffer.concat(chunks, writer.bytesWritten);
+}
+
+async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget, edits: OfficePackageEdits): Promise<StripOutcome> {
   const typesEntry = findEntry(zip, CONTENT_TYPES_PART);
-  if (!typesEntry) return 'unchanged';
+  if (!typesEntry || edits.removed.has(typesEntry.name)) return 'unchanged';
   assertEntryCount(zip);
   const names = partNames(zip);
-  const types = await readZipEntryText(typesEntry, { budget });
+  const types = await readCurrentEntryText(typesEntry, edits, budget);
+  if (types === undefined) return 'unchanged';
   const typeElements = elementsWithin(types, ['Default', 'Override'], MACRO_STRIP_MAX_TYPE_ELEMENTS, 'content types');
   const macroParts = macroPartsOf(typeElements, names);
   const enabledMain = typeElements.some((element) => MACRO_ENABLED_MAIN_TYPES.has((element.attrs.ContentType ?? '').toLowerCase()));
@@ -218,13 +307,16 @@ async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<Stri
   // macro part for every relationship, so the parts are read twice: the first round collects the targets, the second one rewrites.
   const relationshipParts = names.filter((name) => /\.rels$/i.test(name));
   for (const name of relationshipParts) {
-    withoutMacroRelationships(name, await readZipEntryText(zip.file(name)!, { budget }), macroParts, newRelationshipAllowance());
+    const relsText = await readCurrentEntryText(zip.files[name]!, edits, budget);
+    if (relsText !== undefined) withoutMacroRelationships(name, relsText, macroParts, newRelationshipAllowance());
   }
   const allowance = newRelationshipAllowance();
   const rewritten = new Map<string, string>();
   const removedByPart = new Map<string, string[]>();
   for (const name of relationshipParts) {
-    const result = withoutMacroRelationships(name, await readZipEntryText(zip.file(name)!, { budget }), macroParts, allowance);
+    const relsText = await readCurrentEntryText(zip.files[name]!, edits, budget);
+    if (relsText === undefined) continue;
+    const result = withoutMacroRelationships(name, relsText, macroParts, allowance);
     if (result) {
       rewritten.set(name, result.text);
       removedByPart.set(sourceOf(name), result.removedIds);
@@ -232,57 +324,48 @@ async function stripOoxmlMacros(zip: JSZip, budget: InflateBudget): Promise<Stri
   }
   if (macroParts.size === 0 && !enabledMain) return 'unchanged';
 
-  const edits: Edit[] = [];
-  for (const element of typeElements) {
-    const { ContentType: contentType, PartName: partName, Extension: extension } = element.attrs;
-    if (contentType === undefined) continue;
-    const macroDefault = extension !== undefined && OOXML_MACRO_CONTENT_TYPE.test(contentType);
-    if (OOXML_MACRO_CONTENT_TYPE.test(contentType) || macroDefault || (partName !== undefined && macroParts.has(normalizePartName(partName)))) {
-      edits.push({ start: element.startIndex, end: element.endIndex, replacement: '' });
-      continue;
-    }
-    const plain = MACRO_ENABLED_MAIN_TYPES.get(contentType.toLowerCase());
-    if (plain !== undefined) edits.push({ start: element.startIndex, end: element.endIndex, replacement: element.raw.replace(contentType, plain) });
-  }
-  zip.file(typesEntry.name, applyEdits(types, edits));
-  for (const [name, text] of rewritten) zip.file(name, text);
+  markRewritten(edits, typesEntry.name, rewriteContentTypesXml(typeElements, types, macroParts));
+  for (const [name, text] of rewritten) markRewritten(edits, name, text);
   for (const [source, ids] of removedByPart) {
     const part = findEntry(zip, source);
-    if (part && /(^|\/)workbook\.xml$/i.test(source) && ids.length > 0) {
-      zip.file(part.name, withoutRemovedSheets(await readZipEntryText(part, { budget }), new Set(ids)));
+    if (part && /(^|\/)workbook\.xml$/i.test(source) && ids.length > 0 && !edits.removed.has(part.name)) {
+      const workbookText = await readCurrentEntryText(part, edits, budget);
+      if (workbookText !== undefined) markRewritten(edits, part.name, withoutRemovedSheets(workbookText, new Set(ids)));
     }
   }
   for (const name of names) {
-    if (macroParts.has(name.toLowerCase())) zip.remove(name);
+    if (macroParts.has(name.toLowerCase())) markRemoved(edits, name);
   }
   // The relationships of a removed part go with it.
-  for (const name of relationshipParts) if (macroParts.has(sourceOf(name).toLowerCase())) zip.remove(name);
+  for (const name of relationshipParts) if (macroParts.has(sourceOf(name).toLowerCase())) markRemoved(edits, name);
   return macroParts.size > 0 ? 'dropped' : 'retyped';
 }
 
-async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget): Promise<StripOutcome> {
+async function stripOpenDocumentMacros(zip: JSZip, budget: InflateBudget, edits: OfficePackageEdits): Promise<StripOutcome> {
   // The manifest is what makes a package an OpenDocument one for the office suite, which loads a package without a `mimetype` entry as well.
-  if (!findEntry(zip, ODF_MANIFEST_ROOT)) return 'unchanged';
+  const manifestRoot = findEntry(zip, ODF_MANIFEST_ROOT);
+  if (!manifestRoot || edits.removed.has(manifestRoot.name)) return 'unchanged';
   assertEntryCount(zip);
   const macroEntries: string[] = [];
   const manifests: string[] = [];
   for (const entry of Object.values(zip.files)) {
     if (ODF_MACRO_PATH.test(entry.name)) macroEntries.push(entry.name);
-    else if (!entry.dir && ODF_MANIFEST_PART.test(entry.name)) manifests.push(entry.name);
+    else if (!entry.dir && ODF_MANIFEST_PART.test(entry.name) && !edits.removed.has(entry.name)) manifests.push(entry.name);
   }
   if (macroEntries.length === 0) return 'unchanged';
   for (const name of manifests) {
-    const text = await readZipEntryText(zip.file(name)!, { budget });
+    const text = await readCurrentEntryText(zip.files[name]!, edits, budget);
+    if (text === undefined) continue;
     const prefix = name.replace(/META-INF\/manifest\.xml$/i, '');
-    const edits = elementsWithin(text, 'file-entry', MACRO_STRIP_MAX_TYPE_ELEMENTS, 'manifest entries')
+    const manifestEdits = elementsWithin(text, 'file-entry', MACRO_STRIP_MAX_TYPE_ELEMENTS, 'manifest entries')
       .filter((entry) => ODF_MACRO_PATH.test(`${prefix}${entry.attrs['manifest:full-path'] ?? ''}`.replace(/^\//, '')))
       .map((entry): Edit => ({ start: entry.startIndex, end: entry.endIndex, replacement: '' }));
-    if (edits.length > 0) zip.file(name, applyEdits(text, edits));
+    if (manifestEdits.length > 0) markRewritten(edits, name, applyEdits(text, manifestEdits));
   }
-  for (const name of macroEntries) zip.remove(name);
+  for (const name of macroEntries) markRemoved(edits, name);
   // The first entry of an OpenDocument package is its mimetype, stored: a reader finds the type by the bytes after the header.
   const mimetype = findEntry(zip, ODF_MIMETYPE_PART);
-  if (mimetype) zip.file(mimetype.name, await readZipEntryBytes(mimetype, { budget }), { compression: 'STORE' });
+  if (mimetype && !edits.removed.has(mimetype.name)) edits.storeFirst = mimetype.name;
   return 'dropped';
 }
 
@@ -310,10 +393,11 @@ export async function stripOfficeMacros(buffer: Buffer): Promise<MacroStripResul
     return unchanged;
   }
   const budget = new InflateBudget();
+  const edits: OfficePackageEdits = { rewritten: new Map(), removed: new Set() };
   // Both passes run: a package can carry the parts of both (a polyglot), and the second pass must not be skipped because the first found something.
-  const ooxml = await stripOoxmlMacros(zip, budget);
-  const odf = await stripOpenDocumentMacros(zip, budget);
+  const ooxml = await stripOoxmlMacros(zip, budget, edits);
+  const odf = await stripOpenDocumentMacros(zip, budget, edits);
   const outcome = strongerOutcome(ooxml, odf);
   if (outcome === 'unchanged') return unchanged;
-  return { buffer: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }), droppedMacros: outcome === 'dropped' };
+  return { buffer: await serializeBoundedOfficePackage(zip, edits), droppedMacros: outcome === 'dropped' };
 }

@@ -2,7 +2,7 @@ import { ConversionFailedError } from '../types';
 import type { ConversionResult } from '../types';
 import { openPackage } from './package-access';
 import { InflateBudget } from './bounded-inflate';
-import { stripOfficeMacros } from './office-macro-strip';
+import { serializeBoundedOfficePackage, stripOfficeMacros } from './office-macro-strip';
 import { safeExtractXmlElements } from './safe-xml-scanner';
 import { readZipEntryText } from './zip-entry-reader';
 
@@ -81,8 +81,15 @@ export async function ooxmlVariantAsPlainPackage(
   const types = await readZipEntryText(typesPart, { budget: new InflateBudget() });
   const main = safeExtractXmlElements(types, 'Override', { maxElements: MAX_TYPE_ELEMENTS }).find((element) => element.attrs.PartName === facts.mainPart);
   if (main === undefined || main.attrs.ContentType === facts.mainContentType) return { buffer: stripped.buffer, droppedMacros: stripped.droppedMacros };
-  plain.file(CONTENT_TYPES_PART, types.slice(0, main.startIndex) + main.raw.replace(/\bContentType\s*=\s*(["'])[^"']*\1/, `ContentType="${facts.mainContentType}"`) + types.slice(main.endIndex));
-  return { buffer: await plain.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }), droppedMacros: stripped.droppedMacros };
+  const rewrittenTypes =
+    types.slice(0, main.startIndex) +
+    main.raw.replace(/\bContentType\s*=\s*(["'])[^"']*\1/, `ContentType="${facts.mainContentType}"`) +
+    types.slice(main.endIndex);
+  const buffer = await serializeBoundedOfficePackage(plain, {
+    rewritten: new Map([[typesPart.name, Buffer.from(rewrittenTypes, 'utf8')]]),
+    removed: new Set(),
+  });
+  return { buffer, droppedMacros: stripped.droppedMacros };
 }
 
 /** The plain-format package of a variant, as the result of converting the variant to its own family. */

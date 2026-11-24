@@ -4,8 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { convertFile } from '../src/lib/conversions';
-import { ConversionFailedError } from '../src/lib/types';
+import { MAX_DOCUMENT_INFLATE_BYTES } from '../src/lib/conversions/bounded-inflate';
+import { ConversionFailedError, DecompressionLimitError } from '../src/lib/types';
 import { OOXML_VARIANT_FAMILY, ooxmlVariantToPlainFormat } from '../src/lib/conversions/ooxml-variants';
+import { ZipWriter } from '../src/lib/conversions/zip-writer';
 import { craftDocx, paragraph } from './helpers/docx-craft';
 import { pythonModuleAvailable, runPythonHelper } from './helpers/python-oracle';
 import { readXps } from './helpers/xps-text-walker';
@@ -159,4 +161,57 @@ describe('Office Open XML variants are read like their plain formats', () => {
   it('names every variant family in the registry', () => {
     expect(Object.keys(OOXML_VARIANT_FAMILY).sort()).toEqual(['docm', 'dotm', 'dotx', 'pptm', 'potm', 'ppsm', 'ppsx', 'xltm', 'xltx', 'xlsm'].sort());
   });
+
+  it('rejects a macro-free .dotx carrying > MAX_DOCUMENT_INFLATE_BYTES of compressed media with DecompressionLimitError (413)', async () => {
+    const MEGABYTE = 1024 * 1024;
+    const DECOY_COUNT = 4;
+    const DECOY_MIB = 70;
+    expect(DECOY_COUNT * DECOY_MIB * MEGABYTE).toBeGreaterThan(MAX_DOCUMENT_INFLATE_BYTES);
+
+    const zeroMiB = Buffer.alloc(MEGABYTE);
+    function* repeatedZeroMiB(count: number): Generator<Buffer> {
+      for (let index = 0; index < count; index++) yield zeroMiB;
+    }
+
+    const chunks: Uint8Array[] = [];
+    const writer = new ZipWriter((chunk) => {
+      chunks.push(chunk);
+    });
+    await writer.addEntry({
+      name: '[Content_Types].xml',
+      data: Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="${TYPES_NS}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="bin" ContentType="application/octet-stream"/><Override PartName="/word/document.xml" ContentType="${WORD_TEMPLATE_TYPE}"/></Types>`,
+        'utf8'
+      ),
+      method: 'deflate',
+    });
+    await writer.addEntry({
+      name: '_rels/.rels',
+      data: Buffer.from(
+        `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PACKAGE_REL_NS}"><Relationship Id="rId1" Type="${REL_NS}/officeDocument" Target="word/document.xml"/></Relationships>`,
+        'utf8'
+      ),
+      method: 'deflate',
+    });
+    await writer.addEntry({
+      name: 'word/document.xml',
+      data: Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello</w:t></w:r></w:p></w:body></w:document>', 'utf8'),
+      method: 'deflate',
+    });
+    for (let index = 0; index < DECOY_COUNT; index++) {
+      await writer.addEntry({
+        name: `word/media/decoy-${index}.bin`,
+        data: repeatedZeroMiB(DECOY_MIB),
+        declaredSize: DECOY_MIB * MEGABYTE,
+        method: 'deflate',
+        level: 1,
+      });
+    }
+    await writer.finish();
+    const dotx = Buffer.concat(chunks, writer.bytesWritten);
+
+    const error = await convertFile(dotx, 'dotx', 'docx', {}, 'bomb.dotx').catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as DecompressionLimitError).status).toBe(413);
+  }, 30_000);
 });

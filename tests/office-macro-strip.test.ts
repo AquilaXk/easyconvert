@@ -3,8 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
+import { MAX_DOCUMENT_INFLATE_BYTES } from '../src/lib/conversions/bounded-inflate';
 import { MACRO_STRIP_MAX_ENTRIES, MACRO_STRIP_MAX_TYPE_ELEMENTS, stripOfficeMacros } from '../src/lib/conversions/office-macro-strip';
-import { ConversionFailedError } from '../src/lib/types';
+import { ZipWriter } from '../src/lib/conversions/zip-writer';
+import { ConversionFailedError, DecompressionLimitError } from '../src/lib/types';
 import { officeInputWithoutMacros } from '../src/worker/office-input-checks';
 import { craftDocx, paragraph } from './helpers/docx-craft';
 
@@ -306,6 +308,109 @@ describe('case-insensitive OOXML and OpenDocument part names', () => {
     const manifest = await out.file('meta-inf/manifest.xml')!.async('string');
     expect(manifest.toLowerCase()).not.toMatch(/basic|scripts/);
   });
+});
+
+describe('package-wide inflate budget enforcement in stripOfficeMacros', () => {
+  const MEGABYTE = 1024 * 1024;
+  const zeroMiB = Buffer.alloc(MEGABYTE);
+
+  function* repeatedZeroMiB(count: number): Generator<Buffer> {
+    for (let index = 0; index < count; index++) yield zeroMiB;
+  }
+
+  async function buildFastArchive(
+    entries: Array<{ name: string; data: Buffer; method?: 'store' | 'deflate' }>,
+    decoyPrefix: string,
+    decoySizesMiB: readonly number[]
+  ): Promise<Buffer> {
+    const chunks: Uint8Array[] = [];
+    const writer = new ZipWriter((chunk) => {
+      chunks.push(chunk);
+    });
+    for (const entry of entries) {
+      await writer.addEntry({ name: entry.name, data: entry.data, method: entry.method ?? 'deflate' });
+    }
+    for (let index = 0; index < decoySizesMiB.length; index++) {
+      const mib = decoySizesMiB[index];
+      await writer.addEntry({
+        name: `${decoyPrefix}${index}.bin`,
+        data: repeatedZeroMiB(mib),
+        declaredSize: mib * MEGABYTE,
+        method: 'deflate',
+        level: 1,
+      });
+    }
+    await writer.finish();
+    return Buffer.concat(chunks, writer.bytesWritten);
+  }
+
+  function macroOoxmlCoreEntries(): Array<{ name: string; data: Buffer; method?: 'store' | 'deflate' }> {
+    return [
+      {
+        name: '[Content_Types].xml',
+        data: Buffer.from(
+          `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="${TYPES_NS}"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="bin" ContentType="application/octet-stream"/><Override PartName="/word/document.xml" ContentType="${WORD_MACRO_MAIN}"/><Override PartName="/word/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>`,
+          'utf8'
+        ),
+      },
+      { name: 'word/document.xml', data: Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>', 'utf8') },
+      { name: 'word/vbaProject.bin', data: Buffer.from('macro payload', 'utf8') },
+      {
+        name: 'word/_rels/document.xml.rels',
+        data: Buffer.from(
+          `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="${PACKAGE_REL_NS}"><Relationship Id="rId9" Type="${VBA_RELATIONSHIP}" Target="vbaProject.bin"/></Relationships>`,
+          'utf8'
+        ),
+      },
+    ];
+  }
+
+  function macroOdtCoreEntries(): Array<{ name: string; data: Buffer; method?: 'store' | 'deflate' }> {
+    return [
+      { name: 'mimetype', data: Buffer.from('application/vnd.oasis.opendocument.text', 'latin1'), method: 'store' },
+      {
+        name: 'META-INF/manifest.xml',
+        data: Buffer.from(
+          ODF_MANIFEST('<manifest:file-entry manifest:full-path="Basic/Standard/Module1.xml" manifest:media-type="text/xml"/>'),
+          'utf8'
+        ),
+      },
+      { name: 'content.xml', data: Buffer.from('<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"/>', 'utf8') },
+      { name: 'Basic/Standard/Module1.xml', data: Buffer.from('<script:module/>', 'utf8') },
+    ];
+  }
+
+  it('rejects a macro-bearing OOXML package whose kept media exceeds MAX_DOCUMENT_INFLATE_BYTES across multiple entries', async () => {
+    const decoySizes = [70, 70, 70, 70];
+    expect(decoySizes.reduce((sum, n) => sum + n, 0) * MEGABYTE).toBeGreaterThan(MAX_DOCUMENT_INFLATE_BYTES);
+    const archive = await buildFastArchive(macroOoxmlCoreEntries(), 'word/media/decoy-', decoySizes);
+    const error = await stripOfficeMacros(archive).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as DecompressionLimitError).status).toBe(413);
+  }, 30_000);
+
+  it('rejects a macro-bearing OOXML package carrying a single 300 MiB entry', async () => {
+    const archive = await buildFastArchive(macroOoxmlCoreEntries(), 'word/media/oversized-', [300]);
+    const error = await stripOfficeMacros(archive).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as DecompressionLimitError).status).toBe(413);
+  }, 30_000);
+
+  it('rejects a macro-bearing OpenDocument package whose kept media exceeds MAX_DOCUMENT_INFLATE_BYTES across multiple entries', async () => {
+    const decoySizes = [70, 70, 70, 70];
+    expect(decoySizes.reduce((sum, n) => sum + n, 0) * MEGABYTE).toBeGreaterThan(MAX_DOCUMENT_INFLATE_BYTES);
+    const archive = await buildFastArchive(macroOdtCoreEntries(), 'Pictures/decoy-', decoySizes);
+    const error = await stripOfficeMacros(archive).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as DecompressionLimitError).status).toBe(413);
+  }, 30_000);
+
+  it('rejects a macro-bearing OpenDocument package carrying a single 300 MiB entry', async () => {
+    const archive = await buildFastArchive(macroOdtCoreEntries(), 'Pictures/oversized-', [300]);
+    const error = await stripOfficeMacros(archive).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(DecompressionLimitError);
+    expect((error as DecompressionLimitError).status).toBe(413);
+  }, 30_000);
 });
 
 
