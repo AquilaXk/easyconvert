@@ -76,8 +76,8 @@ function stripLeadingSlashes(pathStr: string): string {
 }
 
 function encodeSafePathSegments(remotePath: string, provider: string): string {
-  if (!remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
-    throw new StorageInvalidKeyError(`Invalid remote path "${remotePath}"`, provider);
+  if (typeof remotePath !== 'string' || !remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
+    throw new StorageInvalidKeyError(`Invalid remote path "${String(remotePath)}"`, provider);
   }
   const cleanPath = stripLeadingSlashes(remotePath);
   const segments = cleanPath.split('/');
@@ -98,6 +98,17 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
   constructor(credentials: AzureBlobCredentials) {
     if (typeof credentials.storageAccount !== 'string' || !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount)) {
       throw new StorageAdapterError('Invalid Azure Blob storageAccount: 3 to 24 lowercase letters and digits', this.providerName);
+    }
+    if (
+      typeof credentials.containerName !== 'string' ||
+      !credentials.containerName ||
+      !credentials.containerName.isWellFormed() ||
+      FORBIDDEN_PATH_CHAR.test(credentials.containerName) ||
+      credentials.containerName.includes('/') ||
+      credentials.containerName.includes('..') ||
+      credentials.containerName === '.'
+    ) {
+      throw new StorageInputError('Invalid Azure Blob containerName', this.providerName);
     }
     this.storageAccount = credentials.storageAccount;
     this.containerName = credentials.containerName;

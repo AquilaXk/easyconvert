@@ -54,6 +54,30 @@ function stripTrailingSlashes(s: string): string {
   return s.slice(0, end);
 }
 
+function signServiceAccountJwt(clientEmail: string, privateKey: string, provider: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const claims = {
+    iss: clientEmail,
+    scope: 'https://www.googleapis.com/auth/devstorage.read_write',
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600,
+    iat: now,
+  };
+
+  const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
+  const b64Claims = Buffer.from(JSON.stringify(claims)).toString('base64url');
+  const signInput = `${b64Header}.${b64Claims}`;
+  try {
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(signInput);
+    const signature = signer.sign(privateKey, 'base64url');
+    return `${signInput}.${signature}`;
+  } catch (err) {
+    throw new StorageAuthenticationError(err instanceof Error ? err.message : String(err), provider);
+  }
+}
+
 export class GcsStorageAdapter implements IStorageAdapter {
   readonly providerName = 'gcs';
   private readonly endpoint: string;
@@ -108,64 +132,58 @@ export class GcsStorageAdapter implements IStorageAdapter {
       return null;
     }
 
-    const now = Math.floor(Date.now() / 1000);
-    const header = { alg: 'RS256', typ: 'JWT' };
-    const claims = {
-      iss: clientEmail,
-      scope: 'https://www.googleapis.com/auth/devstorage.read_write',
-      aud: 'https://oauth2.googleapis.com/token',
-      exp: now + 3600,
-      iat: now,
-    };
+    const jwt = signServiceAccountJwt(clientEmail, privateKey, this.providerName);
+    const tokenUrl = 'https://oauth2.googleapis.com/token';
+    await this.assertSsrfSafe(tokenUrl);
 
-    const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
-    const b64Claims = Buffer.from(JSON.stringify(claims)).toString('base64url');
-    const signInput = `${b64Header}.${b64Claims}`;
-
+    const dispatcher = adapterDispatcher(tokenUrl);
     try {
-      const signer = crypto.createSign('RSA-SHA256');
-      signer.update(signInput);
-      const signature = signer.sign(privateKey, 'base64url');
-      const jwt = `${signInput}.${signature}`;
+      const res = await guardedRequest(tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+          assertion: jwt,
+        }).toString(),
+        dispatcher,
+      });
 
-      const tokenUrl = 'https://oauth2.googleapis.com/token';
-      await this.assertSsrfSafe(tokenUrl);
-
-      const dispatcher = adapterDispatcher(tokenUrl);
-      try {
-        const res = await guardedRequest(tokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          body: new URLSearchParams({
-            grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-            assertion: jwt,
-          }).toString(),
-          dispatcher,
-        });
-
-        if (res.statusCode !== 200) {
-          const errBody = await readErrorText(res.body, this.providerName);
-          if (isRetryableHttpStatus(res.statusCode)) {
-            throw new StorageServiceError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName, {
-              statusCode: res.statusCode,
-              retryable: true,
-            });
-          }
-          throw new StorageAuthenticationError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName);
+      if (res.statusCode !== 200) {
+        const errBody = await readErrorText(res.body, this.providerName);
+        if (isRetryableHttpStatus(res.statusCode)) {
+          throw new StorageServiceError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName, {
+            statusCode: res.statusCode,
+            retryable: true,
+          });
         }
-
-        const tokenData = await readJsonBody<{ access_token: string; expires_in: number }>(res.body, this.providerName);
-        this.cachedToken = tokenData.access_token;
-        this.tokenExpiresAt = Date.now() + tokenData.expires_in * 1000;
-        return this.cachedToken;
-      } finally {
-        await releaseDispatcher(dispatcher);
+        throw new StorageAuthenticationError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName);
       }
+
+      const tokenData = await readJsonBody<{ access_token?: unknown; expires_in?: unknown }>(res.body, this.providerName);
+      if (typeof tokenData?.access_token !== 'string' || !tokenData.access_token) {
+        throw new StorageServiceError('Token exchange response did not include an access_token', this.providerName, {
+          retryable: false,
+        });
+      }
+      const expiresInSec =
+        typeof tokenData.expires_in === 'number' && Number.isFinite(tokenData.expires_in) && tokenData.expires_in > 0
+          ? tokenData.expires_in
+          : 3600;
+      this.cachedToken = tokenData.access_token;
+      this.tokenExpiresAt = Date.now() + expiresInSec * 1000;
+      return this.cachedToken;
     } catch (err) {
       if (err instanceof StorageAdapterError) throw err;
-      throw new StorageAuthenticationError(err instanceof Error ? err.message : String(err), this.providerName);
+      throw new StorageServiceError(
+        `Token exchange request failed: ${err instanceof Error ? err.message : String(err)}`,
+        this.providerName,
+        { retryable: true },
+        err
+      );
+    } finally {
+      await releaseDispatcher(dispatcher);
     }
   }
 

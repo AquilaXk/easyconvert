@@ -17,6 +17,7 @@ import {
 } from '../src/lib/storage/adapters/adapter-interface';
 import * as httpGuard from '../src/lib/storage/adapters/http-guard';
 import { BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/http-guard';
+import { ConversionFailedError } from '../src/lib/types';
 import { StorageUnavailableError, customerStorageFailure } from '../src/lib/storage/customer-storage-errors';
 import { validateJobGraph } from '../src/lib/jobs/graph';
 import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/queue/graph/node-storage-io';
@@ -252,9 +253,11 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       expect((await adapter.head('empty/zero.bin'))?.size).toBe(0);
     });
 
-    it('exports a 0-byte local artifact via exportToCustomerStorage (export.azure-blob) with valid SharedKey', async () => {
+    it('exports a 0-byte local artifact via exportToCustomerStorage (export.azure-blob) with valid SharedKey across 429/503 retries', async () => {
       const uploaded = new Map<string, Buffer>();
+      let attempt = 0;
       const azureServer = await serve((req, body, res) => {
+        attempt++;
         const wireContentLength = headerStr(req.headers, 'content-length');
         const expectedStringToSign = buildAzureSharedKeyStringToSign(
           req.method ?? 'PUT',
@@ -266,6 +269,14 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         const expectedAuth = signAzureSharedKey(expectedStringToSign, ACCOUNT_KEY_BYTES, ACCOUNT);
         if (headerStr(req.headers, 'authorization') !== expectedAuth) {
           res.writeHead(403).end();
+          return;
+        }
+        if (attempt === 1) {
+          res.writeHead(429).end('throttled');
+          return;
+        }
+        if (attempt === 2) {
+          res.writeHead(503).end('unavailable');
           return;
         }
         const parsed = new URL(req.url ?? '/', 'http://localhost');
@@ -319,9 +330,10 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         graphNodeJobId(graphId, 'out')
       );
 
+      expect(attempt).toBe(3);
       expect(uploaded.get('out/empty.txt')).toEqual(Buffer.alloc(0));
       await Promise.resolve(storageProvider.deleteObject(stored.key)).catch(() => false);
-    });
+    }, 15_000);
 
     it('rejects negative, fractional, or NaN upload sizes with StorageInputError across HTTP adapters', async () => {
       const azure = new AzureBlobStorageAdapter({
@@ -453,10 +465,19 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       }
     });
 
-    it('maps GCS OAuth token endpoint 429/5xx to retryable StorageServiceError while keeping 401 as StorageAuthenticationError', async () => {
-      let tokenStatus = 429;
-      const oauthServer = await serve((_req, _body, res) => {
-        res.writeHead(tokenStatus, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'rate_limit' }));
+    it('maps GCS OAuth token endpoint 429/5xx and transport drops to retryable StorageServiceError while keeping 401 and bad key as StorageAuthenticationError', async () => {
+      let tokenMode: '429' | '503' | '401' | 'drop' | 'empty200' = '429';
+      const oauthServer = await serve((req, _body, res) => {
+        if (tokenMode === 'drop') {
+          req.socket.destroy();
+          return;
+        }
+        if (tokenMode === 'empty200') {
+          res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
+          return;
+        }
+        const status = Number(tokenMode);
+        res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: `err_${status}` }));
       });
       const dataServer = await serve((_req, _body, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' }).end('{"size":"1"}');
@@ -481,20 +502,40 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         endpoint: dataServer.origin,
       });
 
-      tokenStatus = 429;
+      tokenMode = '429';
       const err429 = await adapter.head('a.bin').catch((e: unknown) => e);
       expect(err429).toBeInstanceOf(StorageServiceError);
       expect((err429 as StorageServiceError).statusCode).toBe(429);
       expect((err429 as StorageServiceError).retryable).toBe(true);
 
-      tokenStatus = 503;
+      tokenMode = '503';
       const err503 = await adapter.downloadStream('a.bin').catch((e: unknown) => e);
       expect(err503).toBeInstanceOf(StorageServiceError);
       expect((err503 as StorageServiceError).statusCode).toBe(503);
       expect((err503 as StorageServiceError).retryable).toBe(true);
 
-      tokenStatus = 401;
+      tokenMode = 'drop';
+      const errDrop = await adapter.head('a.bin').catch((e: unknown) => e);
+      expect(errDrop).toBeInstanceOf(StorageServiceError);
+      expect((errDrop as StorageServiceError).retryable).toBe(true);
+
+      tokenMode = 'empty200';
+      const errEmpty = await adapter.head('a.bin').catch((e: unknown) => e);
+      expect(errEmpty).toBeInstanceOf(StorageServiceError);
+      expect((errEmpty as StorageServiceError).retryable).toBe(false);
+      expect(dataServer.hits).toHaveLength(0);
+
+      tokenMode = '401';
       await expect(adapter.head('a.bin')).rejects.toThrow(StorageAuthenticationError);
+
+      const badKeyAdapter = new GcsStorageAdapter({
+        type: 'gcs',
+        bucket: 'bkt',
+        clientEmail: 'svc@project.iam.gserviceaccount.com',
+        privateKey: 'not-a-valid-pem-key',
+        endpoint: dataServer.origin,
+      });
+      await expect(badKeyAdapter.head('a.bin')).rejects.toThrow(StorageAuthenticationError);
     });
 
     it('retries transient 429 and 5xx failures end-to-end inside node-storage-io for GCS, Azure Blob, and WebDAV', async () => {
@@ -710,6 +751,8 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/q1%20report%232.csv</D:href><D:propstat><D:prop><D:getcontentlength>17</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/nested/skip.csv</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/.hidden</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
+            `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/sub%20child/?sort=asc</D:href><D:propstat><D:prop><D:getcontentlength>0</D:getcontentlength></D:prop></D:propstat></D:response>`,
+            `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/bad%0Aline.txt</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/bad%2Fslash.csv</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
             `<D:response><D:href>https://evil.example/dav/Team%20%231/2026%25data%3Fv%3D1/team@org/caf%c3%a9/sub%20dir/evil.csv</D:href><D:propstat><D:prop><D:getcontentlength>3</D:getcontentlength></D:prop></D:propstat></D:response>`,
             '</D:multistatus>',
@@ -843,6 +886,35 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         expect(azErr).toBeInstanceOf(StorageInvalidKeyError);
         expect(azErr).not.toBeInstanceOf(URIError);
       }
+
+      const davNonString = await dav.head(123 as unknown as string).catch((e: unknown) => e);
+      expect(davNonString).toBeInstanceOf(StorageInvalidKeyError);
+      const azNonString = await azure.head(123 as unknown as string).catch((e: unknown) => e);
+      expect(azNonString).toBeInstanceOf(StorageInvalidKeyError);
+
+      for (const badContainer of ['', '../c', 'bad\ud800', 'a/b']) {
+        expect(
+          () =>
+            new AzureBlobStorageAdapter({
+              type: 'azure-blob',
+              storageAccount: ACCOUNT,
+              containerName: badContainer,
+              accountKey: ACCOUNT_KEY,
+            })
+        ).toThrow(StorageInputError);
+      }
+
+      const badPercentDav = new WebDavStorageAdapter({ type: 'webdav', url: 'https://dav.example.com/%ZZ' });
+      const urlErr = await badPercentDav.listDirectory('', 10).catch((e: unknown) => e);
+      expect(urlErr).toBeInstanceOf(StorageInputError);
+      expect(customerStorageFailure(urlErr)).toBeInstanceOf(ConversionFailedError);
+
+      const acceptedDav = await serve((req, _body, res) => {
+        res.writeHead(req.method === 'DELETE' ? 202 : 200).end();
+      });
+      allowDev(acceptedDav);
+      const dav202 = new WebDavStorageAdapter({ type: 'webdav', url: acceptedDav.origin });
+      expect(await dav202.delete('async-delete.txt')).toBe(true);
     });
   });
 });

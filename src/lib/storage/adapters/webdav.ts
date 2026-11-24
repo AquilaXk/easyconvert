@@ -2,7 +2,6 @@ import { Readable } from 'node:stream';
 import type { WebDavCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
-  StorageAdapterError,
   StorageAdapterMetadata,
   StorageInputError,
   StorageNotFoundError,
@@ -60,14 +59,21 @@ function extractWebDavChildName(href: string, targetUrl: URL, baseSegments: read
   } catch {
     return null;
   }
-  if (entryUrl.origin !== targetUrl.origin) return null;
+  if (entryUrl.origin !== targetUrl.origin || entryUrl.pathname.endsWith('/')) return null;
   const entrySegments = splitDecodedPathSegments(entryUrl.pathname);
   if (!entrySegments || entrySegments.length !== baseSegments.length + 1) return null;
   for (let i = 0; i < baseSegments.length; i++) {
     if (entrySegments[i] !== baseSegments[i]) return null;
   }
   const decoded = entrySegments[baseSegments.length];
-  if (!decoded || decoded.startsWith('.') || decoded === '..' || decoded.includes('/') || decoded.includes('\\') || decoded.includes('\0')) {
+  if (
+    !decoded ||
+    decoded.startsWith('.') ||
+    decoded === '..' ||
+    decoded.includes('/') ||
+    !decoded.isWellFormed() ||
+    FORBIDDEN_PATH_CHAR.test(decoded)
+  ) {
     return null;
   }
   return decoded;
@@ -94,8 +100,8 @@ function stripSlashes(s: string): string {
 }
 
 function encodeSafePathSegments(remotePath: string, provider: string): string {
-  if (!remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
-    throw new StorageInvalidKeyError(`Invalid remote path "${remotePath}"`, provider);
+  if (typeof remotePath !== 'string' || !remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
+    throw new StorageInvalidKeyError(`Invalid remote path "${String(remotePath)}"`, provider);
   }
   const cleanPath = stripLeadingSlashes(remotePath);
   const segments = cleanPath.split('/');
@@ -105,7 +111,8 @@ function encodeSafePathSegments(remotePath: string, provider: string): string {
   return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
 
-function encodeBasePath(basePath: unknown, provider: string): string {
+/** Validates and percent-encodes WebDAV basePath segments; shared with credential validation. */
+export function encodeWebDavBasePath(basePath: unknown, provider = 'webdav'): string {
   if (basePath === undefined || basePath === '') return '';
   if (typeof basePath !== 'string' || !basePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(basePath)) {
     throw new StorageInputError('Invalid WebDAV basePath: control characters, backslashes, or unpaired surrogates rejected', provider);
@@ -127,7 +134,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   constructor(credentials: WebDavCredentials) {
     const parsedUrl = parseCleanBaseEndpointUrl(credentials.url, this.providerName);
     let base = stripTrailingSlashes(parsedUrl.href);
-    const encodedBasePath = encodeBasePath(credentials.basePath, this.providerName);
+    const encodedBasePath = encodeWebDavBasePath(credentials.basePath, this.providerName);
     if (encodedBasePath) {
       base = `${base}/${encodedBasePath}`;
     }
@@ -316,7 +323,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     const targetUrl = new URL(url);
     const baseSegments = splitDecodedPathSegments(targetUrl.pathname);
     if (!baseSegments) {
-      throw new StorageAdapterError('Invalid WebDAV base URL path encoding', this.providerName);
+      throw new StorageInputError('Invalid WebDAV base URL path encoding', this.providerName);
     }
     const dispatcher = adapterDispatcher(url);
     try {
@@ -374,7 +381,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         dispatcher,
       });
 
-      if (res.statusCode === 204 || res.statusCode === 200) {
+      if (res.statusCode === 204 || res.statusCode === 200 || res.statusCode === 202) {
         return true;
       }
       if (res.statusCode === 401 || res.statusCode === 403) {
