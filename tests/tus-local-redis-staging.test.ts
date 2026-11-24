@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { assertNotSpoofedFile, sniffMimeTypeFromMagicBytes } from '../src/lib/registry';
 import { StorageServiceError } from '../src/lib/storage/adapters/adapter-interface';
 import { localFsStorage } from '../src/lib/storage/local-fs-storage';
 import { storageProvider } from '../src/lib/storage/selected-storage';
@@ -134,6 +135,19 @@ function createFakeRedis(options?: { isCluster?: boolean }) {
   return { client, strings, lists, expCalls, delCalls, getCalls, rpushCalls, pipelineExecs };
 }
 
+const NON_MAGIC_OCTET_PREFIX = Buffer.from('EC_RAW_OCTET_TEST\x00', 'ascii');
+
+/** Stamps an ASCII header over initial bytes so magic-byte sniffing returns undefined for .bin fixtures. */
+function stampNonMagicOctetPrefix(buf: Buffer): Buffer {
+  NON_MAGIC_OCTET_PREFIX.copy(buf, 0, 0, Math.min(NON_MAGIC_OCTET_PREFIX.length, buf.length));
+  return buf;
+}
+
+/** Returns random octet bytes whose header never collides with magic-byte format sniffing for .bin fixtures. */
+function randomOctetPayload(byteLength: number): Buffer {
+  return stampNonMagicOctetPrefix(crypto.randomBytes(byteLength));
+}
+
 async function readStreamBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
   const parts: Buffer[] = [];
   for await (const chunk of stream) {
@@ -197,7 +211,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
     const engineB = new TusEngine();
 
     for (const totalBytes of [6 * 1024 * 1024, 12 * 1024 * 1024]) {
-      const payload = crypto.randomBytes(totalBytes);
+      const payload = randomOctetPayload(totalBytes);
       const c1 = payload.subarray(0, Math.floor(totalBytes / 3));
       const c2 = payload.subarray(c1.length, Math.floor((totalBytes * 2) / 3));
       const c3 = payload.subarray(c1.length + c2.length);
@@ -248,7 +262,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
 
     const firstSize = 3.5 * 1024 * 1024;
     const crossedSize = 8.5 * 1024 * 1024;
-    const fullBytes = crypto.randomBytes(crossedSize);
+    const fullBytes = randomOctetPayload(crossedSize);
     fs.writeFileSync(binPath, fullBytes.subarray(0, firstSize));
 
     await store.syncStagedBytes(id, binPath, 0, firstSize, 3600);
@@ -293,7 +307,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
     fakeRedis.lists.set(chunksKey, ['stale-slice-1', 'stale-slice-2']);
 
     const payloadSize = 2.5 * 1024 * 1024;
-    fs.writeFileSync(binPath, crypto.randomBytes(payloadSize));
+    fs.writeFileSync(binPath, randomOctetPayload(payloadSize));
 
     await store.syncStagedBytes(id, binPath, 0, payloadSize, 1800);
 
@@ -312,7 +326,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
     const fakeRedisA = createFakeRedis();
     setTusSessionStore(new RedisTusSessionStore(fakeRedisA.client as never));
 
-    const payloadA = crypto.randomBytes(5 * 1024 * 1024);
+    const payloadA = randomOctetPayload(5 * 1024 * 1024);
     const replicaA = new TusEngine({ tusDir: dirA });
     const replicaB = new TusEngine({ tusDir: dirB });
     const sessA = await replicaA.createSession({
@@ -334,7 +348,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
     setTusSessionStore(new RedisTusSessionStore(fakeRedisB.client as never));
     const optInA = new TusEngine({ stageLocalInRedis: true });
     const optInB = new TusEngine({ stageLocalInRedis: true });
-    const payloadB = crypto.randomBytes(3 * 1024 * 1024);
+    const payloadB = randomOctetPayload(3 * 1024 * 1024);
     const sessB = await optInA.createSession({
       uploadLength: payloadB.length,
       metadataHeader: serializeTusMetadata({ filename: 'opt-in.bin', filetype: 'application/octet-stream' }),
@@ -376,7 +390,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
 
     // For <= 8 MiB remote tails, Redis staged bytes take precedence over stale local file of identical length
     const tailLen = 2 * 1024 * 1024;
-    const authoritativeTail = crypto.randomBytes(tailLen);
+    const authoritativeTail = randomOctetPayload(tailLen);
     fs.writeFileSync(binPath, Buffer.alloc(tailLen, 0x00));
     fakeRedis.strings.set(`tus:stage:{${id}}:len`, String(tailLen));
     fakeRedis.lists.set(`tus:stage:{${id}}:chunks`, [
@@ -402,8 +416,8 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
       [1 * 1024 * 1024, 1 * 1024 * 1024],
       [9 * 1024 * 1024, 1 * 1024 * 1024],
     ]) {
-      const c1 = crypto.randomBytes(firstLen);
-      const c2 = crypto.randomBytes(secondLen);
+      const c1 = randomOctetPayload(firstLen);
+      const c2 = randomOctetPayload(secondLen);
       const sess = await engine.createSession({
         uploadLength: firstLen + secondLen,
         metadataHeader: serializeTusMetadata({ filename: `trim-${firstLen}.bin`, filetype: 'application/octet-stream' }),
@@ -422,7 +436,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
 
     // Case 2: non-ENOENT stat failure throws retryable StorageServiceError without mutating uploadOffset,
     // while truncated or missing (ENOENT) .bin rewinds uploadOffset to actual bytes and throws TusStagedSizeMismatchError (400)
-    const fullBytes = crypto.randomBytes(4 * 1024 * 1024);
+    const fullBytes = randomOctetPayload(4 * 1024 * 1024);
     const chunk1 = fullBytes.subarray(0, 2 * 1024 * 1024);
     const chunk2 = fullBytes.subarray(2 * 1024 * 1024);
     const shortSess = await engine.createSession({
@@ -482,7 +496,7 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
     const replicaA = new TusEngine({ tusDir: dirA });
     const replicaB = new TusEngine({ tusDir: dirB });
 
-    const payload = crypto.randomBytes(12 * 1024 * 1024);
+    const payload = randomOctetPayload(12 * 1024 * 1024);
     const c1 = payload.subarray(0, 6 * 1024 * 1024); // <= 8 MiB -> staged in Redis
     const c2 = payload.subarray(6 * 1024 * 1024, 9 * 1024 * 1024); // crosses 8 MiB
     const c3 = payload.subarray(9 * 1024 * 1024);
@@ -523,5 +537,17 @@ describe('P0-01: TUS local storage Redis staging suppression and 8 MiB pipelined
     expect(r3.isComplete).toBe(true);
     const stored = await localFsStorage.getStream(sess.key);
     expect((await readStreamBuffer(stored!.stream)).equals(payload)).toBe(true);
+  });
+
+  it('prevents random .bin fixture bytes from colliding with MPEG audio sync magic sniffing', () => {
+    const rawSync = Buffer.alloc(64, 0xaa);
+    Buffer.from([0xff, 0xfb, 0x90, 0x64]).copy(rawSync, 0);
+    expect(sniffMimeTypeFromMagicBytes(rawSync)).toBe('audio/mpeg');
+    expect(() => assertNotSpoofedFile(rawSync, 'bin', 'retry-cross-8mib.bin')).toThrow();
+
+    const stamped = stampNonMagicOctetPrefix(Buffer.from(rawSync));
+    expect(stamped.subarray(0, NON_MAGIC_OCTET_PREFIX.length).equals(NON_MAGIC_OCTET_PREFIX)).toBe(true);
+    expect(sniffMimeTypeFromMagicBytes(stamped)).toBeUndefined();
+    expect(() => assertNotSpoofedFile(stamped, 'bin', 'retry-cross-8mib.bin')).not.toThrow();
   });
 });
