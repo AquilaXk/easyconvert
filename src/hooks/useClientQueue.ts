@@ -199,9 +199,9 @@ async function prepareServerBundleDownload(
       throw new ExpiredResultsError(expiredIds);
     }
   }
-  const message =
-    typeof errorBody?.error === 'string' && errorBody.error ? errorBody.error : `Bundle download failed (${res.status})`;
-  throw new Error(message);
+  throw new Error(
+    typeof errorBody?.error === 'string' && errorBody.error ? errorBody.error : `Bundle download failed (${res.status})`
+  );
 }
 
 async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: string): Promise<string | null> {

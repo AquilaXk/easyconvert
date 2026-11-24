@@ -144,9 +144,9 @@ async function downloadEntriesBundle(entries: readonly ToolResultFile[]): Promis
     });
     if (!res.ok) {
       const errorBody = (await res.json().catch(() => null)) as { error?: unknown } | null;
-      const message =
-        typeof errorBody?.error === 'string' && errorBody.error ? errorBody.error : `Could not bundle files (${res.status})`;
-      throw new Error(message);
+      throw new Error(
+        typeof errorBody?.error === 'string' && errorBody.error ? errorBody.error : `Could not bundle files (${res.status})`
+      );
     }
     const body = (await res.json().catch(() => null)) as { downloadUrl?: unknown } | null;
     if (typeof body?.downloadUrl !== 'string' || body.downloadUrl.length === 0) {
