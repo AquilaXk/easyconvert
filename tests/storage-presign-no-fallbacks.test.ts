@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalFsStorage } from '../src/lib/storage/local-fs-storage';
-import { OciObjectStorageService } from '../src/lib/storage/oci-storage';
 import { S3ObjectStorageService } from '../src/lib/storage/s3-storage';
 import { StorageSigningSecretMissingError } from '../src/lib/storage/errors';
 
@@ -81,34 +80,12 @@ describe('Storage presign never invents credentials, hosts or secrets (#483)', (
       }
     });
 
-    it('presigns OciObjectStorageService part URLs on the application origin without the made-up key', () => {
-      const oci = new OciObjectStorageService(
-        { namespace: 'regression-ns', region: 'ap-seoul-1' },
-        { signingSecret: 'regression-signing-secret-32-bytes!!' }
-      );
-      try {
-        const presigned = oci.generatePresignedUploadPartUrl('uploads/a.bin', 'up_1', 1, 900);
-        const parsed = new URL(presigned.url);
-        expect(parsed.origin).toBe(APP_ORIGIN);
-        expect(presigned.url).not.toContain(FORBIDDEN_ACCESS_KEY);
-        expect(presigned.url).not.toContain(FORBIDDEN_HOST);
-      } finally {
-        oci.stopGc();
-      }
-    });
-
     it('does not offer a download URL signed by a local backend for a host that cannot verify it', () => {
       const service = new S3ObjectStorageService({ signingSecret: 'regression-signing-secret-32-bytes!!' });
-      const oci = new OciObjectStorageService(
-        { namespace: 'regression-ns', region: 'ap-seoul-1' },
-        { signingSecret: 'regression-signing-secret-32-bytes!!' }
-      );
       try {
         expect((service as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
-        expect((oci as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
       } finally {
         service.stopGc();
-        oci.stopGc();
       }
     });
   });
@@ -124,16 +101,6 @@ describe('Storage presign never invents credentials, hosts or secrets (#483)', (
         );
       } finally {
         service.stopGc();
-      }
-    });
-
-    it('refuses to sign with OciObjectStorageService when no signing secret is configured', () => {
-      const oci = new OciObjectStorageService({ namespace: 'regression-ns', region: 'ap-seoul-1' });
-      try {
-        expect(() => oci.getSigningSecret()).toThrow(StorageSigningSecretMissingError);
-        expect(() => oci.generatePresignedUploadUrl('k', 1, 'up_1', 60)).toThrow(StorageSigningSecretMissingError);
-      } finally {
-        oci.stopGc();
       }
     });
 

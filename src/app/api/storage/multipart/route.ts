@@ -4,7 +4,7 @@ import type { MultipartUploadComplete } from '@/lib/types';
 import { admittingNewFiles } from '@/lib/api/storage-full-response';
 import { discardUpload, mayPresignDownload, registerCompletedUpload, removeUnregistered } from '@/lib/storage/retention-service';
 import { MULTIPART_MAX_PARTS, storageProvider } from '@/lib/storage';
-import type { IStorageBackend, UploadSessionInfo } from '@/lib/storage/oci-storage';
+import type { IStorageBackend, UploadSessionInfo } from '@/lib/storage/types';
 import { stripEtagQuotes } from '@/lib/storage/etag';
 import { isUploadKey } from '@/lib/storage/key-namespace';
 import { validateApiAccess, authErrorHeaders, getQuotaUsage, PERIOD_WORDS } from '@/lib/api-keys/guard';

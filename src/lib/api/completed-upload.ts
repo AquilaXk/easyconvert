@@ -1,6 +1,6 @@
 import type { NextResponse } from 'next/server';
 import { registerCompletedUpload } from '../storage/retention-service';
-import type { IStorageBackend } from '../storage/oci-storage';
+import type { IStorageBackend } from '../storage/types';
 import { createProblemDetailsResponse } from './problem-details';
 
 /** The detail of the answer to an upload that was stored but could not be recorded; the error itself stays in the server log. */

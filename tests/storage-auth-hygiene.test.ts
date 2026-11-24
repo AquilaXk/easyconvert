@@ -8,7 +8,7 @@ import { NextRequest } from 'next/server';
 import { processNodeJob, type ConversionEnginePort, type EngineResult } from '../src/lib/queue/node-processor';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData } from '../src/lib/types';
-import type { IStorageBackend, StoredObject } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend, StoredObject } from '../src/lib/storage/types';
 import { sweepWorkerSandboxDirs } from '../src/worker/sandbox-sweep';
 import { JOB_STAGING_MAX_AGE_MS } from '../src/lib/storage/temp-file';
 import { LocalFsStorage, localFsStorage } from '../src/lib/storage/local-fs-storage';

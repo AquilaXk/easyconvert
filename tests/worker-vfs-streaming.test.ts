@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { ociStorage, s3Storage, storageProvider, globalSharedObjects } from '../src/lib/storage';
+import { s3Storage, storageProvider, globalSharedObjects } from '../src/lib/storage';
 import { executeWorkerConversion, assertNotSpoofedFileVfs } from '../src/worker/engines';
 import { resolveInputContext, preserveOutput, createConversionResult } from '../src/worker/worker-output';
 import { FileExtensionSpoofError } from '../src/lib/types';
@@ -34,7 +34,7 @@ describe('Phase 2: Zero-Heap VFS Streaming Pipeline for 2GB+ Payloads', () => {
       fs.writeFileSync(filePath, testContent, 'utf-8');
 
       const storageKey = `datasets/sample_${Date.now()}.csv`;
-      const stored = await ociStorage.saveObjectFromFile!(
+      const stored = await storageProvider.saveObjectFromFile!(
         storageKey,
         filePath,
         'text/csv',

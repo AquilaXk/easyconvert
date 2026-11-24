@@ -15,7 +15,7 @@ import { identityMatrix } from '@/lib/conversions/office/affine';
 import { PDFDocument } from 'pdf-lib';
 import { processGraphNodeJob } from '@/lib/queue/graph/node-executor';
 import { s3Storage } from '@/lib/storage/s3-storage';
-import type { IStorageBackend } from '@/lib/storage/oci-storage';
+import type { IStorageBackend } from '@/lib/storage/types';
 import type { Job } from '@/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '@/lib/types';
 

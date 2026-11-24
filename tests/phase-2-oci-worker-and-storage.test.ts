@@ -1,45 +1,62 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { ociStorage, OciObjectStorageService } from '../src/lib/storage/oci-storage';
+import { describe, it, expect, vi } from 'vitest';
+import { storageProvider } from '../src/lib/storage';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { resolveStorageConfig } from '../src/lib/storage/storage-config';
 import { probeNativeEngines, executeWorkerConversion } from '../src/worker/engines';
-import { Queue, Job } from '../src/lib/queue/bullmq-engine';
+import { Queue } from '../src/lib/queue/bullmq-engine';
 import { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { probeStream } from './helpers/media-lossy-oracle';
 import { oracleTest } from './helpers/oracle-test';
 
-describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', () => {
-  describe('1. OCI Object Storage Configuration & Presigned URLs', () => {
-    it('synchronizes default configuration with active OCI Seoul tenancy', () => {
-      const storage = new OciObjectStorageService();
-      expect(storage.config.region).toBe('ap-seoul-1');
-      expect(storage.config.namespace).toBe('axvym6vk8g7i');
-      expect(storage.config.bucketName).toBe('easyconvert-transcode-bucket');
-      expect(storage.config.endpoint).toContain('ap-seoul-1.oraclecloud.com');
+describe('Phase 2: Storage Backend & Container Worker Integration (#109)', () => {
+  describe('1. Object Storage Configuration & Presigned URLs', () => {
+    it('resolves OCI Seoul tenancy object storage configuration', () => {
+      const config = resolveStorageConfig({
+        STORAGE_DRIVER: 'oci',
+        OCI_NAMESPACE: 'axvym6vk8g7i',
+        OCI_REGION: 'ap-seoul-1',
+        OCI_BUCKET: 'easyconvert-transcode-bucket',
+        OCI_ACCESS_KEY_ID: 'ocikeyid0000000000001',
+        OCI_SECRET_ACCESS_KEY: 'oci/secret+key/EXAMPLE000000000000',
+      });
+      expect(config.driver).toBe('oci');
+      if (config.driver !== 'oci') throw new Error('expected oci driver');
+      expect(config.region).toBe('ap-seoul-1');
+      expect(config.namespace).toBe('axvym6vk8g7i');
+      expect(config.bucket).toBe('easyconvert-transcode-bucket');
+      expect(config.endpoint).toBe('https://axvym6vk8g7i.compat.objectstorage.ap-seoul-1.oraclecloud.com');
     });
 
-    it('generates compliant multipart upload URLs for large client files', () => {
-      const init = ociStorage.initiateMultipartUpload('sample_document.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 10 * 1024 * 1024);
-      expect(init.uploadId).toBeDefined();
-      expect(init.totalParts).toBe(10); // 10MB / 1MB (dynamic part sizing for <= 50MB)
+    it('generates compliant multipart upload URLs for large client files', async () => {
+      const init = await s3Storage.initiateMultipartUpload(
+        'sample_document.docx',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        10 * 1024 * 1024
+      );
+      try {
+        expect(init.uploadId).toBeDefined();
+        expect(init.totalParts).toBe(2); // 10 MiB / 5 MiB default S3 part size
 
-      if (typeof ociStorage.generatePresignedUploadUrl === 'function') {
-        const presigned = ociStorage.generatePresignedUploadUrl(init.key, 1, init.uploadId, 3600);
+        const presigned = s3Storage.generatePresignedUploadUrl(init.key, 1, init.uploadId, 3600);
         // Local storage mints URLs that point back at this application, never at a remote host.
         expect(new URL(presigned.url).pathname).toBe('/api/v1/uploads/direct/part');
         expect(presigned.url).toContain(init.uploadId);
         expect(presigned.expiresAt).toBeGreaterThan(Math.floor(Date.now() / 1000));
+      } finally {
+        await s3Storage.abortMultipartUpload(init.uploadId);
       }
     });
 
-    it('enforces 1-hour TTL and cryptographically purges expired transit objects', async () => {
+    it('enforces TTL and purges expired transit objects', async () => {
       const testKey = `temp/test_${Date.now()}.bin`;
       const testPayload = Buffer.from('Transit ephemeral conversion payload');
 
       // A one-minute TTL: a slow runner reads the object well inside it, and the clock is moved
       // past it instead of the test sleeping through a few milliseconds (it failed on CI at 50 ms).
       const ttlMs = 60_000;
-      ociStorage.saveObject(testKey, testPayload, 'application/octet-stream', 'test.bin', ttlMs);
+      s3Storage.saveObject(testKey, testPayload, 'application/octet-stream', 'test.bin', ttlMs);
 
-      const immediate = ociStorage.getObject(testKey);
+      const immediate = s3Storage.getObject(testKey);
       expect(immediate).toBeDefined();
       expect(immediate?.buffer.toString()).toBe('Transit ephemeral conversion payload');
 
@@ -47,12 +64,11 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
       vi.useFakeTimers({ toFake: ['Date'] });
       try {
         vi.setSystemTime(Date.now() + ttlMs + 1_000);
-        expect(ociStorage.sweepExpiredObjects()).toBeGreaterThanOrEqual(1);
-        expect(ociStorage.getObject(testKey)).toBeUndefined();
+        expect(s3Storage.sweepExpiredObjects()).toBeGreaterThanOrEqual(1);
+        expect(s3Storage.getObject(testKey)).toBeUndefined();
       } finally {
         vi.useRealTimers();
       }
-
     });
   });
 
@@ -121,65 +137,70 @@ describe('Phase 2: OCI Storage Backend & Container Worker Integration (#109)', (
     });
   });
 
-  describe('3. Queue Job Dispatch & OCI Storage Lifecycle', () => {
-    it('dispatches and completes conversion job with OCI storage download URL', async () => {
-      const queue = new Queue<ConversionJobData, ConversionJobResult>('test-oci-queue');
+  describe('3. Queue Job Dispatch & Storage Lifecycle', () => {
+    it('dispatches and completes conversion job with storageProvider download URL', async () => {
+      const queue = new Queue<ConversionJobData, ConversionJobResult>('test-storage-queue');
       const inputBuffer = Buffer.from('Sample CSV data,column1,column2\n1,a,b\n2,c,d');
 
       const storageKey = `uploads/job_test_${Date.now()}.csv`;
-      ociStorage.saveObject(storageKey, inputBuffer, 'text/csv', 'data.csv', 3600000);
+      await storageProvider.saveObject(storageKey, inputBuffer, 'text/csv', 'data.csv', 3600000);
+      let resultKey: string | undefined;
 
-      const job = await queue.add('convert-csv-to-json', {
-        jobId: 'job_oci_1',
-        sourceFormat: 'csv',
-        targetFormat: 'json',
-        originalFilename: 'data.csv',
-        fileSize: inputBuffer.length,
-        options: {},
-        storageKey,
-      });
+      try {
+        const job = await queue.add('convert-csv-to-json', {
+          jobId: 'job_storage_1',
+          sourceFormat: 'csv',
+          targetFormat: 'json',
+          originalFilename: 'data.csv',
+          fileSize: inputBuffer.length,
+          options: {},
+          storageKey,
+        });
 
-      expect(job.id).toBeDefined();
-      expect(job.state).toBe('waiting');
+        expect(job.id).toBeDefined();
+        expect(job.state).toBe('waiting');
 
-      // Simulate worker processing
-      const loaded = ociStorage.getObject(job.data.storageKey!);
-      expect(loaded).toBeDefined();
+        // Simulate worker processing
+        const loaded = await storageProvider.getObject(job.data.storageKey!);
+        expect(loaded).toBeDefined();
 
-      const convRes = await executeWorkerConversion(
-        loaded!.buffer,
-        job.data.sourceFormat,
-        job.data.targetFormat,
-        {},
-        job.data.originalFilename
-      );
+        const convRes = await executeWorkerConversion(
+          loaded!.buffer,
+          job.data.sourceFormat,
+          job.data.targetFormat,
+          {},
+          job.data.originalFilename
+        );
 
-      const resultKey = `results/${job.id}/${convRes.filename}`;
-      ociStorage.saveObject(resultKey, convRes.buffer, convRes.mimeType, convRes.filename, 3600000);
+        resultKey = `results/${job.id}/${convRes.filename}`;
+        await storageProvider.saveObject(resultKey, convRes.buffer, convRes.mimeType, convRes.filename, 3600000);
 
-      // Local storage has no object-store host to presign for, so results download through the application.
-      const downloadUrl = `/api/storage/file/${resultKey}`;
+        // Local storage has no object-store host to presign for, so results download through the application.
+        const downloadUrl = `/api/storage/file/${resultKey}`;
 
-      const jobResult: ConversionJobResult = {
-        jobId: job.id,
-        status: 'completed',
-        filename: convRes.filename,
-        size: convRes.size,
-        mimeType: convRes.mimeType,
-        downloadUrl,
-        resultKey,
-        durationMs: 15,
-      };
+        const jobResult: ConversionJobResult = {
+          jobId: job.id,
+          status: 'completed',
+          filename: convRes.filename,
+          size: convRes.size,
+          mimeType: convRes.mimeType,
+          downloadUrl,
+          resultKey,
+          durationMs: 15,
+        };
 
-      expect(jobResult.size).toBeGreaterThan(0);
-      expect(jobResult.downloadUrl).toContain(resultKey);
+        expect(jobResult.size).toBeGreaterThan(0);
+        expect(jobResult.downloadUrl).toContain(resultKey);
 
-      // Verify stored result can be retrieved
-      const outputStored = ociStorage.getObject(resultKey);
-      expect(outputStored).toBeDefined();
-      expect(JSON.parse(outputStored!.buffer.toString())).toHaveLength(2);
-
-      await queue.close();
+        // Verify stored result can be retrieved
+        const outputStored = await storageProvider.getObject(resultKey);
+        expect(outputStored).toBeDefined();
+        expect(JSON.parse(outputStored!.buffer.toString())).toHaveLength(2);
+      } finally {
+        await storageProvider.deleteObject(storageKey);
+        if (resultKey) await storageProvider.deleteObject(resultKey);
+        await queue.close();
+      }
     });
   });
 });

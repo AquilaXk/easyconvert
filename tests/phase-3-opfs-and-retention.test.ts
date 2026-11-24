@@ -22,13 +22,10 @@ import {
   DistributedBullMQAdapter,
   IQueueEngine,
 } from '../src/lib/queue/bullmq-engine';
-import {
-  ociStorage,
-  s3Storage,
-  getStorageBackend,
-  S3CompatibleStorageBackend,
-  IStorageBackend,
-} from '../src/lib/storage/s3-storage';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { RemoteStorageBackend } from '../src/lib/storage/remote-storage-backend';
+import { createRemoteStorage } from '../src/lib/storage/remote-storage-factory';
+import type { IStorageBackend } from '../src/lib/storage/types';
 
 describe('Phase 3: OPFS Streaming VFS, Immediate Disposal & Distributed Interfaces', () => {
   describe('1. Level 3 OPFS Streaming VFS Chunk Transcoders', () => {
@@ -325,28 +322,42 @@ describe('Phase 3: OPFS Streaming VFS, Immediate Disposal & Distributed Interfac
       await queue.close();
     });
 
-    it('validates IStorageBackend interface across OCI and S3-Compatible providers', async () => {
-      const ociBackend: IStorageBackend = getStorageBackend('oci');
-      const s3Backend: IStorageBackend = getStorageBackend('s3');
+    it('validates IStorageBackend interface across local S3 and remote OCI providers', async () => {
+      const localBackend: IStorageBackend = s3Storage;
+      const remoteOciBackend: IStorageBackend = createRemoteStorage(
+        {
+          driver: 'oci',
+          endpoint: 'https://axyz123namespace.compat.objectstorage.ap-seoul-1.oraclecloud.com',
+          region: 'ap-seoul-1',
+          bucket: 'easyconvert-transcode-bucket',
+          accessKeyId: 'ocikeyid0000000000001',
+          secretAccessKey: 'oci/secret+key/EXAMPLE000000000000',
+          forcePathStyle: true,
+          namespace: 'axyz123namespace',
+        },
+        { STORAGE_SIGNING_SECRET: 'test-signing-secret-at-least-32-bytes-long!' }
+      ).storageProvider;
 
-      expect(ociBackend.providerName).toBe('oci');
-      expect(s3Backend.providerName).toBe('s3-compatible');
-      expect(s3Backend).toBeInstanceOf(S3CompatibleStorageBackend);
+      expect(localBackend.providerName).toBe('s3');
+      expect(localBackend.kind).toBe('local');
+      expect(remoteOciBackend.providerName).toBe('oci');
+      expect(remoteOciBackend.kind).toBe('remote');
+      expect(remoteOciBackend).toBeInstanceOf(RemoteStorageBackend);
 
       // Verify interface compatibility
       const buffer = Buffer.from('Storage backend interface validation payload');
-      const stored = await s3Backend.saveObject('test/interface-key.txt', buffer, 'text/plain', 'test.txt');
+      const stored = await localBackend.saveObject('test/interface-key.txt', buffer, 'text/plain', 'test.txt');
 
       expect(stored.key).toContain('interface-key.txt');
       expect(stored.size).toBe(buffer.length);
 
-      const retrieved = await s3Backend.getObject(stored.key);
+      const retrieved = await localBackend.getObject(stored.key);
       expect(retrieved).toBeDefined();
       expect(retrieved?.buffer.toString('utf-8')).toBe('Storage backend interface validation payload');
 
-      const deleted = await s3Backend.deleteObject(stored.key);
+      const deleted = await localBackend.deleteObject(stored.key);
       expect(deleted).toBe(true);
-      expect(await s3Backend.getObject(stored.key)).toBeUndefined();
+      expect(await localBackend.getObject(stored.key)).toBeUndefined();
     });
 
     it('clears all pending delay timers when Queue.close() is invoked to prevent event loop leaks', async () => {

@@ -6,7 +6,7 @@ import { planOfCaller } from '@/lib/plan-limits';
 import { MULTIPART_MAX_PART_BYTES, storageProvider } from '@/lib/storage';
 import { receivePart } from '@/lib/storage/part-admission';
 import { declaredPartBytes, partFailureResponse } from '@/lib/api/part-response';
-import type { IStorageBackend } from '@/lib/storage/oci-storage';
+import type { IStorageBackend } from '@/lib/storage/types';
 import { verifySigV4QueryUrl } from '@/lib/storage/sigv4-presigner';
 import { LOCAL_EMULATION_ACCESS_KEY_ID, LOCAL_EMULATION_REGION } from '@/lib/storage/storage-config';
 

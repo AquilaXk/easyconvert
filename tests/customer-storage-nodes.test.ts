@@ -8,7 +8,7 @@ import { exportToCustomerStorage, importFromCustomerStorage } from '../src/lib/q
 import { graphNodeJobId, sealGraph } from '../src/lib/queue/graph/node-jobs';
 import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
 import type { ExportS3Node, ImportS3Node, ImportSftpNode } from '../src/lib/queue/graph/types';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 import { storageProvider } from '../src/lib/storage';
 import { credentialsVault } from '../src/lib/storage/credentials-vault';
 import { S3_DEV_ENDPOINT_ALLOWLIST_ENV } from '../src/lib/storage/adapters/s3';

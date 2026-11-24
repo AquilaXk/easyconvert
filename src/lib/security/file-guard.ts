@@ -3,7 +3,7 @@ import { assertNotSpoofedFile as assertSignatureMatches, FileExtensionSpoofError
 import { assertGzippedXmlRoot } from './gzipped-xml-root';
 import { findFormatByMimeType } from '../storage/declared-format';
 import { OBJECT_HEADER_BYTES, readObjectRange } from '../storage/object-header';
-import type { IStorageBackend } from '../storage/oci-storage';
+import type { IStorageBackend } from '../storage/types';
 import {
   compoundFileVerdictFrom,
   compoundFileVerdictFromAsync,

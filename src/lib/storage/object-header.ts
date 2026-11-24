@@ -1,5 +1,5 @@
 import type { Readable } from 'node:stream';
-import type { IStorageBackend } from './oci-storage';
+import type { IStorageBackend } from './types';
 import { HEADER_WINDOW_BYTES } from '../format-signatures';
 
 /** Enough leading bytes for every magic-number check the registry performs. */

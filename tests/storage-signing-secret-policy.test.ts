@@ -122,14 +122,12 @@ describe('the backends read the same policy', () => {
     vi.resetModules();
   }
 
-  it('refuses to construct the local, S3-shaped and OCI-shaped backends with the public secret', async () => {
+  it('refuses to construct the local storage backends with the public secret', async () => {
     stubProduction(COMPOSE_DEV_SECRET);
     const { LocalFsStorage } = await import('../src/lib/storage/local-fs-storage');
     const { S3ObjectStorageService } = await import('../src/lib/storage/s3-storage');
-    const { OciObjectStorageService } = await import('../src/lib/storage/oci-storage');
-    vi.stubEnv('OCI_NAMESPACE', 'tenant-oci-namespace');
     // The modules are reloaded here, so the error class is matched by its name and code.
-    for (const construct of [() => new LocalFsStorage(), () => new S3ObjectStorageService(), () => new OciObjectStorageService()]) {
+    for (const construct of [() => new LocalFsStorage(), () => new S3ObjectStorageService()]) {
       expect(failureOf(construct)).toMatchObject({
         name: 'StorageConfigError',
         code: 'STORAGE_CONFIG_INVALID',

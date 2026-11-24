@@ -11,7 +11,6 @@ import {
   secureShredBuffer,
   secureWipeObject,
 } from '../src/lib/security/memory-shredder';
-import { OciObjectStorageService } from '../src/lib/storage/oci-storage';
 
 describe('Phase 3: Zero-Trust Enterprise Security, Sandboxing & Privacy Hardening (#68)', () => {
   // =========================================================================
@@ -125,26 +124,6 @@ describe('Phase 3: Zero-Trust Enterprise Security, Sandboxing & Privacy Hardenin
       expect(sensitiveSession.payload).toBeUndefined();
       expect(sensitiveSession.nested.subPayload).toBeUndefined();
       expect(sensitiveSession.nested.meta).toBe('public');
-    });
-
-    it('integrates multi-pass shredding with OCI storage lifecycle and TTL disposal', () => {
-      const storage = new OciObjectStorageService();
-      try {
-        const key = 'test-shred-integration';
-        const rawBuf = Buffer.from('Important transient file awaiting conversion');
-        const stored = storage.saveObject(key, rawBuf, 'text/plain', 'test.txt');
-
-        const bufferRef = stored.buffer;
-        expect(bufferRef[0]).not.toBe(0);
-
-        // Delete object: must trigger multi-pass shredding
-        storage.deleteObject(key);
-
-        expect(bufferRef.every((b) => b === 0)).toBe(true);
-        expect(storage.getObject(key)).toBeUndefined();
-      } finally {
-        storage.stopGc();
-      }
     });
   });
 });

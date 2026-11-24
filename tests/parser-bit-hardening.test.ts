@@ -16,7 +16,7 @@ import {
   createDeterministicSyntheticStream,
   pipeStreamToStorageMultipart,
 } from '../src/lib/streaming/large-payload-streamer';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 import {
   buildLosslessHuffmanLut,
   decodeLosslessJpegStrip,

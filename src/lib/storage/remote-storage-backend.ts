@@ -36,7 +36,7 @@ import type {
   PresignedUrlResult,
   StoredObject,
   UploadSessionInfo,
-} from './oci-storage';
+} from './types';
 import type { GetObjectResult, ListedUpload, ObjectHead, S3ObjectClient } from './s3-object-client';
 
 /**

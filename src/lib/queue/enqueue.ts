@@ -1,5 +1,5 @@
 import type { ConversionJobData, ConversionJobResult } from '../types';
-import type { IStorageBackend } from '../storage/oci-storage';
+import type { IStorageBackend } from '../storage/types';
 import { withInputHeld } from '../storage/retention-service';
 import { generateJobId, type IQueueEngine, type Job, type JobOptions } from './bullmq-engine';
 import { sealJobDataSecrets } from './option-secrets';

@@ -6,7 +6,7 @@ import type { Job } from '../bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../../types';
 import { storageProvider } from '../../storage';
 import { scopeStorageObjects } from '../../storage/scoped-storage';
-import type { IStorageBackend } from '../../storage/oci-storage';
+import type { IStorageBackend } from '../../storage/types';
 import type { ConversionEnginePort, EngineResult } from '../engine-port';
 import { dispatchEngine } from '../dispatch-engine';
 import { graphScheduler } from './scheduler';

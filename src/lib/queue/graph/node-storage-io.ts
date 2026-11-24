@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type { Job } from '../bullmq-engine';
-import type { IStorageBackend } from '../../storage/oci-storage';
+import type { IStorageBackend } from '../../storage/types';
 import { ConversionFailedError, ImportBudgetExceededError, type ConversionJobData, type ConversionJobResult } from '../../types';
 import { detectFormatFromFilename } from '../../registry';
 import {

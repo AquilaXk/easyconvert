@@ -1,4 +1,4 @@
-import type { IStorageBackend, StoredObject } from './oci-storage';
+import type { IStorageBackend, StoredObject } from './types';
 
 export interface ScopedStorage {
   /** The backend to use for the duration of one unit of work. */

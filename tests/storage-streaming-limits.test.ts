@@ -3,7 +3,6 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { s3Storage } from '@/lib/storage/s3-storage';
-import { ociStorage } from '@/lib/storage/oci-storage';
 import { globalSharedObjects } from '@/lib/storage/shared-store';
 import {
   PayloadTooLargeForMemoryError,

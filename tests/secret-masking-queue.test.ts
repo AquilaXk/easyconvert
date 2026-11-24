@@ -8,7 +8,7 @@ import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
 import type { GraphNode } from '../src/lib/queue/graph/types';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { signCustomerRequest, startCustomerStorage, EMPTY_PAYLOAD_SHA256, type CustomerStorage } from './helpers/byos-customer-storage';
 

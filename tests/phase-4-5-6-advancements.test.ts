@@ -10,7 +10,7 @@ import {
   DEFAULT_D65_COLOR_MATRIX,
 } from '../src/lib/conversions/image';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { ociStorage } from '../src/lib/storage/oci-storage';
+import { storageProvider } from '../src/lib/storage';
 import { redisKeyStore, isIpInCidr, isIpAllowed } from '../src/lib/api-keys/redis-key-store';
 import { WebhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { userStore } from '../src/lib/auth/user-store';
@@ -244,21 +244,21 @@ describe('Phase 4, 5, 6 Enterprise Advancements', () => {
       expect(s3Storage.getObject(complete.key)).toBeUndefined();
     });
 
-    it('OCI storage completes multipart upload with disk spooling and lazy buffer', async () => {
-      const filename = 'oci-dataset.csv';
+    it('storageProvider completes multipart upload with disk spooling and lazy buffer', async () => {
+      const filename = 'provider-dataset.csv';
       const rawText = 'col1,col2,col3\n1,2,3\n4,5,6\n';
       const chunkData = Buffer.from(rawText);
 
-      const init = ociStorage.initiateMultipartUpload(filename, 'text/csv', chunkData.length);
-      ociStorage.uploadPart(init.uploadId, 1, chunkData);
-      const complete = ociStorage.completeMultipartUpload(init.uploadId);
+      const init = await storageProvider.initiateMultipartUpload(filename, 'text/csv', chunkData.length);
+      await storageProvider.uploadPart(init.uploadId, 1, chunkData);
+      const complete = await storageProvider.completeMultipartUpload(init.uploadId);
 
-      const stored = ociStorage.getObject(complete.key);
+      const stored = await storageProvider.getObject(complete.key);
       expect(stored).toBeDefined();
       expect(stored?.size).toBe(chunkData.length);
       expect(stored?.buffer.toString('utf-8')).toBe(rawText);
 
-      ociStorage.deleteObject(complete.key);
+      await storageProvider.deleteObject(complete.key);
     });
   });
 

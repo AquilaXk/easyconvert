@@ -7,7 +7,7 @@ import { sealGraphNode } from '../src/lib/queue/graph/sealed-nodes';
 import type { GraphNode } from '../src/lib/queue/graph/types';
 import type { Job } from '../src/lib/queue/bullmq-engine';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 
 /**
  * Graph nodes call safeFetch without a dispatcher, so it uses the shared agent built by

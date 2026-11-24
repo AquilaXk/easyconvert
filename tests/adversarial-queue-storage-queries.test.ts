@@ -30,7 +30,7 @@ import {
   setTusSessionStore,
 } from '../src/lib/storage/tus-engine';
 import { storageProvider } from '../src/lib/storage/selected-storage';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 const REDIS_URL = process.env.REDIS_URL;

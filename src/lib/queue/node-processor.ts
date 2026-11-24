@@ -8,7 +8,7 @@ import type {
   ConversionOptions,
   ConversionResult,
 } from '../types';
-import type { IStorageBackend, StoredObject } from '../storage/oci-storage';
+import type { IStorageBackend, StoredObject } from '../storage/types';
 import { storageProvider } from '../storage';
 import { scopeStorageObjects } from '../storage/scoped-storage';
 import { convertFile } from '../conversions';

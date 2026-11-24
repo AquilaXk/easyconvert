@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { StorageNotFoundError } from './adapters/adapter-interface';
 import { classifyStorageKey, isUploadKey } from './key-namespace';
-import type { IStorageBackend } from './oci-storage';
+import type { IStorageBackend } from './types';
 import { withRedisLeaderLock } from '../redis/leader-lock';
 import { getRetentionLedger } from './retention-ledger';
 import {

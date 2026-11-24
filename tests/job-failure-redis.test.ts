@@ -10,7 +10,7 @@ import { RedisGraphScheduler, graphScheduler } from '../src/lib/queue/graph';
 import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { FAIL_JOB_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import { sealGraph } from '../src/lib/queue/graph/node-jobs';
 

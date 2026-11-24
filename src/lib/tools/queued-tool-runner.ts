@@ -4,7 +4,7 @@ import { JobCancelledError } from '../queue/bullmq-engine';
 import { isFinalFailure } from '../queue/job-failure';
 import { sanitizeNodeOutputFilename } from '../queue/graph/node-jobs';
 import { openPasswordOption } from '../queue/option-secrets';
-import type { IStorageBackend } from '../storage/oci-storage';
+import type { IStorageBackend } from '../storage/types';
 import { ANONYMOUS_RESULT_OWNER } from '../auth/anonymous-identity';
 import { isUploadKey, resultKey } from '../storage/key-namespace';
 import { eraseOwnedFile, saveRetainedResult } from '../storage/retention-service';

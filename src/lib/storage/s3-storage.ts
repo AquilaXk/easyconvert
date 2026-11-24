@@ -7,15 +7,14 @@ import {
   UploadedPart,
   MultipartUploadComplete,
 } from '../types';
-import {
+import type {
   IStorageBackend,
   StoredObject,
   PresignedUrlResult,
-  ObjectStat,
   UploadSessionInfo,
-} from './oci-storage';
+} from './types';
 import { StorageServiceError } from './adapters/adapter-interface';
-import { StorageSigningSecretMissingError } from './errors';
+import { ObjectStat, StorageSigningSecretMissingError } from './errors';
 import { lazySingleton } from './lazy-singleton';
 import {
   LOCAL_DIRECT_PART_PATH,
@@ -30,8 +29,6 @@ import { multipartUploadKey } from './key-namespace';
 import { LocalFsStorage, localFsStorage, type LocalMultipartSession, type StoredPart } from './local-fs-storage';
 import { extendStoredExpiry, fileBackedObject, globalSharedObjects, type SavedVersion } from './shared-store';
 import { sweepStaleJobDirectories } from './temp-file';
-
-export * from './oci-storage';
 
 const DEFAULT_OBJECT_TTL_MS = 24 * 60 * 60 * 1000;
 const UPLOAD_KEY_RANDOM_BYTES = 8;

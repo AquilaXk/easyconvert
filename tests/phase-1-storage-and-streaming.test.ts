@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { s3Storage, ociStorage, storageProvider, globalSharedObjects } from '../src/lib/storage';
+import { s3Storage, storageProvider, globalSharedObjects } from '../src/lib/storage';
 import { keyStore } from '../src/lib/api-keys/key-store';
 import { StreamingHashAndMetricsTransform } from '../src/lib/streaming/large-payload-streamer';
 import crypto from 'node:crypto';
@@ -11,18 +11,18 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
   });
 
   describe('1. Unified SSOT Storage Provider Interface', () => {
-    it('shares object state between S3 and OCI storage backends without split-brain', async () => {
+    it('shares object state across s3Storage, globalSharedObjects, and storageProvider without split-brain', async () => {
       const testKey = `test-shared-${Date.now()}.txt`;
       const content = Buffer.from('Enterprise unified storage content');
 
       // Save via S3 backend
       s3Storage.saveObject(testKey, content, 'text/plain', 'test.txt', 3600 * 1000);
 
-      // Verify retrieval via OCI backend
-      const retrievedViaOci = ociStorage.getObject(testKey);
-      expect(retrievedViaOci).toBeDefined();
-      expect(retrievedViaOci?.buffer.toString('utf-8')).toBe('Enterprise unified storage content');
-      expect(retrievedViaOci?.size).toBe(content.length);
+      // Verify retrieval via SharedObjectStore
+      const retrievedViaShared = globalSharedObjects.get(testKey);
+      expect(retrievedViaShared).toBeDefined();
+      expect(retrievedViaShared?.buffer.toString('utf-8')).toBe('Enterprise unified storage content');
+      expect(retrievedViaShared?.size).toBe(content.length);
 
       // Verify retrieval via unified storageProvider
       const retrievedViaProvider = await storageProvider.getObject(testKey);
@@ -30,7 +30,7 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       expect(retrievedViaProvider?.buffer.toString('utf-8')).toBe('Enterprise unified storage content');
     });
 
-    it('makes S3 multipart upload output immediately accessible to OCI worker', async () => {
+    it('makes S3 multipart upload output immediately accessible to worker storageProvider', async () => {
       const filename = 'large_payload.bin';
       const fileData = crypto.randomBytes(64 * 1024);
 
@@ -39,19 +39,19 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       await s3Storage.uploadPart(init.uploadId, 1, fileData);
       const completed = await s3Storage.completeMultipartUpload(init.uploadId);
 
-      // OCI Worker retrieves by completed.key
-      const workerFound = ociStorage.getObject(completed.key);
+      // Worker retrieves by completed.key via storageProvider
+      const workerFound = await storageProvider.getObject(completed.key);
       expect(workerFound).toBeDefined();
       expect(workerFound?.size).toBe(fileData.length);
       expect(workerFound?.buffer.equals(fileData)).toBe(true);
     });
 
-    it('makes OCI worker output immediately retrievable via S3 storage and download route', () => {
+    it('makes worker storageProvider output immediately retrievable via S3 storage and download route', async () => {
       const resultKey = `results/job_123/output.pdf`;
       const resultData = Buffer.from('%PDF-1.4 mock conversion output %%EOF');
 
-      // OCI worker saves output
-      ociStorage.saveObject(resultKey, resultData, 'application/pdf', 'output.pdf', 3600 * 1000);
+      // Worker saves output via storageProvider
+      await storageProvider.saveObject(resultKey, resultData, 'application/pdf', 'output.pdf', 3600 * 1000);
 
       // S3 download route gets the same object: bytes, name and type as the worker stored them.
       const s3Found = s3Storage.getObject(resultKey);
@@ -78,7 +78,7 @@ describe('Phase 1: Storage Architecture & Streaming Unification (#139)', () => {
       expect(loaded?.filePath).toBeDefined();
 
       // Deletion removes from disk and memory
-      const deleted = ociStorage.deleteObject(zeroByteKey);
+      const deleted = await storageProvider.deleteObject(zeroByteKey);
       expect(deleted).toBe(true);
       expect(replicaStore.get(zeroByteKey)).toBeUndefined();
     });

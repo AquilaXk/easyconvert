@@ -3,7 +3,7 @@ import type Redis from 'ioredis';
 import { redisKeyStore } from '../api-keys/redis-key-store';
 import type { UploadedPart } from '../types';
 import { PART_IN_FLIGHT_STATUS } from '../part-in-flight';
-import type { MaybePromise } from './oci-storage';
+import type { MaybePromise } from './types';
 
 /**
  * The parts of an upload session that are written at once (docs/policy-decisions.md, entries 137 & 322).

@@ -23,7 +23,7 @@ import {
   TusInvalidMetadataError,
 } from '@/lib/storage/tus-engine';
 import { UNKNOWN_FORMAT_PROBLEM_TYPE, UnknownDeclaredFormatError, resolveDeclaredFormat } from '@/lib/storage/declared-format';
-import type { UploadSessionInfo } from '@/lib/storage/oci-storage';
+import type { UploadSessionInfo } from '@/lib/storage/types';
 import { readObjectHeader } from '@/lib/storage/object-header';
 import { assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';

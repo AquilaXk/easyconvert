@@ -10,7 +10,7 @@ import { processGraphNodeJob } from '../src/lib/queue/graph/node-executor';
 import { resolveNodeResourceClass } from '../src/lib/queue/resource-class';
 import { SEALED_PREFIX, SecretSealError, unsealJobSecret } from '../src/lib/security/job-secret-seal';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import type { IStorageBackend } from '../src/lib/storage/oci-storage';
+import type { IStorageBackend } from '../src/lib/storage/types';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 import {
   CUSTOMER_ACCESS_KEY as ACCESS_KEY,

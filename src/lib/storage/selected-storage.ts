@@ -1,6 +1,6 @@
 import { localFsStorage } from './local-fs-storage';
 import type { IObjectStorage } from './object-storage';
-import type { IStorageBackend } from './oci-storage';
+import type { IStorageBackend } from './types';
 import { createRemoteStorage } from './remote-storage-factory';
 import { s3Storage } from './s3-storage';
 import { assertSigningSecretConfigured, isRemoteStorageConfig, resolveStorageConfig, type StorageConfig } from './storage-config';

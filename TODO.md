@@ -52,7 +52,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Tests, CI and code health
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
-- Extract shared storage types from unused oci-storage.ts and remove dead OciObjectStorageService implementation.
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
 - Engine choice, second step (entry 267): install a second engine version when a pair needs it, expose `default` and `latest` flags in `GET /api/formats`, show per-node engine and version in the graph view, and probe engine versions at worker startup.

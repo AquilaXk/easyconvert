@@ -13,7 +13,7 @@ import {
   safeEncodeText,
   createLosslessSandwichPdfFromImage,
 } from '../src/lib/conversions/ocr-pdf-combiner';
-import { OciObjectStorageService, s3Storage } from '../src/lib/storage/oci-storage';
+import { S3ObjectStorageService } from '../src/lib/storage/s3-storage';
 import { resolveChunkTransformer } from '../src/lib/edge/workers/opfs-vfs.worker';
 import {
   isSvg,
@@ -283,108 +283,90 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
   });
 
   // =========================================================================
-  // 4. Async Queue In-Memory TTL GC & In-Memory Shredding
+  // 4. Async Queue Storage TTL GC & Object Disposal
   // =========================================================================
-  describe('4. Async Queue In-Memory TTL GC & In-Memory Shredding', () => {
-    it('sets 1-hour TTL on stored objects and lazy-expires after TTL', () => {
-      const storage = new OciObjectStorageService();
+  describe('4. Async Queue Storage TTL GC & Object Disposal', () => {
+    it('sets default TTL on stored objects and expires after TTL', () => {
+      const storage = new S3ObjectStorageService();
+      const key = `test-file-key-${Date.now()}`;
       try {
-        const testBuffer = Buffer.from('Confidential in-memory payload for conversion queue');
-        const key = 'test-file-key';
-        const stored = storage.saveObject(key, testBuffer, 'text/plain', 'test.txt');
+        const testBuffer = Buffer.from('Confidential payload for conversion queue');
+        const defaultStored = storage.saveObject(key, testBuffer, 'text/plain', 'test.txt');
 
-        expect(stored.expiresAt).toBeGreaterThan(Date.now() + 59 * 60 * 1000);
-        expect(stored.expiresAt).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
+        expect(defaultStored.expiresAt).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1000);
+        expect(defaultStored.expiresAt).toBeLessThanOrEqual(Date.now() + 25 * 60 * 60 * 1000);
 
-        // Immediate lookup succeeds
-        const found = storage.getObject(key);
-        expect(found).toBeDefined();
+        const shortKey = `${key}-short`;
+        const ttlMs = 60_000;
+        storage.saveObject(shortKey, testBuffer, 'text/plain', 'short.txt', ttlMs);
+        expect(storage.getObject(shortKey)?.buffer.toString('utf-8')).toBe('Confidential payload for conversion queue');
 
-        // Artificially fast-forward expiration time
-        stored.expiresAt = Date.now() - 1000;
-
-        // Lookup now lazy-expires and returns undefined
-        const expired = storage.getObject(key);
-        expect(expired).toBeUndefined();
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(Date.now() + ttlMs + 1_000);
+          expect(storage.sweepExpiredObjects()).toBeGreaterThanOrEqual(1);
+          expect(storage.getObject(shortKey)).toBeUndefined();
+        } finally {
+          vi.useRealTimers();
+          storage.deleteObject(shortKey);
+        }
       } finally {
+        storage.deleteObject(key);
         storage.stopGc();
       }
     });
 
-    it('executes in-memory buffer shredding (fill(0)) upon object disposal', () => {
-      const storage = new OciObjectStorageService();
+    it('sweeps expired objects in bulk while keeping active objects', () => {
+      const storage = new S3ObjectStorageService();
+      const key1 = `exp1-${Date.now()}`;
+      const key2 = `exp2-${Date.now()}`;
+      const keyActive = `active-${Date.now()}`;
       try {
-        const rawSecret = Buffer.from('Extremely sensitive user data that must be securely wiped');
-        const key = 'sensitive-object';
+        const shortTtl = 60_000;
+        storage.saveObject(key1, Buffer.from('Expired payload 1'), 'text/plain', 'exp1.txt', shortTtl);
+        storage.saveObject(key2, Buffer.from('Expired payload 2'), 'text/plain', 'exp2.txt', shortTtl);
+        storage.saveObject(keyActive, Buffer.from('Active payload'), 'text/plain', 'active.txt', shortTtl * 10);
 
-        storage.saveObject(key, rawSecret, 'application/octet-stream', 'secret.bin');
+        vi.useFakeTimers({ toFake: ['Date'] });
+        try {
+          vi.setSystemTime(Date.now() + shortTtl + 1_000);
+          const swept = storage.sweepExpiredObjects();
+          expect(swept).toBe(2);
+          expect(storage.getObject(key1)).toBeUndefined();
+          expect(storage.getObject(key2)).toBeUndefined();
 
-        const objRef = storage.getObject(key);
-        expect(objRef).toBeDefined();
-        const bufferRef = objRef!.buffer;
-
-        // Verify buffer has non-zero content initially
-        expect(bufferRef[0]).not.toBe(0);
-
-        // Delete object: must wipe buffer with 0x00
-        const deleted = storage.deleteObject(key);
-        expect(deleted).toBe(true);
-
-        // Buffer contents must be zeroed out
-        expect(bufferRef.every((b) => b === 0)).toBe(true);
+          // Active object remains available
+          expect(storage.getObject(keyActive)?.buffer.toString('utf-8')).toBe('Active payload');
+        } finally {
+          vi.useRealTimers();
+        }
       } finally {
-        storage.stopGc();
-      }
-    });
-
-    it('sweeps expired objects and shreds buffers in bulk', () => {
-      const storage = new OciObjectStorageService();
-      try {
-        const buf1 = Buffer.from('Expired payload 1');
-        const buf2 = Buffer.from('Expired payload 2');
-        const bufActive = Buffer.from('Active payload');
-
-        const key1 = 'exp1';
-        const key2 = 'exp2';
-        const keyActive = 'active';
-
-        const s1 = storage.saveObject(key1, buf1, 'text/plain', 'exp1.txt');
-        const s2 = storage.saveObject(key2, buf2, 'text/plain', 'exp2.txt');
-        storage.saveObject(keyActive, bufActive, 'text/plain', 'active.txt');
-
-        // Fast-forward expiration for 1 and 2
-        s1.expiresAt = Date.now() - 5000;
-        s2.expiresAt = Date.now() - 1000;
-
-        const swept = storage.sweepExpiredObjects();
-        expect(swept).toBe(2);
-
-        // Swept buffers must be zeroed out
-        expect(s1.buffer.every((b) => b === 0)).toBe(true);
-        expect(s2.buffer.every((b) => b === 0)).toBe(true);
-
-        // Active object remains available
-        expect(storage.getObject(keyActive)).toBeDefined();
-      } finally {
+        storage.deleteObject(key1);
+        storage.deleteObject(key2);
+        storage.deleteObject(keyActive);
         storage.stopGc();
       }
     });
 
     it('accurately counts distinct stored objects in getObjectsCount', () => {
-      const storage = new OciObjectStorageService();
+      const storage = new S3ObjectStorageService();
+      const k1 = `test-item-1-${Date.now()}`;
+      const k2 = `test-item-2-${Date.now()}`;
       try {
-        storage.saveObject('test-item-1', Buffer.from('data1'), 'text/plain', 'test-item-1.txt');
-        storage.saveObject('test-item-2', Buffer.from('data2'), 'text/plain', 'test-item-2.txt');
+        storage.saveObject(k1, Buffer.from('data1'), 'text/plain', 'test-item-1.txt');
+        storage.saveObject(k2, Buffer.from('data2'), 'text/plain', 'test-item-2.txt');
         expect(storage.getObjectsCount()).toBe(2);
       } finally {
+        storage.deleteObject(k1);
+        storage.deleteObject(k2);
         storage.stopGc();
       }
     });
 
     it('preserves storage object across retry attempts until final completion or exhaustion', async () => {
-      const storage = new OciObjectStorageService();
+      const storage = new S3ObjectStorageService();
+      const key = `retry-test-input-${Date.now()}.txt`;
       try {
-        const key = 'retry-test-input.txt';
         const buffer = Buffer.from('Important payload');
         storage.saveObject(key, buffer, 'text/plain', key);
 
@@ -399,7 +381,7 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
           storage.deleteObject(key);
         }
         // Key MUST NOT be deleted yet!
-        expect(storage.getObject(key)).toBeDefined();
+        expect(storage.getObject(key)?.buffer.toString('utf-8')).toBe('Important payload');
 
         // Simulate attempt 2 (succeeded, attemptsMade: 2, attempts: 2)
         jobSim.attemptsMade = 2;
@@ -408,9 +390,10 @@ describe('Phase 1: Edge Stability, Security Hardening, and Critical Hotfixes', (
         if (succeeded || isFinalAttempt2) {
           storage.deleteObject(key);
         }
-        // Key MUST now be deleted and shredded!
+        // Key MUST now be deleted!
         expect(storage.getObject(key)).toBeUndefined();
       } finally {
+        storage.deleteObject(key);
         storage.stopGc();
       }
     });

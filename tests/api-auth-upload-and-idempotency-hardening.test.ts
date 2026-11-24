@@ -11,7 +11,7 @@ import { signJwt, verifyJwt, deriveJwtKeyId, getPreviousJwtSecret } from '../src
 import { computeFingerprint, InMemoryIdempotencyStore, setIdempotencyStore } from '../src/lib/api/idempotency';
 import { extractFingerprintData, respondOnce } from '../src/lib/api/with-idempotency';
 import { storageProvider } from '../src/lib/storage';
-import { OciObjectStorageService } from '../src/lib/storage/oci-storage';
+import { S3ObjectStorageService } from '../src/lib/storage/s3-storage';
 import { userStore } from '../src/lib/auth/user-store';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { FileExtensionSpoofError } from '../src/lib/types';
@@ -60,22 +60,26 @@ describe('Row 35: spoof check at creation across streaming, queue/jobs, v1/jobs,
 
   it('pipeStreamToStorageMultipart verifies CFBF directory streams after upload and deletes spoofed objects', async () => {
     const spoofedSdw = spoofedCfbBeyond64KiB();
-    const ociBackend = new OciObjectStorageService();
-    const deleteSpy = vi.spyOn(ociBackend, 'deleteObject');
+    const s3Backend = new S3ObjectStorageService();
+    const deleteSpy = vi.spyOn(s3Backend, 'deleteObject');
 
-    await expect(
-      pipeStreamToStorageMultipart(bufferToStream(spoofedSdw), {
-        filename: 'fake.sdw',
-        mimeType: 'application/vnd.stardivision.writer',
-        expectedTotalSize: spoofedSdw.length,
-        sourceExtension: 'sdw',
-        storage: ociBackend,
-      })
-    ).rejects.toBeInstanceOf(FileExtensionSpoofError);
+    try {
+      await expect(
+        pipeStreamToStorageMultipart(bufferToStream(spoofedSdw), {
+          filename: 'fake.sdw',
+          mimeType: 'application/vnd.stardivision.writer',
+          expectedTotalSize: spoofedSdw.length,
+          sourceExtension: 'sdw',
+          storage: s3Backend,
+        })
+      ).rejects.toBeInstanceOf(FileExtensionSpoofError);
 
-    expect(deleteSpy).toHaveBeenCalledTimes(1);
-    const deletedKey = deleteSpy.mock.calls[0][0];
-    expect(ociBackend.openReadStream(deletedKey)).toBeNull();
+      expect(deleteSpy).toHaveBeenCalledTimes(1);
+      const deletedKey = deleteSpy.mock.calls[0][0];
+      expect(s3Backend.openReadStream(deletedKey)).toBeNull();
+    } finally {
+      s3Backend.stopGc();
+    }
   });
 
   it('POST /api/queue/jobs refuses a spoofed multipart file before storing it', async () => {

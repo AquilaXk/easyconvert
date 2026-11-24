@@ -1,6 +1,6 @@
 import { StorageConfigError } from './errors';
 import type { IObjectStorage } from './object-storage';
-import type { IStorageBackend } from './oci-storage';
+import type { IStorageBackend } from './types';
 import { RemoteStorageBackend } from './remote-storage-backend';
 import { S3CompatibleStorage } from './s3-compatible-storage';
 import { resolveSigningSecret, type RemoteStorageConfig } from './storage-config';

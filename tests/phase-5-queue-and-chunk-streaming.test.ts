@@ -9,12 +9,7 @@ import {
   subscribeToJobTelemetry,
   DlqEntry,
 } from '../src/lib/queue/bullmq-engine';
-import {
-  OciObjectStorageService,
-  S3CompatibleStorageBackend,
-  ociStorage,
-} from '../src/lib/storage/oci-storage';
-import { s3Storage } from '../src/lib/storage/s3-storage';
+import { S3ObjectStorageService, s3Storage } from '../src/lib/storage/s3-storage';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import { POST as multipartPost } from '../src/app/api/storage/multipart/route';
@@ -204,21 +199,19 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
     });
   });
 
-  describe('5. OCI / S3 Presigned URL Generation and Verification', () => {
-    const oci = new OciObjectStorageService();
-    const s3 = new S3CompatibleStorageBackend();
+  describe('5. Presigned URL Generation and Verification', () => {
+    const s3 = new S3ObjectStorageService();
 
     afterEach(() => {
-      oci.stopGc();
       s3.stopGc();
     });
 
-    it('generates secure presigned upload URLs with HMAC signature', () => {
+    it('generates secure presigned upload URLs with HMAC and SigV4 signatures', () => {
       const key = 'uploads/test-key-123.dat';
       const uploadId = 'test-upload-id';
       const partNumber = 1;
 
-      const presigned = oci.generatePresignedUploadUrl(key, partNumber, uploadId, 3600);
+      const presigned = s3.generatePresignedHmacPartUrl(key, uploadId, partNumber, 3600);
       const url = new URL(presigned.url);
       expect(url.searchParams.get('key')).toBe(key);
       expect(url.searchParams.get('uploadId')).toBe(uploadId);
@@ -227,12 +220,12 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
 
       // Independent oracle: HMAC-SHA256(secret, "PUT\n<key>\n<uploadId>\n<partNumber>\n<expiresAt>").
       const expected = crypto
-        .createHmac('sha256', oci.getSigningSecret())
+        .createHmac('sha256', s3.getSigningSecret())
         .update(`PUT\n${key}\n${uploadId}\n${partNumber}\n${presigned.expiresAt}`)
         .digest('hex');
       expect(presigned.signature).toBe(expected);
 
-      const isValid = oci.verifyPresignedSignature(
+      const isValid = s3.verifyPresignedSignature(
         'PUT',
         key,
         presigned.expiresAt,
@@ -241,10 +234,12 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
         partNumber
       );
       expect(isValid).toBe(true);
+
+      const sigv4Presigned = s3.generatePresignedUploadUrl(key, partNumber, uploadId, 3600);
+      expect(s3.verifySigV4Url(sigv4Presigned.url, 'PUT').valid).toBe(true);
     });
 
     it('does not mint download URLs for a host that cannot verify them', () => {
-      expect((oci as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
       expect((s3 as { generatePresignedDownloadUrl?: unknown }).generatePresignedDownloadUrl).toBeUndefined();
     });
 
@@ -259,15 +254,15 @@ describe('Phase 5: Distributed Queue Engine, DLQ & Chunk Streaming Storage', () 
 
     it('fails closed when signature is tampered or expired', () => {
       const key = 'secure/contract.docx';
-      const presigned = oci.generatePresignedUploadUrl(key, 1, 'up_tamper', 3600);
+      const presigned = s3.generatePresignedHmacPartUrl(key, 'up_tamper', 1, 3600);
 
       // Tampered signature
       const tampered = '0'.repeat(64);
-      expect(oci.verifyPresignedSignature('PUT', key, presigned.expiresAt, tampered, 'up_tamper', 1)).toBe(false);
+      expect(s3.verifyPresignedSignature('PUT', key, presigned.expiresAt, tampered, 'up_tamper', 1)).toBe(false);
 
       // Expired timestamp
-      const expiredTimestamp = Math.floor(Date.now() / 1000) - 100;
-      expect(oci.verifyPresignedSignature('PUT', key, expiredTimestamp, presigned.signature, 'up_tamper', 1)).toBe(false);
+      const expiredTimestamp = Date.now() - 100;
+      expect(s3.verifyPresignedSignature('PUT', key, expiredTimestamp, presigned.signature, 'up_tamper', 1)).toBe(false);
     });
   });
 

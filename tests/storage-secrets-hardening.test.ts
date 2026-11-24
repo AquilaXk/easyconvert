@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import crypto from 'node:crypto';
 import { S3ObjectStorageService } from '../src/lib/storage/s3-storage';
-import { OciObjectStorageService } from '../src/lib/storage/oci-storage';
+import { resolveStorageConfig } from '../src/lib/storage/storage-config';
+import { createRemoteStorage } from '../src/lib/storage/remote-storage-factory';
 import { StorageConfigError, StorageSigningSecretMissingError } from '../src/lib/storage/errors';
 
 describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
@@ -118,101 +119,49 @@ describe('Phase 1-D: Storage Secrets Hardening & Namespace Cleanup', () => {
     });
   });
 
-  describe('OCI Storage Service Security Hardening', () => {
+  describe('OCI Driver Security Hardening', () => {
     it('fails closed in production when OCI namespace is missing', () => {
-      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
-      delete process.env.OCI_NAMESPACE;
-      process.env.STORAGE_SIGNING_SECRET = 'valid-storage-secret-for-oci-prod';
-
-      expect(() => new OciObjectStorageService()).toThrow(
-        /Missing required OCI_NAMESPACE environment variable in production/
-      );
+      expect(() =>
+        resolveStorageConfig({
+          NODE_ENV: 'production',
+          STORAGE_DRIVER: 'oci',
+          OCI_REGION: 'ap-seoul-1',
+          OCI_BUCKET: 'easyconvert-internal',
+          OCI_ACCESS_KEY_ID: 'ocikeyid0000000000001',
+          OCI_SECRET_ACCESS_KEY: 'oci/secret+key/EXAMPLE000000000000',
+        })
+      ).toThrow(/OCI_NAMESPACE/);
     });
 
-    it('fails closed in production when OCI signing secret is missing', () => {
-      (process.env as Record<string, string | undefined>).NODE_ENV = 'production';
-      process.env.OCI_NAMESPACE = 'tenant-oci-namespace';
-      delete process.env.STORAGE_SIGNING_SECRET;
-      delete process.env.S3_SIGNING_SECRET;
-      delete process.env.OCI_SIGNING_SECRET;
-
-      expect(() => new OciObjectStorageService()).toThrow(
-        /Missing required STORAGE_SIGNING_SECRET environment variable in production/
-      );
+    it('fails closed in production when signing secret is missing for OCI remote storage', () => {
+      const config = resolveStorageConfig({
+        NODE_ENV: 'production',
+        STORAGE_DRIVER: 'oci',
+        OCI_NAMESPACE: 'tenant-oci-namespace',
+        OCI_REGION: 'ap-seoul-1',
+        OCI_BUCKET: 'easyconvert-internal',
+        OCI_ACCESS_KEY_ID: 'ocikeyid0000000000001',
+        OCI_SECRET_ACCESS_KEY: 'oci/secret+key/EXAMPLE000000000000',
+      });
+      if (config.driver !== 'oci') throw new Error('expected oci driver');
+      expect(() => createRemoteStorage(config, { NODE_ENV: 'production' })).toThrow(/STORAGE_SIGNING_SECRET/);
     });
 
     it('derives authentic tenancy endpoint dynamically when OCI_NAMESPACE is configured', () => {
-      const service = new OciObjectStorageService({
-        namespace: 'enterprise-client-namespace',
-        region: 'us-ashburn-1',
-      }, {
-        signingSecret: 'custom-oci-signing-key-99',
+      const config = resolveStorageConfig({
+        STORAGE_DRIVER: 'oci',
+        OCI_NAMESPACE: 'enterprise-client-namespace',
+        OCI_REGION: 'us-ashburn-1',
+        OCI_BUCKET: 'easyconvert-internal',
+        OCI_ACCESS_KEY_ID: 'ocikeyid0000000000001',
+        OCI_SECRET_ACCESS_KEY: 'oci/secret+key/EXAMPLE000000000000',
       });
-
-      expect(service.config.namespace).toBe('enterprise-client-namespace');
-      expect(service.config.region).toBe('us-ashburn-1');
-      expect(service.config.endpoint).toBe(
+      if (config.driver !== 'oci') throw new Error('expected oci driver');
+      expect(config.namespace).toBe('enterprise-client-namespace');
+      expect(config.region).toBe('us-ashburn-1');
+      expect(config.endpoint).toBe(
         'https://enterprise-client-namespace.compat.objectstorage.us-ashburn-1.oraclecloud.com'
       );
-    });
-
-    it('verifies OCI presigned signatures with timingSafeEqual length guarding', () => {
-      const service = new OciObjectStorageService({
-        namespace: 'secure-test-namespace',
-      }, {
-        signingSecret: 'secure-oci-signing-key-hex-42',
-      });
-
-      const uploadUrl = service.generatePresignedUploadUrl('parts/file.zip', 1, 'up_session_42', 300);
-      const parsedOciUrl = new URL(uploadUrl.url);
-      expect(parsedOciUrl.searchParams.get('uploadId')).toBe('up_session_42');
-      expect(parsedOciUrl.searchParams.get('partNumber')).toBe('1');
-      expect(uploadUrl.signature).toHaveLength(64);
-
-      // Valid signature
-      const isValid = service.verifyPresignedSignature(
-        'PUT',
-        'parts/file.zip',
-        uploadUrl.expiresAt,
-        uploadUrl.signature,
-        'up_session_42',
-        1
-      );
-      expect(isValid).toBe(true);
-
-      // Length mismatch: should return false cleanly without throwing
-      const isMismatched = service.verifyPresignedSignature(
-        'PUT',
-        'parts/file.zip',
-        uploadUrl.expiresAt,
-        'abc',
-        'up_session_42',
-        1
-      );
-      expect(isMismatched).toBe(false);
-
-      // Tampered signature
-      const tampered = crypto.randomBytes(32).toString('hex');
-      const isTampered = service.verifyPresignedSignature(
-        'PUT',
-        'parts/file.zip',
-        uploadUrl.expiresAt,
-        tampered,
-        'up_session_42',
-        1
-      );
-      expect(isTampered).toBe(false);
-
-      // Expired signature
-      const isExpired = service.verifyPresignedSignature(
-        'PUT',
-        'parts/file.zip',
-        Math.floor(Date.now() / 1000) - 100,
-        uploadUrl.signature,
-        'up_session_42',
-        1
-      );
-      expect(isExpired).toBe(false);
     });
   });
 });

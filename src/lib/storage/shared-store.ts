@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import type { StoredObject } from './oci-storage';
+import type { StoredObject } from './types';
 import type { StoredObjectMetadata as ObjectRecord } from './object-storage';
 import {
   ObjectStat,
