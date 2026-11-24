@@ -189,9 +189,12 @@ export async function processQueuedArchiveInspection(
     if (!stored) {
       throw new Error(`Input storage object missing for key "${payload.storageKey}".`);
     }
+    const archiveBuffer = stored.buffer;
+    const archiveSize = archiveBuffer.length;
+    const resolvedFilename = payload.filename ?? stored.filename;
     const opened = openPasswordOption(payload.options ?? {}, job.id);
-    const inspection = await inspectArchive(stored.buffer, {
-      filename: payload.filename ?? stored.filename,
+    const inspection = await inspectArchive(archiveBuffer, {
+      filename: resolvedFilename,
       password: opened.password,
       signal: job.signal,
     });
@@ -202,9 +205,9 @@ export async function processQueuedArchiveInspection(
       status: 'completed',
       resultKey: '',
       downloadUrl: '',
-      filename: payload.filename ?? stored.filename ?? 'archive',
+      filename: resolvedFilename ?? 'archive',
       mimeType: 'application/json',
-      size: stored.buffer.length,
+      size: archiveSize,
       durationMs: Date.now() - startedAt,
       archiveInspection: inspection,
     };

@@ -29,6 +29,8 @@ import { dispatchSyncArchiveInspection, rehydrateQueuedJobFailure } from '../src
 import * as workerPresence from '../src/lib/queue/worker-presence';
 import { PROBLEM_TYPE_BASE } from '../src/lib/refusal-codes';
 import { storageProvider } from '../src/lib/storage';
+import { S3ObjectStorageService } from '../src/lib/storage/s3-storage';
+import { globalSharedObjects } from '../src/lib/storage/shared-store';
 import { FileRetentionLedger, setRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { deleteResult, registerResult } from '../src/lib/storage/retention-service';
 import {
@@ -901,6 +903,52 @@ describe('P1-08: POST /api/v1/archives/inspect key authorization, object release
         ArchiveEncryptedHeaderError
       );
       expect(releaseSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('materializes buffer before cleanupUploadKeys deletes a cross-process fileBackedObject', async () => {
+      const alice = await makeUser('cross_proc_file_backed');
+      const zipBytes = await buildZipBuffer([{ name: 'two_proc.txt', text: 'shared-disk-bytes' }]);
+      const stagedKey = await saveStoredObject(
+        `uploads/${alice.user.id}/cross_proc_${Date.now()}.zip`,
+        zipBytes,
+        'two_proc.zip'
+      );
+      // Drop in-process caches while keeping .meta.json and .bin on disk so a separate backend reconstructs fileBackedObject.
+      globalSharedObjects.evictInMemory(stagedKey);
+      const workerStorage = new S3ObjectStorageService();
+      try {
+        const job = {
+          id: 'job_cross_proc_file_backed',
+          attemptsMade: 1,
+          opts: { attempts: 1 },
+          data: {
+            jobId: 'job_cross_proc_file_backed',
+            originalFilename: 'two_proc.zip',
+            sourceFormat: 'zip',
+            targetFormat: 'zip',
+            fileSize: zipBytes.length,
+            options: {},
+            userId: alice.user.id,
+            archiveInspect: {
+              storageKey: stagedKey,
+              filename: 'two_proc.zip',
+              cleanupUploadKeys: [stagedKey],
+            },
+          },
+        } as Job<ConversionJobData, ConversionJobResult>;
+
+        const result = await processQueuedArchiveInspection(job, workerStorage);
+        expect(result.size).toBe(zipBytes.length);
+        expect(result.filename).toBe('two_proc.zip');
+        expect(result.archiveInspection).toMatchObject({
+          format: 'zip',
+          totalEntries: 1,
+          entries: [expect.objectContaining({ name: 'two_proc.txt' })],
+        });
+        expect(workerStorage.stat(stagedKey)).toBeNull();
+      } finally {
+        workerStorage.stopGc();
+      }
     });
   });
 });
