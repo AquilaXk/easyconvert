@@ -50,8 +50,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Stream TUS remote multipart part flushes from file descriptors in 8 MiB slices and persist part progress incrementally.
 - Fix Azure 0-byte SharedKey signing, map GCS/Azure/WebDAV 429 and 5xx responses to retryable StorageServiceError, and encode WebDAV basePath segments.
 - Run website-capture page height probes in an isolated JS world with guarded int parsing and multi-address connection fallback.
-- Separate per-worker /tmp scratch mounts, protect live LibreOffice pool profiles during deploy.sh sweep, and add noexec to /home/easyconvert tmpfs.
-- Extend nginx-easyconvert.conf conversion rate-limit zones to /api/v1/jobs, /api/queue/jobs, /api/tools/, /api/fetch-url, /api/storage/bundle and /api/v1/archives/inspect.
 
 ## Tests, CI and code health
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.

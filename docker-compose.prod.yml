@@ -145,7 +145,7 @@ x-worker: &worker
       bind:
         create_host_path: false
   tmpfs:
-    - /home/easyconvert:size=512m,nosuid,nodev,uid=10001,gid=10001,mode=0750
+    - /home/easyconvert:size=512m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750
 
 services:
   redis:
@@ -268,7 +268,7 @@ services:
         bind:
           create_host_path: false
     tmpfs:
-      - /home/easyconvert:size=512m,nosuid,nodev,uid=10001,gid=10001,mode=0750
+      - /home/easyconvert:size=512m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750
       - /app/.next/cache:size=128m,noexec,nosuid,nodev,uid=10001,gid=10001,mode=0750
 
   # The worker that subscribes to every queue: the launch worker. Concurrency, not worker count, is its knob, because each worker repeats
@@ -300,6 +300,17 @@ services:
     cpus: ${EASYCONVERT_CLASS_LIGHT_CPUS:-2.0}
     mem_limit: ${EASYCONVERT_CLASS_LIGHT_MEMORY:-4g}
     memswap_limit: ${EASYCONVERT_CLASS_LIGHT_MEMORY:-4g}
+    volumes:
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage
+        target: /shared/storage
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR}/tmp-worker-light
+        target: /tmp
+        bind:
+          create_host_path: false
     environment:
       <<: *app-environment
       WORKER_QUEUES: light
@@ -314,6 +325,17 @@ services:
     cpus: ${EASYCONVERT_CLASS_CPU_CPUS:-2.5}
     mem_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-10g}
     memswap_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-10g}
+    volumes:
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage
+        target: /shared/storage
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR}/tmp-worker-cpu
+        target: /tmp
+        bind:
+          create_host_path: false
     environment:
       <<: *app-environment
       WORKER_QUEUES: cpu
@@ -328,6 +350,17 @@ services:
     cpus: ${EASYCONVERT_CLASS_MEMORY_CPUS:-2.0}
     mem_limit: ${EASYCONVERT_CLASS_MEMORY_MEMORY:-14g}
     memswap_limit: ${EASYCONVERT_CLASS_MEMORY_MEMORY:-14g}
+    volumes:
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage
+        target: /shared/storage
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR}/tmp-worker-memory
+        target: /tmp
+        bind:
+          create_host_path: false
     environment:
       <<: *app-environment
       WORKER_QUEUES: memory
@@ -346,6 +379,17 @@ services:
     cpus: ${EASYCONVERT_CLASS_GPU_CPUS:-4.0}
     mem_limit: ${EASYCONVERT_CLASS_GPU_MEMORY:-12g}
     memswap_limit: ${EASYCONVERT_CLASS_GPU_MEMORY:-12g}
+    volumes:
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage
+        target: /shared/storage
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${EASYCONVERT_SCRATCH_DIR}/tmp-worker-gpu
+        target: /tmp
+        bind:
+          create_host_path: false
     environment:
       <<: *app-environment
       WORKER_QUEUES: gpu

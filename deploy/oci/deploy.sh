@@ -7,8 +7,8 @@
 #   deploy.sh filter-env  < raw-env            keep only the keys of deploy/oci/env-allowlist.txt (dropped lines are named by number on stderr)
 #   deploy.sh budget                           print the per-service limits derived from the two budget knobs
 #   deploy.sh guard                            exit 1 and log a warning when the scratch mount is missing or a disk is nearly full
-#   deploy.sh sweep                            delete scratch temp files and job staging entries older than two hours, from inside
-#                                              the worker image (run it only while the worker is stopped: it shares /tmp with it)
+#   deploy.sh sweep                            delete stale top-level /tmp entries across active worker scratch dirs and job staging
+#                                              entries older than two hours while keeping live LibreOffice pool profiles intact
 #   deploy.sh deploy <image-ref>               pull, pin by digest, read the smoke label, start, check health, the smoke (one conversion, and
 #                                              the convert route refusing a request it has parsed) and the canonical host of the pages,
 #                                              roll back on failure, prune old images (<image-ref> is main or sha-<40 hex characters>)
@@ -51,10 +51,12 @@ SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 ALLOWLIST="${ENV_ALLOWLIST:-$SCRIPT_DIR/env-allowlist.txt}"
 NGINX_SITE_FILE="${NGINX_SITE_FILE:-/etc/nginx/sites-available/easyconvert}"
 KEEP_RELEASES=2
-# What a stopped worker leaves, removed from inside the worker image: files in its /tmp, and the job directories and outputs in the
-# staging folder of the storage directory. No job outlives two hours there: the longest deadline the settings accept is one hour,
-# and the application sweep waits an hour more for the save (JOB_STAGING_MAX_AGE_MS in src/lib/storage/temp-file.ts).
-SCRATCH_SWEEP='find /tmp -mindepth 1 -mmin +120 -delete; [ ! -d /shared/storage/.staging ] || find /shared/storage/.staging -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} +'
+# Stale temporary entries across each worker's /tmp and job staging entries older than two hours. Live LibreOffice pool profile
+# directories (`libreoffice_*`) keep their inner files untouched when the directory itself or any entry inside it is newer than
+# two hours, so the scheduled cron sweep is safe while workers run; deploy.sh still stops the previous workers before sweeping.
+TMP_SWEEP='find /tmp -mindepth 1 -maxdepth 1 -mmin +120 \( ! -name '\''libreoffice_*'\'' -o ! -exec sh -c '\''find "$1" -mmin -120 -print -quit 2>/dev/null | grep -q .'\'' _ {} \; \) -exec rm -rf {} +'
+STAGING_SWEEP='[ ! -d /shared/storage/.staging ] || find /shared/storage/.staging -mindepth 1 -maxdepth 1 -mmin +120 -exec rm -rf {} +'
+SCRATCH_SWEEP="$TMP_SWEEP; $STAGING_SWEEP"
 IMAGE_REF_PATTERN='^(main|sha-[0-9a-f]{40})$'
 ENV_KEY_PATTERN='^[A-Z_][A-Z0-9_]*$'
 APPARMOR_PROFILE='easyconvert'
@@ -212,6 +214,49 @@ compose() { # compose <release-dir> <args...>
   fi
   docker compose --project-name easyconvert --project-directory "$dir" --env-file "$dir/.env" \
     -f "$dir/docker-compose.prod.yml" "${profiles[@]}" "$@"
+}
+
+# Active worker services for a release: always `worker`, plus split/gpu class workers enabled in COMPOSE_PROFILES.
+worker_services() { # worker_services <release-dir>
+  local env_file="$1/.env" extra_profiles="" p has_split=0 has_gpu=0
+  local -a extra_arr
+  printf '%s\n' worker
+  [ -r "$env_file" ] || return 0
+  extra_profiles="$(env_value "$env_file" COMPOSE_PROFILES)"
+  [ -n "$extra_profiles" ] || return 0
+  IFS=',' read -ra extra_arr <<< "$extra_profiles"
+  for p in "${extra_arr[@]}"; do
+    p="${p#"${p%%[![:space:]]*}"}"
+    p="${p%"${p##*[![:space:]]}"}"
+    case "$p" in
+      split) has_split=1 ;;
+      gpu) has_gpu=1 ;;
+    esac
+  done
+  if [ "$has_split" -eq 1 ]; then
+    printf '%s\n' worker-light worker-cpu worker-memory
+  fi
+  if [ "$has_gpu" -eq 1 ]; then
+    printf '%s\n' worker-gpu
+  fi
+}
+
+sweep_release() { # sweep_release <release-dir> [--best-effort]
+  local dir="$1" best_effort="${2:-}" svc first=1 cmd
+  while IFS= read -r svc; do
+    [ -n "$svc" ] || continue
+    if [ "$first" -eq 1 ]; then
+      cmd="$SCRATCH_SWEEP"
+      first=0
+    else
+      cmd="$TMP_SWEEP"
+    fi
+    if [ "$best_effort" = "--best-effort" ]; then
+      child compose "$dir" run --rm --no-deps --entrypoint sh "$svc" -c "$cmd" || log "scratch sweep skipped"
+    else
+      child compose "$dir" run --rm --no-deps --entrypoint sh "$svc" -c "$cmd"
+    fi
+  done < <(worker_services "$dir")
 }
 
 pin() { # pin <repo> <ref>: pull and print repo@digest
@@ -425,7 +470,11 @@ public_probe_refused() { # public_probe_refused <origin the release runs with>
 # option dropped) would run under another profile and pass every other check on a host that happens to allow it.
 profiles_applied() { # profiles_applied <release-dir>: every replica; the web needs one, the all-queue worker may have none
   local service id ids profile
-  for service in web worker; do
+  local -a services=(web)
+  while IFS= read -r service; do
+    [ -n "$service" ] && services+=("$service")
+  done < <(worker_services "$1")
+  for service in "${services[@]}"; do
     ids="$(compose "$1" ps -q "$service")"
     if [ "$service" = web ] && [ -z "$ids" ]; then log "no web container is running"; return 1; fi
     for id in $ids; do
@@ -535,10 +584,17 @@ deploy() {
 
   compose "$release" config --quiet || die "the compose file does not accept this env secret"
   origin="$(release_origin "$release")" || die "Compose could not resolve the origin of the web service"
-  # The sweep shares /tmp with the worker of the release this one replaces, which keeps files it made when it started (the profile
-  # template of the office pool) untouched for days, so it runs once that worker has stopped.
-  if [ -z "$previous" ] || child compose "$previous" stop worker; then
-    child compose "$release" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP" || log "scratch sweep skipped"
+  # Stop previous worker services before sweeping their per-service /tmp mounts and /shared/storage/.staging, so dead profiles from
+  # the previous release are pruned cleanly before starting the new release.
+  local -a prev_workers=()
+  local prev_svc
+  if [ -n "$previous" ]; then
+    while IFS= read -r prev_svc; do
+      [ -n "$prev_svc" ] && prev_workers+=("$prev_svc")
+    done < <(worker_services "$previous")
+  fi
+  if [ -z "$previous" ] || child compose "$previous" stop "${prev_workers[@]}"; then
+    sweep_release "$release" --best-effort
   else
     log "the worker of the previous release did not stop: scratch sweep skipped"
   fi
@@ -611,7 +667,7 @@ release_hold() {
 }
 
 sweep() {
-  compose "$HOME_DIR/current" run --rm --no-deps --entrypoint sh worker -c "$SCRATCH_SWEEP"
+  sweep_release "$HOME_DIR/current"
 }
 
 case "${1:-}" in

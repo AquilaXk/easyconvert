@@ -167,6 +167,7 @@ describe('docker-compose.prod.yml container hardening', () => {
     for (const name of APP_SERVICES) {
       for (const mount of compose.services[name].tmpfs ?? []) {
         const options = new Set(mount.slice(mount.indexOf(':') + 1).split(','));
+        expect(options.has('noexec'), `${name} ${mount}`).toBe(true);
         expect(options.has('nosuid'), `${name} ${mount}`).toBe(true);
         expect(options.has('nodev'), `${name} ${mount}`).toBe(true);
         expect(options.has('uid=10001'), `${name} ${mount}`).toBe(true);
@@ -174,8 +175,9 @@ describe('docker-compose.prod.yml container hardening', () => {
     }
   });
 
-  it('puts uploads, results and /tmp on the capped scratch directory, never on RAM, and never creates the host path', () => {
-    for (const name of ['web', 'worker']) {
+  it('puts uploads, results and /tmp on the capped scratch directory, never on RAM, gives every service its own /tmp, and never creates the host path', () => {
+    const tmpSources: string[] = [];
+    for (const name of APP_SERVICES) {
       const service = compose.services[name];
       const binds = (service.volumes ?? []).filter((volume): volume is Extract<typeof volume, object> => typeof volume === 'object');
       const targets = binds.map((volume) => volume.target).sort();
@@ -184,8 +186,12 @@ describe('docker-compose.prod.yml container hardening', () => {
         expect(bind.source, name).toMatch(/^\$\{EASYCONVERT_SCRATCH_DIR(:\?[^}]+)?\}\//);
         expect(bind.bind?.create_host_path, name).toBe(false);
       }
+      const tmpBind = binds.find((bind) => bind.target === '/tmp');
+      expect(tmpBind?.source, name).toBeDefined();
+      tmpSources.push(tmpBind!.source);
       expect((service.tmpfs ?? []).some((mount) => mount.startsWith('/tmp:')), name).toBe(false);
     }
+    expect(new Set(tmpSources).size).toBe(APP_SERVICES.length);
   });
 });
 
@@ -438,6 +444,35 @@ describe('nginx site file', () => {
     expect(withoutComments).toMatch(/ssl_certificate \/etc\/ssl\/easyconvert\/origin\.pem;/);
     expect(withoutComments).toMatch(/ssl_certificate_key \/etc\/ssl\/easyconvert\/origin\.key;/);
     expect(withoutComments).not.toMatch(/letsencrypt/);
+  });
+
+  it('applies method-scoped POST conversion rate limiting across every conversion, job, tool, fetch, bundle, and archive-inspect route while allowing GET polling under the API zone', () => {
+    expect(withoutComments).toMatch(/map \$request_method \$easyconvert_convert_post_key \{\s*default "";\s*POST \$binary_remote_addr;\s*\}/);
+    expect(withoutComments).toMatch(/limit_req_zone \$easyconvert_convert_post_key zone=easyconvert_convert:10m rate=2r\/s;/);
+    expect(withoutComments).toMatch(/"~\^\/api\/\(v1\/jobs\|queue\/jobs\|tools\/\|fetch-url\|v1\/archives\/inspect\)"\s+"convert";/);
+
+    const blocks = [...withoutComments.matchAll(/^\s*location ([^{]+)\{([^}]*)\}/gm)].map((match) => ({
+      match: match[1].trim(),
+      body: match[2],
+    }));
+    for (const prefix of [
+      '/api/convert',
+      '/api/v1/convert',
+      '/api/v1/jobs',
+      '/api/queue/jobs',
+      '/api/tools/',
+      '/api/fetch-url',
+      '/api/storage/bundle',
+      '/api/v1/archives/inspect',
+    ]) {
+      const block = blocks.find((candidate) => candidate.match === `^~ ${prefix}`);
+      expect(block, prefix).toBeDefined();
+      expect(block!.body, prefix).toContain('limit_req zone=easyconvert_convert burst=10 nodelay;');
+      expect(block!.body, prefix).toContain('limit_req zone=easyconvert_api burst=60 nodelay;');
+      expect(block!.body, prefix).toContain('limit_conn easyconvert_conn 10;');
+      expect(block!.body, prefix).toContain('proxy_pass http://easyconvert_web;');
+    }
+    expect(blocks.find((candidate) => candidate.match === '^~ /api/queue/stats')?.body.trim()).toBe('return 404;');
   });
 });
 
@@ -927,6 +962,103 @@ exec sh -c "$cmd"
     const minutes = /find \/shared\/storage\/\.staging [^']*-mmin \+(\d+)/.exec(script)?.[1];
 
     expect(Number(minutes) * 60_000).toBe(JOB_STAGING_MAX_AGE_MS);
+  });
+
+  it('preserves live LibreOffice pool profiles when top-level or inner files are under two hours old, while pruning dead stale profiles', () => {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'oci-sweep-lo-'));
+    try {
+      const bin = path.join(sandbox, 'bin');
+      const home = path.join(sandbox, 'home');
+      const scratchTmp = path.join(sandbox, 'tmp-worker');
+      const storage = path.join(sandbox, 'storage');
+      for (const dir of [bin, path.join(home, 'current'), scratchTmp, path.join(storage, '.staging')]) mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(home, 'current', '.env'), 'REDIS_URL=redis://redis:6379\n');
+      writeFileSync(
+        path.join(bin, 'docker'),
+        `#!/usr/bin/env bash
+cmd="\${@: -1}"
+cmd="\${cmd//find \\/tmp /find $STUB_TMP }"
+cmd="\${cmd//\\/shared\\/storage\\//$STUB_STORAGE/}"
+exec sh -c "$cmd"
+`
+      );
+      chmodSync(path.join(bin, 'docker'), 0o755);
+
+      const ageAt = (target: string, minutes: number): void => {
+        const at = new Date(Date.now() - minutes * 60_000);
+        utimesSync(target, at, at);
+      };
+
+      const liveTemplate = path.join(scratchTmp, 'libreoffice_probe_profile_1a2b3c4d_11111111-1111-4111-8111-111111111111');
+      const liveTemplateUser = path.join(liveTemplate, 'user');
+      const liveTemplateConfig = path.join(liveTemplateUser, 'registrymodifications.xcu');
+      mkdirSync(liveTemplateUser, { recursive: true });
+      writeFileSync(liveTemplateConfig, '<oor:items/>');
+      ageAt(liveTemplateConfig, 180);
+      ageAt(liveTemplateUser, 180);
+      ageAt(liveTemplate, 1);
+
+      const liveSlot = path.join(scratchTmp, 'libreoffice_profile_worker-1a2b3c4d_22222222-2222-4222-8222-222222222222');
+      const liveSlotUser = path.join(liveSlot, 'user');
+      const liveSlotConfig = path.join(liveSlotUser, 'registrymodifications.xcu');
+      mkdirSync(liveSlotUser, { recursive: true });
+      writeFileSync(liveSlotConfig, '<oor:items/>');
+      ageAt(liveSlotConfig, 30);
+      ageAt(liveSlotUser, 180);
+      ageAt(liveSlot, 180);
+
+      const deadProfile = path.join(scratchTmp, 'libreoffice_profile_worker-dead0000_33333333-3333-4333-8333-333333333333');
+      const deadProfileUser = path.join(deadProfile, 'user');
+      const deadProfileConfig = path.join(deadProfileUser, 'registrymodifications.xcu');
+      mkdirSync(deadProfileUser, { recursive: true });
+      writeFileSync(deadProfileConfig, '<oor:items/>');
+      ageAt(deadProfileConfig, 180);
+      ageAt(deadProfileUser, 180);
+      ageAt(deadProfile, 180);
+
+      const staleScratchDir = path.join(scratchTmp, 'easyconvert-ocr-stale');
+      const staleScratchFile = path.join(staleScratchDir, 'page.png');
+      mkdirSync(staleScratchDir, { recursive: true });
+      writeFileSync(staleScratchFile, 'x');
+      ageAt(staleScratchFile, 180);
+      ageAt(staleScratchDir, 180);
+
+      const result = run(['sweep'], {
+        env: { PATH: `${bin}:${process.env.PATH ?? ''}`, EASYCONVERT_HOME: home, STUB_TMP: scratchTmp, STUB_STORAGE: storage },
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(liveTemplateConfig)).toBe(true);
+      expect(existsSync(liveSlotConfig)).toBe(true);
+      expect(existsSync(deadProfile)).toBe(false);
+      expect(existsSync(staleScratchDir)).toBe(false);
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  it('sweeps every active split and gpu worker scratch directory configured in COMPOSE_PROFILES', () => {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'oci-sweep-profiles-'));
+    try {
+      const bin = path.join(sandbox, 'bin');
+      const home = path.join(sandbox, 'home');
+      const logFile = path.join(sandbox, 'calls.log');
+      for (const dir of [bin, path.join(home, 'current')]) mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(home, 'current', '.env'), 'REDIS_URL=redis://redis:6379\nCOMPOSE_PROFILES=split,gpu\n');
+      writeFileSync(path.join(bin, 'docker'), '#!/usr/bin/env bash\necho "docker $*" >> "$STUB_LOG"\nexit 0\n');
+      chmodSync(path.join(bin, 'docker'), 0o755);
+
+      const result = run(['sweep'], { env: { PATH: `${bin}:${process.env.PATH ?? ''}`, EASYCONVERT_HOME: home, STUB_LOG: logFile } });
+      expect(result.status, result.stderr).toBe(0);
+
+      const dockerCalls = readFileSync(logFile, 'utf-8').split('\n').filter(Boolean);
+      const sweptServices = dockerCalls.map((line) => / run --rm --no-deps --entrypoint sh (\S+) -c /.exec(line)?.[1]);
+      expect(sweptServices).toEqual(['worker', 'worker-light', 'worker-cpu', 'worker-memory', 'worker-gpu']);
+      expect(dockerCalls[0]).toContain('/shared/storage/.staging');
+      for (const line of dockerCalls.slice(1)) expect(line).not.toContain('/shared/storage/.staging');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
   });
 });
 

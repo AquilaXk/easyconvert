@@ -20,6 +20,7 @@ interface ComposeService {
   cap_drop?: string[];
   read_only?: boolean;
   pids_limit?: number;
+  volumes?: Array<string | { type?: string; source?: string; target?: string }>;
   environment?: Record<string, ComposeValue> | string[];
   deploy?: { resources?: { limits?: { cpus?: string; memory?: string; pids?: number } } };
   devices?: string[];
@@ -94,11 +95,12 @@ describe('docker-compose.yml worker hardening', () => {
     expect(Object.keys(base.services).sort()).toEqual(['redis', ...WORKER_SERVICES].sort());
   });
 
-  it.each(WORKER_SERVICES)('%s mounts every tmpfs with nosuid and nodev, and /tmp also noexec', (name) => {
+  it.each(WORKER_SERVICES)('%s mounts every tmpfs with noexec, nosuid and nodev', (name) => {
     const tmpfs = base.services[name].tmpfs ?? [];
     expect(tmpfs.length).toBeGreaterThanOrEqual(2);
     for (const mount of tmpfs) {
       const options = new Set(mount.slice(mount.indexOf(':') + 1).split(','));
+      expect(options.has('noexec'), mount).toBe(true);
       expect(options.has('nodev'), mount).toBe(true);
       expect(options.has('nosuid'), mount).toBe(true);
     }
@@ -292,6 +294,7 @@ describe.skipIf(skipUnless('docker compose', compose.available))('docker compose
 
   it('expands the production file for every application service and leaves the cloud identifiers unset', () => {
     const effective = config(['-f', 'docker-compose.prod.yml', '--profile', 'redis', '--profile', 'split', '--profile', 'gpu'], PROD_ENV);
+    const tmpSources: string[] = [];
     for (const name of ['web', ...WORKER_SERVICES]) {
       const env = environmentOf(effective.services[name]);
       expect(env.NODE_ENV, name).toBe('production');
@@ -299,7 +302,14 @@ describe.skipIf(skipUnless('docker compose', compose.available))('docker compose
       expect(env.OCI_NAMESPACE, name).toBeNull();
       expect(env.OCI_ENDPOINT, name).toBeNull();
       expect(env.S3_SECRET_ACCESS_KEY, name).toBeNull();
+      const binds = (effective.services[name].volumes ?? []).filter(
+        (volume): volume is { type?: string; source?: string; target?: string } => typeof volume === 'object'
+      );
+      const tmpBind = binds.find((volume) => volume.target === '/tmp');
+      expect(tmpBind?.source, name).toMatch(/^\/scratch\/tmp-/);
+      tmpSources.push(tmpBind!.source!);
     }
+    expect(new Set(tmpSources).size).toBe(1 + WORKER_SERVICES.length);
   });
 
   it('uses the Redis named by REDIS_URL, without a Redis password and without the Redis service of the stack', () => {
