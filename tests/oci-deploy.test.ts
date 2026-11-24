@@ -215,9 +215,13 @@ describe('docker-compose.prod.yml resource budget', () => {
   });
 
   it('gives each worker job at least the 3.3 GiB share the input limits are sized for', () => {
-    const worker = compose.services.worker;
-    const jobs = Number(defaultOf(worker.environment?.WORKER_CONCURRENCY ?? undefined));
-    expect(mebibytes(worker.mem_limit) / jobs).toBeGreaterThanOrEqual(3.3 * 1024);
+    for (const name of ['worker', 'worker-cpu', 'worker-memory', 'worker-gpu']) {
+      const service = compose.services[name];
+      const jobs = Number(defaultOf(service.environment?.WORKER_CONCURRENCY ?? undefined));
+      expect(jobs, name).toBeGreaterThan(0);
+      expect(mebibytes(service.mem_limit) / jobs, name).toBeGreaterThanOrEqual(3.3 * 1024);
+      expect(mebibytes(service.mem_limit) - jobs * 3328, `${name} worker heap headroom`).toBeGreaterThanOrEqual(1024);
+    }
   });
 
   it('starts only redis, web and worker by default; the classes, monitoring and the GPU worker need a profile', () => {

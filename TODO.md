@@ -33,7 +33,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Confirm the Paddle checkout script under the nonce policy (entry 370) in the first sandbox purchase.
 - Pick a free package name before publishing the SDKs (PyPI `easyconvert` belongs to another project; npm `@easyconvert/sdk` is unpublished) and add install lines to their READMEs.
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
-- Remove the unpooled soffice fallback in runHeadlessOffice and align worker-cpu memory limits with its LibreOffice slot budget.
 - Check quota, multipart content type and sync concurrency slots before acquireIdempotency reads request bodies in POST /api/v1/convert.
 - Persist or require pinned host keys in the BYOS SFTP adapter, try all validated DNS addresses, confine sftp runs, and clean unconsumed download spools.
 - Enforce forbidden HTTP header checks on graph import.url/export.url nodes and BYOS http credentials, and delete unused byos-operations.ts.

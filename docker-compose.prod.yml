@@ -323,8 +323,8 @@ services:
     deploy:
       replicas: ${EASYCONVERT_CLASS_CPU_REPLICAS:-1}
     cpus: ${EASYCONVERT_CLASS_CPU_CPUS:-2.5}
-    mem_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-10g}
-    memswap_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-10g}
+    mem_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-12g}
+    memswap_limit: ${EASYCONVERT_CLASS_CPU_MEMORY:-12g}
     volumes:
       - type: bind
         source: ${EASYCONVERT_SCRATCH_DIR:?set the mounted scratch directory, see docs/deploy-oci.md}/storage

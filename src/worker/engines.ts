@@ -111,7 +111,7 @@ import {
 } from '../lib/conversions/archive-password';
 import { resolveArchiveCompressionLevel } from '../lib/conversions/archive-compression-level';
 import { runWithDirectoryGrowthWatch } from './directory-growth-watch';
-import { LIBREOFFICE_ADDRESS_SPACE_BYTES, LIBREOFFICE_MAX_FILE_SIZE, LIBREOFFICE_MEMORY_LIMIT_MB, LibreOfficePoolManager, LibreOfficePoolTimeoutError, libreOfficeDiskBudgetBytes, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
+import { LIBREOFFICE_ADDRESS_SPACE_BYTES, LIBREOFFICE_MAX_FILE_SIZE, LIBREOFFICE_MEMORY_LIMIT_MB, LIBREOFFICE_POOL_ENGINE_NAME, LibreOfficePoolManager, LibreOfficePoolTimeoutError, libreOfficeDiskBudgetBytes, officeInputBytes, resolveLibreOfficeFilter, standaloneProfileArguments } from './libreoffice-pool';
 import { BUILT_IN_ENGINE, engineAllowsRoute, type EngineId } from '../lib/conversions/engine-ids';
 
 export { EngineUnavailableError, InvalidPageRangeError, ComplexScriptRequiresNativeEngineError, safeOutputStem };
@@ -270,8 +270,8 @@ export function assertNotSpoofedFileVfs(
 }
 
 /**
- * Converts an Office document using headless LibreOffice in an isolated sandbox. Runs it in a pre-warmed worker slot of the pool
- * (own profile, recycled every N jobs), with a fail-closed fallback to standalone sandbox execution.
+ * Converts an Office document using headless LibreOffice in an isolated sandbox. Runs in a pre-warmed pool slot when enabled
+ * (own profile, recycled every N jobs), failing closed without unpooled fallback; standalone sandbox runs only when disabled or keeping Excel objects.
  */
 async function runHeadlessOffice(
   input: Buffer | WorkerVfsPayload,
@@ -300,20 +300,18 @@ async function runHeadlessOffice(
 
   if (libreOfficePool.isEnabled() && !options.keepEmbeddedExcelObjects) {
     try {
-      const poolResult = await libreOfficePool.convert(input, src, tgt, options, originalFilename);
-      if (poolResult) {
-        return poolResult;
-      }
+      return await libreOfficePool.convert(input, src, tgt, options, originalFilename);
     } catch (poolErr) {
-      // The standalone run below needs the same sandbox the pool just failed to get.
       rethrowSandboxUnavailable(poolErr);
       if (options.signal?.aborted || poolErr instanceof SandboxedMemoryLimitError || poolErr instanceof SandboxedTimeoutError) {
         throw poolErr;
       }
-      if (options.throwOnUnavailable && !(poolErr instanceof LibreOfficePoolTimeoutError)) {
-        throw poolErr;
+      if (poolErr instanceof LibreOfficePoolTimeoutError) {
+        if (options.throwOnUnavailable) throw new EngineUnavailableError(LIBREOFFICE_POOL_ENGINE_NAME, poolErr.message);
+        return null;
       }
-      // Fall through cleanly to standalone sandbox execution if pool acquire timed out
+      if (options.throwOnUnavailable) throw poolErr;
+      return null;
     }
   }
 
