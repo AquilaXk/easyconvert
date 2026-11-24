@@ -6,8 +6,10 @@ import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
-import { fileSentAsText, formText, isMultipartBody, readMultipartForm } from '@/lib/api/multipart-body';
+import { fileSentAsText, formText, isMultipartBody, readMultipartForm, type MultipartRead } from '@/lib/api/multipart-body';
 import type { User } from '@/lib/auth/types';
+import type { QuotaUsage } from '@/lib/api-keys/types';
+import { AuthStoreUnavailableError } from '@/lib/auth/store-unavailable';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { getQueueForResourceClass } from '@/lib/queue/conversion-queue';
 import { sanitizeNodeOutputFilename } from '@/lib/queue/graph/node-jobs';
@@ -41,7 +43,14 @@ import { describeStorageError, storageErrorResponse } from '@/lib/api/storage-er
 import { pipeStreamToStorageMultipart } from '@/lib/streaming/large-payload-streamer';
 import { recordCompletedUpload } from '@/lib/api/completed-upload';
 import { validateOrProblem, ConversionOptionsSchema } from '@/lib/api/contracts';
-import { acquireIdempotency, IdempotencyContext, releaseKey, replyUnderKey } from '@/lib/api/with-idempotency';
+import {
+  acquireIdempotency,
+  hasExistingIdempotencyRecord,
+  IdempotencyContext,
+  releaseKey,
+  replyUnderKey,
+  validateIdempotencyKeyHeader,
+} from '@/lib/api/with-idempotency';
 import { wantsRawResponse } from '@/lib/api/idempotency';
 import { boundedJsonFieldProblem, parseBoundedJsonField } from '@/lib/api/json-body-bounds';
 import { spoofRefusalProblem, typedFailureProblem } from '@/lib/api/typed-failure-response';
@@ -163,6 +172,172 @@ async function parseConvertFormData(formData: FormData, instanceUri: string, hea
   return { facts, data: { file: file as File, sourceDef, targetDef, options } };
 }
 
+interface ConvertAdmissionOptions {
+  req: NextRequest;
+  user: User;
+  instanceUri: string;
+  state: ConvertAdmissionState;
+}
+
+interface ConvertAdmissionState {
+  idempotencyCtx?: IdempotencyContext;
+  rateLimitHeaders: Record<string, string>;
+  releaseSlot?: () => void;
+}
+
+type ConvertAdmissionResult =
+  | { response: NextResponse | Response; body?: undefined }
+  | { body: MultipartRead; response?: undefined };
+
+function unsupportedMediaTypeResponse(instanceUri: string, rateLimitHeaders: Record<string, string>): NextResponse {
+  return createProblemDetailsResponse(
+    HTTP_UNSUPPORTED_MEDIA_TYPE,
+    'The request body must be multipart/form-data.',
+    instanceUri,
+    undefined,
+    undefined,
+    rateLimitHeaders
+  );
+}
+
+function quotaExhaustedResponse(user: User, quota: QuotaUsage, instanceUri: string): NextResponse {
+  return conversionRefusalResponse(creditsUsedUp(user, quota, 1), instanceUri);
+}
+
+/** Handles an `Idempotency-Key` with a prior record, preserving 200/409/422 replay before quota or slot gates. */
+async function admitExistingIdempotentConvert(
+  options: ConvertAdmissionOptions & { rawIdempotencyKey: string; quota: QuotaUsage }
+): Promise<ConvertAdmissionResult> {
+  const { req, user, instanceUri, state, rawIdempotencyKey, quota } = options;
+  const { rateLimitHeaders } = state;
+
+  if (!isMultipartBody(req)) {
+    const precheck = await acquireIdempotency(req, user.id, rawIdempotencyKey, instanceUri, { parsedBody: {} });
+    if (precheck.response) return { response: precheck.response };
+    state.idempotencyCtx = precheck.context;
+    const refusal =
+      quota.remaining <= 0
+        ? quotaExhaustedResponse(user, quota, instanceUri)
+        : unsupportedMediaTypeResponse(instanceUri, rateLimitHeaders);
+    return { response: await replyUnderKey(precheck.context, refusal, instanceUri) };
+  }
+
+  const body = await readMultipartForm(req);
+  const precheck = await acquireIdempotency(req, user.id, rawIdempotencyKey, instanceUri, {
+    multipartForm: body.malformed ? null : body.form,
+  });
+  if (precheck.response) return { response: precheck.response };
+
+  state.idempotencyCtx = precheck.context;
+  if (quota.remaining <= 0) {
+    return { response: await replyUnderKey(precheck.context, quotaExhaustedResponse(user, quota, instanceUri), instanceUri) };
+  }
+
+  const slot = await acquireSyncSlot(user.id, user.tier);
+  if (!slot.granted) {
+    await releaseKey(precheck.context, instanceUri);
+    state.idempotencyCtx = undefined;
+    return { response: concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders) };
+  }
+  state.releaseSlot = slot.release;
+  return { body };
+}
+
+/** Admits a fresh conversion request by checking quota, multipart Content-Type, and sync slots before reading the body. */
+async function admitFreshConvert(
+  options: ConvertAdmissionOptions & { rawIdempotencyKey: string | null; quota: QuotaUsage }
+): Promise<ConvertAdmissionResult> {
+  const { req, user, instanceUri, state, rawIdempotencyKey, quota } = options;
+  const { rateLimitHeaders } = state;
+
+  if (quota.remaining <= 0) {
+    return { response: quotaExhaustedResponse(user, quota, instanceUri) };
+  }
+
+  if (!isMultipartBody(req)) {
+    if (rawIdempotencyKey === null) {
+      return { response: unsupportedMediaTypeResponse(instanceUri, rateLimitHeaders) };
+    }
+    const precheck = await acquireIdempotency(req, user.id, rawIdempotencyKey, instanceUri, { parsedBody: {} });
+    if (precheck.response) return { response: precheck.response };
+    state.idempotencyCtx = precheck.context;
+    return { response: await replyUnderKey(precheck.context, unsupportedMediaTypeResponse(instanceUri, rateLimitHeaders), instanceUri) };
+  }
+
+  const slot = await acquireSyncSlot(user.id, user.tier);
+  if (!slot.granted) {
+    return { response: concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders) };
+  }
+  state.releaseSlot = slot.release;
+
+  const body = await readMultipartForm(req);
+  if (rawIdempotencyKey !== null) {
+    const precheck = await acquireIdempotency(req, user.id, rawIdempotencyKey, instanceUri, {
+      multipartForm: body.malformed ? null : body.form,
+    });
+    if (precheck.response) return { response: precheck.response };
+    state.idempotencyCtx = precheck.context;
+  }
+  return { body };
+}
+
+/** Validates key syntax, runs pre-body resource gates unless replaying an existing record, and parses multipart at most once. */
+async function admitConvertRequest(options: ConvertAdmissionOptions): Promise<ConvertAdmissionResult> {
+  const { req, user, instanceUri, state } = options;
+  const rawIdempotencyKey = req.headers.get('idempotency-key');
+  if (rawIdempotencyKey !== null) {
+    const invalidKeyResponse = validateIdempotencyKeyHeader(rawIdempotencyKey, instanceUri);
+    if (invalidKeyResponse) return { response: invalidKeyResponse };
+  }
+
+  const quota = await redisKeyStore.getQuotaUsage(user.id);
+  state.rateLimitHeaders = buildRateLimitHeaders(quota);
+
+  if (rawIdempotencyKey !== null && (await hasExistingIdempotencyRecord(user.id, instanceUri, rawIdempotencyKey))) {
+    return admitExistingIdempotentConvert({ ...options, rawIdempotencyKey, quota });
+  }
+  return admitFreshConvert({ ...options, rawIdempotencyKey, quota });
+}
+
+function errorResponseForConvert(err: unknown, instanceUri: string, rateLimitHeaders: Record<string, string>): NextResponse {
+  const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
+  if (deadlineProblem) return deadlineProblem;
+  if (err instanceof PdfPostprocessError) {
+    return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
+  }
+  const storageProblem = storageErrorResponse(err, instanceUri, rateLimitHeaders);
+  if (storageProblem) return storageProblem;
+  if (err instanceof ArchiveEntryCollisionError) {
+    return createProblemDetailsResponse(
+      err.status,
+      err.message,
+      instanceUri,
+      'Archive Entry Collision',
+      undefined,
+      rateLimitHeaders,
+      undefined,
+      { code: err.refusalCode }
+    );
+  }
+  const limitStatus = payloadLimitStatus(err);
+  if (limitStatus !== null) {
+    // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
+    return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
+  }
+  if (err instanceof WorkerOutputMissingError) {
+    // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
+    return createProblemDetailsResponse(
+      err.status,
+      WORKER_OUTPUT_MISSING_DETAIL,
+      instanceUri,
+      'Internal Server Error',
+      undefined,
+      rateLimitHeaders
+    );
+  }
+  return typedFailureProblem(err, instanceUri, rateLimitHeaders);
+}
+
 export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/convert', async function POST(req: NextRequest, trace: ConversionTrace) {
   const startTime = Date.now();
   const instanceUri = req.nextUrl?.pathname || '/api/v1/convert';
@@ -192,41 +367,19 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     );
   }
 
-  // 1b. Idempotency Check
-  const rawIdempotencyKey = req.headers.get('idempotency-key');
-  let idempotencyCtx: IdempotencyContext | undefined;
-  if (rawIdempotencyKey !== null) {
-    const precheck = await acquireIdempotency(req, auth.user.id, rawIdempotencyKey, instanceUri);
-    if (precheck.response) {
-      return precheck.response;
-    }
-    idempotencyCtx = precheck.context;
-  }
-
-  // Only a success is kept under the key, and the answer stands whatever the idempotency store does: a store failure after
-  // a conversion was charged must not turn its success into an error the client would retry, and pay for again.
-  const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
-
-  // Obtain rate-limiting context and construct IETF RateLimit headers
-  const quota = await redisKeyStore.getQuotaUsage(auth.user.id);
-  const rateLimitHeaders = buildRateLimitHeaders(quota);
-
-  if (quota.remaining <= 0) return reply(conversionRefusalResponse(creditsUsedUp(auth.user, quota, 1), instanceUri));
-  if (!isMultipartBody(req)) {
-    return reply(createProblemDetailsResponse(HTTP_UNSUPPORTED_MEDIA_TYPE, 'The request body must be multipart/form-data.', instanceUri, undefined, undefined, rateLimitHeaders));
-  }
-
   // At most five conversions in flight (queued plus running) for an anonymous or free caller. The slot is held until
   // the request ends; an asynchronous handoff stays counted through the job it queues.
-  let releaseSlot: (() => void) | undefined;
+  const state: ConvertAdmissionState = { rateLimitHeaders: {} };
   try {
-    const slot = await acquireSyncSlot(auth.user.id, auth.user.tier);
-    if (!slot.granted) {
-      await releaseKey(idempotencyCtx, instanceUri);
-      return concurrencyLimitResponse(slot.limit, instanceUri, rateLimitHeaders);
-    }
-    releaseSlot = slot.release;
-    const body = await readMultipartForm(req);
+    const admission = await admitConvertRequest({ req, user: auth.user, instanceUri, state });
+    if (admission.response) return admission.response;
+
+    const { body } = admission;
+    const { idempotencyCtx, rateLimitHeaders } = state;
+    // Only a success is kept under the key, and the answer stands whatever the idempotency store does: a store failure after
+    // a conversion was charged must not turn its success into an error the client would retry, and pay for again.
+    const reply = (res: NextResponse | Response) => replyUnderKey(idempotencyCtx, res, instanceUri);
+
     if (body.malformed) {
       trace.cause = body.malformed;
       return reply(createProblemDetailsResponse(HTTP_BAD_REQUEST, 'The request body is not well-formed multipart/form-data.', instanceUri, undefined, undefined, rateLimitHeaders));
@@ -295,45 +448,11 @@ export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('v1/co
     return await withReservedUnit(unit.reservationId, (reserved) => convertReserved(conversion, reserved));
   } catch (err: unknown) {
     trace.cause = err;
-    await releaseKey(idempotencyCtx, instanceUri);
-    const deadlineProblem = deadlineErrorResponse(err, instanceUri, rateLimitHeaders);
-    if (deadlineProblem) return deadlineProblem;
-    if (err instanceof PdfPostprocessError) {
-      return createPdfPostprocessResponse(err, instanceUri, rateLimitHeaders);
-    }
-    const storageProblem = storageErrorResponse(err, instanceUri, rateLimitHeaders);
-    if (storageProblem) return storageProblem;
-    if (err instanceof ArchiveEntryCollisionError) {
-      return createProblemDetailsResponse(
-        err.status,
-        err.message,
-        instanceUri,
-        'Archive Entry Collision',
-        undefined,
-        rateLimitHeaders,
-        undefined,
-        { code: err.refusalCode }
-      );
-    }
-    const limitStatus = payloadLimitStatus(err);
-    if (limitStatus !== null) {
-      // A stream decodes past a size limit, an image declares more pixels than allowed, or a WOFF2 passes the codec limits: 413.
-      return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri, undefined, undefined, rateLimitHeaders);
-    }
-    if (err instanceof WorkerOutputMissingError) {
-      // A server fault, not a verdict on the input: answer 500 without the worker's file name; the outcome line carries the error.
-      return createProblemDetailsResponse(
-        err.status,
-        WORKER_OUTPUT_MISSING_DETAIL,
-        instanceUri,
-        'Internal Server Error',
-        undefined,
-        rateLimitHeaders
-      );
-    }
-    return typedFailureProblem(err, instanceUri, rateLimitHeaders);
+    await releaseKey(state.idempotencyCtx, instanceUri);
+    if (err instanceof AuthStoreUnavailableError) throw err;
+    return errorResponseForConvert(err, instanceUri, state.rateLimitHeaders);
   } finally {
-    releaseSlot?.();
+    state.releaseSlot?.();
   }
 })));
 

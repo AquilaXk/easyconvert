@@ -393,6 +393,30 @@ async function resolveFingerprintInput(
   return extractFingerprintData(req.clone());
 }
 
+/** Validates `Idempotency-Key` header syntax without reading the request body, returning 400 Problem Details when invalid. */
+export function validateIdempotencyKeyHeader(rawKey: string, instanceUri: string): NextResponse | null {
+  if (isValidIdempotencyKey(rawKey)) return null;
+  return createProblemDetailsResponse(
+    400,
+    'Idempotency-Key header must contain 1 to 255 printable ASCII characters.',
+    instanceUri,
+    'Bad Request'
+  );
+}
+
+/** Reports whether the active store already holds a live record for `(userId, instanceUri, rawKey)`. */
+export async function hasExistingIdempotencyRecord(
+  userId: string,
+  instanceUri: string,
+  rawKey: string,
+  store?: IdempotencyStore
+): Promise<boolean> {
+  const scopedKey = buildScopedKey(userId, instanceUri, rawKey);
+  const activeStore = store || getIdempotencyStore();
+  if (typeof activeStore.getRecord !== 'function') return false;
+  return (await activeStore.getRecord(scopedKey)) !== null;
+}
+
 /** Acquires idempotency lock or returns early replay/conflict response. */
 export async function acquireIdempotency(
   req: NextRequest | Request,
@@ -401,15 +425,9 @@ export async function acquireIdempotency(
   instanceUri: string,
   { store, parsedBody, multipartForm, lockTtlMs }: AcquireIdempotencyOptions = {}
 ): Promise<AcquireIdempotencyResult> {
-  if (!isValidIdempotencyKey(rawKey)) {
-    return {
-      response: createProblemDetailsResponse(
-        400,
-        'Idempotency-Key header must contain 1 to 255 printable ASCII characters.',
-        instanceUri,
-        'Bad Request'
-      ),
-    };
+  const invalidKey = validateIdempotencyKeyHeader(rawKey, instanceUri);
+  if (invalidKey) {
+    return { response: invalidKey };
   }
 
   const { bodyWithoutFile, fileSha256 } = await resolveFingerprintInput(req, { parsedBody, multipartForm });
