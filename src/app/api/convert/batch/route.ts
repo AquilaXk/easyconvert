@@ -11,7 +11,8 @@ import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
 import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckRefusal } from '@/lib/security/file-guard';
-import { refusalCodeOf } from '@/lib/refusal-codes';
+import { maskServerText } from '@/lib/security/server-paths';
+import { refusalCodeOf, type ConversionRefusalCode } from '@/lib/refusal-codes';
 import {
   ConversionOptions,
   ArchiveEntryCollisionError,
@@ -19,13 +20,14 @@ import {
   UnsupportedTargetError,
   WorkerOutputMissingError,
   WORKER_OUTPUT_MISSING_DETAIL,
+  typedFailureOf,
 } from '@/lib/types';
 import { validateApiAccess, authErrorHeaders, reserveConversionUnit, withReservedUnit } from '@/lib/api-keys/guard';
 import { baseCredits } from '@/lib/billing/credits';
 import type { ReservedUnit } from '@/lib/api-keys/hand-off';
 import { conversionRefusalResponse } from '@/lib/api/conversion-refusal-response';
 import type { User } from '@/lib/auth/types';
-import { createProblemDetailsResponse, createPdfPostprocessResponse } from '@/lib/api/problem-details';
+import { codedRefusal, createProblemDetailsResponse, createPdfPostprocessResponse } from '@/lib/api/problem-details';
 import { DOWNLOAD_SECURITY_HEADERS } from '@/lib/api/content-disposition';
 import { loggingOutcomes, type ConversionTrace } from '@/lib/api/conversion-outcome-log';
 import { typedFailureProblem } from '@/lib/api/typed-failure-response';
@@ -80,7 +82,23 @@ function parseTargetFormats(raw: string | null, instanceUri: string): { map: Map
   return { map: new Map(entries as Array<[string, string]>) };
 }
 
-/** The files and fields of a batch request, or the refusal for a malformed body or an empty file list. */
+const MAX_BATCH_FILES = 100;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+const INTERNAL_ITEM_ERROR = 'Internal conversion error';
+
+/** Masks server faults and untyped crashes on batch items while keeping masked 4xx client refusal details. */
+function formatBatchItemError(error: unknown): string {
+  if (payloadLimitStatus(error) !== null || spoofCheckRefusal(error)) {
+    return maskServerText(error instanceof Error ? error.message : String(error));
+  }
+  const typed = typedFailureOf(error);
+  if (typed && typed.status < HTTP_INTERNAL_SERVER_ERROR) {
+    return maskServerText(error instanceof Error ? error.message : String(error));
+  }
+  return INTERNAL_ITEM_ERROR;
+}
+
+/** The files and fields of a batch request, or the refusal for a malformed body or an invalid file count. */
 async function readBatchForm(
   req: NextRequest,
   instanceUri: string
@@ -92,6 +110,15 @@ async function readBatchForm(
   const files = body.form.getAll('files').filter((entry): entry is File => entry instanceof Blob);
   if (files.length === 0) {
     return { refusal: NextResponse.json({ success: false, error: 'No files provided for batch conversion.' }, { status: 400 }) };
+  }
+  if (files.length > MAX_BATCH_FILES) {
+    return {
+      refusal: codedRefusal<ConversionRefusalCode>(
+        400,
+        'too_many_files',
+        `At most ${MAX_BATCH_FILES} files may be submitted in a single batch; the request has ${files.length}.`
+      ),
+    };
   }
   const onErrorRaw = body.form.get('onError');
   let onError: 'fail' | 'continue' = 'fail';
@@ -383,16 +410,45 @@ async function convertPlanned(ctx: ConvertPlannedContext): Promise<NextResponse>
           results[idx] = {
             status: 'failed',
             filename: file.name,
-            error: itemErr instanceof Error ? itemErr.message : String(itemErr),
+            error: formatBatchItemError(itemErr),
           };
         }
       }
     };
 
-    const workerCount = Math.min(BATCH_CONCURRENCY, planned.length);
-    const work = Promise.all(Array.from({ length: workerCount }, () => worker()));
-    onRunningWork?.(work);
-    await work;
+    const desiredExtra = Math.max(0, Math.min(BATCH_CONCURRENCY, planned.length) - 1);
+    const extraReleases: Array<() => void> = [];
+    let workStarted = false;
+    let extrasReleased = false;
+    const releaseExtras = () => {
+      if (extrasReleased) return;
+      extrasReleased = true;
+      while (extraReleases.length > 0) extraReleases.pop()!();
+    };
+
+    try {
+      for (let i = 0; i < desiredExtra; i++) {
+        limits.signal.throwIfAborted();
+        const extra = await acquireSyncSlot(caller.id, caller.tier);
+        if (!extra.granted) break;
+        extraReleases.push(extra.release);
+        limits.signal.throwIfAborted();
+      }
+      limits.signal.throwIfAborted();
+
+      const workerCount = 1 + extraReleases.length;
+      const work = Promise.all(Array.from({ length: workerCount }, () => worker()));
+      workStarted = true;
+      void work.then(releaseExtras, releaseExtras);
+      onRunningWork?.(work);
+      try {
+        await work;
+      } finally {
+        releaseExtras();
+      }
+    } finally {
+      if (!workStarted) releaseExtras();
+    }
   });
 
   const convertedFiles: { filename: string; buffer: Buffer }[] = [];

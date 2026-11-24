@@ -741,7 +741,7 @@ export const internalPaths = {
       operationId: 'convertBatchInternal',
       security: ANONYMOUS_OR_SCOPE('convert:write'),
       requestBody: multipartBody({
-        files: { type: 'array', items: { type: 'string', format: 'binary' }, description: `Up to ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total, the most one request carries.` },
+        files: { type: 'array', maxItems: 100, items: { type: 'string', format: 'binary' }, description: `Up to ${formatBytes(SINGLE_REQUEST_FILE_MAX_BYTES)} in total, the most one request carries.` },
         targetFormats: { type: 'string', description: 'JSON map of filename to target format; `default` applies to the rest.' },
         options: { type: 'string', description: CONVERT_OPTIONS_DESCRIPTION },
         onError: { type: 'string', enum: ['fail', 'continue'], description: 'Failure policy: "fail" aborts on first failure, "continue" bundles successes and returns _failures.json.' },

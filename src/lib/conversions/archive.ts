@@ -58,7 +58,7 @@ import { resolveArchiveCompressionLevel } from './archive-compression-level';
 import { singleStreamPayload } from './archive-single-stream';
 import { RAR4_FILE_FLAG_UNICODE, decodeRar4FileName, readRar4BlockHeader } from './archive-rar4-name';
 import { extractRarWithSevenZipOr } from './archive-rar-seven-zip';
-import { canonicalEntryPath, encryptedStagedName, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
+import { canonicalEntryPath, safeCanonicalArchivePath, validateEntryPath } from './archive-entry-path';
 import { gzipInBlocks } from './deflate-blocks';
 import { createZipBuffer, deflaterRunningAhead, ZIP_DEFAULT_LEVEL, type ZipEntryInput } from './zip-writer';
 import { decodeLzma, decodeLzma2 } from './lzma-decoder';
@@ -119,7 +119,6 @@ import {
   archivePasswordError, unrarLinkRefusal,
   archiveFailureStderr,
   assertArchivePasswordSafe,
-  assertListingShowsEncryption,
   assertEncryptedArchiveInputWithinLimits,
   assertZipPasswordSupported,
   MAX_ENCRYPTION_LISTING_BYTES,
@@ -128,10 +127,14 @@ import {
   execFileSyncWithPasswordStdin,
   isArchivePasswordError,
   sevenZipCreatePasswordInput,
-  sevenZipEncryptionCheckInput,
   sevenZipReadPasswordInput,
   isArchivePasswordFailure,
 } from './archive-password';
+import {
+  assertCreatedArchiveEncrypted,
+  createEncryptedArchiveVia7z,
+  createEncryptedArchiveVia7zAsync,
+} from './archive-encrypted';
 import {
   compressWithZstdDict,
   decompressWithZstdDict,
@@ -274,81 +277,6 @@ function renameDuplicateArchiveEntries<T extends { filename: string }>(files: T[
   return result;
 }
 
-/**
- * Lists a freshly created password-protected archive without its password and throws
- * ArchiveNotEncryptedError unless it is encrypted, so a plaintext archive is never returned.
- */
-function assertCreatedArchiveEncrypted(p7z: string, archivePath: string, format: 'zip' | '7z', cwd: string): void {
-  const resolved = resolveSandboxedCommand(p7z, ['l', '-slt', archivePath], { networkIsolated: true, workDir: cwd, readDirs: [archivePath] });
-  let outcome: { listing?: string; failureOutput?: string };
-  try {
-    const out = execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
-      cwd,
-      env: getSanitizedEnvironment({}, true, cwd),
-      timeout: SEVEN_ZIP_LISTING_TIMEOUT_MS,
-      maxBuffer: MAX_ENCRYPTION_LISTING_BYTES,
-      input: sevenZipEncryptionCheckInput(),
-    });
-    outcome = { listing: out.toString('utf-8') };
-  } catch (err) {
-    outcome = { failureOutput: archiveFailureStderr(err) };
-  }
-  assertListingShowsEncryption(format, outcome);
-}
-
-function createEncryptedArchiveVia7z(
-  files: { filename: string; buffer: Buffer }[],
-  archiveName: string,
-  archiveType: 'zip' | '7z',
-  mimeType: string,
-  password?: string,
-  collisionPolicy?: ArchiveCollisionPolicy
-): ConversionResult | null {
-  const p7z = get7zBinaryPath();
-  if (!p7z || !password) return null;
-  assertArchivePasswordSafe(password);
-  if (archiveType === 'zip') assertZipPasswordSupported(password);
-
-  const resolvedFiles = resolveArchiveEntryCollisions(files, collisionPolicy || 'rename');
-  const stagedNames = resolvedFiles.map((f) => encryptedStagedName(f.filename));
-  assertEncryptedArchiveInputWithinLimits(stagedNames);
-  const tmpDir = os.tmpdir();
-  const token = crypto.randomBytes(8).toString('hex');
-  const workDir = path.join(tmpDir, `easyconvert_${archiveType}_create_${Date.now()}_${token}`);
-  const stagingDir = path.join(workDir, 'staging');
-  fs.mkdirSync(stagingDir, { recursive: true });
-  try {
-    for (const [i, f] of resolvedFiles.entries()) {
-      const dest = path.join(stagingDir, stagedNames[i]);
-      fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, f.buffer);
-    }
-    const outPath = path.join(workDir, archiveName);
-    const extraArgs = archiveType === '7z'
-      ? ['-t7z', '-mhe=on', SEVEN_ZIP_ASK_PASSWORD_SWITCH]
-      : ['-tzip', '-mem=AES256', SEVEN_ZIP_ASK_PASSWORD_SWITCH];
-    const resolved = resolveSandboxedCommand(p7z, ['a', '-y', ...extraArgs, outPath, '.'], {
-      networkIsolated: true, workDir,
-    });
-    execFileSyncWithPasswordStdin(resolved.binary, resolved.args, {
-      cwd: stagingDir,
-      env: getSanitizedEnvironment({}, true, workDir),
-      timeout: 60000,
-      input: sevenZipCreatePasswordInput(password),
-    });
-    assertCreatedArchiveEncrypted(p7z, outPath, archiveType, stagingDir);
-    const content = readSandboxOutput(outPath);
-    return {
-      buffer: content,
-      mimeType,
-      filename: archiveName,
-      size: content.length,
-    };
-  } finally {
-    try { fs.rmSync(workDir, { recursive: true, force: true }); } catch {}
-  }
-}
-
 export async function createZipArchive(
   files: { filename: string; buffer: Buffer }[],
   options: ConversionOptions = {},
@@ -364,14 +292,14 @@ export async function createZipArchive(
         'Archive encryption is unavailable: native 7z binary is required for encrypted ZIP archives.'
       );
     }
-    const encRes = createEncryptedArchiveVia7z(
-      resolvedFiles,
+    const encRes = await createEncryptedArchiveVia7zAsync(resolvedFiles, {
+      p7z,
       archiveName,
-      'zip',
-      'application/zip',
-      options.password,
-      options.collisionPolicy
-    );
+      archiveType: 'zip',
+      mimeType: 'application/zip',
+      password: options.password,
+      signal: options.signal,
+    });
     if (encRes) return encRes;
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
@@ -2382,14 +2310,13 @@ function prepare7zArchive(
         'Archive encryption is unavailable: native 7z binary is required for encrypted 7z archives.'
       );
     }
-    const encRes = createEncryptedArchiveVia7z(
-      resolvedFiles,
+    const encRes = createEncryptedArchiveVia7z(resolvedFiles, {
+      p7z,
       archiveName,
-      '7z',
-      'application/x-7z-compressed',
-      options.password,
-      options.collisionPolicy
-    );
+      archiveType: '7z',
+      mimeType: 'application/x-7z-compressed',
+      password: options.password,
+    });
     if (encRes) return { encrypted: encRes };
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
@@ -2540,7 +2467,7 @@ async function createNative7zArchive(plan: SevenZipPlan, p7z: string, signal: Ab
  * `create7zArchive` that keeps the event loop free. With 7-Zip installed, input of SEVEN_ZIP_NATIVE_MIN_BYTES or more
  * with an LZMA2 coder is compressed by `7z a -t7z -m0=lzma2` in the sandbox (the result is tested with `7z t` and its
  * listing checked); otherwise the pure LZMA, LZMA2 and Deflate streams are built on pool threads. Both give an archive
- * the reference extractor reads. Encrypted archives take the same path as `create7zArchive`.
+ * the reference extractor reads. Encrypted archives run through `createEncryptedArchiveVia7zAsync` off the event loop.
  */
 export async function create7zArchiveAsync(
   files: { filename: string; buffer: Buffer }[],
@@ -2548,6 +2475,26 @@ export async function create7zArchiveAsync(
   archiveName = 'converted_files.7z',
   runtime: { signal?: AbortSignal } = {}
 ): Promise<ConversionResult> {
+  assertArchivePasswordSafe(options.password);
+  if (options.password) {
+    const p7z = get7zBinaryPath();
+    if (!p7z) {
+      throw new ArchiveEncryptionUnavailableError(
+        'Archive encryption is unavailable: native 7z binary is required for encrypted 7z archives.'
+      );
+    }
+    const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
+    const encRes = await createEncryptedArchiveVia7zAsync(resolvedFiles, {
+      p7z,
+      archiveName,
+      archiveType: '7z',
+      mimeType: 'application/x-7z-compressed',
+      password: options.password,
+      signal: runtime.signal ?? options.signal,
+    });
+    if (encRes) return encRes;
+    throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
+  }
   const prepared = prepare7zArchive(files, options, archiveName);
   if ('encrypted' in prepared) return prepared.encrypted;
   const { plan } = prepared;
