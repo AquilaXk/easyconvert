@@ -223,4 +223,95 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
       await Promise.all([userStoreClient.quit(), keyStoreClient.quit()]);
     }
   });
+
+  async function seedLegacyUnindexedKeys(activeCount: number, revokedCount: number): Promise<void> {
+    const total = activeCount + revokedCount;
+    for (let i = 0; i < total; i++) {
+      const id = `legacy-${i}`;
+      const status = i < activeCount ? 'active' : 'revoked';
+      const keyHash = crypto.createHash('sha256').update(`legacy-adv-secret-${keyPrefix}-${i}`).digest('hex');
+      const record = {
+        id,
+        userId,
+        name: id,
+        prefix: 'ec_live_adv...',
+        keyHash,
+        createdAt: 1000 + i,
+        status,
+      };
+      await admin.hset(`${keyPrefix}apikeys:${id}`, {
+        id,
+        userId,
+        status,
+        keyHash,
+        previousKeyHash: '',
+        data: JSON.stringify(record),
+      });
+      await admin.hset(`${keyPrefix}apikey_hashes`, keyHash, id);
+      await admin.sadd(`${keyPrefix}user_keys:${userId}`, id);
+    }
+  }
+
+  it('handles 40 concurrent creates across 4 clients racing revokeApiKey during legacy backfill', async () => {
+    await seedLegacyUnindexedKeys(19, 5);
+    const stores = clients.map((client) => storeOf(client));
+
+    const createPromises = Array.from({ length: 40 }, (_, i) =>
+      stores[i % stores.length]!.generateApiKey(userId, `race-${i}`)
+    );
+    const revokePromise = stores[0]!.revokeApiKey(userId, 'legacy-0');
+    const [createSettled, revokeSettled] = await Promise.all([
+      Promise.allSettled(createPromises),
+      revokePromise,
+    ]);
+
+    expect(revokeSettled).toBe(true);
+    const succeeded = createSettled.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<RedisKeyStore['generateApiKey']>>> => r.status === 'fulfilled');
+    const rejected = createSettled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+    expect(succeeded.length).toBeGreaterThanOrEqual(1);
+    expect(succeeded.length).toBeLessThanOrEqual(2);
+    expect(rejected).toHaveLength(40 - succeeded.length);
+    for (const err of rejected) {
+      expect(err.reason).toBeInstanceOf(ApiKeyLimitError);
+    }
+
+    expect(await admin.get(`${keyPrefix}user_active_keys_init:${userId}`)).toBe('1');
+    const activeMembers = await admin.smembers(`${keyPrefix}user_active_keys:${userId}`);
+    expect(activeMembers.length).toBeLessThanOrEqual(EXPECTED_LIMIT);
+    expect(activeMembers).not.toContain('legacy-0');
+    for (let i = 19; i < 24; i++) {
+      expect(activeMembers).not.toContain(`legacy-${i}`);
+    }
+
+    const listed = await stores[1]!.listApiKeys(userId, { decryptSecrets: false });
+    const listedActiveIds = listed.filter((k) => k.status === 'active').map((k) => k.id).sort();
+    expect([...activeMembers].sort()).toEqual(listedActiveIds);
+
+    // Fill any single slot reclaimed if revoke happened after initial cap, then verify strict 20 cap.
+    if (listedActiveIds.length === EXPECTED_LIMIT - 1) {
+      await stores[2]!.generateApiKey(userId, 'fill-reclaimed-slot');
+    }
+    expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT);
+    await expect(stores[3]!.generateApiKey(userId, 'past-cap')).rejects.toBeInstanceOf(ApiKeyLimitError);
+  });
+
+  it('allows full 20 active keys across concurrent burst on legacy account with 25 revoked keys', async () => {
+    await seedLegacyUnindexedKeys(0, 25);
+    const stores = clients.map((client) => storeOf(client));
+
+    const settled = await Promise.allSettled(
+      Array.from({ length: 25 }, (_, i) => stores[i % stores.length]!.generateApiKey(userId, `fresh-${i}`))
+    );
+    const fulfilled = settled.filter((r) => r.status === 'fulfilled');
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+
+    expect(fulfilled).toHaveLength(EXPECTED_LIMIT);
+    expect(rejected).toHaveLength(5);
+    for (const err of rejected) {
+      expect(err.reason).toBeInstanceOf(ApiKeyLimitError);
+    }
+    expect(await admin.get(`${keyPrefix}user_active_keys_init:${userId}`)).toBe('1');
+    expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT);
+    expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(45);
+  });
 });

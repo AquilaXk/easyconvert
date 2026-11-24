@@ -64,6 +64,8 @@ import {
 } from './reservation-ledger';
 import type { PromoGrant, PromoGrantOutcome, PromoVoidOutcome } from './promo-grants';
 
+const MAX_ACTIVE_KEY_SYNC_ATTEMPTS = 16;
+
 export { isIpInCidr, isIpAllowed, RECORD_VERIFIED_KEY_LUA_SCRIPT };
 export type { QuotaExtension };
 
@@ -575,7 +577,7 @@ export class RedisKeyStore extends KeyStore {
     const userKeysKey = `${this.keyPrefix}user_keys:${userId}`;
     const userActiveKeysKey = `${this.keyPrefix}user_active_keys:${userId}`;
     const userActiveInitKey = `${this.keyPrefix}user_active_keys_init:${userId}`;
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < MAX_ACTIVE_KEY_SYNC_ATTEMPTS; attempt++) {
       const keyIds = await client.smembers(userKeysKey);
       const keyHashes = keyIds.map((id) => `${this.keyPrefix}apikeys:${id}`);
       const outcome = await client.eval(
@@ -602,7 +604,7 @@ export class RedisKeyStore extends KeyStore {
     const keyPrefix = this.keyPrefix;
     const dataJson = JSON.stringify(key);
     const prevHash = key.previousKeyHash || '';
-    for (let attempt = 0; attempt < 5; attempt++) {
+    for (let attempt = 0; attempt < MAX_ACTIVE_KEY_SYNC_ATTEMPTS; attempt++) {
       const luaRes = await this.redisClient!.eval(
         CREATE_API_KEY_LUA_SCRIPT,
         5,
@@ -630,6 +632,24 @@ export class RedisKeyStore extends KeyStore {
     throw new Error(`Timed out creating API key after syncing index for ${key.userId}`);
   }
 
+  private async cleanupFallbackApiKeyWrite(key: ApiKey): Promise<void> {
+    const client = this.redisClient;
+    if (!client) return;
+    const prefix = this.keyPrefix;
+    const ops: Array<Promise<unknown>> = [];
+    if (typeof client.hdel === 'function') {
+      ops.push(client.hdel(`${prefix}apikey_hashes`, key.keyHash));
+    }
+    if (typeof client.srem === 'function') {
+      ops.push(client.srem(`${prefix}user_keys:${key.userId}`, key.id));
+      ops.push(client.srem(`${prefix}user_active_keys:${key.userId}`, key.id));
+    }
+    if (typeof client.del === 'function') {
+      ops.push(client.del(`${prefix}apikeys:${key.id}`));
+    }
+    await Promise.allSettled(ops);
+  }
+
   private async createApiKeyInRedisFallback(
     key: ApiKey,
     maxActiveKeys: number,
@@ -652,10 +672,15 @@ export class RedisKeyStore extends KeyStore {
       previousKeyHash: prevHash,
       data: JSON.stringify(key),
     });
-    await client.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
-    await client.sadd(`${keyPrefix}user_keys:${key.userId}`, key.id);
-    if (key.status === 'active') {
-      await client.sadd(`${keyPrefix}user_active_keys:${key.userId}`, key.id);
+    try {
+      await client.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
+      await client.sadd(`${keyPrefix}user_keys:${key.userId}`, key.id);
+      if (key.status === 'active') {
+        await client.sadd(`${keyPrefix}user_active_keys:${key.userId}`, key.id);
+      }
+    } catch (error) {
+      await this.cleanupFallbackApiKeyWrite(key);
+      throw error;
     }
   }
 

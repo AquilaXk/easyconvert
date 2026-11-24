@@ -11,7 +11,72 @@ export const DEFAULT_BASE_URL = 'https://convert.aquilaxk.site';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 5 * 60_000;
+const MAX_MULTIPART_PARTS = 10_000;
+const PRESIGN_EXPIRY_LEEWAY_MS = 10_000;
+const EXPIRY_SECONDS_THRESHOLD = 1_000_000_000_000;
 const TERMINAL_JOB_STATUSES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
+
+interface PregeneratedPartEntry {
+  url?: string;
+  expiresAtMs?: number;
+}
+
+interface MultipartPartDescriptor {
+  partNumber: number;
+  uploadUrl?: string;
+  url?: string;
+  expiresAt?: number;
+}
+
+function normalizePresignExpiryMs(expiresAt: unknown): number | undefined {
+  if (typeof expiresAt !== 'number' || !Number.isFinite(expiresAt)) {
+    return undefined;
+  }
+  if (expiresAt <= 0) {
+    return 0;
+  }
+  return expiresAt < EXPIRY_SECONDS_THRESHOLD ? expiresAt * 1000 : expiresAt;
+}
+
+function resolveValidatedTotalParts(
+  declaredTotalParts: unknown,
+  partListLength: number
+): number | undefined {
+  if (partListLength > MAX_MULTIPART_PARTS) {
+    throw new Error(`Multipart upload initialization returned ${partListLength} parts, exceeding cap ${MAX_MULTIPART_PARTS}`);
+  }
+  if (declaredTotalParts === undefined || declaredTotalParts === null) {
+    return undefined;
+  }
+  if (
+    typeof declaredTotalParts !== 'number' ||
+    !Number.isInteger(declaredTotalParts) ||
+    declaredTotalParts < 1 ||
+    declaredTotalParts > MAX_MULTIPART_PARTS
+  ) {
+    throw new Error(`Invalid multipart totalParts: ${String(declaredTotalParts)}`);
+  }
+  return declaredTotalParts;
+}
+
+function isPregeneratedPartExpired(entry: PregeneratedPartEntry): boolean {
+  return entry.expiresAtMs !== undefined && Date.now() >= entry.expiresAtMs - PRESIGN_EXPIRY_LEEWAY_MS;
+}
+
+function* iterMultipartPartNumbers(
+  partList: readonly MultipartPartDescriptor[],
+  declaredTotalParts: number | undefined
+): IterableIterator<number> {
+  if (declaredTotalParts !== undefined && declaredTotalParts > partList.length) {
+    for (let partNumber = 1; partNumber <= declaredTotalParts; partNumber += 1) {
+      yield partNumber;
+    }
+    return;
+  }
+  for (const partInfo of partList) {
+    yield partInfo.partNumber;
+  }
+}
 
 export interface EasyConvertClientConfig {
   apiKey: string;
@@ -344,34 +409,40 @@ export class EasyConvertClient {
       storageKey?: string;
       partSize: number;
       totalParts?: number;
-      parts?: Array<{ partNumber: number; uploadUrl?: string; url?: string }>;
-      partUrls?: Array<{ partNumber: number; url?: string; uploadUrl?: string }>;
+      parts?: MultipartPartDescriptor[];
+      partUrls?: MultipartPartDescriptor[];
     };
 
-    const partList = initData.parts ?? initData.partUrls ?? [];
-    const pregeneratedUrls = new Map<number, string | undefined>();
-    for (const partInfo of partList) {
-      pregeneratedUrls.set(partInfo.partNumber, partInfo.uploadUrl ?? partInfo.url);
+    if (typeof initData.partSize !== 'number' || !Number.isFinite(initData.partSize) || initData.partSize <= 0) {
+      throw new Error(`Invalid multipart partSize: ${String(initData.partSize)}`);
     }
-    const totalParts =
-      typeof initData.totalParts === 'number' && Number.isInteger(initData.totalParts) && initData.totalParts > partList.length
-        ? initData.totalParts
-        : partList.length;
-    const partNumbers =
-      totalParts > partList.length
-        ? Array.from({ length: totalParts }, (_, idx) => idx + 1)
-        : partList.map((partInfo) => partInfo.partNumber);
+
+    const storageKey = initData.key ?? initData.storageKey;
+    const partList = initData.parts ?? initData.partUrls ?? [];
+    const declaredTotalParts = resolveValidatedTotalParts(initData.totalParts, partList.length);
+    if (declaredTotalParts === undefined && partList.length === 0 && file.size > 0) {
+      throw new Error('Multipart upload initialization returned no parts');
+    }
+
+    const pregeneratedUrls = new Map<number, PregeneratedPartEntry>();
+    for (const partInfo of partList) {
+      pregeneratedUrls.set(partInfo.partNumber, {
+        url: partInfo.uploadUrl ?? partInfo.url,
+        expiresAtMs: normalizePresignExpiryMs(partInfo.expiresAt),
+      });
+    }
 
     const parts: Array<{ partNumber: number; etag: string }> = [];
-    for (const partNumber of partNumbers) {
-      let targetUrl: string | undefined;
-      if (pregeneratedUrls.has(partNumber)) {
-        targetUrl = pregeneratedUrls.get(partNumber);
-        if (!targetUrl) {
+    for (const partNumber of iterMultipartPartNumbers(partList, declaredTotalParts)) {
+      const pregenerated = pregeneratedUrls.get(partNumber);
+      let targetUrl: string;
+      if (pregenerated && !isPregeneratedPartExpired(pregenerated)) {
+        if (!pregenerated.url) {
           throw new Error(`Missing upload URL for multipart part ${partNumber}`);
         }
+        targetUrl = pregenerated.url;
       } else {
-        targetUrl = await this.presignMultipartPart(initData.uploadId, initData.key, partNumber);
+        targetUrl = await this.presignMultipartPart(initData.uploadId, storageKey, partNumber);
       }
       const start = (partNumber - 1) * initData.partSize;
       const end = Math.min(start + initData.partSize, file.size);

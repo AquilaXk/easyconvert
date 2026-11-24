@@ -7,6 +7,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 from collections.abc import Iterator, Mapping
 from io import BytesIO
@@ -29,6 +30,42 @@ DEFAULT_BASE_URL = "https://convert.aquilaxk.site"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 TERMINAL_JOB_STATUSES = frozenset({"completed", "failed", "cancelled"})
 HTTP_ERROR_FLOOR = 400
+_MAX_MULTIPART_PARTS = 10_000
+_PRESIGN_EXPIRY_LEEWAY_MS = 10_000
+_EXPIRY_SECONDS_THRESHOLD = 1_000_000_000_000
+
+
+def _normalize_presign_expiry_ms(expires_at: Any) -> float | None:
+    if isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)):
+        return None
+    if not math.isfinite(expires_at):
+        return None
+    if expires_at <= 0:
+        return 0.0
+    return float(expires_at * 1000 if expires_at < _EXPIRY_SECONDS_THRESHOLD else expires_at)
+
+
+def _is_presign_expired(expires_at_ms: float | None) -> bool:
+    if expires_at_ms is None:
+        return False
+    return (time.time() * 1000.0) >= (expires_at_ms - _PRESIGN_EXPIRY_LEEWAY_MS)
+
+
+def _resolve_declared_total_parts(declared_total_parts: Any, part_list_len: int) -> int | None:
+    if part_list_len > _MAX_MULTIPART_PARTS:
+        raise ValueError(
+            f"Multipart upload initialization returned {part_list_len} parts, exceeding cap {_MAX_MULTIPART_PARTS}"
+        )
+    if declared_total_parts is None:
+        return None
+    if (
+        isinstance(declared_total_parts, bool)
+        or not isinstance(declared_total_parts, int)
+        or declared_total_parts < 1
+        or declared_total_parts > _MAX_MULTIPART_PARTS
+    ):
+        raise ValueError(f"Invalid multipart totalParts: {declared_total_parts!r}")
+    return declared_total_parts
 
 
 class EasyConvertApiError(Exception):
@@ -350,21 +387,37 @@ class EasyConvertClient:
         upload_id = init_data["uploadId"]
         storage_key = init_data.get("key") or init_data.get("storageKey")
         part_size_actual = init_data.get("partSize", 5 * 1024 * 1024)
+        if (
+            isinstance(part_size_actual, bool)
+            or not isinstance(part_size_actual, int)
+            or part_size_actual <= 0
+        ):
+            raise ValueError(f"Invalid multipart partSize: {part_size_actual!r}")
+
         part_list = init_data.get("parts") or init_data.get("partUrls") or []
+        declared_total_parts = _resolve_declared_total_parts(
+            init_data.get("totalParts"), len(part_list)
+        )
+        if declared_total_parts is None and not part_list and total_size > 0:
+            raise ValueError("Multipart upload initialization returned no parts")
+
         pregenerated_urls = {
-            part_info["partNumber"]: (part_info.get("uploadUrl") or part_info.get("url"))
+            part_info["partNumber"]: (
+                part_info.get("uploadUrl") or part_info.get("url"),
+                _normalize_presign_expiry_ms(part_info.get("expiresAt")),
+            )
             for part_info in part_list
         }
-        declared_total_parts = init_data.get("totalParts")
-        if isinstance(declared_total_parts, int) and declared_total_parts > len(part_list):
-            part_numbers = list(range(1, declared_total_parts + 1))
+        if declared_total_parts is not None and declared_total_parts > len(part_list):
+            part_numbers = range(1, declared_total_parts + 1)
         else:
-            part_numbers = [part_info["partNumber"] for part_info in part_list]
+            part_numbers = (part_info["partNumber"] for part_info in part_list)
 
         parts = []
         for p_num in part_numbers:
-            if p_num in pregenerated_urls:
-                raw_url = pregenerated_urls[p_num]
+            entry = pregenerated_urls.get(p_num)
+            if entry is not None and not _is_presign_expired(entry[1]):
+                raw_url = entry[0]
                 if not raw_url:
                     raise ValueError(f"Missing upload URL for multipart part {p_num}")
             else:

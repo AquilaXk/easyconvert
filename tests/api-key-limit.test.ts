@@ -5,6 +5,7 @@ import { userStore } from '../src/lib/auth/user-store';
 import { keyStore } from '../src/lib/api-keys/key-store';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { ApiKeyLimitError } from '../src/lib/api-keys/types';
+import { AuthStoreUnavailableError } from '../src/lib/auth/store-unavailable';
 import { createSessionToken } from '../src/lib/auth/session';
 import { POST as createKey } from '../src/app/api/keys/route';
 import { DELETE as revokeKey } from '../src/app/api/keys/[id]/route';
@@ -173,28 +174,76 @@ describe('the number of active API keys of an account', () => {
 
   it('places every key passed to CREATE, SYNC, REVOKE, and DELETE scripts in one Redis Cluster hash slot', async () => {
     const keySets: string[][] = [];
+    let needsSync = true;
     const clusterClient = {
       isCluster: true,
       smembers: async () => ['k_old'],
       eval: async (_script: string, numKeys: number, ...args: unknown[]) => {
         const keys = args.slice(0, numKeys).map(String);
         keySets.push(keys);
-        if (keys.length === 5 && args[5] === 'sync-check') return 'NEEDS_SYNC';
-        if (keys.length === 4) return 'SYNCED';
-        if (keys.length === 2) return 'REVOKED';
-        if (keys.length === 5 && numKeys === 5 && args[5] === 'u_slot') return 'DELETED';
+        if (numKeys === 5 && args[6] === 'u_slot' && needsSync) {
+          needsSync = false;
+          return 'NEEDS_SYNC';
+        }
+        if (numKeys === 4) return 'SYNCED';
+        if (numKeys === 2) return 'REVOKED';
+        if (numKeys === 5 && args[5] === 'u_slot') return 'DELETED';
         return 'CREATED';
       },
     } as unknown as Redis;
 
     const store = new RedisKeyStore({ keyPrefix: 'easyconvert:{keys}:', isolated: true, redisClient: clusterClient });
-    const created = await store.generateApiKey('u_slot', 'slot-key');
+    const created = await store.generateApiKey('u_slot', 'slot-key', { maxActiveKeys: EXPECTED_LIMIT });
     await store.revokeApiKey('u_slot', created.key.id);
     await store.deleteApiKey('u_slot', created.key.id);
 
-    expect(keySets.length).toBeGreaterThanOrEqual(3);
+    expect(keySets).toHaveLength(5);
+    expect(keySets.map((keys) => keys.length)).toEqual([5, 4, 5, 2, 5]);
     for (const keys of keySets) {
       expect(new Set(keys.map(clusterKeySlot)).size).toBe(1);
     }
+  });
+
+  it('cleans up partial fallback Redis writes when an index update fails mid-creation', async () => {
+    const deletedKeys: string[] = [];
+    const hdelCalls: Array<[string, string]> = [];
+    const sremCalls: Array<[string, string]> = [];
+    const partialFailClient = {
+      smembers: async () => [],
+      hgetall: async () => ({}),
+      hset: async (key: string) => {
+        if (key.endsWith('apikey_hashes')) {
+          throw new Error('simulated hash index write failure');
+        }
+        return 1;
+      },
+      sadd: async () => 1,
+      hdel: async (key: string, field: string) => {
+        hdelCalls.push([key, field]);
+        return 1;
+      },
+      srem: async (key: string, member: string) => {
+        sremCalls.push([key, member]);
+        return 1;
+      },
+      del: async (key: string) => {
+        deletedKeys.push(key);
+        return 1;
+      },
+    } as unknown as Redis;
+
+    const store = new RedisKeyStore({ keyPrefix: 'easyconvert:fallback:', isolated: true, redisClient: partialFailClient });
+    await expect(store.generateApiKey('u_partial', 'broken-key', { maxActiveKeys: EXPECTED_LIMIT })).rejects.toBeInstanceOf(
+      AuthStoreUnavailableError
+    );
+
+    expect(deletedKeys).toHaveLength(1);
+    expect(deletedKeys[0]).toMatch(/^easyconvert:fallback:apikeys:/);
+    expect(hdelCalls).toHaveLength(1);
+    expect(hdelCalls[0][0]).toBe('easyconvert:fallback:apikey_hashes');
+    expect(sremCalls.map(([k]) => k)).toEqual([
+      'easyconvert:fallback:user_keys:u_partial',
+      'easyconvert:fallback:user_active_keys:u_partial',
+    ]);
   });
 });
