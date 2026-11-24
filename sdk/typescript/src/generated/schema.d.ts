@@ -196,7 +196,7 @@ export interface paths {
         put?: never;
         /**
          * Start Direct Multipart Upload
-         * @description Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15 minutes.
+         * @description Creates a multipart upload and returns presigned PUT URLs for up to the first 100 parts (sign remaining part numbers 101..totalParts on demand via `POST /api/v1/uploads?action=presign`). Part URLs expire after 15 minutes.
          */
         post: operations["createDirectUploadV1"];
         delete?: never;
@@ -3618,7 +3618,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Upload created with presigned part URLs. */
+            /** @description Upload created with initial presigned part URLs (at most 100 parts). */
             200: {
                 headers: {
                     [name: string]: unknown;

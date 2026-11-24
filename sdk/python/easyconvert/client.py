@@ -306,6 +306,25 @@ class EasyConvertClient:
 
         return {"uploadId": upload_id, "storageKey": storage_key, "location": location}
 
+    def _presign_multipart_part(
+        self,
+        client: httpx2.Client,
+        upload_id: str,
+        key: str | None,
+        part_number: int,
+    ) -> str:
+        payload: dict[str, Any] = {"uploadId": upload_id, "partNumber": part_number}
+        if key:
+            payload["key"] = key
+        presign_res = client.post("/api/v1/uploads?action=presign", json=payload)
+        if presign_res.status_code >= HTTP_ERROR_FLOOR:
+            raise EasyConvertApiError(presign_res.status_code, _problem(presign_res))
+        presign_data = presign_res.json()
+        raw_url = presign_data.get("url") or presign_data.get("uploadUrl")
+        if not raw_url:
+            raise ValueError(f"Missing upload URL for multipart part {part_number}")
+        return str(raw_url)
+
     def upload_multipart(
         self,
         file: bytes | BinaryIO,
@@ -329,15 +348,27 @@ class EasyConvertClient:
 
         init_data = init_res.json()
         upload_id = init_data["uploadId"]
+        storage_key = init_data.get("key") or init_data.get("storageKey")
         part_size_actual = init_data.get("partSize", 5 * 1024 * 1024)
         part_list = init_data.get("parts") or init_data.get("partUrls") or []
+        pregenerated_urls = {
+            part_info["partNumber"]: (part_info.get("uploadUrl") or part_info.get("url"))
+            for part_info in part_list
+        }
+        declared_total_parts = init_data.get("totalParts")
+        if isinstance(declared_total_parts, int) and declared_total_parts > len(part_list):
+            part_numbers = list(range(1, declared_total_parts + 1))
+        else:
+            part_numbers = [part_info["partNumber"] for part_info in part_list]
 
         parts = []
-        for part_info in part_list:
-            p_num = part_info["partNumber"]
-            raw_url = part_info.get("uploadUrl") or part_info.get("url")
-            if not raw_url:
-                raise ValueError(f"Missing upload URL for multipart part {p_num}")
+        for p_num in part_numbers:
+            if p_num in pregenerated_urls:
+                raw_url = pregenerated_urls[p_num]
+                if not raw_url:
+                    raise ValueError(f"Missing upload URL for multipart part {p_num}")
+            else:
+                raw_url = self._presign_multipart_part(client, upload_id, storage_key, p_num)
             target_url = str(client.base_url.join(raw_url))
             start = (p_num - 1) * part_size_actual
             part_len = max(0, min(part_size_actual, total_size - start))

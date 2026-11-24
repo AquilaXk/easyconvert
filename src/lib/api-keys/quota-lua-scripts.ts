@@ -662,8 +662,8 @@ return 1
 `;
 
 export const REVOKE_API_KEY_LUA_SCRIPT = `
--- KEYS[1]: apikeys:<keyId>
--- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: revokedDataJson
+-- KEYS[1]: apikeys:<keyId>  KEYS[2]: user_active_keys:<userId> (optional)
+-- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: revokedDataJson  ARGV[4]: keyId
 if redis.call('EXISTS', KEYS[1]) == 0 then
   return 'MISSING'
 end
@@ -675,6 +675,9 @@ if ARGV[3] ~= '' and redis.call('HGET', KEYS[1], 'keyHash') == ARGV[2] then
   redis.call('HSET', KEYS[1], 'status', 'revoked', 'data', ARGV[3])
 else
   redis.call('HSET', KEYS[1], 'status', 'revoked')
+end
+if KEYS[2] and ARGV[4] and ARGV[4] ~= '' then
+  redis.call('SREM', KEYS[2], ARGV[4])
 end
 return 'REVOKED'
 `;
@@ -725,17 +728,51 @@ end
 return 'OK'
 `;
 
+export const SYNC_ACTIVE_API_KEYS_LUA_SCRIPT = `
+-- KEYS[1]: user_active_keys:<userId>  KEYS[2]: user_active_keys_init:<userId>  KEYS[3]: user_keys:<userId>
+-- KEYS[4..3+#ARGV]: apikeys:<keyId> matching ARGV[1..#ARGV]
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return 'OK'
+end
+if redis.call('SCARD', KEYS[3]) ~= #ARGV then
+  return 'RETRY'
+end
+redis.call('DEL', KEYS[1])
+for i = 1, #ARGV do
+  if redis.call('HGET', KEYS[3 + i], 'status') == 'active' then
+    redis.call('SADD', KEYS[1], ARGV[i])
+  end
+end
+redis.call('SET', KEYS[2], '1')
+return 'SYNCED'
+`;
+
 export const CREATE_API_KEY_LUA_SCRIPT = `
--- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes  KEYS[3]: user_keys:<userId>
--- ARGV[1]: id  ARGV[2]: userId  ARGV[3]: status  ARGV[4]: keyHash  ARGV[5]: previousKeyHash  ARGV[6]: dataJson
+-- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes  KEYS[3]: user_keys:<userId>  KEYS[4]: user_active_keys:<userId>  KEYS[5]: user_active_keys_init:<userId>
+-- ARGV[1]: id  ARGV[2]: userId  ARGV[3]: status  ARGV[4]: keyHash  ARGV[5]: previousKeyHash  ARGV[6]: dataJson  ARGV[7]: maxActiveKeys
+local maxActive = tonumber(ARGV[7] or '0')
+if maxActive and maxActive > 0 and ARGV[3] == 'active' then
+  if KEYS[5] and redis.call('EXISTS', KEYS[5]) == 0 and redis.call('SCARD', KEYS[3]) > 0 then
+    return 'NEEDS_SYNC'
+  end
+  if KEYS[4] and redis.call('SCARD', KEYS[4]) >= maxActive then
+    return 'LIMIT_REACHED'
+  end
+end
 redis.call('HSET', KEYS[1], 'id', ARGV[1], 'userId', ARGV[2], 'status', ARGV[3], 'keyHash', ARGV[4], 'previousKeyHash', ARGV[5], 'data', ARGV[6])
 redis.call('HSET', KEYS[2], ARGV[4], ARGV[1])
 redis.call('SADD', KEYS[3], ARGV[1])
+if KEYS[4] and ARGV[3] == 'active' then
+  redis.call('SADD', KEYS[4], ARGV[1])
+end
+if KEYS[5] and redis.call('EXISTS', KEYS[5]) == 0 and redis.call('SCARD', KEYS[3]) <= 1 then
+  redis.call('SET', KEYS[5], '1')
+end
 return 'CREATED'
 `;
 
 export const DELETE_API_KEY_LUA_SCRIPT = `
--- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes  KEYS[3]: user_keys:<userId>  KEYS[4]: rate:apikey:<keyId>
+-- KEYS[1]: apikeys:<keyId>  KEYS[2]: apikey_hashes  KEYS[3]: user_keys:<userId>  KEYS[4]: rate:apikey:<keyId>  KEYS[5]: user_active_keys:<userId> (optional)
 -- ARGV[1]: userId  ARGV[2]: keyId  ARGV[3]: localOwnerId
 local ownerId = redis.call('HGET', KEYS[1], 'userId')
 local effectiveOwner = ownerId or (ARGV[3] ~= '' and ARGV[3] or false)
@@ -751,6 +788,9 @@ if prevHash and prevHash ~= '' then
   redis.call('HDEL', KEYS[2], prevHash)
 end
 redis.call('SREM', KEYS[3], ARGV[2])
+if KEYS[5] then
+  redis.call('SREM', KEYS[5], ARGV[2])
+end
 redis.call('DEL', KEYS[1], KEYS[4])
 return ownerId and 'DELETED' or 'MISSING'
 `;

@@ -8,7 +8,7 @@ import type { User } from '@/lib/auth/types';
 import { UPLOAD_PART_MAX_BYTES } from '@/lib/plan-limits';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
 import { reserveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
-import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { MAX_PREGENERATED_PART_URLS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { storageProvider } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
@@ -164,12 +164,14 @@ async function postDirectUploadAuthorized(req: NextRequest, instanceUri: string,
     );
   }
 
-  // 4. Generate presigned part URLs: object-store URLs for a remote provider, URLs on this
-  // application for local storage
+  // 4. Generate initial presigned part URLs (up to MAX_PREGENERATED_PART_URLS; later parts
+  // are signed on demand via POST /api/v1/uploads?action=presign): object-store URLs for a
+  // remote provider, URLs on this application for local storage
+  const pregenLimit = Math.min(totalParts, MAX_PREGENERATED_PART_URLS);
   let parts;
   try {
     parts = await Promise.all(
-      Array.from({ length: totalParts }, async (_, idx) => {
+      Array.from({ length: pregenLimit }, async (_, idx) => {
         const partNumber = idx + 1;
         const presigned = await presignPart(session.key, session.uploadId, partNumber, PART_URL_TTL_SECONDS);
         return {

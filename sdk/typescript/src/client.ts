@@ -287,6 +287,32 @@ export class EasyConvertClient {
     return { uploadId, storageKey, location };
   }
 
+  private async presignMultipartPart(uploadId: string, key: string | undefined, partNumber: number): Promise<string> {
+    const presignRes = await this.fetchImpl(new URL('/api/v1/uploads?action=presign', this.baseUrl), {
+      method: 'POST',
+      headers: {
+        Authorization: this.authorization,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        uploadId,
+        ...(key ? { key } : {}),
+        partNumber,
+      }),
+      signal: AbortSignal.timeout(this.timeoutMs),
+    });
+    if (!presignRes.ok) {
+      const problem = (await presignRes.json().catch(() => undefined)) as ProblemDetails | undefined;
+      throw new EasyConvertApiError(presignRes.status, problem);
+    }
+    const presignData = (await presignRes.json()) as { url?: string; uploadUrl?: string };
+    const targetUrl = presignData.url ?? presignData.uploadUrl;
+    if (!targetUrl) {
+      throw new Error(`Missing upload URL for multipart part ${partNumber}`);
+    }
+    return targetUrl;
+  }
+
   /** Direct multipart upload via presigned / direct upload URLs. */
   async uploadMultipart(
     file: Blob,
@@ -317,18 +343,37 @@ export class EasyConvertClient {
       key?: string;
       storageKey?: string;
       partSize: number;
+      totalParts?: number;
       parts?: Array<{ partNumber: number; uploadUrl?: string; url?: string }>;
       partUrls?: Array<{ partNumber: number; url?: string; uploadUrl?: string }>;
     };
 
     const partList = initData.parts ?? initData.partUrls ?? [];
-    const parts: Array<{ partNumber: number; etag: string }> = [];
+    const pregeneratedUrls = new Map<number, string | undefined>();
     for (const partInfo of partList) {
-      const targetUrl = partInfo.uploadUrl ?? partInfo.url;
-      if (!targetUrl) {
-        throw new Error(`Missing upload URL for multipart part ${partInfo.partNumber}`);
+      pregeneratedUrls.set(partInfo.partNumber, partInfo.uploadUrl ?? partInfo.url);
+    }
+    const totalParts =
+      typeof initData.totalParts === 'number' && Number.isInteger(initData.totalParts) && initData.totalParts > partList.length
+        ? initData.totalParts
+        : partList.length;
+    const partNumbers =
+      totalParts > partList.length
+        ? Array.from({ length: totalParts }, (_, idx) => idx + 1)
+        : partList.map((partInfo) => partInfo.partNumber);
+
+    const parts: Array<{ partNumber: number; etag: string }> = [];
+    for (const partNumber of partNumbers) {
+      let targetUrl: string | undefined;
+      if (pregeneratedUrls.has(partNumber)) {
+        targetUrl = pregeneratedUrls.get(partNumber);
+        if (!targetUrl) {
+          throw new Error(`Missing upload URL for multipart part ${partNumber}`);
+        }
+      } else {
+        targetUrl = await this.presignMultipartPart(initData.uploadId, initData.key, partNumber);
       }
-      const start = (partInfo.partNumber - 1) * initData.partSize;
+      const start = (partNumber - 1) * initData.partSize;
       const end = Math.min(start + initData.partSize, file.size);
       const chunk = file.slice(start, end);
       const putRes = await this.fetchImpl(new URL(targetUrl, this.baseUrl), {
@@ -342,8 +387,8 @@ export class EasyConvertClient {
       if (!putRes.ok) {
         throw new EasyConvertApiError(putRes.status, undefined);
       }
-      const etag = putRes.headers.get('ETag') || `"${partInfo.partNumber}"`;
-      parts.push({ partNumber: partInfo.partNumber, etag });
+      const etag = putRes.headers.get('ETag') || `"${partNumber}"`;
+      parts.push({ partNumber, etag });
     }
 
     const completeRes = await this.fetchImpl(new URL('/api/v1/uploads/direct/complete', this.baseUrl), {

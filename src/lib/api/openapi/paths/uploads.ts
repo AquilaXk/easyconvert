@@ -198,7 +198,7 @@ export const uploadPaths = {
   '/api/v1/uploads/direct': {
     post: {
       summary: 'Start Direct Multipart Upload',
-      description: 'Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15 minutes.',
+      description: 'Creates a multipart upload and returns presigned PUT URLs for up to the first 100 parts (sign remaining part numbers 101..totalParts on demand via `POST /api/v1/uploads?action=presign`). Part URLs expire after 15 minutes.',
       operationId: 'createDirectUploadV1',
       security: requireScope('convert:write'),
       requestBody: jsonBody({
@@ -208,7 +208,7 @@ export const uploadPaths = {
         partSize: { type: 'integer', description: 'Requested part size in bytes: at least 5 MiB unless the file fits in one part (every part but the last must reach it), and at most 10,000 parts are allowed.' },
       }, ['filename', 'totalSize']),
       responses: {
-        '200': createJsonResponse('Upload created with presigned part URLs.', {
+        '200': createJsonResponse('Upload created with initial presigned part URLs (at most 100 parts).', {
           uploadId: { type: 'string' },
           key: { type: 'string' },
           partSize: { type: 'integer' },

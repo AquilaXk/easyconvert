@@ -10,20 +10,22 @@ import {
   type ListApiKeysOptions,
   apiKeyHashCandidates,
   apiKeySecretAad,
+  resolveMaxActiveKeys,
   timingSafeHashMatch,
 } from './key-store';
 import { quotaAllowanceOf } from './quota-window';
-import type {
-  ApiKey,
-  ApiKeyCreateOptions,
-  ApiKeyCreateResult,
-  ApiKeyRotateOptions,
-  ApiKeyRotateResult,
-  ApiKeyUpdateOptions,
-  ChargeEntry,
-  QuotaUsage,
-  UserConversionFile,
-  UserConversionFileInput,
+import {
+  ApiKeyLimitError,
+  type ApiKey,
+  type ApiKeyCreateOptions,
+  type ApiKeyCreateResult,
+  type ApiKeyRotateOptions,
+  type ApiKeyRotateResult,
+  type ApiKeyUpdateOptions,
+  type ChargeEntry,
+  type QuotaUsage,
+  type UserConversionFile,
+  type UserConversionFileInput,
 } from './types';
 import type { User, UserTier } from '../auth/types';
 import { decryptSecret } from './secret-encryption';
@@ -39,6 +41,7 @@ import {
   RECORD_VERIFIED_KEY_LUA_SCRIPT,
   REVOKE_API_KEY_LUA_SCRIPT,
   ROTATE_API_KEY_LUA_SCRIPT,
+  SYNC_ACTIVE_API_KEYS_LUA_SCRIPT,
   TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
   UPDATE_API_KEY_LUA_SCRIPT,
 } from './quota-lua-scripts';
@@ -567,55 +570,120 @@ export class RedisKeyStore extends KeyStore {
     return (await this.endReservation('rollback', reservationId, (ledger) => ledger.rollback(reservationId))) === true;
   }
 
+  private async syncActiveApiKeysInRedis(userId: string): Promise<void> {
+    const client = this.redisClient!;
+    const userKeysKey = `${this.keyPrefix}user_keys:${userId}`;
+    const userActiveKeysKey = `${this.keyPrefix}user_active_keys:${userId}`;
+    const userActiveInitKey = `${this.keyPrefix}user_active_keys_init:${userId}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const keyIds = await client.smembers(userKeysKey);
+      const keyHashes = keyIds.map((id) => `${this.keyPrefix}apikeys:${id}`);
+      const outcome = await client.eval(
+        SYNC_ACTIVE_API_KEYS_LUA_SCRIPT,
+        3 + keyIds.length,
+        userActiveKeysKey,
+        userActiveInitKey,
+        userKeysKey,
+        ...keyHashes,
+        ...keyIds
+      );
+      if (outcome === 'OK' || outcome === 'SYNCED') {
+        return;
+      }
+      if (outcome !== 'RETRY') {
+        return;
+      }
+    }
+    throw new Error(`Timed out syncing active API keys index for ${userId}`);
+  }
+
+  private async createApiKeyInRedisViaLua(key: ApiKey, maxActiveKeys: number): Promise<boolean> {
+    if (!this.canEvalMultiKey()) return false;
+    const keyPrefix = this.keyPrefix;
+    const dataJson = JSON.stringify(key);
+    const prevHash = key.previousKeyHash || '';
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const luaRes = await this.redisClient!.eval(
+        CREATE_API_KEY_LUA_SCRIPT,
+        5,
+        `${keyPrefix}apikeys:${key.id}`,
+        `${keyPrefix}apikey_hashes`,
+        `${keyPrefix}user_keys:${key.userId}`,
+        `${keyPrefix}user_active_keys:${key.userId}`,
+        `${keyPrefix}user_active_keys_init:${key.userId}`,
+        key.id,
+        key.userId,
+        key.status,
+        key.keyHash,
+        prevHash,
+        dataJson,
+        String(maxActiveKeys)
+      );
+      if (luaRes === 'CREATED') return true;
+      if (luaRes === 'LIMIT_REACHED') throw new ApiKeyLimitError(maxActiveKeys);
+      if (luaRes === 'NEEDS_SYNC') {
+        await this.syncActiveApiKeysInRedis(key.userId);
+        continue;
+      }
+      return false;
+    }
+    throw new Error(`Timed out creating API key after syncing index for ${key.userId}`);
+  }
+
+  private async createApiKeyInRedisFallback(
+    key: ApiKey,
+    maxActiveKeys: number,
+    explicitCapRequested: boolean
+  ): Promise<void> {
+    const client = this.redisClient!;
+    if (explicitCapRequested || typeof (client as { smembers?: unknown }).smembers === 'function') {
+      const existing = await this.listApiKeys(key.userId, { decryptSecrets: false });
+      if (existing.filter((entry) => entry.status === 'active').length >= maxActiveKeys) {
+        throw new ApiKeyLimitError(maxActiveKeys);
+      }
+    }
+    const keyPrefix = this.keyPrefix;
+    const prevHash = key.previousKeyHash || '';
+    await client.hset(`${keyPrefix}apikeys:${key.id}`, {
+      id: key.id,
+      userId: key.userId,
+      status: key.status,
+      keyHash: key.keyHash,
+      previousKeyHash: prevHash,
+      data: JSON.stringify(key),
+    });
+    await client.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
+    await client.sadd(`${keyPrefix}user_keys:${key.userId}`, key.id);
+    if (key.status === 'active') {
+      await client.sadd(`${keyPrefix}user_active_keys:${key.userId}`, key.id);
+    }
+  }
+
   public override async generateApiKey(
     userId: string,
     name: string,
     options: ApiKeyCreateOptions = {}
   ): Promise<ApiKeyCreateResult> {
-    const result = await super.generateApiKey(userId, name, options);
-    if (this.redisClient) {
-      try {
-        const key = this.keys.get(result.key.id) ?? result.key;
-        const keyPrefix = this.keyPrefix;
-        const dataJson = JSON.stringify(key);
-        const prevHash = key.previousKeyHash || '';
-        let createdViaLua = false;
-        if (this.canEvalMultiKey()) {
-          const luaRes = await this.redisClient.eval(
-            CREATE_API_KEY_LUA_SCRIPT,
-            3,
-            `${keyPrefix}apikeys:${key.id}`,
-            `${keyPrefix}apikey_hashes`,
-            `${keyPrefix}user_keys:${userId}`,
-            key.id,
-            key.userId,
-            key.status,
-            key.keyHash,
-            prevHash,
-            dataJson
-          );
-          createdViaLua = luaRes === 'CREATED';
-        }
-        if (!createdViaLua) {
-          await this.redisClient.hset(`${keyPrefix}apikeys:${key.id}`, {
-            id: key.id,
-            userId: key.userId,
-            status: key.status,
-            keyHash: key.keyHash,
-            previousKeyHash: prevHash,
-            data: dataJson,
-          });
-          await this.redisClient.hset(`${keyPrefix}apikey_hashes`, key.keyHash, key.id);
-          await this.redisClient.sadd(`${keyPrefix}user_keys:${userId}`, key.id);
-        }
-      } catch (err) {
-        // A key that only this process knows would verify here and nowhere else: it is not issued.
-        this.keys.delete(result.key.id);
-        this.keyHashIndex.delete(result.key.keyHash);
-        return failClosed('RedisKeyStore', 'generateApiKey', err);
-      }
+    if (!this.redisClient) {
+      return super.generateApiKey(userId, name, options);
     }
-    return result;
+    this.ensureInitialized();
+    const maxActiveKeys = resolveMaxActiveKeys(options);
+    const { storedKey, result } = this.buildApiKeyRecord(userId, name, options);
+    try {
+      const createdViaLua = await this.createApiKeyInRedisViaLua(storedKey, maxActiveKeys);
+      if (!createdViaLua) {
+        await this.createApiKeyInRedisFallback(storedKey, maxActiveKeys, options.maxActiveKeys !== undefined);
+      }
+      this.upsertKeyInMemory(storedKey);
+      return result;
+    } catch (err) {
+      if (err instanceof ApiKeyLimitError) throw err;
+      // A key that only this process knows would verify here and nowhere else: it is not issued.
+      this.keys.delete(storedKey.id);
+      this.keyHashIndex.delete(storedKey.keyHash);
+      return failClosed('RedisKeyStore', 'generateApiKey', err);
+    }
   }
 
   private hasLocalKeyChanged(existing: ApiKey | undefined, key: ApiKey): boolean {
@@ -833,17 +901,33 @@ export class RedisKeyStore extends KeyStore {
             ? JSON.stringify({ ...localBefore, status: 'revoked' })
             : '';
         if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
-          const luaRes = await this.redisClient.eval(
-            REVOKE_API_KEY_LUA_SCRIPT,
-            1,
-            `${this.keyPrefix}apikeys:${keyId}`,
-            userId,
-            expectedHash,
-            revokedJson
-          );
+          const canMulti = this.canEvalMultiKey();
+          const luaRes = canMulti
+            ? await this.redisClient.eval(
+                REVOKE_API_KEY_LUA_SCRIPT,
+                2,
+                `${this.keyPrefix}apikeys:${keyId}`,
+                `${this.keyPrefix}user_active_keys:${userId}`,
+                userId,
+                expectedHash,
+                revokedJson,
+                keyId
+              )
+            : await this.redisClient.eval(
+                REVOKE_API_KEY_LUA_SCRIPT,
+                1,
+                `${this.keyPrefix}apikeys:${keyId}`,
+                userId,
+                expectedHash,
+                revokedJson,
+                keyId
+              );
           if (luaRes === 'FORBIDDEN') return false;
           if (luaRes === 'MISSING') return super.revokeApiKey(userId, keyId);
           if (luaRes === 'REVOKED') {
+            if (!canMulti && typeof (this.redisClient as { srem?: unknown }).srem === 'function') {
+              await this.redisClient.srem(`${this.keyPrefix}user_active_keys:${userId}`, keyId);
+            }
             await super.revokeApiKey(userId, keyId);
             return true;
           }
@@ -861,6 +945,9 @@ export class RedisKeyStore extends KeyStore {
             });
           } else {
             await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'status', 'revoked');
+          }
+          if (typeof (this.redisClient as { srem?: unknown }).srem === 'function') {
+            await this.redisClient.srem(`${this.keyPrefix}user_active_keys:${userId}`, keyId);
           }
         }
       } catch (err) {
@@ -1018,11 +1105,12 @@ export class RedisKeyStore extends KeyStore {
         if (this.canEvalMultiKey()) {
           const outcome = await this.redisClient.eval(
             DELETE_API_KEY_LUA_SCRIPT,
-            4,
+            5,
             `${this.keyPrefix}apikeys:${keyId}`,
             `${this.keyPrefix}apikey_hashes`,
             `${this.keyPrefix}user_keys:${userId}`,
             `${this.keyPrefix}rate:apikey:${keyId}`,
+            `${this.keyPrefix}user_active_keys:${userId}`,
             userId,
             keyId,
             localKey?.userId ?? ''
@@ -1049,6 +1137,9 @@ export class RedisKeyStore extends KeyStore {
             await this.redisClient.hdel(`${this.keyPrefix}apikey_hashes`, keyData.previousKeyHash);
           }
           await this.redisClient.srem(`${this.keyPrefix}user_keys:${userId}`, keyId);
+          if (typeof (this.redisClient as { srem?: unknown }).srem === 'function') {
+            await this.redisClient.srem(`${this.keyPrefix}user_active_keys:${userId}`, keyId);
+          }
           await deleteKeysClusterSafe(this.redisClient, [
             `${this.keyPrefix}apikeys:${keyId}`,
             `${this.keyPrefix}rate:apikey:${keyId}`,

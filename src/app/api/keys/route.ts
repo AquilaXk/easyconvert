@@ -3,7 +3,7 @@ import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/d
 import { serverFault } from '@/lib/api/problem-details';
 import type { DashboardRefusalCode } from '@/lib/refusal-codes';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
-import { ALL_API_KEY_SCOPES, ApiKeyScope, MAX_ACTIVE_API_KEYS } from '@/lib/api-keys/types';
+import { ALL_API_KEY_SCOPES, ApiKeyLimitError, ApiKeyScope, MAX_ACTIVE_API_KEYS } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
 import { TERMS_VERSION, termsRefusal, termsRefusalText } from '@/lib/legal/documents';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
@@ -14,10 +14,6 @@ export const dynamic = 'force-dynamic';
 const MANAGE_KEYS = { action: 'manage API keys', adminKey: true };
 const HTTP_CONFLICT = 409;
 const KEY_LIMIT_MESSAGE = `An account holds at most ${MAX_ACTIVE_API_KEYS} active API keys. Revoke a key you no longer use, then create a new one.`;
-
-async function activeKeyCount(userId: string): Promise<number> {
-  return (await redisKeyStore.listApiKeys(userId, { decryptSecrets: false })).filter((key) => key.status === 'active').length;
-}
 
 export async function GET(req: NextRequest) {
   const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
@@ -112,8 +108,6 @@ export async function POST(req: NextRequest) {
     const parsed = parseKeyCreationPayload(body);
     if (parsed.error) return refusal(400, 'invalid_key_settings', parsed.error);
 
-    if ((await activeKeyCount(auth.user.id)) >= MAX_ACTIVE_API_KEYS) return refusal(HTTP_CONFLICT, 'key_limit_reached', KEY_LIMIT_MESSAGE);
-
     const result = await redisKeyStore.generateApiKey(auth.user.id, parsed.keyName, {
       allowedIps: parsed.allowedIps,
       webhookUrl: parsed.webhookUrl,
@@ -121,13 +115,8 @@ export async function POST(req: NextRequest) {
       scopes: parsed.scopes,
       expiresAt: parsed.expiresAt,
       acceptedTermsVersion: TERMS_VERSION,
+      maxActiveKeys: MAX_ACTIVE_API_KEYS,
     });
-
-    // Requests that passed the check at the same time made more keys than the account may hold: each takes its own key back.
-    if ((await activeKeyCount(auth.user.id)) > MAX_ACTIVE_API_KEYS) {
-      await redisKeyStore.deleteApiKey(auth.user.id, result.key.id);
-      return refusal(HTTP_CONFLICT, 'key_limit_reached', KEY_LIMIT_MESSAGE);
-    }
 
     return NextResponse.json({
       success: true,
@@ -136,6 +125,9 @@ export async function POST(req: NextRequest) {
       warning: 'Please copy your API key now. You will not be able to see it again.',
     });
   } catch (err: unknown) {
+    if (err instanceof ApiKeyLimitError) {
+      return refusal(HTTP_CONFLICT, 'key_limit_reached', KEY_LIMIT_MESSAGE);
+    }
     return serverFault<DashboardRefusalCode>('keys', err, 'Failed to generate API key.', 'key_create_failed');
   }
 }

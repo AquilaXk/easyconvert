@@ -1,11 +1,14 @@
 import crypto from 'node:crypto';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as uploadsHandler } from '../src/app/api/v1/uploads/[[...id]]/route';
 import { POST as directPostHandler } from '../src/app/api/v1/uploads/direct/route';
 import { PUT as directPartPutHandler } from '../src/app/api/v1/uploads/direct/part/route';
+import { DELETE as directDeleteHandler } from '../src/app/api/v1/uploads/direct/[id]/route';
 import { LOCAL_DIRECT_PART_PATH } from '../src/lib/storage/storage-config';
-import { localFsStorage } from '../src/lib/storage';
+import { MAX_PREGENERATED_PART_URLS } from '../src/lib/storage/presign-limits';
+import { localFsStorage, storageProvider } from '../src/lib/storage';
+import { endUploadReservation } from '../src/lib/api-keys/anonymous-upload-budget';
 import { userStore } from '../src/lib/auth/user-store';
 import { createSessionToken } from '../src/lib/auth/session';
 import type { User } from '../src/lib/auth/types';
@@ -89,14 +92,32 @@ describe('part URLs of an upload opened on /api/v1/uploads with the local driver
   });
 });
 
-describe('the part size of POST /api/v1/uploads/direct', () => {
+describe('the part size and initial presigned part URL cap of POST /api/v1/uploads/direct', () => {
   let headers: Record<string, string>;
+  const openedUploads: string[] = [];
 
   beforeEach(async () => {
     ({ headers } = await signedIn('partsize'));
   });
 
-  const initiate = (body: Record<string, unknown>) => directPostHandler(post('/api/v1/uploads/direct', headers, { filename: 'big.bin', ...body }));
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    for (const uploadId of openedUploads.splice(0)) {
+      await directDeleteHandler(new NextRequest(`${BASE_URL}/api/v1/uploads/direct/${uploadId}`, { method: 'DELETE', headers }), {
+        params: Promise.resolve({ id: uploadId }),
+      }).catch(() => undefined);
+      await endUploadReservation(uploadId, 'aborted').catch(() => undefined);
+    }
+  });
+
+  const initiate = async (body: Record<string, unknown>) => {
+    const res = await directPostHandler(post('/api/v1/uploads/direct', headers, { filename: 'big.bin', ...body }));
+    if (res.status === 200) {
+      const cloned = (await res.clone().json()) as { uploadId?: string };
+      if (cloned.uploadId) openedUploads.push(cloned.uploadId);
+    }
+    return res;
+  };
 
   it('refuses a part size under 5 MiB for a file of more than one part', async () => {
     const res = await initiate({ totalSize: 20 * MIB, partSize: MIB });
@@ -120,5 +141,58 @@ describe('the part size of POST /api/v1/uploads/direct', () => {
     const res = await initiate({ totalSize: 12 * MIB });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ partSize: EXPECTED_MIN_PART_BYTES, totalParts: 3 });
+  });
+
+  it('caps initial presigned part URLs at 100 while preserving totalParts and letting parts > 100 presign via ?action=presign', async () => {
+    expect(MAX_PREGENERATED_PART_URLS).toBe(100);
+    const presignSpy = vi.spyOn(storageProvider, 'generatePresignedUploadPartUrl');
+
+    const res = await initiate({ totalSize: 600 * MIB, partSize: EXPECTED_MIN_PART_BYTES });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      uploadId: string;
+      key: string;
+      partSize: number;
+      totalParts: number;
+      parts: Array<{ partNumber: number; uploadUrl: string; expiresAt: number }>;
+    };
+
+    expect(body.totalParts).toBe(120);
+    expect(body.parts).toHaveLength(100);
+    expect(body.parts.map((part) => part.partNumber)).toEqual(Array.from({ length: 100 }, (_, i) => i + 1));
+    expect(presignSpy).toHaveBeenCalledTimes(100);
+
+    // Remaining parts past 100 can be signed on demand via POST /api/v1/uploads?action=presign and uploaded to /api/v1/uploads/direct/part.
+    const tailPresign = await uploadsHandler(
+      post('/api/v1/uploads?action=presign', headers, { uploadId: body.uploadId, key: body.key, partNumber: 120 }),
+      { params: Promise.resolve({}) }
+    );
+    expect(tailPresign.status).toBe(200);
+    const tailPresignJson = (await tailPresign.json()) as { success: boolean; url: string };
+    expect(tailPresignJson.success).toBe(true);
+    const tailUrl = new URL(tailPresignJson.url);
+    expect(tailUrl.searchParams.get('partNumber')).toBe('120');
+
+    const tailPut = await directPartPutHandler(putPart(tailPresignJson.url, Buffer.from('PART_120_BYTES')));
+    expect(tailPut.status).toBe(200);
+    expect(await tailPut.json()).toMatchObject({ success: true, partNumber: 120 });
+
+    // Another user cannot presign parts for this direct upload session.
+    const stranger = await signedIn('stranger');
+    const forbiddenPresign = await uploadsHandler(
+      post('/api/v1/uploads?action=presign', stranger.headers, { uploadId: body.uploadId, key: body.key, partNumber: 101 }),
+      { params: Promise.resolve({}) }
+    );
+    expect(forbiddenPresign.status).toBe(404);
+  });
+
+  it('caps a 10 GiB (2048-part) direct upload initiation at 100 presigned URLs', async () => {
+    const presignSpy = vi.spyOn(storageProvider, 'generatePresignedUploadPartUrl');
+    const res = await initiate({ totalSize: 10 * 1024 * MIB, partSize: EXPECTED_MIN_PART_BYTES });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { totalParts: number; parts: Array<{ partNumber: number }> };
+    expect(body.totalParts).toBe(2048);
+    expect(body.parts).toHaveLength(100);
+    expect(presignSpy).toHaveBeenCalledTimes(100);
   });
 });

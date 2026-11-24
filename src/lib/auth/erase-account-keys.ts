@@ -192,6 +192,8 @@ export async function accountTaggedKeys(userId: string, context: TaggedKeyContex
   }
   candidates.add(`${prefix}rate:${userId}`);
   candidates.add(`${prefix}user_keys:${userId}`);
+  candidates.add(`${prefix}user_active_keys:${userId}`);
+  candidates.add(`${prefix}user_active_keys_init:${userId}`);
   candidates.add(`${prefix}user_graphs:{${userId}}`);
   const userToolJobsIndexKey = `${prefix}user:tool_jobs:${userId}`;
   candidates.add(userToolJobsIndexKey);

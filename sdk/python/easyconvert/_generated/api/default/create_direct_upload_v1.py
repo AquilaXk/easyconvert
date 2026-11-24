@@ -85,8 +85,9 @@ def sync_detailed(
 ) -> Response[CreateDirectUploadV1Response200 | ProblemDetails]:
     """Start Direct Multipart Upload
 
-     Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15
-    minutes.
+     Creates a multipart upload and returns presigned PUT URLs for up to the first 100 parts (sign
+    remaining part numbers 101..totalParts on demand via `POST /api/v1/uploads?action=presign`). Part
+    URLs expire after 15 minutes.
 
     Args:
         body (CreateDirectUploadV1Body):
@@ -117,8 +118,9 @@ def sync(
 ) -> CreateDirectUploadV1Response200 | ProblemDetails | None:
     """Start Direct Multipart Upload
 
-     Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15
-    minutes.
+     Creates a multipart upload and returns presigned PUT URLs for up to the first 100 parts (sign
+    remaining part numbers 101..totalParts on demand via `POST /api/v1/uploads?action=presign`). Part
+    URLs expire after 15 minutes.
 
     Args:
         body (CreateDirectUploadV1Body):
@@ -144,8 +146,9 @@ async def asyncio_detailed(
 ) -> Response[CreateDirectUploadV1Response200 | ProblemDetails]:
     """Start Direct Multipart Upload
 
-     Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15
-    minutes.
+     Creates a multipart upload and returns presigned PUT URLs for up to the first 100 parts (sign
+    remaining part numbers 101..totalParts on demand via `POST /api/v1/uploads?action=presign`). Part
+    URLs expire after 15 minutes.
 
     Args:
         body (CreateDirectUploadV1Body):
@@ -174,8 +177,9 @@ async def asyncio(
 ) -> CreateDirectUploadV1Response200 | ProblemDetails | None:
     """Start Direct Multipart Upload
 
-     Creates a multipart upload and returns a presigned PUT URL for every part. Part URLs expire after 15
-    minutes.
+     Creates a multipart upload and returns presigned PUT URLs for up to the first 100 parts (sign
+    remaining part numbers 101..totalParts on demand via `POST /api/v1/uploads?action=presign`). Part
+    URLs expire after 15 minutes.
 
     Args:
         body (CreateDirectUploadV1Body):

@@ -148,6 +148,58 @@ describe('SDK Ergonomic Helpers', () => {
       expect(result.storageKey).toBe(`uploads/${uploadId}/big.bin`);
       expect(mockFetch).toHaveBeenCalledTimes(3);
     });
+
+    it('requests presigned URLs on demand when totalParts exceeds initial parts returned by /api/v1/uploads/direct', async () => {
+      const uploadId = 'mp_session_paginated';
+      const key = `uploads/${uploadId}/large.bin`;
+      const uploadedChunks: string[] = [];
+      const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+        if (url.endsWith('/api/v1/uploads/direct')) {
+          return new Response(
+            JSON.stringify({
+              uploadId,
+              key,
+              partSize: 4,
+              totalParts: 3,
+              parts: [{ partNumber: 1, uploadUrl: 'https://storage.test/part1', expiresAt: 9999999999 }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/api/v1/uploads?action=presign')) {
+          const payload = JSON.parse(String(init?.body)) as { uploadId: string; key: string; partNumber: number };
+          expect(payload.uploadId).toBe(uploadId);
+          expect(payload.key).toBe(key);
+          return new Response(
+            JSON.stringify({ success: true, url: `https://storage.test/part${payload.partNumber}` }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.startsWith('https://storage.test/part')) {
+          const partNum = url.slice('https://storage.test/part'.length);
+          uploadedChunks.push(await (init?.body as Blob).text());
+          return new Response(null, { status: 200, headers: { ETag: `"etag-${partNum}"` } });
+        }
+        if (url.endsWith('/api/v1/uploads/direct/complete')) {
+          const completed = JSON.parse(String(init?.body)) as { parts: Array<{ partNumber: number; etag: string }> };
+          expect(completed.parts).toEqual([
+            { partNumber: 1, etag: '"etag-1"' },
+            { partNumber: 2, etag: '"etag-2"' },
+            { partNumber: 3, etag: '"etag-3"' },
+          ]);
+          return new Response(JSON.stringify({ key }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        return new Response('{}', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const client = new EasyConvertClient({ apiKey: API_KEY, baseUrl: BASE_URL, fetch: mockFetch });
+      const file = new Blob(['AAAABBBBCC'], { type: 'application/octet-stream' });
+
+      const result = await client.uploadMultipart(file, { filename: 'large.bin', partSize: 4 });
+      expect(result).toEqual({ uploadId, storageKey: key });
+      expect(uploadedChunks).toEqual(['AAAA', 'BBBB', 'CC']);
+    });
   });
 
   describe('inspectArchive', () => {

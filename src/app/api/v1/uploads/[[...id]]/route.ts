@@ -37,7 +37,7 @@ import type { User } from '@/lib/auth/types';
 import type { UploadReservation } from '@/lib/api-keys/anonymous-upload-budget';
 import { storageErrorResponse, uploadSessionNotFoundResponse } from '@/lib/api/storage-error-response';
 import { multipartUploadKey } from '@/lib/storage/key-namespace';
-import { PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
+import { MAX_PREGENERATED_PART_URLS, PART_URL_TTL_SECONDS } from '@/lib/storage/presign-limits';
 import { PRESIGN_MAX_EXPIRES_SECONDS, PRESIGN_MIN_EXPIRES_SECONDS, SigV4SigningError, assertValidObjectKey } from '@/lib/storage/s3-sigv4';
 import { closeSessionBudget, reserveSessionBudget, resumeActiveSessionBudget, undoOpening } from '@/lib/api/upload-session-budget';
 import { forgetUploadParts, receivePart, type PartStore } from '@/lib/storage/part-admission';
@@ -61,8 +61,6 @@ function checkTusVersion(req: NextRequest): NextResponse | null {
 }
 
 const MIN_PART_SIZE = 5 * 1024 * 1024; // 5 MiB
-/** Part URLs handed out with an initiate response: at most this many parts, each good for 15 minutes. */
-const MAX_PREGENERATED_PART_URLS = 100;
 const LOCAL_KEY_RANDOM_BYTES = 8;
 
 interface InitiateUploadBody {

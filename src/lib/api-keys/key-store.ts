@@ -4,7 +4,16 @@ import crypto from 'node:crypto';
 import { hmacSha256, sha256 } from '../auth/crypto';
 import { redisUserStore } from '../auth/redis-user-store';
 import type { User } from '../auth/types';
-import type { ApiKey, ApiKeyCreateOptions, ApiKeyCreateResult, QuotaUsage, UserConversionFile, UserConversionFileInput } from './types';
+import {
+  ApiKeyLimitError,
+  MAX_ACTIVE_API_KEYS,
+  type ApiKey,
+  type ApiKeyCreateOptions,
+  type ApiKeyCreateResult,
+  type QuotaUsage,
+  type UserConversionFile,
+  type UserConversionFileInput,
+} from './types';
 import { isIpAllowed } from './ip-utils';
 import { getAnonymousDailyLimit } from '../plan-limits';
 import { dayWindow, quotaAllowanceOf } from './quota-window';
@@ -106,6 +115,14 @@ export interface ListApiKeysOptions {
 
 export function apiKeySecretAad(userId: string, keyId: string): string {
   return `apikey:${userId}:${keyId}`;
+}
+
+export function resolveMaxActiveKeys(options: ApiKeyCreateOptions): number {
+  if (options.maxActiveKeys === undefined) return MAX_ACTIVE_API_KEYS;
+  if (!Number.isSafeInteger(options.maxActiveKeys) || options.maxActiveKeys < 1) {
+    throw new RangeError('maxActiveKeys must be a positive safe integer.');
+  }
+  return options.maxActiveKeys;
 }
 
 export class KeyStore {
@@ -249,20 +266,28 @@ export class KeyStore {
     } catch {}
   }
 
-  public async generateApiKey(
+  protected countActiveKeysInMemory(userId: string): number {
+    let active = 0;
+    for (const key of this.keys.values()) {
+      if (key.userId === userId && key.status === 'active') {
+        active++;
+      }
+    }
+    return active;
+  }
+
+  protected buildApiKeyRecord(
     userId: string,
     name: string,
     options: ApiKeyCreateOptions = {}
-  ): Promise<ApiKeyCreateResult> {
-    this.ensureInitialized();
-
+  ): { storedKey: ApiKey; result: ApiKeyCreateResult } {
     const rawRandom = crypto.randomBytes(24).toString('hex');
     const secretKey = `ec_live_${rawRandom}`;
     const keyHash = hashApiKeySecret(secretKey);
     const prefix = `${secretKey.substring(0, 12)}...`;
 
     const keyId = crypto.randomUUID();
-    const key: ApiKey = {
+    const storedKey: ApiKey = {
       id: keyId,
       userId,
       name: name.trim() || 'Default API Key',
@@ -278,16 +303,34 @@ export class KeyStore {
       acceptedTermsVersion: options.acceptedTermsVersion,
     };
 
-    this.upsertKeyInMemory(key);
+    return {
+      storedKey,
+      result: {
+        key: {
+          ...storedKey,
+          webhookSecret: options.webhookSecret,
+        },
+        secretKey,
+      },
+    };
+  }
+
+  public async generateApiKey(
+    userId: string,
+    name: string,
+    options: ApiKeyCreateOptions = {}
+  ): Promise<ApiKeyCreateResult> {
+    this.ensureInitialized();
+    const maxActiveKeys = resolveMaxActiveKeys(options);
+    if (this.countActiveKeysInMemory(userId) >= maxActiveKeys) {
+      throw new ApiKeyLimitError(maxActiveKeys);
+    }
+
+    const { storedKey, result } = this.buildApiKeyRecord(userId, name, options);
+    this.upsertKeyInMemory(storedKey);
     this.persist();
 
-    return {
-      key: {
-        ...key,
-        webhookSecret: options.webhookSecret,
-      },
-      secretKey,
-    };
+    return result;
   }
 
   private lookupKeyId(candidateHashes: readonly string[]): string | undefined {

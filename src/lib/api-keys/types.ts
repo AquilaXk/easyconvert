@@ -6,6 +6,16 @@ export type ApiKeyScope = 'convert:read' | 'convert:write' | 'storage:download' 
 /** The most active (not revoked) API keys an account holds at once (docs/policy-decisions.md, entry 296). */
 export const MAX_ACTIVE_API_KEYS = 20;
 
+/** The account already holds the most active API keys it may (`MAX_ACTIVE_API_KEYS`). */
+export class ApiKeyLimitError extends Error {
+  readonly code = 'key_limit_reached' as const;
+
+  constructor(readonly limit: number = MAX_ACTIVE_API_KEYS) {
+    super(`An account holds at most ${limit} active API keys. Revoke a key you no longer use, then create a new one.`);
+    this.name = 'ApiKeyLimitError';
+  }
+}
+
 export const ALL_API_KEY_SCOPES: ApiKeyScope[] = [
   'convert:read',
   'convert:write',
@@ -40,6 +50,7 @@ export interface ApiKeyCreateOptions {
   scopes?: ApiKeyScope[];
   expiresAt?: number;
   acceptedTermsVersion?: string;
+  maxActiveKeys?: number;
 }
 
 export interface ApiKeyUpdateOptions {
