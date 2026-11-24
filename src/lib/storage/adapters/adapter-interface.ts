@@ -25,6 +25,18 @@ export class StorageInputError extends StorageAdapterError {
   }
 }
 
+export function assertValidMaxFiles(maxFiles: number, provider: string): void {
+  if (!Number.isInteger(maxFiles) || maxFiles < 0) {
+    throw new StorageInputError(`Invalid maxFiles listing limit: ${typeof maxFiles === 'number' ? String(maxFiles) : typeof maxFiles}`, provider);
+  }
+}
+
+export function assertValidUploadSize(size: number | undefined, provider: string): void {
+  if (size !== undefined && (!Number.isInteger(size) || size < 0)) {
+    throw new StorageInputError(`Invalid upload size: ${typeof size === 'number' ? String(size) : typeof size}`, provider);
+  }
+}
+
 /** An object key the store cannot address safely (empty, or with "." / ".." path segments). */
 export class StorageInvalidKeyError extends StorageInputError {
   constructor(message: string, provider: string, cause?: unknown) {

@@ -18,6 +18,7 @@ import {
   adapterDispatcher,
   assertAdapterUrlSafe,
   assertValidMaxFiles,
+  assertValidUploadSize,
   encodeSafePathSegments,
   guardedRequest,
   isRetryableHttpStatus,
@@ -67,7 +68,6 @@ function extractWebDavChildName(href: string, targetUrl: URL, baseSegments: read
   if (
     !decoded ||
     decoded.startsWith('.') ||
-    decoded === '..' ||
     decoded.includes('/') ||
     !decoded.isWellFormed() ||
     FORBIDDEN_PATH_CHAR.test(decoded)
@@ -179,9 +179,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
-    if (options?.size !== undefined && (!Number.isFinite(options.size) || !Number.isInteger(options.size) || options.size < 0)) {
-      throw new StorageInputError(`Invalid upload size: ${options.size}`, this.providerName);
-    }
+    assertValidUploadSize(options?.size, this.providerName);
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 

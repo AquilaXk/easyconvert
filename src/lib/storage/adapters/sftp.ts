@@ -15,6 +15,7 @@ import {
   StorageAdapterError,
   StorageListingLimitError,
   StorageSizeLimitError,
+  assertValidMaxFiles,
 } from './adapter-interface';
 import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
 import {
@@ -411,6 +412,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
    * is refused with a `StorageListingLimitError`: nothing is listed short. A directory that is not there is `StorageNotFoundError`.
    */
   async listDirectory(directory: string, maxFiles: number): Promise<Array<{ name: string; size: number }>> {
+    assertValidMaxFiles(maxFiles, this.providerName);
     const addresses = await this.resolveAllowedAddresses();
     const resolved = resolveRemotePath(this.basePath, directory);
     let output: string;

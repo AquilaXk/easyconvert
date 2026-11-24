@@ -8,8 +8,12 @@ import { NextRequest } from 'next/server';
 import {
   AzureBlobStorageAdapter,
   GcsStorageAdapter,
+  S3StorageAdapter,
+  S3_DEV_ENDPOINT_ALLOWLIST_ENV,
+  SftpStorageAdapter,
   WebDavStorageAdapter,
 } from '../src/lib/storage/adapters';
+import { listS3Files } from '../src/lib/storage/s3-customer-listing';
 import {
   StorageAuthenticationError,
   StorageInputError,
@@ -89,7 +93,9 @@ async function startTestServer(
 
 function allowDev(...servers: TestHttpServer[]): void {
   vi.stubEnv('NODE_ENV', 'development');
-  vi.stubEnv(BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV, servers.map((s) => s.host).join(','));
+  const hosts = servers.map((s) => s.host).join(',');
+  vi.stubEnv(BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST_ENV, hosts);
+  vi.stubEnv(S3_DEV_ENDPOINT_ALLOWLIST_ENV, hosts);
 }
 
 function headerStr(headers: http.IncomingHttpHeaders, name: string): string {
@@ -949,6 +955,8 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         'a\nb',
         'a\u2028b',
         'bad\ud800surrogate',
+        0,
+        false,
         123,
         true,
         null,
@@ -974,6 +982,46 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
         expect(res.status).toBe(400);
         const body = await res.json();
         expect(body.detail).toMatch(/basePath/i);
+      }
+
+      for (const badAuth of [{ username: 123 }, { password: { secret: 'x' } }]) {
+        const res = await credentialsPost(
+          new NextRequest('http://localhost:3000/api/v1/storage/credentials', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              providerType: 'webdav',
+              credentials: {
+                type: 'webdav',
+                url: 'https://dav.example.com/dav',
+                ...badAuth,
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.detail).toMatch(/username or password/i);
+      }
+
+      for (const badContainer of ['.', 'bad\nc', 'bad\0c', 'bad\ud800c', 123]) {
+        const res = await credentialsPost(
+          new NextRequest('http://localhost:3000/api/v1/storage/credentials', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              providerType: 'azure-blob',
+              credentials: {
+                type: 'azure-blob',
+                storageAccount: ACCOUNT,
+                containerName: badContainer,
+              },
+            }),
+          })
+        );
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.detail).toMatch(/containerName/i);
       }
       expect(await credentialsVault.list(user.id)).toEqual([]);
 
@@ -1009,6 +1057,9 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       });
       const gcs = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt' });
       const dav = new WebDavStorageAdapter({ type: 'webdav', url: 'https://dav.example.com/dav' });
+      const sftp = new SftpStorageAdapter({ type: 'sftp', host: 'sftp.example.com', username: 'u' });
+      const s3 = new S3StorageAdapter({ type: 's3', bucket: 'customer-bucket', accessKeyId: 'AKIAEXAMPLEKEY000001', secretAccessKey: 'secret' });
+      const s3XmlSpy = vi.spyOn(s3, 'listObjectsXml');
 
       const invalidLimits: unknown[] = [Number.NaN, -1, -100, 1.5, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, '10', null, undefined];
       for (const limit of invalidLimits) {
@@ -1020,11 +1071,24 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
 
         const davErr = await dav.listDirectory('', limit as number).catch((e: unknown) => e);
         expect(davErr).toBeInstanceOf(StorageInputError);
+
+        const sftpErr = await sftp.listDirectory('', limit as number).catch((e: unknown) => e);
+        expect(sftpErr).toBeInstanceOf(StorageInputError);
+
+        const s3Err = await listS3Files(s3, '', limit as number).catch((e: unknown) => e);
+        expect(s3Err).toBeInstanceOf(StorageInputError);
       }
       expect(safeSpy).not.toHaveBeenCalled();
+      expect(dns.promises.lookup).not.toHaveBeenCalled();
+      expect(s3XmlSpy).not.toHaveBeenCalled();
 
       let returnOneItem = false;
       const listServer = await serve((req, _body, res) => {
+        if (req.url?.includes('list-type=2')) {
+          const items = returnOneItem ? '<Contents><Key>a.txt</Key><Size>1</Size></Contents>' : '';
+          res.writeHead(200, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><IsTruncated>false</IsTruncated>${items}</ListBucketResult>`);
+          return;
+        }
         if (req.url?.includes('comp=list')) {
           const blobs = returnOneItem ? '<Blob><Name>a.txt</Name><Properties><Content-Length>1</Content-Length></Properties></Blob>' : '';
           res.writeHead(200, { 'Content-Type': 'application/xml' }).end(`<?xml version="1.0" encoding="utf-8"?><EnumerationResults><Blobs>${blobs}</Blobs></EnumerationResults>`);
@@ -1049,15 +1113,24 @@ describe('HTTP BYOS adapters: Azure 0-byte signing, 429/5xx retries, and WebDAV 
       });
       const gcsZero = new GcsStorageAdapter({ type: 'gcs', bucket: 'bkt', endpoint: listServer.origin });
       const davZero = new WebDavStorageAdapter({ type: 'webdav', url: `${listServer.origin}/dav` });
+      const s3Zero = new S3StorageAdapter({
+        type: 's3',
+        bucket: 'customer-bucket',
+        accessKeyId: 'AKIAEXAMPLEKEY000001',
+        secretAccessKey: 'secret',
+        endpoint: listServer.origin,
+      });
 
       expect(await azZero.listObjects('', 0)).toEqual([]);
       expect(await gcsZero.listObjects('', 0)).toEqual([]);
       expect(await davZero.listDirectory('', 0)).toEqual([]);
+      expect(await listS3Files(s3Zero, '', 0)).toEqual([]);
 
       returnOneItem = true;
       await expect(azZero.listObjects('', 0)).rejects.toThrow(StorageListingLimitError);
       await expect(gcsZero.listObjects('', 0)).rejects.toThrow(StorageListingLimitError);
       await expect(davZero.listDirectory('', 0)).rejects.toThrow(StorageListingLimitError);
+      await expect(listS3Files(s3Zero, '', 0)).rejects.toThrow(StorageListingLimitError);
     });
   });
 });

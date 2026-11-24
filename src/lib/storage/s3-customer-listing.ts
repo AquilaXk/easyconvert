@@ -1,4 +1,4 @@
-import { StorageListingLimitError, StorageServiceError } from './adapters/adapter-interface';
+import { StorageListingLimitError, StorageServiceError, assertValidMaxFiles } from './adapters/adapter-interface';
 import type { S3StorageAdapter } from './adapters/s3';
 import { parseListObjectsPage } from './s3-list-xml';
 
@@ -25,6 +25,7 @@ function decodeListedKey(encoded: string): string {
  * the limit, so a prefix of a million keys costs one page.
  */
 export async function listS3Files(adapter: S3StorageAdapter, prefix: string, maxFiles: number): Promise<ListedS3File[]> {
+  assertValidMaxFiles(maxFiles, 's3');
   const files: ListedS3File[] = [];
   let continuationToken: string | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page++) {

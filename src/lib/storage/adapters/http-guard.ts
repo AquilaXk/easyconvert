@@ -5,10 +5,12 @@ import {
   StorageInvalidKeyError,
   StorageSsrfError,
   StorageTimeoutError,
+  assertValidMaxFiles,
+  assertValidUploadSize,
 } from './adapter-interface';
 import { ssrfSafeLookup, validateUrlForSsrf } from '../../security/ssrf';
 import { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS } from './http-limits';
-export { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS };
+export { ADAPTER_BODY_CAP_BYTES, ADAPTER_HEADERS_TIMEOUT_MS, ADAPTER_RESPONSE_TIMEOUT_MS, assertValidMaxFiles, assertValidUploadSize };
 
 const HTTP_TOO_MANY_REQUESTS = 429;
 const HTTP_SERVER_ERROR_MIN = 500;
@@ -43,7 +45,8 @@ export function stripSlashes(s: string): string {
 
 export function encodeSafePathSegments(remotePath: string, provider: string): string {
   if (typeof remotePath !== 'string' || !remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
-    throw new StorageInvalidKeyError(`Invalid remote path "${String(remotePath)}"`, provider);
+    const label = typeof remotePath === 'string' ? remotePath : typeof remotePath;
+    throw new StorageInvalidKeyError(`Invalid remote path "${label}"`, provider);
   }
   const cleanPath = stripLeadingSlashes(remotePath);
   const segments = cleanPath.split('/');
@@ -53,9 +56,17 @@ export function encodeSafePathSegments(remotePath: string, provider: string): st
   return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
 
-export function assertValidMaxFiles(maxFiles: number, provider: string): void {
-  if (!Number.isInteger(maxFiles) || maxFiles < 0) {
-    throw new StorageInputError(`Invalid maxFiles listing limit: ${String(maxFiles)}`, provider);
+export function assertValidAzureContainerName(containerName: unknown, provider = 'azure-blob'): asserts containerName is string {
+  if (
+    typeof containerName !== 'string' ||
+    !containerName ||
+    containerName === '.' ||
+    !containerName.isWellFormed() ||
+    FORBIDDEN_PATH_CHAR.test(containerName) ||
+    containerName.includes('/') ||
+    containerName.includes('..')
+  ) {
+    throw new StorageInputError('Invalid Azure Blob containerName', provider);
   }
 }
 

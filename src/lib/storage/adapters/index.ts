@@ -9,6 +9,7 @@ import type { CustomerStorageCredentials } from '../credentials-vault';
 import {
   type IStorageAdapter,
   StorageAdapterError,
+  StorageInputError,
   StorageSsrfError,
 } from './adapter-interface';
 import { GcsStorageAdapter } from './gcs';
@@ -25,7 +26,13 @@ import {
   inspectCustomHeaders,
 } from '../../security/http-headers';
 import { isPrivateOrRestrictedHost, validateUrlForSsrf } from '../../security/ssrf';
-import { assertTlsEndpoint, isDevAllowlistedEndpoint, isTrustedGcsOAuthEndpoint, parseCleanBaseEndpointUrl } from './http-guard';
+import {
+  assertTlsEndpoint,
+  assertValidAzureContainerName,
+  isDevAllowlistedEndpoint,
+  isTrustedGcsOAuthEndpoint,
+  parseCleanBaseEndpointUrl,
+} from './http-guard';
 
 /**
  * Providers whose adapter has no network client yet. Registration and every import/export
@@ -85,13 +92,10 @@ function validateGcsCredentials(credentials: Extract<CustomerStorageCredentials,
 }
 
 function validateAzureBlobCredentials(credentials: Extract<CustomerStorageCredentials, { type: 'azure-blob' }>): void {
-  if (
-    typeof credentials.storageAccount !== 'string' ||
-    !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount) ||
-    !isSimpleContainerIdentifier(credentials.containerName)
-  ) {
-    throw new StorageAdapterError('Invalid Azure Blob storageAccount or containerName', 'azure-blob');
+  if (typeof credentials.storageAccount !== 'string' || !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount)) {
+    throw new StorageAdapterError('Invalid Azure Blob storageAccount', 'azure-blob');
   }
+  assertValidAzureContainerName(credentials.containerName, 'azure-blob');
   if (credentials.customEndpoint) {
     validateExternalEndpointUrl(credentials.customEndpoint, 'azure-blob');
   }
@@ -102,6 +106,12 @@ function validateWebDavCredentials(credentials: Extract<CustomerStorageCredentia
     throw new StorageAdapterError('WebDAV url is required', 'webdav');
   }
   validateHttpEndpointSyntax(credentials.url, 'webdav');
+  if (
+    (credentials.username !== undefined && typeof credentials.username !== 'string') ||
+    (credentials.password !== undefined && typeof credentials.password !== 'string')
+  ) {
+    throw new StorageInputError('Invalid WebDAV username or password: expected string', 'webdav');
+  }
   encodeWebDavBasePath(credentials.basePath, 'webdav');
 }
 

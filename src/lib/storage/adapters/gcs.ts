@@ -4,7 +4,6 @@ import type { GcsCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
   StorageAdapterMetadata,
-  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageAdapterError,
@@ -19,6 +18,7 @@ import {
   adapterDispatcher,
   assertAdapterUrlSafe,
   assertValidMaxFiles,
+  assertValidUploadSize,
   guardedRequest,
   isRetryableHttpStatus,
   isTrustedGcsOAuthEndpoint,
@@ -242,9 +242,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
-    if (options?.size !== undefined && (!Number.isFinite(options.size) || !Number.isInteger(options.size) || options.size < 0)) {
-      throw new StorageInputError(`Invalid upload size: ${options.size}`, this.providerName);
-    }
+    assertValidUploadSize(options?.size, this.providerName);
     const cleanPath = toObjectName(remotePath);
     const url = `${this.endpoint}/upload/storage/v1/b/${encodeURIComponent(this.bucket)}/o?uploadType=media&name=${encodeURIComponent(cleanPath)}`;
     await this.assertSsrfSafe(url);

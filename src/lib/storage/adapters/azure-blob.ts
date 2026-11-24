@@ -5,7 +5,6 @@ import {
   IStorageAdapter,
   StorageAdapterError,
   StorageAdapterMetadata,
-  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageInvalidKeyError,
@@ -16,10 +15,11 @@ import { remotePathProblem } from '../customer-storage-paths';
 import { ADAPTER_LISTING_CAP_BYTES } from './http-limits';
 import { parseAzureListBlobsXml } from './listing-xml';
 import {
-  FORBIDDEN_PATH_CHAR,
   adapterDispatcher,
   assertAdapterUrlSafe,
+  assertValidAzureContainerName,
   assertValidMaxFiles,
+  assertValidUploadSize,
   encodeSafePathSegments,
   guardedRequest,
   isRetryableHttpStatus,
@@ -69,17 +69,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     if (typeof credentials.storageAccount !== 'string' || !AZURE_STORAGE_ACCOUNT_PATTERN.test(credentials.storageAccount)) {
       throw new StorageAdapterError('Invalid Azure Blob storageAccount: 3 to 24 lowercase letters and digits', this.providerName);
     }
-    if (
-      typeof credentials.containerName !== 'string' ||
-      !credentials.containerName ||
-      !credentials.containerName.isWellFormed() ||
-      FORBIDDEN_PATH_CHAR.test(credentials.containerName) ||
-      credentials.containerName.includes('/') ||
-      credentials.containerName.includes('..') ||
-      credentials.containerName === '.'
-    ) {
-      throw new StorageInputError('Invalid Azure Blob containerName', this.providerName);
-    }
+    assertValidAzureContainerName(credentials.containerName, this.providerName);
     this.storageAccount = credentials.storageAccount;
     this.containerName = credentials.containerName;
     this.accountKey = credentials.accountKey ?? extractConnectionStringPart(credentials.connectionString, 'AccountKey');
@@ -223,9 +213,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
-    if (options?.size !== undefined && (!Number.isFinite(options.size) || !Number.isInteger(options.size) || options.size < 0)) {
-      throw new StorageInputError(`Invalid upload size: ${options.size}`, this.providerName);
-    }
+    assertValidUploadSize(options?.size, this.providerName);
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
