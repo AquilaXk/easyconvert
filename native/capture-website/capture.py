@@ -66,7 +66,7 @@ def parse_guarded_int(value, fallback):
         return int(value) if math.isfinite(value) else fallback
     if isinstance(value, str):
         text = value.strip()
-        if not text:
+        if not text or '_' in text:
             return fallback
         try:
             numeric = float(text)
@@ -84,7 +84,7 @@ def parse_guarded_float(value, fallback):
         return numeric if math.isfinite(numeric) else fallback
     if isinstance(value, str):
         text = value.strip()
-        if not text:
+        if not text or '_' in text:
             return fallback
         try:
             numeric = float(text)
@@ -206,8 +206,14 @@ def main():
     deadline.start(timeout_ms)
 
     out_dir = os.path.dirname(os.path.abspath(sys.argv[1]))
-    output_path = os.path.join(out_dir, os.path.basename(str(request.get('output', 'capture.' + request['format']))))
-    fmt = request['format']
+    fmt = request.get('format')
+    if fmt not in ('pdf', 'png', 'jpg'):
+        raise ValueError('Unsupported capture format')
+    raw_output = request.get('output')
+    output_name = os.path.basename(raw_output) if isinstance(raw_output, str) and raw_output else ''
+    if not output_name or output_name in ('.', '..'):
+        output_name = 'capture.' + fmt
+    output_path = os.path.join(out_dir, output_name)
 
     def report(extra):
         info = {'ok': True, 'output': os.path.basename(output_path), 'finalUrl': page.url().toString()[:2000], 'title': page.title()[:300], 'blocked': blocked}
@@ -244,13 +250,9 @@ def main():
         from PyQt6.QtWebEngineWidgets import QWebEngineView
 
         raw_viewport = request.get('viewport')
-        raw_viewport = raw_viewport if isinstance(raw_viewport, dict) else {}
-        viewport = {
-            'width': parse_guarded_int(raw_viewport.get('width'), 1280),
-            'height': parse_guarded_int(raw_viewport.get('height'), 800),
-        }
-        width = max(200, min(int(viewport.get('width', 1280)), 3840))
-        height = max(200, min(int(viewport.get('height', 800)), MAX_FULL_PAGE_HEIGHT))
+        viewport = raw_viewport if isinstance(raw_viewport, dict) else {}
+        width = max(200, min(parse_guarded_int(viewport.get('width'), 1280), 3840))
+        height = max(200, min(parse_guarded_int(viewport.get('height'), 800), MAX_FULL_PAGE_HEIGHT))
         view = QWebEngineView()
         view.setPage(page)
         view.resize(width, height)
@@ -280,9 +282,13 @@ def main():
             grab(height)
 
     def capture():
+        if state['done']:
+            return
         (write_pdf if fmt == 'pdf' else write_picture)()
 
     def after_load(ok):
+        if state['done']:
+            return
         if not ok:
             finish({'ok': False, 'code': 'load_failed', 'detail': 'The page could not be loaded.'})
             return
@@ -297,6 +303,9 @@ def main():
         quiet.setInterval(100)
 
         def check():
+            if state['done']:
+                quiet.stop()
+                return
             if clock['t'] - state['last_request_ms'] >= IDLE_QUIET_MS:
                 quiet.stop()
                 QTimer.singleShot(delay, capture)

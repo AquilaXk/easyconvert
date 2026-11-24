@@ -55,7 +55,8 @@ describe('the capture driver', () => {
 
   it('keeps the size of a picture and the wait of a page within fixed bounds', () => {
     expect([numberOf('MAX_FULL_PAGE_HEIGHT'), numberOf('MAX_DELAY_MS')]).toEqual(['16384', '30000']);
-    expect(/max\(200, min\(int\(viewport\.get\('width', 1280\)\), (\d+)\)\)/.exec(source)?.[1]).toBe('3840');
+    expect(/max\(200, min\(parse_guarded_int\(viewport\.get\('width'\), 1280\), (\d+)\)\)/.exec(source)?.[1]).toBe('3840');
+    expect(/max\(200, min\(parse_guarded_int\(viewport\.get\('height'\), 800\), ([A-Z_]+)\)\)/.exec(source)?.[1]).toBe('MAX_FULL_PAGE_HEIGHT');
   });
 
   it('runs page height probes in an isolated JS world with guarded null-safe script', () => {
@@ -71,6 +72,17 @@ import importlib.util, json, math, sys
 spec = importlib.util.spec_from_file_location('capture_driver', sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
+
+assert mod.parse_guarded_int(None, 42) == 42
+assert mod.parse_guarded_int(True, 42) == 42
+assert mod.parse_guarded_int(False, 42) == 42
+assert mod.parse_guarded_int(float('nan'), 42) == 42
+assert mod.parse_guarded_int(float('inf'), 42) == 42
+assert mod.parse_guarded_int(float('-inf'), 42) == 42
+assert mod.parse_guarded_int('1_000', 42) == 42
+assert mod.parse_guarded_int('1e309', 42) == 42
+assert mod.parse_guarded_int('  -15  ', 42) == -15
+assert mod.parse_guarded_int(' 250 ', 42) == 250
 
 assert mod.parse_page_height(2400, 800) == 2400
 assert mod.parse_page_height(2400.9, 800) == 2400
@@ -88,16 +100,21 @@ assert mod.parse_page_height('not-a-number', 800) == 800
 assert mod.parse_page_height('NaN', 800) == 800
 assert mod.parse_page_height('Infinity', 800) == 800
 assert mod.parse_page_height('9' * 5000, 800) == 800
+assert mod.parse_page_height('1_000', 800) == 800
 assert mod.parse_page_height('2500.7', 800) == 2500
 assert mod.parse_page_height({'scrollHeight': 1000}, 800) == 800
 assert mod.parse_page_height([1000], 800) == 800
 assert mod.parse_guarded_float(float('nan'), 1.0) == 1.0
+assert mod.parse_guarded_float(float('inf'), 1.0) == 1.0
+assert mod.parse_guarded_float(float('-inf'), 1.0) == 1.0
+assert mod.parse_guarded_float('1_000', 1.0) == 1.0
+assert mod.parse_guarded_float('9' * 5000, 1.0) == 1.0
 assert mod.parse_guarded_float(True, 1.0) == 1.0
 assert mod.parse_guarded_float('2.5', 1.0) == 2.5
 
 flags = mod.chromium_flags({'proxyPort': 9})
 assert '--proxy-server=http://127.0.0.1:9' in flags
-for bad_port in (None, True, 0, -1, 65536, 'bad'):
+for bad_port in (None, True, False, float('nan'), float('inf'), 0, -1, 65536, 'bad'):
     try:
         mod.chromium_flags({'proxyPort': bad_port})
     except ValueError:

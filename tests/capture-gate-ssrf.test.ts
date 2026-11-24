@@ -671,4 +671,97 @@ describe('multi-address connection fallback', () => {
       for (const sock of stalledSockets) sock.destroy();
     }
   });
+
+  it('aborts plain HTTP requests on post-connect peer mismatch without falling back to subsequent addresses', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const port = await upstream((_request, response) => response.end('unexpected'));
+    const realConnect = net.connect.bind(net) as (...args: unknown[]) => net.Socket;
+    const hostsAttempted: string[] = [];
+    vi.spyOn(net, 'connect').mockImplementation(((options: { host?: string }, ...rest: unknown[]) => {
+      if (options.host === PUBLIC_V6 || options.host === PUBLIC_V4) {
+        hostsAttempted.push(options.host);
+        return realConnect({ host: '127.0.0.1', port }, ...rest);
+      }
+      return realConnect(options, ...rest);
+    }) as never);
+    gate = await startCaptureGate();
+    const answer = await getVia(gate, 'http://peer-http-multi.example/check');
+    expect(answer.status).toMatch(/^HTTP\/1\.1 502 /);
+    expect(hostsAttempted).toEqual([PUBLIC_V6]);
+    expect(gate.refusals).toEqual([{ host: 'peer-http-multi.example', port: HTTP_PORT, reason: 'peer' }]);
+  });
+
+  it('enforces idleMs on connected plain HTTP upstreams and tears down truncated chunked responses instead of sending EOF', async () => {
+    nameServer([{ address: PUBLIC_V4, family: 4 }]);
+    const slowPort = await upstream((_request, response) => {
+      const timer = setTimeout(() => {
+        if (!response.destroyed) response.end('too-late');
+      }, 350);
+      response.on('close', () => clearTimeout(timer));
+    });
+    const idleGate = await openGate({ idleMs: 120, connectTimeoutMs: 1_000 }, slowPort);
+    const slowAnswer = await getVia(idleGate, 'http://idle-http.example/slow');
+    expect(slowAnswer.status).toMatch(/^HTTP\/1\.1 502 /);
+    await idleGate.close();
+    gate = undefined;
+
+    const truncServer = net.createServer((sock) => {
+      sock.once('data', () => {
+        sock.write('HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello');
+        setTimeout(() => sock.resetAndDestroy(), 20);
+      });
+    });
+    await new Promise<void>((resolve) => truncServer.listen(0, '127.0.0.1', resolve));
+    const truncPort = (truncServer.address() as net.AddressInfo).port;
+    try {
+      const truncGate = await openGate({}, truncPort);
+      const outcome = await new Promise<{ status?: number; body: string; complete?: boolean; err?: string }>((resolve) => {
+        const req = http.request({ host: '127.0.0.1', port: truncGate.port, path: 'http://trunc.example/', method: 'GET' }, (res) => {
+          let body = '';
+          res.on('data', (chunk: Buffer) => {
+            body += chunk.toString('utf8');
+          });
+          res.on('end', () => resolve({ status: res.statusCode, body, complete: res.complete }));
+          res.on('error', (err) => resolve({ status: res.statusCode, body, complete: res.complete, err: err.message }));
+        });
+        req.on('error', (err) => resolve({ body: '', err: err.message }));
+        req.end();
+      });
+      expect(outcome.status).toBe(200);
+      expect(outcome.complete).not.toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => truncServer.close(() => resolve()));
+    }
+  });
+
+  it('cancels stalled fallback dials cleanly when a client aborts mid-POST body', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const stalledSockets: net.Socket[] = [];
+    const target = await openGate({
+      connectTimeoutMs: 5_000,
+      dial: (entry) => {
+        dialed.push(entry);
+        const sock = new net.Socket();
+        stalledSockets.push(sock);
+        return sock;
+      },
+    });
+    try {
+      const client = net.connect({ host: '127.0.0.1', port: target.port });
+      await new Promise<void>((resolve) => client.once('connect', resolve));
+      client.write('POST http://mid-post-abort.example/upload HTTP/1.1\r\nHost: mid-post-abort.example\r\nContent-Length: 10000\r\n\r\npartial');
+      await vi.waitFor(() => expect(dialed).toHaveLength(1));
+      client.destroy();
+      await vi.waitFor(() => expect(stalledSockets[0]?.destroyed).toBe(true));
+      expect(dialed).toHaveLength(1);
+    } finally {
+      for (const sock of stalledSockets) sock.destroy();
+    }
+  });
 });

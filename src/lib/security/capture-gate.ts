@@ -450,6 +450,7 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
         const cleanupAbortListeners = (): void => {
           response.removeListener('close', abortUpstreamIfPremature);
           response.removeListener('finish', cleanupAbortListeners);
+          request.removeListener('error', abortUpstreamIfPremature);
           request.socket.removeListener('close', abortUpstreamIfPremature);
         };
         const abortUpstreamIfPremature = (): void => {
@@ -461,6 +462,7 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
         };
         response.once('close', abortUpstreamIfPremature);
         response.once('finish', cleanupAbortListeners);
+        request.on('error', abortUpstreamIfPremature);
         request.socket.once('close', abortUpstreamIfPremature);
 
         cancelDial = dialWithFallback(
@@ -479,7 +481,7 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
                 // No agent: the request uses the already-connected vetted socket.
                 createConnection: () => socket,
               });
-              upstream.setTimeout(CONNECT_TIMEOUT_MS, () => upstream?.destroy());
+              upstream.setTimeout(idleMs, () => upstream?.destroy());
               upstream.on('response', (answer) => {
                 response.writeHead(answer.statusCode ?? BAD_GATEWAY, buildAnswerHeaders(answer.headers));
                 answer.on('error', () => {
@@ -490,14 +492,18 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
               upstream.on('error', (error) => {
                 cleanupAbortListeners();
                 if (error instanceof GateError) refuse(url.hostname, port, error.reason);
-                if (!response.headersSent) response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
-                if (!response.destroyed) response.end();
+                if (!response.headersSent) {
+                  response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
+                  if (!response.destroyed) response.end();
+                } else if (!response.destroyed) {
+                  response.destroy();
+                }
               });
               request.pipe(upstream);
             },
             onFailed: () => {
               cleanupAbortListeners();
-              if (!aborted && !response.destroyed && !response.headersSent) {
+              if (!aborted && !closed && !response.destroyed && !response.headersSent) {
                 response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
                 response.end();
               } else if (!response.destroyed) {
