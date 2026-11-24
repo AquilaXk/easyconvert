@@ -45,6 +45,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   IcnsDecodeError: 'conversion_failed',
   IcoDecodeError: 'conversion_failed',
   InvalidConversionOutputError: 'conversion_failed',
+  InvalidCustomHeaderError: 'conversion_failed',
   InvalidRawSensorError: 'conversion_failed',
   InvalidSheetIndexError: 'conversion_failed',
   InvalidUnicodeTextError: 'conversion_failed',
