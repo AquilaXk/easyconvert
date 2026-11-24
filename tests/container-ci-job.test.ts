@@ -320,6 +320,8 @@ describe('scripts/verify-worker-container.sh', () => {
     expect(script).toContain('capsh --print');
     expect(script).toContain('unshare -r -n');
     expect(script).toContain('pdftotext');
+    expect(script).toContain('/usr/local/lib/easyconvert/capture-website.py');
+    expect(script).toContain('proxySocket');
     expect(script).toMatch(/failures=\$\(\(failures \+ 1\)\)/);
     expect(script).toMatch(/exit 1\s*$/);
   });

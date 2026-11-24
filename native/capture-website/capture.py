@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
 """Website capture driver: loads one page in Qt WebEngine (Chromium) and writes it as a PDF, a PNG or a JPEG.
 
-The worker runs this program as a separate sandboxed process (src/lib/capture/website-capture.ts). It reads one JSON request
-file (argv[1]) and prints one JSON line on standard output. Everything the page asks the network for goes to the gate proxy of
-the worker (`proxyPort` on 127.0.0.1), which applies the SSRF checks of the project to every connection; this program adds the
-browser-side limits: only http and https (and data) URLs load, no file access, no popups, no downloads, no device or
-notification permission, no WebRTC on a direct route, no plug-ins and no persistent state.
+The worker runs this program as a separate sandboxed process inside an isolated network namespace (src/lib/capture/website-capture.ts).
+It reads one JSON request file (argv[1]) and prints one JSON line on standard output. When given `proxySocket` (an AF_UNIX gate
+socket across the network namespace boundary), this program brings loopback up inside the isolated namespace and relays an ephemeral
+local 127.0.0.1 TCP listener to `proxySocket`, so the browser has no host network access and every request goes to the SSRF-checking
+gate (`capture-gate.ts`). `proxyPort` remains supported for standalone local checks; browser-side restrictions additionally limit URLs to
+http/https/data/about/blob, block file access, popups, downloads, device permissions, plug-ins, direct WebRTC UDP, and persistent state.
 
-Request fields: url, format (pdf|png|jpg), proxyPort, timeoutMs, waitUntil (load|idle), delayMs, viewport {width, height, scale},
+Request fields: url, format (pdf|png|jpg), proxySocket|proxyPort, timeoutMs, waitUntil (load|idle), delayMs, viewport {width, height, scale},
 fullPage, quality, userAgent, pdf {paper|width+height (mm), landscape, margin (mm), printBackground, scale}, output (file name).
 Result fields: ok, output, finalUrl, title, blocked (URLs the browser refused), or ok=false with code and detail.
 """
+import errno
+import fcntl
 import json
 import math
 import os
+import selectors
+import socket
+import struct
 import sys
+import threading
 
 MAX_FULL_PAGE_HEIGHT = 16384
 MAX_DELAY_MS = 30000
 IDLE_QUIET_MS = 500
 SETTLE_MS = 300
 DEFAULT_TIMEOUT_MS = 30000
+MAX_UNIX_SOCKET_PATH_BYTES = 107
+MAX_RELAY_CONNECTIONS = 128
+RELAY_BUFFER_BYTES = 65536
+RELAY_HIGH_WATER_BYTES = 262144
+IFF_UP = 0x1
+SIOCGIFFLAGS = 0x8913
+SIOCSIFFLAGS = 0x8914
 MM_PER_INCH = 25.4
 PAPERS = {'A3': 'A3', 'A4': 'A4', 'A5': 'A5', 'Letter': 'Letter', 'Legal': 'Legal', 'Tabloid': 'Tabloid'}
 ALLOWED_SCHEMES = ('http', 'https', 'data', 'about', 'blob')
@@ -101,6 +115,295 @@ def parse_page_height(value, fallback, maximum=MAX_FULL_PAGE_HEIGHT):
     return min(parsed, maximum)
 
 
+def validate_proxy_socket(value):
+    if not isinstance(value, str) or not value.strip() or '\x00' in value or not os.path.isabs(value):
+        raise ValueError('proxySocket must be a non-empty absolute path without NUL bytes')
+    if len(value.encode('utf-8')) > MAX_UNIX_SOCKET_PATH_BYTES:
+        raise ValueError('proxySocket exceeds POSIX AF_UNIX path limit')
+    return value
+
+
+def ensure_loopback_up():
+    if not sys.platform.startswith('linux'):
+        return
+    ctl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        ifreq = fcntl.ioctl(ctl.fileno(), SIOCGIFFLAGS, struct.pack('16sH22x', b'lo', 0))
+        flags = struct.unpack('16sH22x', ifreq)[1]
+        if not (flags & IFF_UP):
+            fcntl.ioctl(ctl.fileno(), SIOCSIFFLAGS, struct.pack('16sH22x', b'lo', flags | IFF_UP))
+    finally:
+        ctl.close()
+
+
+class _RelayPair:
+    def __init__(self, client, unix_sock, unix_connected):
+        self.client = client
+        self.unix = unix_sock
+        self.unix_connected = unix_connected
+        self.to_unix = bytearray()
+        self.to_client = bytearray()
+        self.client_eof = False
+        self.unix_eof = False
+        self.client_wr_closed = False
+        self.unix_wr_closed = False
+        self.closed = False
+
+
+class GateRelay:
+    """Single-threaded non-blocking loopback-to-AF_UNIX relay for an isolated network namespace."""
+
+    def __init__(self, socket_path):
+        self._socket_path = validate_proxy_socket(socket_path)
+        self._selector = selectors.DefaultSelector()
+        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._server.bind(('127.0.0.1', 0))
+        self._server.listen(MAX_RELAY_CONNECTIONS)
+        self._server.setblocking(False)
+        self.port = self._server.getsockname()[1]
+        self._wake_r, self._wake_w = socket.socketpair()
+        self._wake_r.setblocking(False)
+        self._wake_w.setblocking(False)
+        self._registered = {}
+        self._conns = set()
+        self._stop = False
+        self._thread = None
+
+    def start(self):
+        self._set_events(self._server, selectors.EVENT_READ, ('accept', None))
+        self._set_events(self._wake_r, selectors.EVENT_READ, ('wake', None))
+        self._thread = threading.Thread(target=self._run, name='capture-gate-relay', daemon=True)
+        self._thread.start()
+        return self
+
+    def _set_events(self, sock, events, data):
+        try:
+            fd = sock.fileno()
+        except OSError:
+            return
+        if fd < 0:
+            return
+        if events == 0:
+            if fd in self._registered:
+                try:
+                    self._selector.unregister(sock)
+                except (KeyError, ValueError, OSError):
+                    pass
+                self._registered.pop(fd, None)
+            return
+        if fd in self._registered:
+            if self._registered[fd] != events:
+                self._selector.modify(sock, events, data)
+                self._registered[fd] = events
+        else:
+            self._selector.register(sock, events, data)
+            self._registered[fd] = events
+
+    def _close_pair(self, pair):
+        if pair.closed:
+            return
+        pair.closed = True
+        self._conns.discard(pair)
+        for sock in (pair.client, pair.unix):
+            try:
+                fd = sock.fileno()
+            except OSError:
+                fd = -1
+            if fd >= 0 and fd in self._registered:
+                try:
+                    self._selector.unregister(sock)
+                except (KeyError, ValueError, OSError):
+                    pass
+                self._registered.pop(fd, None)
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    def _sync_events(self, pair):
+        if pair.closed:
+            return
+        if pair.client_eof and not pair.to_unix and not pair.unix_wr_closed and pair.unix_connected:
+            try:
+                pair.unix.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            pair.unix_wr_closed = True
+        if pair.unix_eof and not pair.to_client and not pair.client_wr_closed:
+            try:
+                pair.client.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+            pair.client_wr_closed = True
+        if pair.client_eof and pair.unix_eof and not pair.to_unix and not pair.to_client:
+            self._close_pair(pair)
+            return
+        client_events = 0
+        if not pair.client_eof and len(pair.to_unix) < RELAY_HIGH_WATER_BYTES:
+            client_events |= selectors.EVENT_READ
+        if pair.to_client:
+            client_events |= selectors.EVENT_WRITE
+        unix_events = 0
+        if not pair.unix_connected:
+            unix_events |= selectors.EVENT_WRITE
+        else:
+            if not pair.unix_eof and len(pair.to_client) < RELAY_HIGH_WATER_BYTES:
+                unix_events |= selectors.EVENT_READ
+            if pair.to_unix:
+                unix_events |= selectors.EVENT_WRITE
+        if client_events == 0 and unix_events == 0:
+            self._close_pair(pair)
+            return
+        self._set_events(pair.client, client_events, ('pair', (pair, True)))
+        self._set_events(pair.unix, unix_events, ('pair', (pair, False)))
+
+    def _accept(self):
+        while True:
+            try:
+                client, _ = self._server.accept()
+            except BlockingIOError:
+                break
+            except OSError:
+                break
+            if len(self._conns) >= MAX_RELAY_CONNECTIONS:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+                continue
+            unix_sock = None
+            try:
+                client.setblocking(False)
+                try:
+                    client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                except OSError:
+                    pass
+                unix_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                unix_sock.setblocking(False)
+                rc = unix_sock.connect_ex(self._socket_path)
+            except OSError:
+                for sock in (client, unix_sock):
+                    if sock is not None:
+                        try:
+                            sock.close()
+                        except OSError:
+                            pass
+                continue
+            if rc != 0 and rc not in (errno.EINPROGRESS, errno.EAGAIN, errno.EWOULDBLOCK):
+                for sock in (client, unix_sock):
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                continue
+            pair = _RelayPair(client, unix_sock, rc == 0)
+            self._conns.add(pair)
+            self._sync_events(pair)
+
+    def _handle_pair(self, pair, is_client, mask):
+        if pair.closed:
+            return
+        if not is_client and (mask & selectors.EVENT_WRITE) and not pair.unix_connected:
+            try:
+                err = pair.unix.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            except OSError:
+                self._close_pair(pair)
+                return
+            if err != 0:
+                self._close_pair(pair)
+                return
+            pair.unix_connected = True
+        if mask & selectors.EVENT_READ:
+            sock = pair.client if is_client else pair.unix
+            outbuf = pair.to_unix if is_client else pair.to_client
+            try:
+                chunk = sock.recv(RELAY_BUFFER_BYTES)
+            except BlockingIOError:
+                chunk = None
+            except OSError:
+                self._close_pair(pair)
+                return
+            if chunk == b'':
+                if is_client:
+                    pair.client_eof = True
+                else:
+                    pair.unix_eof = True
+            elif chunk:
+                outbuf.extend(chunk)
+        if mask & selectors.EVENT_WRITE:
+            if is_client and pair.to_client:
+                try:
+                    sent = pair.client.send(memoryview(pair.to_client))
+                    if sent > 0:
+                        del pair.to_client[:sent]
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    self._close_pair(pair)
+                    return
+            elif not is_client and pair.unix_connected and pair.to_unix:
+                try:
+                    sent = pair.unix.send(memoryview(pair.to_unix))
+                    if sent > 0:
+                        del pair.to_unix[:sent]
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    self._close_pair(pair)
+                    return
+        self._sync_events(pair)
+
+    def _run(self):
+        while not self._stop:
+            try:
+                ready = self._selector.select()
+            except OSError:
+                break
+            for key, mask in ready:
+                kind, payload = key.data
+                if kind == 'wake':
+                    try:
+                        self._wake_r.recv(64)
+                    except OSError:
+                        pass
+                    break
+                if kind == 'accept':
+                    self._accept()
+                else:
+                    pair, is_client = payload
+                    self._handle_pair(pair, is_client, mask)
+
+    def close(self):
+        if self._stop:
+            return
+        self._stop = True
+        try:
+            self._wake_w.send(b'x')
+        except OSError:
+            pass
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        for pair in list(self._conns):
+            self._close_pair(pair)
+        for sock in (self._server, self._wake_r, self._wake_w):
+            try:
+                fd = sock.fileno()
+                if fd >= 0 and fd in self._registered:
+                    self._selector.unregister(sock)
+                    self._registered.pop(fd, None)
+            except (KeyError, ValueError, OSError):
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+        try:
+            self._selector.close()
+        except OSError:
+            pass
+
+
 def chromium_flags(request):
     port = parse_guarded_int(request.get('proxyPort'), 0)
     if port < 1 or port > 65535:
@@ -117,8 +420,23 @@ def chromium_flags(request):
 def main():
     with open(sys.argv[1], 'r', encoding='utf-8') as handle:
         request = json.load(handle)
+    relay = None
+    try:
+        flag_request = request
+        if 'proxySocket' in request and request['proxySocket'] is not None:
+            sock_path = validate_proxy_socket(request['proxySocket'])
+            ensure_loopback_up()
+            relay = GateRelay(sock_path).start()
+            flag_request = {'proxyPort': relay.port}
+        return _run_browser(request, flag_request)
+    finally:
+        if relay is not None:
+            relay.close()
+
+
+def _run_browser(request, flag_request):
     os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-    os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = chromium_flags(request)
+    os.environ['QTWEBENGINE_CHROMIUM_FLAGS'] = chromium_flags(flag_request)
     os.environ.setdefault('QTWEBENGINE_DISABLE_SANDBOX', '1')
 
     from PyQt6.QtCore import QMarginsF, QSizeF, QTimer, QUrl
@@ -319,7 +637,6 @@ def main():
     app.exec()
     emit(result if result else {'ok': False, 'code': 'capture_failed', 'detail': 'The browser ended without a result.'})
     sys.stdout.flush()
-    os._exit(0)
 
 
 if __name__ == '__main__':
@@ -328,4 +645,4 @@ if __name__ == '__main__':
     except Exception as error:  # noqa: BLE001 - the worker needs one JSON line whatever happened
         fail('capture_failed', '%s: %s' % (type(error).__name__, error))
         sys.stdout.flush()
-        os._exit(0)
+    os._exit(0)

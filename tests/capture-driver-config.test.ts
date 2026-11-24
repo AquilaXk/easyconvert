@@ -121,9 +121,129 @@ for bad_port in (None, True, False, float('nan'), float('inf'), 0, -1, 65536, 'b
         pass
     else:
         raise AssertionError('expected ValueError for proxyPort=' + repr(bad_port))
+for bad_sock in (None, '', '   ', 'relative.sock', '/tmp/with\\x00nul.sock', '/tmp/' + 'x' * 110 + '.sock', 123):
+    try:
+        mod.validate_proxy_socket(bad_sock)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('expected ValueError for proxySocket=' + repr(bad_sock))
 print('ok')
 `;
     const checked = execFileSync(PYTHON as string, ['-I', '-c', script, DRIVER], { encoding: 'utf8' });
     expect(checked.trim()).toBe('ok');
+  });
+
+  it.skipIf(skipUnless('a Python 3 interpreter', PYTHON !== undefined))('bridges loopback TCP connections to an AF_UNIX gate socket with half-close, backpressure, concurrency, and teardown', () => {
+    const relayScript = `
+import importlib.util, os, socket, sys, tempfile, threading
+
+spec = importlib.util.spec_from_file_location('capture_driver', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
+    sock_path = os.path.join(td, 'g.sock')
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    srv.listen(32)
+    stop_srv = threading.Event()
+
+    def serve_conn(conn):
+        try:
+            chunks = []
+            while True:
+                data = conn.recv(65536)
+                if not data:
+                    break
+                chunks.append(data)
+            payload = b''.join(chunks)
+            conn.sendall(b'ECHO:' + payload)
+            conn.shutdown(socket.SHUT_WR)
+        finally:
+            conn.close()
+
+    def accept_loop():
+        srv.settimeout(0.2)
+        while not stop_srv.is_set():
+            try:
+                c, _ = srv.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=serve_conn, args=(c,), daemon=True).start()
+
+    srv_thread = threading.Thread(target=accept_loop, daemon=True)
+    srv_thread.start()
+
+    relay = mod.GateRelay(sock_path).start()
+    try:
+        assert 1 <= relay.port <= 65535
+        # Large (>300 KiB) bidirectional half-close stream exercising backpressure watermark
+        big = b'A' * (320 * 1024)
+        c = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        c.sendall(big)
+        c.shutdown(socket.SHUT_WR)
+        got = bytearray()
+        while True:
+            chunk = c.recv(65536)
+            if not chunk:
+                break
+            got.extend(chunk)
+        c.close()
+        assert bytes(got) == b'ECHO:' + big, f'got {len(got)} bytes'
+
+        # Concurrent short requests
+        results = []
+        errs = []
+        def worker(i):
+            try:
+                s = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+                msg = ('req-%d' % i).encode()
+                s.sendall(msg)
+                s.shutdown(socket.SHUT_WR)
+                buf = bytearray()
+                while True:
+                    d = s.recv(4096)
+                    if not d:
+                        break
+                    buf.extend(d)
+                s.close()
+                results.append(bytes(buf) == b'ECHO:' + msg)
+            except Exception as e:
+                errs.append(repr(e))
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(16)]
+        for t in ts: t.start()
+        for t in ts: t.join(timeout=5)
+        assert not errs and len(results) == 16 and all(results)
+
+        # Fail-closed when AF_UNIX target disappears
+        stop_srv.set()
+        srv.close()
+        missing = mod.GateRelay(os.path.join(td, 'missing.sock')).start()
+        try:
+            d = socket.create_connection(('127.0.0.1', missing.port), timeout=2)
+            try:
+                d.sendall(b'CONNECT example.com:443 HTTP/1.1\\r\\n\\r\\n')
+                assert d.recv(1024) == b''
+            except (ConnectionResetError, BrokenPipeError):
+                pass
+            finally:
+                d.close()
+        finally:
+            missing.close()
+    finally:
+        stop_srv.set()
+        relay.close()
+        relay.close()  # idempotent
+        try:
+            srv.close()
+        except OSError:
+            pass
+print('relay-ok')
+`;
+    const checked = execFileSync(PYTHON as string, ['-I', '-c', relayScript, DRIVER], { encoding: 'utf8' });
+    expect(checked.trim()).toBe('relay-ok');
   });
 });

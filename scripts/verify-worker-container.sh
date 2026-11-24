@@ -25,6 +25,9 @@
 #
 #  13. fontconfig reads the font caches of the image as the image user: `fc-list` with an empty home writes no cache file there (a cache whose
 #      directory time differs from the one it records is refused, and every office conversion then rebuilds 26 caches in its own new home)
+#  14. website capture (`/usr/local/lib/easyconvert/capture-website.py`) runs inside a relay-only network namespace (`unshare -r -n`) and Landlock
+#      confinement (`pid-init --confine --require`): direct host-loopback and link-local TCP sockets fail in the netns while an `http://` page (with
+#      a refused `169.254.169.254` subresource) renders to PDF, PNG and JPEG over the `AF_UNIX` gate relay on Debian Qt WebEngine
 #
 # The sandbox is entered with the same `unshare -r -n` and `prlimit --as` the worker uses
 # (src/lib/security/process-sandbox.ts); this script does not load the worker's own code.
@@ -56,12 +59,14 @@ WAV_HEADER_BYTES=44
 failures=0
 work_dir=""
 listener_pid=""
+capture_gate_pid=""
 
 pass() { printf 'PASS  %s\n' "$1"; }
 fail() { printf 'FAIL  %s\n' "$1"; failures=$((failures + 1)); }
 note() { printf '      %s\n' "$1"; }
 
 cleanup() {
+  if [ -n "$capture_gate_pid" ]; then kill "$capture_gate_pid" 2>/dev/null; fi
   if [ -n "$listener_pid" ]; then kill "$listener_pid" 2>/dev/null; fi
   if [ -n "$work_dir" ]; then rm -rf "$work_dir"; fi
 }
@@ -629,6 +634,136 @@ else
   # The directory a cache belongs to is the first path written in the file, which names the directories whose caches are stale.
   stale_dirs="$(for cache in "$font_home"/.cache/fontconfig/*.cache-*; do [ -f "$cache" ] && grep -ao '/usr/[[:graph:]]*' "$cache" | head -n 1; done 2>/dev/null | tr '\n' ' ')"
   fail "fc-list wrote font caches into an empty home ($(ls "$font_home/.cache/fontconfig" 2>/dev/null | wc -l) files): the caches of the image are stale for the image user (${stale_dirs:-no directory named})"
+fi
+
+# --- 14. website capture in relay-only network namespace and file confinement ---------------------------
+CAPTURE_DRIVER_SCRIPT="/usr/local/lib/easyconvert/capture-website.py"
+CAPTURE_AS_BYTES=$((192 * 1024 * 1024 * 1024))
+if [ ! -r "$CAPTURE_DRIVER_SCRIPT" ] || ! command -v python3 >/dev/null 2>&1 || ! command -v pid-init >/dev/null 2>&1; then
+  fail "website capture prerequisites are missing ($CAPTURE_DRIVER_SCRIPT, python3, or pid-init)"
+else
+  capture_gate_dir="$work_dir/cg"
+  capture_work="$work_dir/cw"
+  mkdir -p "$capture_gate_dir" "$capture_work/home" "$capture_work/config" "$capture_work/cache" "$capture_work/runtime"
+  chmod 0700 "$capture_gate_dir" "$capture_work"
+  capture_sock="$capture_gate_dir/g.sock"
+  capture_info="$work_dir/capture-gate-info.json"
+  capture_stats="$work_dir/capture-gate-stats.json"
+  cat > "$work_dir/capture-gate-probe.js" <<'CGATE'
+const fs = require('node:fs');
+const http = require('node:http');
+const net = require('node:net');
+
+const [socketPath, infoPath, statsPath] = process.argv.slice(2);
+const stats = { allowed: 0, blocked: 0 };
+const writeStats = () => fs.writeFileSync(statsPath, JSON.stringify(stats));
+writeStats();
+
+const hostTcp = net.createServer((sock) => sock.end('HOST-LOOPBACK\n'));
+const unixGate = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === 'http://capture-check.example/') {
+    stats.allowed += 1;
+    writeStats();
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', connection: 'close' });
+    res.end('<!doctype html><html><head><title>NetNS Probe</title></head><body><h1>Relay Capture OK</h1><img src="http://169.254.169.254/latest"></body></html>');
+    return;
+  }
+  stats.blocked += 1;
+  writeStats();
+  res.writeHead(403, { 'content-length': '0', connection: 'close', 'x-capture-gate': 'blocked' });
+  res.end();
+});
+unixGate.on('connect', (_req, clientSocket) => {
+  stats.blocked += 1;
+  writeStats();
+  clientSocket.end('HTTP/1.1 403 Refused\r\nx-capture-gate: blocked\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+});
+
+hostTcp.listen(0, '127.0.0.1', () => {
+  const { port: hostPort } = hostTcp.address();
+  unixGate.listen(socketPath, () => {
+    fs.chmodSync(socketPath, 0o600);
+    fs.writeFileSync(infoPath, JSON.stringify({ hostPort, socketPath }));
+  });
+});
+
+const shutdown = () => {
+  try { fs.rmSync(socketPath, { force: true }); } catch {}
+  hostTcp.close();
+  unixGate.close();
+  process.exit(0);
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+CGATE
+  node "$work_dir/capture-gate-probe.js" "$capture_sock" "$capture_info" "$capture_stats" &
+  capture_gate_pid=$!
+  i=0
+  while [ "$i" -lt "$LISTENER_WAIT_TRIES" ] && { [ ! -s "$capture_info" ] || [ ! -S "$capture_sock" ]; }; do
+    if ! kill -0 "$capture_gate_pid" 2>/dev/null; then break; fi
+    sleep "$LISTENER_WAIT_SECONDS"
+    i=$((i + 1))
+  done
+  if [ ! -s "$capture_info" ] || [ ! -S "$capture_sock" ]; then
+    fail "the capture gate probe did not bind $capture_sock"
+  else
+    host_loopback_port="$(node -e "console.log(JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')).hostPort)" "$capture_info")"
+    netns_probe="$(unshare -r -n -- pid-init --confine --require --write "$capture_work" --read "$CAPTURE_DRIVER_SCRIPT" -- python3 -c "
+import os, socket, sys
+host_port, sock_path, gate_dir = int(sys.argv[1]), sys.argv[2], sys.argv[3]
+s1 = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s1.settimeout(1.0)
+try:
+    s1.connect(('127.0.0.1', host_port)); host_res = 'connected'
+except OSError:
+    host_res = 'refused'
+finally:
+    s1.close()
+s2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s2.settimeout(1.0)
+try:
+    s2.connect(('169.254.169.254', 80)); meta_res = 'connected'
+except OSError:
+    meta_res = 'refused'
+finally:
+    s2.close()
+try:
+    os.listdir(gate_dir); dir_res = 'listed'
+except OSError:
+    dir_res = 'denied'
+try:
+    os.unlink(sock_path); unlink_res = 'unlinked'
+except OSError:
+    unlink_res = 'denied'
+print(host_res, meta_res, dir_res, unlink_res)
+" "$host_loopback_port" "$capture_sock" "$capture_gate_dir" 2>&1)"
+    if [ "$netns_probe" != "refused refused denied denied" ]; then
+      fail "the capture sandbox did not block host loopback, metadata routing, gate directory listing or unlink: $(printf '%s' "$netns_probe" | head -c 300)"
+    else
+      capture_ok=1
+      for fmt in pdf png jpg; do
+        printf '{"url":"http://capture-check.example/","format":"%s","proxySocket":"%s","timeoutMs":60000,"output":"out.%s"}\n' "$fmt" "$capture_sock" "$fmt" > "$capture_work/request.json"
+        cap_out="$(timeout 120 unshare -r -n -- pid-init --confine --require --write "$capture_work" --read "$CAPTURE_DRIVER_SCRIPT" -- prlimit --as="$CAPTURE_AS_BYTES" -- env PATH="$PATH" HOME="$capture_work/home" XDG_CONFIG_HOME="$capture_work/config" XDG_CACHE_HOME="$capture_work/cache" XDG_DATA_HOME="$capture_work/home" XDG_RUNTIME_DIR="$capture_work/runtime" TMPDIR="$capture_work" DBUS_SESSION_BUS_ADDRESS=disabled: QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 python3 -I "$CAPTURE_DRIVER_SCRIPT" "$capture_work/request.json" 2>"$work_dir/capture-${fmt}.err")"
+        cap_rc=$?
+        if [ "$cap_rc" -ne 0 ] || ! printf '%s' "$cap_out" | grep -q '"ok": true' || ! printf '%s' "$cap_out" | grep -q '"title": "NetNS Probe"'; then
+          fail "confined website capture ($fmt) failed (rc=$cap_rc): $(printf '%s %s' "$cap_out" "$(tail -c 250 "$work_dir/capture-${fmt}.err" 2>/dev/null)" | tr '\n' ' ')"
+          capture_ok=0
+          break
+        fi
+      done
+      if [ "$capture_ok" -eq 1 ]; then
+        if [ "$(head -c 5 "$capture_work/out.pdf" 2>/dev/null)" = "%PDF-" ] \
+          && [ "$(od -An -tx1 -N4 "$capture_work/out.png" 2>/dev/null | tr -d ' \n')" = "89504e47" ] \
+          && [ "$(od -An -tx1 -N3 "$capture_work/out.jpg" 2>/dev/null | tr -d ' \n')" = "ffd8ff" ] \
+          && node -e "const s=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if (s.allowed < 3 || s.blocked < 3) process.exit(1);" "$capture_stats"; then
+          pass "website capture drew PDF, PNG and JPEG over the AF_UNIX gate relay inside unshare -r -n and pid-init --confine --require with direct network and gate dir denied"
+        else
+          fail "website capture outputs or gate relay counters did not verify ($(cat "$capture_stats" 2>/dev/null))"
+        fi
+      fi
+    fi
+  fi
+  kill "$capture_gate_pid" 2>/dev/null
+  wait "$capture_gate_pid" 2>/dev/null
+  capture_gate_pid=""
 fi
 
 if [ "$failures" -eq 0 ]; then

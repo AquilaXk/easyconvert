@@ -1,6 +1,7 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { startCaptureGate, type CaptureGateOptions } from '../security/capture-gate';
+import { startCaptureGate, type CaptureGate, type CaptureGateOptions } from '../security/capture-gate';
 import { OUTPUT_READ_FLAGS } from '../security/sandbox-output';
 import { assertPublicOutboundUrl, OutboundRequestBlockedError } from '../security/safe-fetch';
 import {
@@ -18,10 +19,10 @@ import { CaptureFailedError, CaptureTargetBlockedError, CaptureUnavailableError 
 
 /**
  * Website capture: a public page as a PDF, a PNG or a JPEG, drawn by Chromium as Qt WebEngine, which the worker image already carries
- * (calibre depends on it; nothing is added to the image). The browser runs as a separate sandboxed process of the driver
- * `native/capture-website/capture.py` (Python with PyQt6, the interpreter and the bindings of the image), and its only route to the
- * network is the gate proxy of `capture-gate.ts`: the navigation, every redirect it follows and every subresource, frame, fetch and
- * WebSocket the page makes pass the SSRF checks of the project, with the address pinned to the one that was checked.
+ * (calibre depends on it; nothing is added to the image). The browser runs inside an isolated network, user, and PID namespace with
+ * Landlock file confinement (`native/capture-website/capture.py`); its only route across the network namespace boundary is the gate's
+ * AF_UNIX socket (`capture-gate.ts`), so every navigation, redirect, subresource, frame, fetch, and WebSocket passes the project's
+ * SSRF checks and pinned-address dialing while direct TCP/UDP from Chromium fails at the kernel.
  *
  * The first address is also refused before a browser is started (`assertPublicOutboundUrl`, ports 80 and 443 only, no credentials in
  * the URL), so a request for a private address costs nothing. A page that cannot be loaded because the gate refused a hop of its
@@ -33,6 +34,8 @@ export const CAPTURE_FORMATS: ReadonlySet<string> = new Set(['pdf', 'png', 'jpg'
 const DRIVER_FILE_NAME = 'capture.py';
 const PYTHON_VARIABLE = 'CAPTURE_PYTHON_PATH';
 const DRIVER_VARIABLE = 'CAPTURE_DRIVER_PATH';
+const GATE_DIR_PREFIX = 'easyconvert-gate-';
+const GATE_SOCKET_NAME = 'g.sock';
 const PYTHON_CANDIDATES = ['/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3'];
 /** Where the worker image puts the driver; a checkout runs the one in `native/`. */
 const DRIVER_CANDIDATES = ['/usr/local/lib/easyconvert/capture-website.py', path.resolve(process.cwd(), 'native', 'capture-website', DRIVER_FILE_NAME)];
@@ -133,10 +136,21 @@ function browserEnvironment(dir: string): Record<string, string> {
     XDG_CACHE_HOME: dirs.cache,
     XDG_DATA_HOME: dirs.home,
     XDG_RUNTIME_DIR: dirs.runtime,
+    DBUS_SESSION_BUS_ADDRESS: 'disabled:',
     QT_QPA_PLATFORM: 'offscreen',
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
   };
+}
+
+function createGateSocketDir(): { gateDir: string; socketPath: string } {
+  const gateDir = fs.mkdtempSync(path.join(os.tmpdir(), GATE_DIR_PREFIX));
+  try {
+    fs.chmodSync(gateDir, 0o700);
+  } catch {
+    // Filesystem may ignore chmod (e.g. non-POSIX TMPDIR); mkdtempSync already applies 0o700.
+  }
+  return { gateDir, socketPath: path.join(gateDir, GATE_SOCKET_NAME) };
 }
 
 /**
@@ -159,13 +173,19 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
   if (python === null || driver === null) throw new EngineUnavailableError('capture-website', 'The browser driver or its Python interpreter is not installed.');
 
   const timeoutMs = Math.min(request.timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-  const gate = await startCaptureGate(request.gate);
+  const { gateDir, socketPath } = createGateSocketDir();
+  let gate: CaptureGate | undefined;
   try {
+    gate = await startCaptureGate({ socketPath, ...request.gate });
+    const proxySocket = gate.socketPath;
     return await withWorkerSandbox(
       async (sandbox) => {
         const outputName = `capture.${format}`;
         const requestFile = path.join(sandbox.sandboxDir, 'request.json');
-        fs.writeFileSync(requestFile, JSON.stringify({ ...request.options, url: url.href, format, proxyPort: gate.port, timeoutMs, output: outputName }));
+        fs.writeFileSync(
+          requestFile,
+          JSON.stringify({ ...request.options, url: url.href, format, proxySocket, timeoutMs, output: outputName })
+        );
         let stdout: string;
         try {
           const run = await sandbox.execute(python, ['-I', driver, requestFile], {
@@ -175,10 +195,6 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
             memoryLimitMb: MAX_MEMORY_MB,
             rlimits: { asBytes: ADDRESS_SPACE_BYTES },
             env: browserEnvironment(sandbox.sandboxDir),
-            // The browser reaches the network through the gate on the loopback interface, which a network namespace of its own would hide, so it
-            // keeps the network of the worker and takes every other protection of a run: user and PID namespaces, the file confinement, the limits.
-            networkIsolated: false,
-            sandboxOptions: { keepNetwork: true },
             readDirs: [driver],
             signal: request.signal,
           });
@@ -190,12 +206,12 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
           if (error instanceof SandboxedProcessError) throw new CaptureFailedError('The browser stopped before it drew the page.');
           throw error;
         }
-        return finish(parseReport(stdout), sandbox.sandboxDir, format, gate.refusals, url, timeoutMs);
-      },
-      { networkIsolated: false }
+        return finish(parseReport(stdout), sandbox.sandboxDir, format, gate!.refusals, url, timeoutMs);
+      }
     );
   } finally {
-    await gate.close();
+    await gate?.close();
+    fs.rmSync(gateDir, { recursive: true, force: true });
   }
 }
 

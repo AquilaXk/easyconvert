@@ -1,5 +1,7 @@
+import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import path from 'node:path';
 import { isBlockedIp, ssrfSafeLookup } from './ssrf';
 
 /**
@@ -34,6 +36,8 @@ const DEFAULT_IDLE_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const MAX_PORT = 65_535;
 const MAX_CANDIDATE_TARGETS = 16;
+const MAX_UNIX_SOCKET_PATH_BYTES = 103;
+const UNIX_SOCKET_MODE = 0o600;
 /** `host:port` of a CONNECT: a name or an IPv4 address, or an IPv6 address in brackets; no user information, path or whitespace. */
 const AUTHORITY = /^(\[[0-9a-fA-F:.]+(?:%[0-9A-Za-z._~-]+)?\]|[^\s:@/\\?#[\]]+):(\d{1,5})$/;
 const HOP_BY_HOP: ReadonlySet<string> = new Set(['connection', 'proxy-connection', 'proxy-authorization', 'proxy-authenticate', 'keep-alive', 'te', 'trailer', 'upgrade']);
@@ -71,11 +75,15 @@ export interface CaptureGateOptions {
   maxBytes?: number;
   idleMs?: number;
   connectTimeoutMs?: number;
+  /** Filesystem AF_UNIX socket path to listen on instead of an ephemeral TCP loopback port. */
+  socketPath?: string;
 }
 
 export interface CaptureGate {
-  /** The loopback port of the proxy, for the browser's `--proxy-server`. */
+  /** The loopback port of the proxy (0 when listening on `socketPath`), for the browser's `--proxy-server`. */
   readonly port: number;
+  /** The AF_UNIX socket path when the gate listens on a local domain socket. */
+  readonly socketPath?: string;
   /** Every refusal so far (the first 100), in order. */
   readonly refusals: readonly GateRefusal[];
   /** Bytes relayed in both directions. */
@@ -526,22 +534,78 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
     socket.destroy();
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen({ host: '127.0.0.1', port: 0 }, resolve);
-  });
-  const { port } = server.address() as net.AddressInfo;
+  const bound = await listenGateServer(server, options.socketPath);
 
   return {
-    port,
+    port: bound.port,
+    ...(bound.socketPath !== undefined ? { socketPath: bound.socketPath } : {}),
     refusals,
     passed,
     bytes: () => relayed,
     async close() {
       closed = true;
       for (const socket of open) socket.destroy();
+      for (const client of clients) client.destroy();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (bound.socketPath !== undefined) {
+        try {
+          fs.rmSync(bound.socketPath, { force: true });
+        } catch {}
+      }
     },
   };
+}
+
+function prepareUnixSocketPath(socketPath: string): string {
+  if (typeof socketPath !== 'string' || socketPath.length === 0 || socketPath.includes('\0') || !path.isAbsolute(socketPath)) {
+    throw new Error(`Invalid capture gate socket path: ${JSON.stringify(socketPath)}`);
+  }
+  const resolved = path.resolve(socketPath);
+  if (Buffer.byteLength(resolved, 'utf8') > MAX_UNIX_SOCKET_PATH_BYTES) {
+    throw new Error(`Capture gate socket path exceeds ${MAX_UNIX_SOCKET_PATH_BYTES} bytes.`);
+  }
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(resolved);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return resolved;
+    throw error;
+  }
+  if (!stat.isSocket()) {
+    throw new Error(`Refusing non-socket path for capture gate: ${resolved}`);
+  }
+  fs.unlinkSync(resolved);
+  return resolved;
+}
+
+async function listenGateServer(
+  server: http.Server,
+  socketPath?: string
+): Promise<{ port: number; socketPath?: string }> {
+  const resolvedSocketPath = socketPath !== undefined ? prepareUnixSocketPath(socketPath) : undefined;
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error): void => reject(error);
+    server.once('error', onError);
+    const onListening = (): void => {
+      server.removeListener('error', onError);
+      if (resolvedSocketPath !== undefined) {
+        try {
+          fs.chmodSync(resolvedSocketPath, UNIX_SOCKET_MODE);
+        } catch (error) {
+          server.close();
+          try {
+            fs.rmSync(resolvedSocketPath, { force: true });
+          } catch {}
+          reject(error);
+          return;
+        }
+        resolve({ port: 0, socketPath: resolvedSocketPath });
+        return;
+      }
+      resolve({ port: (server.address() as net.AddressInfo).port });
+    };
+    if (resolvedSocketPath !== undefined) server.listen(resolvedSocketPath, onListening);
+    else server.listen({ host: '127.0.0.1', port: 0 }, onListening);
+  });
 }

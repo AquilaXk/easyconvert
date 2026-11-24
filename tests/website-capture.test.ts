@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import dns, { type LookupAddress } from 'node:dns';
 import net from 'node:net';
 import os from 'node:os';
@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { assertCaptureUrl, captureWebsite } from '../src/lib/capture/website-capture';
 import { CaptureFailedError, CaptureTargetBlockedError, CaptureUnavailableError } from '../src/lib/capture/website-capture-errors';
+import * as processSandbox from '../src/lib/security/process-sandbox';
 import { CpuTaskTimeoutError, EngineUnavailableError } from '../src/lib/types';
 import { refusalCodeOf } from '../src/lib/refusal-codes';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
@@ -31,8 +32,10 @@ request = json.load(open(sys.argv[1]))
 def say(report):
     sys.stdout.write(json.dumps(report) + '\\n'); sys.stdout.flush()
 def through_proxy(authority):
-    """What the browser does for a request of the page: a CONNECT to the gate; returns the status line."""
-    s = socket.create_connection(('127.0.0.1', request['proxyPort']), timeout=5)
+    """What the browser does for a request of the page: a CONNECT to the gate over AF_UNIX; returns the status line."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect(request['proxySocket'])
     s.sendall(('CONNECT %s HTTP/1.1\\r\\nHost: %s\\r\\n\\r\\n' % (authority, authority)).encode())
     line = s.recv(200).split(b'\\r\\n')[0].decode()
     s.close()
@@ -123,8 +126,10 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     expect(result).toMatchObject({ finalUrl: 'https://news.example/articles/today?id=1', title: 'Stand-in page', warnings: [] });
   });
 
-  it('hands the driver the options of the request and the loopback port of the gate, and the URL it was checked for', async () => {
+  it('hands the driver the options of the request and the AF_UNIX gate socket, omits proxyPort, and stays network-isolated', async () => {
     useStandIn();
+    const execSpy = vi.spyOn(processSandbox, 'executeSandboxedBinary');
+    const beforeGateDirs = new Set(readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-')));
     const result = await captureWebsite({
       url: 'https://site.example/echo',
       format: 'pdf',
@@ -143,9 +148,71 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
       output: 'capture.pdf',
       pdf: { paper: 'Letter', landscape: true, margin: 12 },
     });
-    expect(sent.proxyPort).toBeGreaterThan(0);
+    expect(sent.proxyPort).toBeUndefined();
+    expect(sent.proxySocket).toMatch(/easyconvert-gate-[^/\\]+\/g\.sock$/);
+    expect(existsSync(sent.proxySocket)).toBe(false);
+    const afterGateDirs = readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-') && !beforeGateDirs.has(entry));
+    expect(afterGateDirs).toEqual([]);
+    expect(execSpy).toHaveBeenCalledTimes(1);
+    const sandboxArg = execSpy.mock.calls[0]?.[2] as { networkIsolated?: boolean; sandboxOptions?: { keepNetwork?: boolean } };
+    expect(sandboxArg.networkIsolated).toBe(true);
+    expect(sandboxArg.sandboxOptions?.keepNetwork).toBeUndefined();
     expect(result.finalUrl).toBe('https://example.org/final');
   });
+
+  it('cleans up the ephemeral gate directory and socket when the driver crashes', async () => {
+    useStandIn();
+    const beforeGateDirs = new Set(readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-')));
+    await expect(captureWebsite({ url: 'https://site.example/crash', format: 'png' })).rejects.toBeInstanceOf(CaptureFailedError);
+    const afterGateDirs = readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-') && !beforeGateDirs.has(entry));
+    expect(afterGateDirs).toEqual([]);
+  });
+
+  const CAN_NETNS = process.platform === 'linux' && processSandbox.getUnshareCapability().available;
+
+  it.skipIf(skipUnless('unprivileged Linux namespaces (unshare -r -n)', CAN_NETNS))(
+    'blocks direct TCP connections to host loopback inside the isolated netns while reaching the gate over AF_UNIX',
+    async () => {
+      useStandIn();
+      const hostListener = net.createServer((sock) => sock.end('HOST-INTERNAL'));
+      await new Promise<void>((resolve) => hostListener.listen(0, '127.0.0.1', resolve));
+      const hostPort = (hostListener.address() as net.AddressInfo).port;
+      const netnsDriver = path.join(dir, 'capture-netns.py');
+      writeFileSync(
+        netnsDriver,
+        `
+import json, socket, sys
+request = json.load(open(sys.argv[1]))
+out = sys.argv[1].rsplit('/', 1)[0] + '/' + request['output']
+direct = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+direct.settimeout(2)
+try:
+    direct.connect(('127.0.0.1', ${hostPort}))
+    direct_status = 'connected'
+except OSError as err:
+    direct_status = 'blocked:' + str(err.errno)
+finally:
+    direct.close()
+u = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+u.settimeout(5)
+u.connect(request['proxySocket'])
+u.sendall(b'CONNECT 169.254.169.254:80 HTTP/1.1\\r\\nHost: 169.254.169.254:80\\r\\n\\r\\n')
+proxy_line = u.recv(200).split(b'\\r\\n')[0].decode()
+u.close()
+open(out, 'wb').write(${PNG_BYTES})
+sys.stdout.write(json.dumps({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': direct_status + '|' + proxy_line, 'blocked': []}) + '\\n')
+`
+      );
+      chmodSync(netnsDriver, 0o755);
+      vi.stubEnv('CAPTURE_DRIVER_PATH', netnsDriver);
+      try {
+        const result = await captureWebsite({ url: 'https://site.example/netns-probe', format: 'png' });
+        expect(result.title).toMatch(/^blocked:\d+\|HTTP\/1\.1 403 Refused$/);
+      } finally {
+        await new Promise<void>((resolve) => hostListener.close(() => resolve()));
+      }
+    }
+  );
 
   it('gives the browser a gate that refuses what the page asks for beyond the public web, and says what was left out', async () => {
     useStandIn();

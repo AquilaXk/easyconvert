@@ -1,6 +1,9 @@
 import dns, { type LookupAddress } from 'node:dns';
+import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startCaptureGate, type CaptureGate, type CaptureGateOptions, type GateTarget } from '../src/lib/security/capture-gate';
 
@@ -762,6 +765,109 @@ describe('multi-address connection fallback', () => {
       expect(dialed).toHaveLength(1);
     } finally {
       for (const sock of stalledSockets) sock.destroy();
+    }
+  });
+});
+
+describe('Unix domain socket gate', () => {
+  const unixDirs: string[] = [];
+
+  afterEach(() => {
+    for (const d of unixDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  function makeSocketDir(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecg-test-'));
+    unixDirs.push(dir);
+    return dir;
+  }
+
+  function sendRawUnix(socketPath: string, payload: string): Promise<Answer> {
+    const socket = net.connect(socketPath);
+    socket.write(payload);
+    return readAnswer(socket);
+  }
+
+  it('rejects relative, empty, NUL, overlong, and non-socket paths fail-closed', async () => {
+    const dir = makeSocketDir();
+    const regularFile = path.join(dir, 'not-a-socket');
+    fs.writeFileSync(regularFile, 'occupied');
+    const overlong = path.join(dir, 'a'.repeat(110) + '.sock');
+    for (const bad of ['', 'relative.sock', path.join(dir, 'bad\0.sock'), regularFile, overlong]) {
+      await expect(startCaptureGate({ socketPath: bad })).rejects.toThrow();
+    }
+    expect(fs.readFileSync(regularFile, 'utf8')).toBe('occupied');
+  });
+
+  it('serves CONNECT and HTTP requests with SSRF pinning over AF_UNIX and removes the socket on close', async () => {
+    nameServer([{ address: PUBLIC_V4, family: 4 }]);
+    const echo = net.createServer((sock) => sock.on('data', (chunk) => sock.write(Buffer.concat([Buffer.from('TUNNEL:'), chunk]))));
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    const echoPort = (echo.address() as net.AddressInfo).port;
+    const httpPort = await upstream((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(`http:${req.method}:${req.url}`);
+    });
+
+    const dir = makeSocketDir();
+    const socketPath = path.join(dir, 'g.sock');
+    try {
+      gate = await openGate({ socketPath }, echoPort);
+      expect(gate.port).toBe(0);
+      expect(gate.socketPath).toBe(path.resolve(socketPath));
+      if (process.platform !== 'win32') {
+        expect(fs.statSync(socketPath).mode & 0o777).toBe(0o600);
+      }
+
+      // Blocked loopback & metadata must still be refused with 403 over AF_UNIX
+      const meta = await sendRawUnix(socketPath, 'CONNECT 169.254.169.254:80 HTTP/1.1\r\nHost: 169.254.169.254:80\r\n\r\n');
+      expect(meta.status).toBe('HTTP/1.1 403 Refused');
+      expect(meta.headers['x-capture-gate']).toBe('blocked');
+      expect(dialed).toHaveLength(0);
+
+      // Valid CONNECT tunnel over AF_UNIX relays bidirectional bytes cleanly
+      const tunneled = await new Promise<string>((resolve, reject) => {
+        const sock = net.connect(socketPath);
+        let acc = '';
+        let sentBody = false;
+        sock.on('connect', () => sock.write('CONNECT pub.example:443 HTTP/1.1\r\nHost: pub.example:443\r\n\r\n'));
+        sock.on('data', (chunk) => {
+          acc += chunk.toString('utf8');
+          if (!sentBody && acc.includes('\r\n\r\n')) {
+            sentBody = true;
+            sock.write('ping');
+          }
+          if (acc.includes('TUNNEL:ping')) {
+            sock.destroy();
+            resolve(acc);
+          }
+        });
+        sock.on('error', reject);
+      });
+      expect(tunneled).toContain('HTTP/1.1 200 Connection Established\r\n\r\nTUNNEL:ping');
+      expect(dialed).toEqual([{ address: PUBLIC_V4, family: 4, port: 443 }]);
+
+      // Plain HTTP over AF_UNIX gate also reaches pinned upstream
+      await gate.close();
+      gate = await openGate({ socketPath }, httpPort);
+      const httpResp = await new Promise<string>((resolve, reject) => {
+        const sock = net.connect(socketPath);
+        let acc = '';
+        sock.on('connect', () => sock.write('GET http://pub.example/hello HTTP/1.1\r\nHost: pub.example\r\nConnection: close\r\n\r\n'));
+        sock.on('data', (chunk) => {
+          acc += chunk.toString('utf8');
+        });
+        sock.on('end', () => resolve(acc));
+        sock.on('error', reject);
+      });
+      expect(httpResp).toContain('HTTP/1.1 200 OK');
+      expect(httpResp).toContain('http:GET:/hello');
+
+      await gate.close();
+      gate = undefined;
+      expect(fs.existsSync(socketPath)).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => echo.close(() => resolve()));
     }
   });
 });
