@@ -1,10 +1,22 @@
+import crypto from 'node:crypto';
+import dns from 'node:dns';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import Redis from 'ioredis';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Readable } from 'node:stream';
 import { SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, SftpStorageAdapter } from '../src/lib/storage/adapters/sftp';
 import {
+  SFTP_TOFU_REDIS_PREFIX,
+  SFTP_TOFU_TTL_SECONDS,
+  getPersistedSftpHostKey,
+  persistSftpHostKeyFirstUse,
+  resetSftpHostKeyStoreForTests,
+} from '../src/lib/storage/adapters/sftp-host-key-store';
+import {
+  StorageAdapterError,
   StorageAuthenticationError,
   StorageListingLimitError,
   StorageNotFoundError,
@@ -41,7 +53,8 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
     await stub.close();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await resetSftpHostKeyStoreForTests();
     vi.stubEnv('NODE_ENV', 'development');
     vi.stubEnv(SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, `${stub.host}:${stub.port}`);
     stub.files.clear();
@@ -55,8 +68,10 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
     stub.log.removes.length = 0;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    await resetSftpHostKeyStoreForTests();
   });
 
   function credentials(overrides: Partial<SftpCredentials> = {}): SftpCredentials {
@@ -150,5 +165,133 @@ describe.skipIf(!CLIENT_AVAILABLE)('SftpStorageAdapter with the OpenSSH client a
     await expect(new SftpStorageAdapter(credentials()).head('reports/a.csv')).rejects.toBeInstanceOf(StorageSsrfError);
 
     expect(stub.log.connections).toBe(before);
+  });
+
+  it('persists TOFU host key on first authenticated use and refuses a rotated MITM server key on the next connection', async () => {
+    const mitm = await startSftpStub();
+    let targetPort = stub.port;
+    const proxySockets = new Set<net.Socket>();
+    const proxy = net.createServer((clientSocket) => {
+      const upstream = net.connect(targetPort, '127.0.0.1');
+      proxySockets.add(clientSocket);
+      proxySockets.add(upstream);
+      clientSocket.pipe(upstream);
+      upstream.pipe(clientSocket);
+      const cleanup = () => {
+        proxySockets.delete(clientSocket);
+        proxySockets.delete(upstream);
+      };
+      clientSocket.on('error', () => upstream.destroy());
+      upstream.on('error', () => clientSocket.destroy());
+      clientSocket.on('close', cleanup);
+      upstream.on('close', cleanup);
+    });
+    await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+    const proxyPort = (proxy.address() as net.AddressInfo).port;
+
+    try {
+      vi.stubEnv(SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, `127.0.0.1:${proxyPort}`);
+      const tofuPayload = Buffer.from('tofu,ok\n');
+      const firstAdapter = new SftpStorageAdapter(credentials({ port: proxyPort, hostKey: undefined }));
+      const written = await firstAdapter.uploadStream('reports/tofu.csv', Readable.from([tofuPayload]), { size: tofuPayload.length });
+      expect(written.size).toBe(tofuPayload.length);
+      expect((await readAll(await firstAdapter.downloadStream('reports/tofu.csv'))).equals(tofuPayload)).toBe(true);
+      await expect(getPersistedSftpHostKey('127.0.0.1', proxyPort)).resolves.toBe(`* ${stub.hostPublicKey}\n`);
+
+      // Switch the same host:port endpoint to a different host key (MITM / key rotation)
+      targetPort = mitm.port;
+      const secondAdapter = new SftpStorageAdapter(credentials({ port: proxyPort, hostKey: undefined, privateKey: mitm.clientPrivateKey }));
+      await expect(secondAdapter.listDirectory('reports', 10)).rejects.toMatchObject({
+        name: StorageAuthenticationError.name,
+        message: expect.stringContaining('REMOTE HOST IDENTIFICATION HAS CHANGED'),
+      });
+      expect(mitm.log.signedIn).toBe(0);
+    } finally {
+      for (const socket of proxySockets) socket.destroy();
+      await new Promise<void>((resolve) => proxy.close(() => resolve()));
+      await mitm.close();
+    }
+  });
+
+  it('does not persist a TOFU host key when authentication fails against the real OpenSSH client', async () => {
+    const other = await startSftpStub();
+    try {
+      const adapter = new SftpStorageAdapter(credentials({ hostKey: undefined, privateKey: other.clientPrivateKey }));
+      await expect(adapter.head('reports/a.csv')).rejects.toMatchObject({ name: StorageAuthenticationError.name });
+      await expect(getPersistedSftpHostKey(stub.host, stub.port)).resolves.toBeUndefined();
+    } finally {
+      await other.close();
+    }
+  });
+
+  it('falls back across validated DNS addresses when the first address refuses connections', async () => {
+    const endpointHost = 'multi-sftp.example.com';
+    vi.stubEnv(SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, `${endpointHost}:${stub.port}`);
+    vi.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '::1', family: 6 },
+      { address: '127.0.0.1', family: 4 },
+    ] as never);
+
+    stub.files.set(`${BASE_PATH}/reports/fallback.txt`, Buffer.from('ok-after-fallback'));
+    const adapter = new SftpStorageAdapter(credentials({ host: endpointHost, hostKey: stub.hostPublicKey }));
+    const body = await readAll(await adapter.downloadStream('reports/fallback.txt'));
+    expect(body.toString()).toBe('ok-after-fallback');
+  });
+
+  const REDIS_URL = process.env.REDIS_URL;
+
+  // skip-ok: mode selection. Standard shards run without REDIS_URL; Redis verification runs set REDIS_URL explicitly.
+  describe.skipIf(!REDIS_URL)('Redis-backed TOFU persistence', () => {
+    let probe: Redis;
+    const keysToDelete: string[] = [];
+
+    beforeAll(() => {
+      probe = new Redis(REDIS_URL as string);
+    });
+
+    afterEach(async () => {
+      if (keysToDelete.length > 0) {
+        await probe.del(...keysToDelete.splice(0));
+      }
+    });
+
+    afterAll(async () => {
+      await probe.quit();
+    });
+
+    it('stores TOFU host key atomically in Redis with 1-year TTL, rejects concurrent mismatch, and fails closed on corrupt entries', async () => {
+      const tofuHost = 'redis-tofu.example.com';
+      const expectedKey = `${SFTP_TOFU_REDIS_PREFIX}${crypto.createHash('sha256').update(`${tofuHost}:${stub.port}`).digest('hex')}`;
+      keysToDelete.push(expectedKey);
+
+      vi.stubEnv(SFTP_DEV_ENDPOINT_ALLOWLIST_ENV, `${tofuHost}:${stub.port}`);
+      vi.spyOn(dns.promises, 'lookup').mockResolvedValue([{ address: '127.0.0.1', family: 4 }] as never);
+      stub.files.set(`${BASE_PATH}/reports/redis.txt`, Buffer.from('redis-tofu-ok'));
+
+      const first = new SftpStorageAdapter(credentials({ host: tofuHost, hostKey: undefined }));
+      expect((await readAll(await first.downloadStream('reports/redis.txt'))).toString()).toBe('redis-tofu-ok');
+
+      const stored = await probe.get(expectedKey);
+      const ttl = await probe.ttl(expectedKey);
+      expect(stored).toBe(`* ${stub.hostPublicKey}\n`);
+      expect(ttl).toBeGreaterThan(SFTP_TOFU_TTL_SECONDS - 60);
+      expect(ttl).toBeLessThanOrEqual(SFTP_TOFU_TTL_SECONDS);
+
+      // Concurrent identical write succeeds; different key fails closed with StorageAuthenticationError
+      await expect(persistSftpHostKeyFirstUse(tofuHost, stub.port, stub.hostPublicKey)).resolves.toBe(`* ${stub.hostPublicKey}\n`);
+      const other = await startSftpStub();
+      try {
+        await expect(persistSftpHostKeyFirstUse(tofuHost, stub.port, other.hostPublicKey)).rejects.toMatchObject({
+          name: StorageAuthenticationError.name,
+          message: 'Storage authentication failed: Host key verification failed: concurrent TOFU host key mismatch',
+        });
+      } finally {
+        await other.close();
+      }
+
+      // Corrupt entry in Redis must fail closed with StorageAdapterError
+      await probe.set(expectedKey, 'corrupt-host-key-entry');
+      await expect(getPersistedSftpHostKey(tofuHost, stub.port)).rejects.toThrow(StorageAdapterError);
+    });
   });
 });

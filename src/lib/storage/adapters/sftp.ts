@@ -17,7 +17,19 @@ import {
   StorageSizeLimitError,
 } from './adapter-interface';
 import { isPrivateOrRestrictedHost, isBlockedIp } from '../../security/ssrf';
+import {
+  confinementRefusal,
+  resolveSandboxedCommand,
+  sandboxUnavailable,
+  withoutProcHideNotice,
+} from '../../security/process-sandbox';
+import { SandboxUnavailableError } from '../../types';
 import { REMOTE_STAGED_OBJECT_MAX_BYTES } from '../remote-storage-backend';
+import {
+  MAX_KNOWN_HOSTS_BYTES,
+  getPersistedSftpHostKey,
+  persistSftpHostKeyFirstUse,
+} from './sftp-host-key-store';
 import {
   SFTP_BATCH_ARGS,
   SFTP_COMMAND_FAILED_EXIT,
@@ -39,6 +51,12 @@ import {
 
 const streamPipeline = promisify(pipeline);
 
+/** Cap on distinct DNS addresses validated and attempted sequentially for a single SFTP operation. */
+export const MAX_SFTP_RESOLVED_ADDRESSES = 16;
+
+/** Unconsumed `downloadStream` spools are destroyed and removed after this idle interval. */
+export const SFTP_DOWNLOAD_IDLE_SWEEP_MS = 60_000;
+
 /** A hung connection or a stalled transfer is killed after this long, so its key file and the process do not outlive the request. */
 const SFTP_COMMAND_TIMEOUT_MS = 15 * 60_000;
 
@@ -59,6 +77,15 @@ interface Spool {
   file: string;
   maxBytes: number;
 }
+
+interface SftpBatchOptions {
+  spool?: Spool;
+  readDirs?: readonly string[];
+}
+
+const downloadSpoolRegistry = new FinalizationRegistry<string>((dir) => {
+  removeDirQuietly(dir);
+});
 
 /**
  * Comma-separated `host:port` list of SFTP servers that may be private, for a local test server during development. It is
@@ -102,6 +129,87 @@ function removeDirQuietly(dir: string): void {
   }
 }
 
+function unlinkQuietly(file: string): void {
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // the enclosing temp directory will be removed separately
+  }
+}
+
+/**
+ * Reads `workDir/known_hosts` without following symlinks and within `MAX_KNOWN_HOSTS_BYTES`.
+ * Returns `undefined` when OpenSSH never wrote a file.
+ */
+function readKnownHostsBounded(knownHostsPath: string, provider: string): string | undefined {
+  let fd: number;
+  try {
+    fd = fs.openSync(knownHostsPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return undefined;
+    }
+    throw new StorageAdapterError(`Failed to open SFTP known_hosts file: ${String(err)}`, provider, err);
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      throw new StorageAdapterError('SFTP known_hosts entry is not a regular file', provider);
+    }
+    if (stat.size > MAX_KNOWN_HOSTS_BYTES) {
+      throw new StorageAdapterError(`SFTP known_hosts file exceeds ${MAX_KNOWN_HOSTS_BYTES} bytes`, provider);
+    }
+    const buf = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < stat.size) {
+      const n = fs.readSync(fd, buf, offset, stat.size - offset, offset);
+      if (n === 0) break;
+      offset += n;
+    }
+    return buf.subarray(0, offset).toString('utf8');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function attachDownloadSpoolCleanup(readStream: fs.ReadStream, tmpDir: string): void {
+  let cleaned = false;
+  let idleTimer: NodeJS.Timeout | undefined;
+
+  const cleanupSpool = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (idleTimer !== undefined) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+    downloadSpoolRegistry.unregister(readStream);
+    removeDirQuietly(tmpDir);
+  };
+
+  const resetIdleTimer = () => {
+    if (cleaned) return;
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (!readStream.destroyed) readStream.destroy();
+      cleanupSpool();
+    }, SFTP_DOWNLOAD_IDLE_SWEEP_MS);
+    idleTimer.unref();
+  };
+
+  const origPush = readStream.push.bind(readStream);
+  readStream.push = ((chunk: Parameters<typeof readStream.push>[0], encoding?: BufferEncoding) => {
+    if (chunk !== null) resetIdleTimer();
+    return origPush(chunk, encoding);
+  }) as typeof readStream.push;
+
+  downloadSpoolRegistry.register(readStream, tmpDir, readStream);
+  resetIdleTimer();
+  readStream.on('close', cleanupSpool);
+  readStream.on('end', cleanupSpool);
+  readStream.on('error', cleanupSpool);
+}
+
 /** The file being fetched grew past the byte limit of the call, whatever size the listing gave it. */
 class SftpSpoolLimitError extends StorageAdapterError {
   constructor(message: string) {
@@ -118,6 +226,28 @@ class SftpOutputLimitError extends StorageAdapterError {
   }
 }
 
+function isPostAuthSftpError(err: unknown): boolean {
+  return (
+    err instanceof SftpCommandFailedError ||
+    err instanceof SftpSpoolLimitError ||
+    err instanceof SftpOutputLimitError
+  );
+}
+
+function isTransportRetryableError(err: unknown): boolean {
+  if (!(err instanceof StorageAdapterError)) return false;
+  if (err instanceof SandboxUnavailableError) return false;
+  if (
+    err instanceof StorageAuthenticationError ||
+    err instanceof SftpCommandFailedError ||
+    err instanceof SftpSpoolLimitError ||
+    err instanceof SftpOutputLimitError
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export class SftpStorageAdapter implements IStorageAdapter {
   readonly providerName = 'sftp';
   private readonly port: number;
@@ -131,8 +261,11 @@ export class SftpStorageAdapter implements IStorageAdapter {
     this.knownHostsLine = credentials.hostKey === undefined ? undefined : sftpKnownHostsLine(credentials.hostKey);
   }
 
-  /** The address the client is told to connect to: the first the name resolves to, after every address passed the check. */
-  private async resolveAllowedAddress(): Promise<string> {
+  /**
+   * Resolves `this.credentials.host` and verifies EVERY returned address against SSRF rules
+   * before returning any address, deduplicating in DNS order up to `MAX_SFTP_RESOLVED_ADDRESSES`.
+   */
+  private async resolveAllowedAddresses(): Promise<string[]> {
     const host = this.credentials.host;
     const devAllowlisted = isSftpDevAllowlisted(host, this.port);
     if (!devAllowlisted && isPrivateOrRestrictedHost(host)) {
@@ -144,12 +277,18 @@ export class SftpStorageAdapter implements IStorageAdapter {
       if (!addresses || addresses.length === 0) {
         throw new StorageSsrfError(`Could not resolve host ${host}`, this.providerName);
       }
+      const seen = new Set<string>();
+      const allowed: string[] = [];
       for (const addr of addresses) {
         if (!devAllowlisted && isBlockedIp(addr.address)) {
           throw new StorageSsrfError(`${host} resolves to restricted IP ${addr.address}`, this.providerName);
         }
+        if (!seen.has(addr.address) && allowed.length < MAX_SFTP_RESOLVED_ADDRESSES) {
+          seen.add(addr.address);
+          allowed.push(addr.address);
+        }
       }
-      return addresses[0].address;
+      return allowed;
     } catch (err) {
       if (err instanceof StorageSsrfError) throw err;
       throw new StorageAdapterError(`DNS lookup failed for ${host}: ${String(err)}`, this.providerName);
@@ -158,7 +297,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
 
   async downloadStream(remotePath: string, options: { maxBytes?: number } = {}): Promise<NodeJS.ReadableStream> {
     const maxBytes = Math.min(options.maxBytes ?? SFTP_MAX_SPOOL_BYTES, SFTP_MAX_SPOOL_BYTES);
-    const address = await this.resolveAllowedAddress();
+    const addresses = await this.resolveAllowedAddresses();
     const resolved = resolveRemotePath(this.basePath, remotePath);
 
     // Spool download through safe temp file to guarantee zero Next.js heap buffering
@@ -166,9 +305,8 @@ export class SftpStorageAdapter implements IStorageAdapter {
     const localTmp = path.join(tmpDir, 'downloaded.tmp');
 
     try {
-      await this.runSftpBatch(address, sftpBatch(sftpCommandLine('get', resolved, localTmp)), {
-        file: localTmp,
-        maxBytes,
+      await this.runSftpBatch(addresses, sftpBatch(sftpCommandLine('get', resolved, localTmp)), {
+        spool: { file: localTmp, maxBytes },
       });
     } catch (err) {
       removeDirQuietly(tmpDir);
@@ -180,7 +318,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
     }
 
     const readStream = fs.createReadStream(localTmp);
-    readStream.on('close', () => removeDirQuietly(tmpDir));
+    attachDownloadSpoolCleanup(readStream, tmpDir);
 
     return readStream;
   }
@@ -195,7 +333,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
       throw new StorageSizeLimitError(maxBytes, this.providerName);
     }
 
-    const address = await this.resolveAllowedAddress();
+    const addresses = await this.resolveAllowedAddresses();
     const resolved = resolveRemotePath(this.basePath, remotePath);
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-up-'));
@@ -238,7 +376,7 @@ export class SftpStorageAdapter implements IStorageAdapter {
       }
       const stats = fs.statSync(localTmp);
 
-      await this.runSftpBatch(address, batchScript);
+      await this.runSftpBatch(addresses, batchScript, { readDirs: [tmpDir] });
 
       return {
         size: stats.size,
@@ -251,12 +389,12 @@ export class SftpStorageAdapter implements IStorageAdapter {
   }
 
   async head(remotePath: string): Promise<StorageAdapterMetadata | null> {
-    const address = await this.resolveAllowedAddress();
+    const addresses = await this.resolveAllowedAddresses();
     const resolved = resolveRemotePath(this.basePath, remotePath);
 
     let output: string;
     try {
-      output = await this.runSftpBatch(address, sftpBatch(sftpCommandLine('ls -l', resolved)));
+      output = await this.runSftpBatch(addresses, sftpBatch(sftpCommandLine('ls -l', resolved)));
     } catch (err) {
       if (err instanceof SftpCommandFailedError) return null;
       throw err;
@@ -273,11 +411,11 @@ export class SftpStorageAdapter implements IStorageAdapter {
    * is refused with a `StorageListingLimitError`: nothing is listed short. A directory that is not there is `StorageNotFoundError`.
    */
   async listDirectory(directory: string, maxFiles: number): Promise<Array<{ name: string; size: number }>> {
-    const address = await this.resolveAllowedAddress();
+    const addresses = await this.resolveAllowedAddresses();
     const resolved = resolveRemotePath(this.basePath, directory);
     let output: string;
     try {
-      output = await this.runSftpBatch(address, sftpBatch(sftpCommandLine('ls -l', resolved)));
+      output = await this.runSftpBatch(addresses, sftpBatch(sftpCommandLine('ls -l', resolved)));
     } catch (err) {
       if (err instanceof SftpOutputLimitError) throw new StorageListingLimitError(maxFiles, this.providerName);
       if (err instanceof SftpCommandFailedError && isSftpNotFound(err.stderr)) throw new StorageNotFoundError(directory, this.providerName);
@@ -289,11 +427,11 @@ export class SftpStorageAdapter implements IStorageAdapter {
   }
 
   async delete(remotePath: string): Promise<boolean> {
-    const address = await this.resolveAllowedAddress();
+    const addresses = await this.resolveAllowedAddresses();
     const resolved = resolveRemotePath(this.basePath, remotePath);
 
     try {
-      await this.runSftpBatch(address, sftpBatch(sftpCommandLine('rm', resolved)));
+      await this.runSftpBatch(addresses, sftpBatch(sftpCommandLine('rm', resolved)));
       return true;
     } catch (err) {
       if (err instanceof SftpCommandFailedError) return false;
@@ -301,33 +439,83 @@ export class SftpStorageAdapter implements IStorageAdapter {
     }
   }
 
-  /**
-   * Runs one sftp session. The private key, the pinned host key and the child's HOME live in a directory of this
-   * call (mkdtemp makes it 0700) that is removed on every way out: success, a failed exit, a spawn failure and
-   * a stop by the timeout.
-   */
-  private async runSftpBatch(address: string, commands: string, spool?: Spool): Promise<string> {
+  private async persistTofuKeyIfPresent(workDir: string): Promise<void> {
+    const raw = readKnownHostsBounded(path.join(workDir, 'known_hosts'), this.providerName);
+    if (raw === undefined || raw.trim().length === 0) return;
+    await persistSftpHostKeyFirstUse(this.credentials.host, this.port, raw);
+  }
+
+  private async runSingleAttempt(
+    address: string,
+    commands: string,
+    pinnedLine: string | undefined,
+    isFirstUse: boolean,
+    options?: SftpBatchOptions
+  ): Promise<{ ok: true; output: string } | { ok: false; err: unknown }> {
     const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'easyconvert-sftp-run-'));
     try {
-      return await this.spawnSftp(this.buildArgs(workDir, address), commands, workDir, spool);
+      let output: string;
+      try {
+        output = await this.spawnSftp(this.buildArgs(workDir, address, pinnedLine), commands, workDir, options);
+      } catch (err) {
+        if (options?.spool) unlinkQuietly(options.spool.file);
+        if (isFirstUse && isPostAuthSftpError(err)) {
+          await this.persistTofuKeyIfPresent(workDir);
+        }
+        return { ok: false, err };
+      }
+
+      if (isFirstUse) {
+        try {
+          await this.persistTofuKeyIfPresent(workDir);
+        } catch (persistErr) {
+          if (options?.spool) unlinkQuietly(options.spool.file);
+          throw persistErr;
+        }
+      }
+      return { ok: true, output };
     } finally {
       removeDirQuietly(workDir);
     }
   }
 
   /**
+   * Runs one sftp session across validated addresses, falling back on transport errors only.
+   * Each attempt gets a fresh 0700 `workDir` removed in `finally`; TOFU keys are persisted only
+   * after SSH authentication has succeeded.
+   */
+  private async runSftpBatch(addresses: readonly string[], commands: string, options?: SftpBatchOptions): Promise<string> {
+    if (addresses.length === 0) {
+      throw new StorageAdapterError('No validated SFTP addresses available', this.providerName);
+    }
+    const pinnedLine = this.knownHostsLine ?? (await getPersistedSftpHostKey(this.credentials.host, this.port));
+    const isFirstUse = pinnedLine === undefined;
+
+    for (let i = 0; i < addresses.length; i++) {
+      const outcome = await this.runSingleAttempt(addresses[i], commands, pinnedLine, isFirstUse, options);
+      if (outcome.ok) return outcome.output;
+      if (i + 1 >= addresses.length || !isTransportRetryableError(outcome.err)) {
+        throw outcome.err;
+      }
+    }
+
+    throw new StorageAdapterError('All SFTP addresses failed', this.providerName);
+  }
+
+  /**
    * The client connects to `address`, the one that passed the SSRF check, so a name that answers differently a
    * second time is never consulted. `HostKeyAlias` keeps the identity of the host key on the name.
    */
-  private buildArgs(workDir: string, address: string): string[] {
+  private buildArgs(workDir: string, address: string, pinnedLine: string | undefined): string[] {
     const args: string[] = [
+      '-F', '/dev/null',
       '-o', 'BatchMode=yes',
       '-o', 'ConnectTimeout=10',
       '-o', `HostKeyAlias=${this.credentials.host}`,
       '-P', String(this.port),
       ...SFTP_BATCH_ARGS,
     ];
-    args.push(...this.hostKeyOptions(workDir));
+    args.push(...this.hostKeyOptions(workDir, pinnedLine));
     if (this.credentials.privateKey) {
       const keyFile = path.join(workDir, 'identity');
       fs.writeFileSync(keyFile, this.credentials.privateKey, { mode: 0o600, flag: 'wx' });
@@ -338,27 +526,37 @@ export class SftpStorageAdapter implements IStorageAdapter {
   }
 
   /**
-   * With a pinned key the call trusts that key and no other: it is the only known hosts file read, and a host that
-   * shows another key is refused. Without one a key is accepted on first use, as before.
+   * Always isolates `UserKnownHostsFile` inside `workDir` and disables global known hosts,
+   * pinning either the configured/TOFU key (`StrictHostKeyChecking=yes`) or first-use capture
+   * (`StrictHostKeyChecking=accept-new`).
    */
-  private hostKeyOptions(workDir: string): string[] {
-    if (this.knownHostsLine === undefined) return ['-o', 'StrictHostKeyChecking=accept-new'];
+  private hostKeyOptions(workDir: string, pinnedLine: string | undefined): string[] {
     const knownHosts = path.join(workDir, 'known_hosts');
     if (!PLAIN_PATH.test(knownHosts)) {
       throw new StorageAdapterError('The temporary directory path holds a character ssh would split an option value on', this.providerName);
     }
-    fs.writeFileSync(knownHosts, this.knownHostsLine, { mode: 0o600, flag: 'wx' });
+    if (pinnedLine !== undefined) {
+      fs.writeFileSync(knownHosts, pinnedLine, { mode: 0o600, flag: 'wx' });
+    }
     return [
-      '-o', 'StrictHostKeyChecking=yes',
+      '-o', pinnedLine === undefined ? 'StrictHostKeyChecking=accept-new' : 'StrictHostKeyChecking=yes',
       '-o', `UserKnownHostsFile=${knownHosts}`,
       '-o', 'GlobalKnownHostsFile=/dev/null',
     ];
   }
 
-  private spawnSftp(args: string[], commands: string, workDir: string, spool?: Spool): Promise<string> {
+  private spawnSftp(args: string[], commands: string, workDir: string, options?: SftpBatchOptions): Promise<string> {
     return new Promise((resolve, reject) => {
+      const spool = options?.spool;
       const sftpBin = fs.existsSync('/usr/bin/sftp') ? '/usr/bin/sftp' : 'sftp';
-      const child = spawn(sftpBin, args, {
+      const sandboxed = resolveSandboxedCommand(sftpBin, args, {
+        networkIsolated: false,
+        sandboxOptions: { keepNetwork: true },
+        workDir,
+        writeDirs: spool ? [workDir, path.dirname(spool.file)] : [workDir],
+        readDirs: options?.readDirs,
+      });
+      const child = spawn(sandboxed.binary, sandboxed.args, {
         shell: false,
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -419,14 +617,20 @@ export class SftpStorageAdapter implements IStorageAdapter {
 
       child.on('close', (code, signal) => {
         settle(() => {
-          const stderr = readStderr();
+          const stderrBuf = withoutProcHideNotice(readStderr());
+          const refusal = confinementRefusal(code, stderrBuf);
+          if (refusal !== null) {
+            reject(sandboxUnavailable(refusal));
+            return;
+          }
+          const stderr = stderrBuf.toString('utf8');
           if (stoppedFor !== undefined) {
             reject(stoppedAs(stoppedFor, { output: stoppedByOutput, spool: stoppedBySpool }, this.providerName));
           } else if (code === 0 && spool && spoolSize(spool.file) > spool.maxBytes) {
             // a transfer that finished between two measurements of the spool is held to the limit too
             reject(new SftpSpoolLimitError(`SFTP download passed ${spool.maxBytes} bytes`));
           } else if (code === 0) {
-            resolve(readStdout());
+            resolve(readStdout().toString('utf8'));
           } else if (code === SFTP_CONNECTION_FAILED_EXIT && /Permission denied|Authentication failed|Host key verification failed/.test(stderr)) {
             reject(new StorageAuthenticationError(truncateSftpErrorText(stderr), this.providerName));
           } else if (code === SFTP_COMMAND_FAILED_EXIT) {
@@ -461,16 +665,17 @@ function spoolSize(file: string): number {
 }
 
 /** Collects what a stream of the child writes, up to the cap; the first chunk past it calls `onOverflow` and is dropped. */
-function collectBounded(stream: NodeJS.ReadableStream, onOverflow: () => void): () => string {
+function collectBounded(stream: NodeJS.ReadableStream, onOverflow: () => void): () => Buffer {
   const chunks: Buffer[] = [];
   let size = 0;
-  stream.on('data', (chunk: Buffer) => {
-    size += chunk.length;
+  stream.on('data', (chunk: Buffer | string) => {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buf.length;
     if (size > SFTP_MAX_OUTPUT_BYTES) {
       onOverflow();
       return;
     }
-    chunks.push(chunk);
+    chunks.push(buf);
   });
-  return () => Buffer.concat(chunks).toString('utf8');
+  return () => Buffer.concat(chunks);
 }

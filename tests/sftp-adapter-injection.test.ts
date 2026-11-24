@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 type SpawnCall = {
   command: string;
   args: string[];
+  sftpArgs: string[];
   options: { env: NodeJS.ProcessEnv; timeout?: number; shell?: boolean; detached?: boolean };
   stdin: string;
   keyDirMode?: number;
@@ -16,10 +17,12 @@ type SpawnCall = {
   keyContent?: string;
   keyPath?: string;
   knownHosts?: string;
+  knownHostsPath?: string;
   killed?: boolean;
   floodedBytes?: number;
   signals?: string[];
   spoolPath?: string;
+  spoolExistedAtSpawn?: boolean;
   /** Whether the key directory and the spool were still there when the client exited. */
   atExit?: { keyDir: boolean; spool: boolean };
 };
@@ -27,6 +30,8 @@ type SpawnCall = {
 type ChildBehavior =
   | 'ok'
   | 'exit-1'
+  | 'connect-refused'
+  | 'confinement-refused'
   | 'spawn-error'
   | 'spawn-throws'
   | 'killed-by-timeout'
@@ -44,15 +49,27 @@ type ChildBehavior =
   | 'spool-grows-slow-exit'
   | 'spool-grows-ignores-sigterm';
 
+interface QueuedSpawnBehavior {
+  behavior: ChildBehavior;
+  tofuLine?: string;
+}
+
 const FLOOD_CHUNK_BYTES = 16 * 1024;
 const FLOOD_MAX_CHUNKS = 4000;
 
 const mocks = vi.hoisted(() => ({
   calls: [] as SpawnCall[],
   behavior: { current: 'ok' as ChildBehavior },
+  behaviorQueue: [] as QueuedSpawnBehavior[],
+  tofuLine: undefined as string | undefined,
+  linuxProbe: { enabled: false, pidInitPath: '/usr/local/bin/pid-init' },
   spoolCap: 0,
   exitDelayMs: 150,
 }));
+
+function sftpArgsOf(call: SpawnCall): string[] {
+  return call.sftpArgs;
+}
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -60,20 +77,43 @@ vi.mock('node:child_process', async (importOriginal) => {
   const nodePath = await import('node:path');
   const { EventEmitter } = await import('node:events');
   const { PassThrough } = await import('node:stream');
+  const extractSftpArgs = (command: string, args: string[]): string[] => {
+    if (nodePath.basename(command) === 'sftp') return args;
+    const sepIndex = args.findIndex(
+      (arg, index) => index > 0 && args[index - 1] === '--' && nodePath.basename(arg) === 'sftp',
+    );
+    return sepIndex !== -1 ? args.slice(sepIndex + 1) : args;
+  };
+  const execFileSync = ((file: string, args?: readonly string[], options?: unknown) => {
+    if (mocks.linuxProbe.enabled) {
+      return Buffer.alloc(0);
+    }
+    return actual.execFileSync(file, args as string[], options as never);
+  }) as typeof actual.execFileSync;
   const spawn = (command: string, args: string[], options: SpawnCall['options']) => {
-    const call: SpawnCall = { command, args, options, stdin: '' };
-    const identityIndex = args.indexOf('-i');
+    const sftpArgs = extractSftpArgs(command, args);
+    const call: SpawnCall = { command, args, sftpArgs, options, stdin: '' };
+    const queued = mocks.behaviorQueue.shift();
+    const spawnBehavior = queued?.behavior ?? mocks.behavior.current;
+    const spawnTofuLine = queued?.tofuLine ?? mocks.tofuLine;
+    const identityIndex = sftpArgs.indexOf('-i');
     if (identityIndex !== -1) {
-      const keyPath = args[identityIndex + 1];
+      const keyPath = sftpArgs[identityIndex + 1];
       call.keyPath = keyPath;
       call.keyDirMode = fs.statSync(nodePath.dirname(keyPath)).mode & 0o777;
       call.keyFileMode = fs.statSync(keyPath).mode & 0o777;
       call.keyContent = fs.readFileSync(keyPath, 'utf8');
     }
-    const knownHostsOption = args.find((arg) => arg.startsWith('UserKnownHostsFile='));
-    if (knownHostsOption) call.knownHosts = fs.readFileSync(knownHostsOption.slice('UserKnownHostsFile='.length), 'utf8');
+    const knownHostsOption = sftpArgs.find((arg) => arg.startsWith('UserKnownHostsFile='));
+    if (knownHostsOption) {
+      const knownHostsPath = knownHostsOption.slice('UserKnownHostsFile='.length);
+      call.knownHostsPath = knownHostsPath;
+      if (fs.existsSync(knownHostsPath)) {
+        call.knownHosts = fs.readFileSync(knownHostsPath, 'utf8');
+      }
+    }
     mocks.calls.push(call);
-    if (mocks.behavior.current === 'spawn-throws') throw new Error('spawn EACCES');
+    if (spawnBehavior === 'spawn-throws') throw new Error('spawn EACCES');
     const child = Object.assign(new EventEmitter(), {
       stdin: new PassThrough(),
       stdout: new PassThrough(),
@@ -88,9 +128,9 @@ vi.mock('node:child_process', async (importOriginal) => {
           };
           child.emit('close', null, signal);
         };
-        if (mocks.behavior.current === 'spool-grows-ignores-sigterm') {
+        if (spawnBehavior === 'spool-grows-ignores-sigterm') {
           if (signal === 'SIGKILL') setImmediate(exit);
-        } else if (mocks.behavior.current === 'spool-grows-slow-exit') setTimeout(exit, mocks.exitDelayMs);
+        } else if (spawnBehavior === 'spool-grows-slow-exit') setTimeout(exit, mocks.exitDelayMs);
         else setImmediate(exit);
         return true;
       },
@@ -98,8 +138,24 @@ vi.mock('node:child_process', async (importOriginal) => {
     child.stdin.on('data', (chunk: Buffer) => {
       call.stdin += chunk.toString();
     });
-    const batchMode = args.includes('-b');
+    const batchMode = sftpArgs.includes('-b');
     const quotedArgs = () => [...call.stdin.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
+    const maybeRecordSpoolAtSpawn = () => {
+      const target = quotedArgs()[1]?.replace(/\\(.)/g, '$1');
+      if (call.stdin.startsWith('get ') && target) {
+        call.spoolPath = target;
+        call.spoolExistedAtSpawn = fs.existsSync(target);
+      }
+    };
+    const maybeWriteTofuKnownHosts = () => {
+      if (
+        spawnTofuLine !== undefined &&
+        call.knownHostsPath !== undefined &&
+        sftpArgs.includes('StrictHostKeyChecking=accept-new')
+      ) {
+        fs.writeFileSync(call.knownHostsPath, spawnTofuLine, { mode: 0o600 });
+      }
+    };
     const flood = (stream: PassThrough) => {
       call.floodedBytes = 0;
       let chunks = 0;
@@ -117,7 +173,7 @@ vi.mock('node:child_process', async (importOriginal) => {
       setImmediate(() => child.emit('close', code, null));
     };
     const echoed = () => `sftp> ${call.stdin.split('\n')[0]}\n`;
-    if (mocks.behavior.current === 'spawn-error') {
+    if (spawnBehavior === 'spawn-error') {
       setImmediate(() => {
         child.emit('error', new Error('spawn sftp ENOENT'));
         child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
@@ -125,44 +181,84 @@ vi.mock('node:child_process', async (importOriginal) => {
     } else {
       child.stdin.on('end', () => {
         setImmediate(() => {
-          const behavior = mocks.behavior.current;
-          if (behavior === 'killed-by-timeout') child.emit('close', null, 'SIGTERM');
-          else if (behavior === 'exit-1') finish(1, 'Connection closed');
-          else if (behavior === 'long-error') finish(255, 'x'.repeat(5000));
-          else if (behavior === 'command-fails') finish(batchMode ? 1 : 0, 'dest open "/srv/data/nodir/x": No such file or directory\n');
-          else if (behavior === 'command-fails-not-found') finish(batchMode ? 1 : 0, `File "${quotedArgs()[0]}" not found.\n`);
-          else if (behavior === 'auth-fails') finish(255, 'sftpuser@93.184.216.34: Permission denied (publickey).\n');
-          else if (behavior === 'listing') {
+          maybeRecordSpoolAtSpawn();
+          if (spawnBehavior === 'killed-by-timeout') child.emit('close', null, 'SIGTERM');
+          else if (spawnBehavior === 'confinement-refused') {
+            maybeWriteTofuKnownHosts();
+            finish(125, 'pid-init: /proc not hidden: disabled\npid-init: cannot confine: missing landlock\n');
+          } else if (spawnBehavior === 'connect-refused') {
+            if (call.spoolPath) {
+              fs.writeFileSync(call.spoolPath, 'partial-bytes-before-drop');
+            }
+            finish(255, 'ssh: connect to host 93.184.216.10 port 22: Connection refused\nConnection closed\n');
+          } else if (spawnBehavior === 'exit-1') {
+            finish(1, 'Connection closed');
+          } else if (spawnBehavior === 'long-error') {
+            finish(255, 'x'.repeat(5000));
+          } else if (spawnBehavior === 'command-fails') {
+            maybeWriteTofuKnownHosts();
+            finish(batchMode ? 1 : 0, 'dest open "/srv/data/nodir/x": No such file or directory\n');
+          } else if (spawnBehavior === 'command-fails-not-found') {
+            maybeWriteTofuKnownHosts();
+            finish(batchMode ? 1 : 0, `File "${quotedArgs()[0]}" not found.\n`);
+          } else if (spawnBehavior === 'auth-fails') {
+            maybeWriteTofuKnownHosts();
+            finish(255, 'sftpuser@93.184.216.34: Permission denied (publickey).\n');
+          } else if (spawnBehavior === 'listing') {
+            maybeWriteTofuKnownHosts();
             finish(0, '', `${echoed()}-rw-r--r--    ?  1000  1000      1234 Oct 25 13:57 f\nsftp> quit\n`);
-          } else if (behavior === 'listing-missing') finish(0, '', `${echoed()}sftp> quit\n`);
-          else if (behavior === 'download') {
+          } else if (spawnBehavior === 'listing-missing') {
+            maybeWriteTofuKnownHosts();
+            finish(0, '', `${echoed()}sftp> quit\n`);
+          } else if (spawnBehavior === 'download') {
+            maybeWriteTofuKnownHosts();
             fs.writeFileSync(nodePath.resolve(quotedArgs()[1].replace(/\\(.)/g, '$1')), 'payload');
             finish(0);
-          } else if (behavior === 'hangs') {
+          } else if (spawnBehavior === 'hangs') {
             // the client never answers and never exits until it is signalled
-          } else if (behavior === 'flood-stdout') flood(child.stdout);
-          else if (behavior === 'flood-stderr') flood(child.stderr);
-          else if (behavior === 'spool-grows' || behavior === 'spool-grows-slow-exit' || behavior === 'spool-grows-ignores-sigterm') {
+          } else if (spawnBehavior === 'flood-stdout') {
+            maybeWriteTofuKnownHosts();
+            flood(child.stdout);
+          } else if (spawnBehavior === 'flood-stderr') {
+            maybeWriteTofuKnownHosts();
+            flood(child.stderr);
+          } else if (spawnBehavior === 'spool-grows' || spawnBehavior === 'spool-grows-slow-exit' || spawnBehavior === 'spool-grows-ignores-sigterm') {
+            maybeWriteTofuKnownHosts();
             call.spoolPath = quotedArgs()[1].replace(/\\(.)/g, '$1');
             const fd = fs.openSync(call.spoolPath, 'w');
             fs.ftruncateSync(fd, mocks.spoolCap + 1);
             fs.closeSync(fd);
-          } else finish(0);
+          } else {
+            maybeWriteTofuKnownHosts();
+            finish(0);
+          }
         });
       });
     }
     return child;
   };
-  return { ...actual, spawn, default: { ...actual, spawn } };
+  return { ...actual, spawn, execFileSync, default: { ...actual, spawn, execFileSync } };
 });
 
-import { SftpStorageAdapter } from '../src/lib/storage/adapters/sftp';
+import { SFTP_DOWNLOAD_IDLE_SWEEP_MS, MAX_SFTP_RESOLVED_ADDRESSES, SftpStorageAdapter } from '../src/lib/storage/adapters/sftp';
+import {
+  MAX_IN_MEMORY_TOFU_KEYS,
+  MAX_KNOWN_HOSTS_BYTES,
+  SFTP_TOFU_REDIS_PREFIX,
+  SFTP_TOFU_TTL_SECONDS,
+  getPersistedSftpHostKey,
+  persistSftpHostKeyFirstUse,
+  resetSftpHostKeyStoreForTests,
+} from '../src/lib/storage/adapters/sftp-host-key-store';
+import { resetUnshareCapabilityCache } from '../src/lib/security/process-sandbox';
+import { SandboxUnavailableError } from '../src/lib/types';
 import {
   StorageAdapterError,
   StorageAuthenticationError,
   StorageInputError,
   StorageInvalidKeyError,
   StorageNotFoundError,
+  StorageSizeLimitError,
   StorageSsrfError,
 } from '../src/lib/storage/adapters/adapter-interface';
 import {
@@ -193,18 +289,31 @@ function leftoverWorkDirs(): string[] {
 }
 
 describe('SFTP adapter: the boundary between caller data and the sftp client', () => {
+  const originalTmpdir = os.tmpdir();
+  let suiteTmpDir: string;
   let before: string[];
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    suiteTmpDir = fs.mkdtempSync(path.join(originalTmpdir, 'sftp-inj-suite-'));
+    vi.stubEnv('TMPDIR', suiteTmpDir);
     mocks.calls.length = 0;
     mocks.behavior.current = 'ok';
+    mocks.behaviorQueue.length = 0;
+    mocks.tofuLine = undefined;
+    mocks.linuxProbe.enabled = false;
+    resetUnshareCapabilityCache();
+    await resetSftpHostKeyStoreForTests();
     vi.spyOn(dns.promises, 'lookup').mockResolvedValue(PUBLIC_ADDRESS as never);
     before = leftoverWorkDirs();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    mocks.linuxProbe.enabled = false;
+    resetUnshareCapabilityCache();
+    await resetSftpHostKeyStoreForTests();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    fs.rmSync(suiteTmpDir, { recursive: true, force: true });
   });
 
   describe('remote paths', () => {
@@ -324,7 +433,7 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
     ])('passes %s for %s as the one operand after "--", with the address that passed the check', async (host, username, address, destination) => {
       vi.mocked(dns.promises.lookup).mockResolvedValue([{ address, family: address.includes(':') ? 6 : 4 }] as never);
       await adapter({ host, username }).delete('f');
-      const { args } = mocks.calls[0];
+      const args = sftpArgsOf(mocks.calls[0]);
       expect(args.slice(-2)).toEqual(['--', destination]);
       expect(args.filter((arg) => arg === '--')).toHaveLength(1);
       expect(args.indexOf('--')).toBe(args.length - 2);
@@ -332,7 +441,7 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
 
     it('keeps the host key policy and the batch options of the existing contract', async () => {
       await adapter({ port: 2222 }).delete('f');
-      const { args } = mocks.calls[0];
+      const args = sftpArgsOf(mocks.calls[0]);
       expect(args).toEqual(expect.arrayContaining(['StrictHostKeyChecking=accept-new', 'BatchMode=yes', 'ConnectTimeout=10']));
       expect(args[args.indexOf('-P') + 1]).toBe('2222');
     });
@@ -371,13 +480,18 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
 
     it('is not written when no private key is configured', async () => {
       await adapter({ privateKey: undefined }).delete('f');
-      expect(mocks.calls[0].args).toEqual([
+      const args = sftpArgsOf(mocks.calls[0]);
+      const workDir = String(mocks.calls[0].options.env.HOME);
+      expect(args).toEqual([
+        '-F', '/dev/null',
         '-o', 'BatchMode=yes',
         '-o', 'ConnectTimeout=10',
         '-o', 'HostKeyAlias=sftp.customer.example.com',
         '-P', '22',
         '-b', '-',
         '-o', 'StrictHostKeyChecking=accept-new',
+        '-o', `UserKnownHostsFile=${workDir}/known_hosts`,
+        '-o', 'GlobalKnownHostsFile=/dev/null',
         '--', 'sftpuser@93.184.216.34',
       ]);
     });
@@ -386,7 +500,7 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
   describe('the exit status of the client', () => {
     it('puts "-b -" before "--", the form that makes a failed command exit 1', async () => {
       await adapter().delete('f');
-      const { args } = mocks.calls[0];
+      const args = sftpArgsOf(mocks.calls[0]);
       const batch = args.indexOf('-b');
       expect(args.slice(batch, batch + 2)).toEqual(['-b', '-']);
       expect(batch).toBeLessThan(args.indexOf('--'));
@@ -446,7 +560,7 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
         .mockResolvedValueOnce(PUBLIC_ADDRESS as never)
         .mockResolvedValue([{ address: '169.254.169.254', family: 4 }] as never);
       await adapter().delete('f');
-      const { args } = mocks.calls[0];
+      const args = sftpArgsOf(mocks.calls[0]);
       expect(dns.promises.lookup).toHaveBeenCalledTimes(1);
       expect(args.at(-1)).toBe('sftpuser@93.184.216.34');
       expect(args.filter((arg) => arg.includes('customer.example.com'))).toEqual(['HostKeyAlias=sftp.customer.example.com']);
@@ -459,7 +573,7 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
         { address: '93.184.216.34', family: 4 },
       ] as never);
       await adapter().delete('f');
-      expect(mocks.calls[0].args.at(-1)).toBe('sftpuser@[2606:2800:220:1::1]');
+      expect(sftpArgsOf(mocks.calls[0]).at(-1)).toBe('sftpuser@[2606:2800:220:1::1]');
     });
 
     it('is refused with no sftp process when any address of the name is restricted', async () => {
@@ -473,7 +587,7 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
 
     it('names the host as the alias of its key also when the host is an IP literal', async () => {
       await adapter({ host: '93.184.216.34' }).delete('f');
-      expect(mocks.calls[0].args.filter((arg) => arg.startsWith('HostKeyAlias='))).toEqual(['HostKeyAlias=93.184.216.34']);
+      expect(sftpArgsOf(mocks.calls[0]).filter((arg) => arg.startsWith('HostKeyAlias='))).toEqual(['HostKeyAlias=93.184.216.34']);
     });
   });
 
@@ -485,12 +599,18 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
     };
     const KEY = ed25519Blob(7);
 
-    it('is accepted on first use when the credential carries none, and no known hosts file is named', async () => {
+    it('is accepted on first use when the credential carries none, using an isolated known_hosts file and -F /dev/null', async () => {
       await adapter().delete('f');
-      const { args, knownHosts } = mocks.calls[0];
-      expect(args).toContain('StrictHostKeyChecking=accept-new');
-      expect(args.some((arg) => arg.startsWith('UserKnownHostsFile='))).toBe(false);
-      expect(knownHosts).toBeUndefined();
+      const call = mocks.calls[0];
+      const args = sftpArgsOf(call);
+      const workDir = String(call.options.env.HOME);
+      expect(args.slice(0, 2)).toEqual(['-F', '/dev/null']);
+      expect(args).toEqual(expect.arrayContaining([
+        'StrictHostKeyChecking=accept-new',
+        `UserKnownHostsFile=${workDir}/known_hosts`,
+        'GlobalKnownHostsFile=/dev/null',
+      ]));
+      expect(call.knownHosts).toBeUndefined();
     });
 
     it.each([
@@ -501,8 +621,11 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
       ['a known_hosts line with an address list', `sftp.customer.example.com,93.184.216.34\tssh-ed25519 ${KEY}\n`],
     ])('is the only key trusted when the credential pins %s', async (_label, hostKey) => {
       await adapter({ hostKey }).delete('f');
-      const { args, knownHosts, keyPath } = mocks.calls[0];
+      const call = mocks.calls[0];
+      const args = sftpArgsOf(call);
+      const { knownHosts, keyPath } = call;
       const workDir = path.dirname(keyPath as string);
+      expect(args.slice(0, 2)).toEqual(['-F', '/dev/null']);
       expect(args).toEqual(expect.arrayContaining(['StrictHostKeyChecking=yes', `UserKnownHostsFile=${workDir}/known_hosts`, 'GlobalKnownHostsFile=/dev/null']));
       expect(args).not.toContain('StrictHostKeyChecking=accept-new');
       expect(knownHosts).toBe(`* ssh-ed25519 ${KEY}\n`);
@@ -647,7 +770,8 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
       vi.stubEnv('AWS_SECRET_ACCESS_KEY', 'aws-secret');
       vi.stubEnv('SSH_AUTH_SOCK', '/run/agent.sock');
       await adapter().delete('f');
-      const { options, args } = mocks.calls[0];
+      const { options } = mocks.calls[0];
+      const args = sftpArgsOf(mocks.calls[0]);
       expect(options.shell).toBe(false);
       expect(options.detached).toBe(true);
       // the lifetime is bounded by a timer of the adapter that signals the process group, not by spawn's own `timeout`
@@ -658,6 +782,265 @@ describe('SFTP adapter: the boundary between caller data and the sftp client', (
       expect(options.env.HOME).not.toBe(process.env.HOME);
       expect(options.env.PATH).toBe('/usr/bin:/bin:/usr/sbin:/sbin');
     });
+  });
+
+  describe('TOFU persistence, multi-address fallback, confinement, and unconsumed spool cleanup', () => {
+    const ed25519Blob = (seed: number) => {
+      const type = Buffer.from('ssh-ed25519');
+      const length = (n: number) => Buffer.from([0, 0, 0, n]);
+      return Buffer.concat([length(type.length), type, length(32), Buffer.alloc(32, seed)]).toString('base64');
+    };
+    const KEY_A = ed25519Blob(11);
+    const KEY_B = ed25519Blob(22);
+
+    it('persists TOFU host key across adapter instances on authenticated success and switches to StrictHostKeyChecking=yes', async () => {
+      mocks.tofuLine = `# comment\nsftp.customer.example.com ssh-ed25519 ${KEY_A} comment\n`;
+      await adapter().delete('first');
+
+      expect(sftpArgsOf(mocks.calls[0])).toContain('StrictHostKeyChecking=accept-new');
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+
+      mocks.tofuLine = undefined;
+      await adapter().delete('second');
+      const secondArgs = sftpArgsOf(mocks.calls[1]);
+      expect(secondArgs).toContain('StrictHostKeyChecking=yes');
+      expect(secondArgs).not.toContain('StrictHostKeyChecking=accept-new');
+      expect(mocks.calls[1].knownHosts).toBe(`* ssh-ed25519 ${KEY_A}\n`);
+    });
+
+    it('persists TOFU key on post-auth exit 1, spool limit, and output limit', async () => {
+      mocks.tofuLine = `sftp.customer.example.com ssh-ed25519 ${KEY_A}\n`;
+      mocks.behavior.current = 'command-fails';
+      await expect(adapter().delete('missing')).resolves.toBe(false);
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+
+      await resetSftpHostKeyStoreForTests();
+      mocks.behavior.current = 'spool-grows';
+      mocks.spoolCap = REMOTE_STAGED_OBJECT_MAX_BYTES;
+      await expect(adapter().downloadStream('too-big')).rejects.toThrow(StorageSizeLimitError);
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+
+      await resetSftpHostKeyStoreForTests();
+      mocks.behavior.current = 'flood-stdout';
+      await expect(adapter().head('huge-dir')).rejects.toThrow(/passed \d+ bytes/);
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+    });
+
+    it('does NOT persist TOFU key on unauthenticated exit-255 auth or transport failures', async () => {
+      mocks.tofuLine = `sftp.customer.example.com ssh-ed25519 ${KEY_A}\n`;
+      mocks.behavior.current = 'auth-fails';
+      await expect(adapter().delete('f')).rejects.toThrow(StorageAuthenticationError);
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBeUndefined();
+
+      mocks.behavior.current = 'connect-refused';
+      await expect(adapter().delete('f')).rejects.toThrow(StorageAdapterError);
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBeUndefined();
+    });
+
+    it('falls back through validated DNS addresses on transport StorageAdapterError and unlinks partial spools before retrying', async () => {
+      vi.mocked(dns.promises.lookup).mockResolvedValue([
+        { address: '93.184.216.10', family: 4 },
+        { address: '93.184.216.34', family: 4 },
+      ] as never);
+      mocks.behaviorQueue.push(
+        { behavior: 'connect-refused', tofuLine: `sftp.customer.example.com ssh-ed25519 ${KEY_A}\n` },
+        { behavior: 'download', tofuLine: `sftp.customer.example.com ssh-ed25519 ${KEY_A}\n` },
+      );
+
+      const stream = await adapter().downloadStream('f');
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(chunk as Buffer);
+      expect(Buffer.concat(chunks).toString()).toBe('payload');
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(mocks.calls).toHaveLength(2);
+      expect(sftpArgsOf(mocks.calls[0]).at(-1)).toBe('sftpuser@93.184.216.10');
+      expect(sftpArgsOf(mocks.calls[1]).at(-1)).toBe('sftpuser@93.184.216.34');
+      expect(mocks.calls[1].spoolExistedAtSpawn).toBe(false);
+      await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+      expect(leftoverWorkDirs()).toEqual(before);
+    });
+
+    it('deduplicates DNS records preserving order and caps retries at MAX_SFTP_RESOLVED_ADDRESSES (16)', async () => {
+      const records = [
+        { address: '93.184.216.1', family: 4 },
+        { address: '93.184.216.1', family: 4 },
+        ...Array.from({ length: 19 }, (_, idx) => ({ address: `93.184.216.${idx + 2}`, family: 4 })),
+      ];
+      vi.mocked(dns.promises.lookup).mockResolvedValue(records as never);
+      mocks.behavior.current = 'connect-refused';
+
+      await expect(adapter().delete('f')).rejects.toThrow(StorageAdapterError);
+      expect(mocks.calls).toHaveLength(MAX_SFTP_RESOLVED_ADDRESSES);
+      expect(mocks.calls.map((c) => sftpArgsOf(c).at(-1))).toEqual(
+        Array.from({ length: 16 }, (_, idx) => `sftpuser@93.184.216.${idx + 1}`),
+      );
+    });
+
+    it('fails closed with StorageSsrfError when any DNS record is restricted even past index 16', async () => {
+      const records = [
+        ...Array.from({ length: 17 }, (_, idx) => ({ address: `93.184.216.${idx + 1}`, family: 4 })),
+        { address: '10.0.0.99', family: 4 },
+      ];
+      vi.mocked(dns.promises.lookup).mockResolvedValue(records as never);
+      await expect(adapter().delete('f')).rejects.toThrow(StorageSsrfError);
+      expect(mocks.calls).toHaveLength(0);
+    });
+
+    it.each([
+      ['StorageAuthenticationError', 'auth-fails', StorageAuthenticationError],
+      ['SftpCommandFailedError', 'command-fails', StorageAdapterError],
+      ['SftpSpoolLimitError', 'spool-grows', StorageSizeLimitError],
+      ['SftpOutputLimitError', 'flood-stdout', StorageAdapterError],
+      ['SandboxUnavailableError', 'confinement-refused', SandboxUnavailableError],
+    ] as const)('never retries next address on %s', async (_label, behavior, ErrorClass) => {
+      vi.mocked(dns.promises.lookup).mockResolvedValue([
+        { address: '93.184.216.10', family: 4 },
+        { address: '93.184.216.34', family: 4 },
+      ] as never);
+      mocks.behavior.current = behavior;
+      mocks.spoolCap = REMOTE_STAGED_OBJECT_MAX_BYTES;
+      mocks.tofuLine = `sftp.customer.example.com ssh-ed25519 ${KEY_A}\n`;
+
+      const target = adapter();
+      const op =
+        behavior === 'spool-grows'
+          ? target.downloadStream('f')
+          : behavior === 'flood-stdout'
+          ? target.head('f')
+          : behavior === 'command-fails'
+          ? target.uploadStream('nodir/x', new PassThrough().end('x'))
+          : target.delete('f');
+
+      const error = await op.catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ErrorClass);
+      expect(mocks.calls).toHaveLength(1);
+    });
+
+    it('confines sftp under Linux unshare -r without -n and pid-init --confine, and maps confinement refusal to SandboxUnavailableError', async () => {
+      const platformDesc = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      const realExistsSync = fs.existsSync.bind(fs);
+      try {
+        Object.defineProperty(process, 'platform', { value: 'linux' });
+        mocks.linuxProbe.enabled = true;
+        vi.stubEnv('PID_INIT_PATH', '/usr/local/bin/pid-init');
+        vi.spyOn(fs, 'existsSync').mockImplementation((p) => {
+          if (p === '/usr/bin/unshare' || p === '/usr/local/bin/pid-init' || p === '/usr/bin/sftp') return true;
+          return realExistsSync(p);
+        });
+        resetUnshareCapabilityCache();
+
+        await adapter().uploadStream('up.txt', new PassThrough().end('hello'));
+        const upCall = mocks.calls[0];
+        expect(upCall.command).toBe('/usr/bin/unshare');
+        expect(upCall.args).toContain('-r');
+        expect(upCall.args).not.toContain('-n');
+        expect(upCall.args).toContain('/usr/local/bin/pid-init');
+        expect(upCall.args).toContain('--confine');
+        const readArgIndex = upCall.args.indexOf('--read');
+        expect(readArgIndex).toBeGreaterThan(-1);
+        expect(path.basename(upCall.args[readArgIndex + 1])).toMatch(/^easyconvert-sftp-up-/);
+        expect(sftpArgsOf(upCall).slice(0, 2)).toEqual(['-F', '/dev/null']);
+
+        mocks.behavior.current = 'download';
+        const stream = await adapter().downloadStream('down.txt');
+        const downCall = mocks.calls[1];
+        const writePaths: string[] = [];
+        for (let i = 0; i < downCall.args.length; i++) {
+          if (downCall.args[i] === '--write') writePaths.push(downCall.args[i + 1]);
+        }
+        expect(writePaths.some((p) => path.basename(p).startsWith('easyconvert-sftp-run-'))).toBe(true);
+        expect(writePaths.some((p) => path.basename(p).startsWith('easyconvert-sftp-down-'))).toBe(true);
+        for await (const _chunk of stream) {
+          // drain
+        }
+
+        mocks.behavior.current = 'confinement-refused';
+        mocks.tofuLine = `sftp.customer.example.com ssh-ed25519 ${KEY_A}\n`;
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await expect(adapter().delete('f')).rejects.toThrow(SandboxUnavailableError);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('command line and the status'));
+        await expect(getPersistedSftpHostKey('sftp.customer.example.com', 22)).resolves.toBeUndefined();
+      } finally {
+        Object.defineProperty(process, 'platform', platformDesc);
+      }
+    });
+
+    it('sweeps unconsumed downloadStream spools after SFTP_DOWNLOAD_IDLE_SWEEP_MS without forcing flowing mode, and resets on push', async () => {
+      mocks.behavior.current = 'download';
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const stream = await adapter().downloadStream('f');
+        expect((stream as unknown as { readableFlowing: boolean | null }).readableFlowing).toBeNull();
+        expect(leftoverWorkDirs().some((d) => d.startsWith('easyconvert-sftp-down-'))).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(40_000);
+        expect(leftoverWorkDirs().some((d) => d.startsWith('easyconvert-sftp-down-'))).toBe(true);
+
+        (stream as unknown as { push: (c: Buffer) => boolean }).push(Buffer.from('keepalive'));
+        await vi.advanceTimersByTimeAsync(40_000);
+        expect(leftoverWorkDirs().some((d) => d.startsWith('easyconvert-sftp-down-'))).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(SFTP_DOWNLOAD_IDLE_SWEEP_MS);
+        expect((stream as unknown as { destroyed: boolean }).destroyed).toBe(true);
+        expect(leftoverWorkDirs()).toEqual(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('cleans up unconsumed downloadStream spool immediately on destroy() and error', async () => {
+      mocks.behavior.current = 'download';
+      const s1 = await adapter().downloadStream('f');
+      expect(leftoverWorkDirs().some((d) => d.startsWith('easyconvert-sftp-down-'))).toBe(true);
+      await new Promise<void>((resolve) => {
+        s1.once('close', () => resolve());
+        (s1 as unknown as { destroy: () => void }).destroy();
+      });
+      expect(leftoverWorkDirs()).toEqual(before);
+
+      const s2 = await adapter().downloadStream('f');
+      expect(leftoverWorkDirs().some((d) => d.startsWith('easyconvert-sftp-down-'))).toBe(true);
+      await new Promise<void>((resolve) => {
+        s2.once('close', () => resolve());
+        (s2 as unknown as { destroy: (err: Error) => void }).destroy(new Error('consumer aborted'));
+      });
+      expect(leftoverWorkDirs()).toEqual(before);
+    });
+
+    it('rejects concurrent TOFU mismatch, corrupt stored entry, oversized known_hosts, and evicts oldest LRU entry at 4096', async () => {
+      expect(SFTP_TOFU_REDIS_PREFIX).toBe('sftp:tofu:hostkey:');
+      expect(SFTP_TOFU_TTL_SECONDS).toBe(31_536_000);
+      expect(MAX_IN_MEMORY_TOFU_KEYS).toBe(4096);
+      expect(MAX_KNOWN_HOSTS_BYTES).toBe(64 * 1024);
+
+      await persistSftpHostKeyFirstUse('tofu.example.com', 22, `# hdr\n\n[tofu.example.com]:22 ssh-ed25519 ${KEY_A}\n`);
+      await expect(persistSftpHostKeyFirstUse('tofu.example.com', 22, `ssh-ed25519 ${KEY_A}`)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+      await expect(persistSftpHostKeyFirstUse('tofu.example.com', 22, `ssh-ed25519 ${KEY_B}`)).rejects.toMatchObject({
+        name: StorageAuthenticationError.name,
+        message: 'Storage authentication failed: Host key verification failed: concurrent TOFU host key mismatch',
+      });
+
+      await expect(
+        persistSftpHostKeyFirstUse('big.example.com', 22, `# ${'a'.repeat(MAX_KNOWN_HOSTS_BYTES)}`),
+      ).rejects.toThrow(StorageAdapterError);
+
+      await resetSftpHostKeyStoreForTests();
+      for (let i = 0; i < MAX_IN_MEMORY_TOFU_KEYS; i++) {
+        await persistSftpHostKeyFirstUse(`h${i}.example.com`, 22, `ssh-ed25519 ${KEY_A}`);
+      }
+      // Touch h0 so h1 becomes oldest
+      await expect(getPersistedSftpHostKey('h0.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+      await persistSftpHostKeyFirstUse('h-extra.example.com', 22, `ssh-ed25519 ${KEY_A}`);
+      await expect(getPersistedSftpHostKey('h0.example.com', 22)).resolves.toBe(`* ssh-ed25519 ${KEY_A}\n`);
+      await expect(getPersistedSftpHostKey('h1.example.com', 22)).resolves.toBeUndefined();
+    });
+
+    it('fails closed with StorageAdapterError when Redis is configured and unreachable', async () => {
+      vi.stubEnv('REDIS_URL', 'redis://127.0.0.1:1');
+      await resetSftpHostKeyStoreForTests();
+      await expect(getPersistedSftpHostKey('down.example.com', 22)).rejects.toThrow(StorageAdapterError);
+    }, 10_000);
   });
 });
 
