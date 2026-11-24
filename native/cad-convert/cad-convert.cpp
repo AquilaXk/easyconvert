@@ -100,6 +100,10 @@ constexpr double kAngularDeflectionRadians = 0.5;
 
 // The kernel works in millimetres: the readers convert to them (xstep.cascade.unit), and the output unit is applied on the way out.
 constexpr const char* kKernelUnit = "MM";
+// Bounds on B-rep assembly expansion and output triangulation so exponential STEP/IGES DAGs fail closed instead of exhausting memory.
+constexpr int kMaxAssemblyShapes = 100000;
+constexpr int kMaxExpandedFaces = 500000;
+constexpr std::size_t kMaxOutputTriangles = 1000000;
 
 // A length unit the output can be written in: its name on the command line, its name in the kernel's writer parameters, how many
 // of it make one millimetre, and how the headers of STL and OBJ say it.
@@ -208,7 +212,7 @@ constexpr std::uint32_t kMaxMeshTriangles = 50000;
 // cannot size the arrays beyond what the triangles could use (cad-occt.ts, OCCT_MESH_MAX_VERTICES, is the same number).
 constexpr std::uint32_t kMaxMeshVertices = 3 * kMaxMeshTriangles;
 
-int countFaces(const TopoDS_Shape& shape);
+int countFacesBounded(const TopoDS_Shape& shape);
 
 struct MeshData {
   std::vector<double> vertices;
@@ -321,11 +325,14 @@ TopoDS_Compound meshToFaces(const MeshData& mesh, int& skipped) {
 }
 
 void readMeshDocument(const std::string& path, Handle(TDocStd_Document)& doc) {
+  STEPControl_Controller::Init();
+  IGESControl_Controller::Init();
+  setStaticString("xstep.cascade.unit", kKernelUnit);
   const MeshData mesh = readMesh(path);
   int skipped = 0;
   const TopoDS_Compound faces = meshToFaces(mesh, skipped);
   if (skipped > 0) note(std::to_string(skipped) + " triangle(s) with coincident or collinear corners are no face and are left out");
-  if (countFaces(faces) == 0) fail(kExitNothing, "no-shapes", "the mesh holds no triangle that is a face");
+  if (countFacesBounded(faces) == 0) fail(kExitNothing, "no-shapes", "the mesh holds no triangle that is a face");
   const Handle(XCAFDoc_ShapeTool) tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   tool->AddShape(faces, Standard_False);
 }
@@ -335,6 +342,9 @@ TopoDS_Compound freeShapes(const Handle(TDocStd_Document)& doc, int& count) {
   const Handle(XCAFDoc_ShapeTool) tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
   TDF_LabelSequence labels;
   tool->GetFreeShapes(labels);
+  if (labels.Length() > kMaxAssemblyShapes) {
+    fail(kExitFailed, "expansion", "the assembly has more than " + std::to_string(kMaxAssemblyShapes) + " top-level shapes");
+  }
   BRep_Builder builder;
   TopoDS_Compound compound;
   builder.MakeCompound(compound);
@@ -348,9 +358,27 @@ TopoDS_Compound freeShapes(const Handle(TDocStd_Document)& doc, int& count) {
   return compound;
 }
 
-int countFaces(const TopoDS_Shape& shape) {
+int checkAssemblyLeavesBounded(const Handle(TDocStd_Document)& doc) {
+  const Handle(XCAFDoc_ShapeTool) tool = XCAFDoc_DocumentTool::ShapeTool(doc->Main());
+  TDF_LabelSequence roots;
+  tool->GetFreeShapes(roots);
+  int leaves = 0;
+  for (XCAFPrs_DocumentExplorer explorer(doc, roots, XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes | XCAFPrs_DocumentExplorerFlags_NoStyle);
+       explorer.More(); explorer.Next()) {
+    if (++leaves > kMaxAssemblyShapes) {
+      fail(kExitFailed, "expansion", "the assembly expands to more than " + std::to_string(kMaxAssemblyShapes) + " shape instances");
+    }
+  }
+  return leaves;
+}
+
+int countFacesBounded(const TopoDS_Shape& shape) {
   int faces = 0;
-  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) ++faces;
+  for (TopExp_Explorer explorer(shape, TopAbs_FACE); explorer.More(); explorer.Next()) {
+    if (++faces > kMaxExpandedFaces) {
+      fail(kExitFailed, "expansion", "the model expands to more than " + std::to_string(kMaxExpandedFaces) + " faces");
+    }
+  }
   return faces;
 }
 
@@ -359,6 +387,7 @@ int countFaces(const TopoDS_Shape& shape) {
 
 void writeStep(const Handle(TDocStd_Document)& doc, const std::string& path, const OutputUnit& unit) {
   STEPControl_Controller::Init();
+  setStaticString("xstep.cascade.unit", kKernelUnit);
   setStaticString("write.step.unit", unit.writerName);
   STEPCAFControl_Writer writer;
   writer.SetColorMode(Standard_True);
@@ -373,6 +402,7 @@ void writeStep(const Handle(TDocStd_Document)& doc, const std::string& path, con
 // (17.5 MB and 17.4 MB). A mesh has no colours or names, so the document model (IGESCAFControl_Writer) adds nothing here.
 void writeIgesFaces(const TopoDS_Shape& faces, const std::string& path, const OutputUnit& unit) {
   IGESControl_Controller::Init();
+  setStaticString("xstep.cascade.unit", kKernelUnit);
   setStaticString("write.iges.unit", unit.writerName);
   IGESControl_Writer writer(unit.writerName, 0);
   for (TopExp_Explorer explorer(faces, TopAbs_FACE); explorer.More(); explorer.Next()) {
@@ -384,6 +414,7 @@ void writeIgesFaces(const TopoDS_Shape& faces, const std::string& path, const Ou
 
 void writeIges(const Handle(TDocStd_Document)& doc, const std::string& path, const OutputUnit& unit) {
   IGESControl_Controller::Init();
+  setStaticString("xstep.cascade.unit", kKernelUnit);
   setStaticString("write.iges.unit", unit.writerName);
   IGESCAFControl_Writer writer;
   writer.SetColorMode(Standard_True);
@@ -416,6 +447,15 @@ void meshFaces(const TopoDS_Shape& shape) {
   (void)mesher;
 }
 
+void scaleVertexCoords(const gp_Pnt& point, const OutputUnit& unit, float out[3]) {
+  out[0] = static_cast<float>(point.X() * unit.perMillimetre);
+  out[1] = static_cast<float>(point.Y() * unit.perMillimetre);
+  out[2] = static_cast<float>(point.Z() * unit.perMillimetre);
+  if (!std::isfinite(out[0]) || !std::isfinite(out[1]) || !std::isfinite(out[2])) {
+    fail(kExitFailed, "too-large", "a meshed vertex overflows single-precision coordinates");
+  }
+}
+
 std::vector<Triangle> meshTriangles(const TopoDS_Shape& shape, const OutputUnit& unit) {
   meshFaces(shape);
   std::vector<Triangle> triangles;
@@ -427,16 +467,16 @@ std::vector<Triangle> meshTriangles(const TopoDS_Shape& shape, const OutputUnit&
     const gp_Trsf placement = location.Transformation();
     const bool reversed = face.Orientation() == TopAbs_REVERSED;
     for (Standard_Integer i = 1; i <= mesh->NbTriangles(); ++i) {
+      if (triangles.size() >= kMaxOutputTriangles) {
+        fail(kExitFailed, "expansion", "the meshed model exceeds " + std::to_string(kMaxOutputTriangles) + " output triangles");
+      }
       Standard_Integer a, b, c;
       mesh->Triangle(i).Get(a, b, c);
       if (reversed) std::swap(b, c);
       const Standard_Integer corner[3] = {a, b, c};
       Triangle triangle;
       for (int k = 0; k < 3; ++k) {
-        const gp_Pnt point = mesh->Node(corner[k]).Transformed(placement);
-        triangle.vertex[k][0] = static_cast<float>(point.X() * unit.perMillimetre);
-        triangle.vertex[k][1] = static_cast<float>(point.Y() * unit.perMillimetre);
-        triangle.vertex[k][2] = static_cast<float>(point.Z() * unit.perMillimetre);
+        scaleVertexCoords(mesh->Node(corner[k]).Transformed(placement), unit, triangle.vertex[k]);
       }
       triangles.push_back(triangle);
     }
@@ -450,10 +490,14 @@ void normalOf(const Triangle& t, float out[3]) {
   const float vx = t.vertex[2][0] - t.vertex[0][0], vy = t.vertex[2][1] - t.vertex[0][1], vz = t.vertex[2][2] - t.vertex[0][2];
   float nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
   const float length = std::sqrt(nx * nx + ny * ny + nz * nz);
-  if (length > 0.0f) {
+  if (std::isfinite(length) && length > 0.0f) {
     nx /= length;
     ny /= length;
     nz /= length;
+  } else if (!std::isfinite(length)) {
+    nx = 0.0f;
+    ny = 0.0f;
+    nz = 0.0f;
   }
   out[0] = nx;
   out[1] = ny;
@@ -547,7 +591,11 @@ void writeObj(const Handle(TDocStd_Document)& doc, const std::string& path, cons
 
   TDF_LabelSequence roots;
   XCAFDoc_DocumentTool::ShapeTool(doc->Main())->GetFreeShapes(roots);
+  int leafCount = 0;
   for (XCAFPrs_DocumentExplorer explorer(doc, roots, XCAFPrs_DocumentExplorerFlags_OnlyLeafNodes); explorer.More(); explorer.Next()) {
+    if (++leafCount > kMaxAssemblyShapes) {
+      fail(kExitFailed, "expansion", "the assembly expands to more than " + std::to_string(kMaxAssemblyShapes) + " shape instances");
+    }
     const XCAFPrs_DocumentNode& node = explorer.Current();
     for (RWMesh_FaceIterator face(node.RefLabel, node.Location, true, node.Style); face.More(); face.Next()) {
       if (face.IsEmptyMesh()) continue;
@@ -561,12 +609,15 @@ void writeObj(const Handle(TDocStd_Document)& doc, const std::string& path, cons
         material = found.first->second;
       }
       for (Standard_Integer i = face.ElemLower(); i <= face.ElemUpper(); ++i) {
+        if (triangles.size() >= kMaxOutputTriangles) {
+          fail(kExitFailed, "expansion", "the meshed model exceeds " + std::to_string(kMaxOutputTriangles) + " output triangles");
+        }
         const Poly_Triangle triangle = face.TriangleOriented(i);
         ObjTriangle entry{{0, 0, 0}, material};
         for (int k = 0; k < 3; ++k) {
-          const gp_Pnt point = face.NodeTransformed(triangle(k + 1));
-          const VertexKey key{static_cast<float>(point.X() * unit.perMillimetre), static_cast<float>(point.Y() * unit.perMillimetre),
-                              static_cast<float>(point.Z() * unit.perMillimetre)};
+          float coords[3];
+          scaleVertexCoords(face.NodeTransformed(triangle(k + 1)), unit, coords);
+          const VertexKey key{coords[0], coords[1], coords[2]};
           const auto added = index.emplace(key, static_cast<std::uint32_t>(vertices.size() + 1));
           if (added.second) vertices.push_back(key);
           entry.corner[k] = added.first->second;
@@ -659,10 +710,11 @@ void run(const Arguments& arguments) {
     fail(kExitUnreadable, "unreadable", std::string("Open CASCADE failed while reading: ") + error.GetMessageString());
   }
 
+  checkAssemblyLeavesBounded(doc);
   int shapes = 0;
   const TopoDS_Compound compound = freeShapes(doc, shapes);
   if (shapes == 0) fail(kExitNothing, "no-shapes", "the file holds no shape");
-  const int faces = countFaces(compound);
+  const int faces = countFacesBounded(compound);
   note(std::string("the result is written in ") + arguments.unit->label);
   note(std::to_string(shapes) + " shape(s), " + std::to_string(faces) + " face(s)");
 

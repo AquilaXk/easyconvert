@@ -2,8 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { endOfRun, recordEngineOutput } from '../engine-output';
 import {
+  CadExpansionLimitError,
   CpuTaskTimeoutError,
   EngineUnavailableError,
+  PayloadLimitError,
   UnprocessableCadInputError,
   type ConversionOptions,
 } from '../types';
@@ -70,12 +72,14 @@ const OUTPUT_TOO_LARGE = 'The model is larger than the CAD converter may write.'
 const SHELL_NOT_FOUND = 127;
 /** The error line of a program that ran out of memory: `memory` is its code. */
 const MEMORY_ERROR_LINE = /^cad-convert: error: memory:/m;
+/** The error line of a program whose assembly, face, or triangle count expanded past the bound: `expansion` is its code. */
+const EXPANSION_ERROR_LINE = /^cad-convert: error: expansion:[ \t]*(.*)$/m;
 /**
  * The codes of the `cad-convert: error: <code>: <message>` line that are a fixed vocabulary of the program (native/cad-convert): the
  * kind of refusal. The answer names the code and never the message, which can quote a number or what the kernel said; `failed` is
  * the kernel's own text and is not in the list.
  */
-const OWN_ERROR_CODES: ReadonlySet<string> = new Set(['unreadable', 'no-shapes', 'no-surfaces', 'too-large', 'unit', 'material', 'transfer', 'write']);
+const OWN_ERROR_CODES: ReadonlySet<string> = new Set(['unreadable', 'no-shapes', 'no-surfaces', 'too-large', 'expansion', 'unit', 'material', 'transfer', 'write']);
 const ERROR_CODE = /^cad-convert: error: ([a-z-]+):/m;
 
 /** ` (unreadable)`: the code the program gave its refusal, or nothing when it gave none of its own. */
@@ -101,6 +105,11 @@ export interface OcctOutput {
   /** True when the buffer is the ZIP of an OBJ and its MTL file, which the caller names `.zip` instead of by the target. */
   archive: boolean;
 }
+
+export const OCCT_MAX_INPUT_BYTES = 256 * 1024 * 1024;
+export const OCCT_MAX_ASSEMBLY_SHAPES = 100_000;
+export const OCCT_MAX_EXPANDED_FACES = 500_000;
+export const OCCT_MAX_OUTPUT_TRIANGLES = 1_000_000;
 
 /**
  * The most triangles of a mesh the program writes to IGES; the program applies the same limit (kMaxMeshTriangles in
@@ -150,6 +159,15 @@ function toProgramError(error: unknown, timeoutMs: number): unknown {
     }
     if (MEMORY_ERROR_LINE.test(error.stderr)) {
       return new UnprocessableCadInputError(`The CAD converter ran out of memory: the model needs more than the ${PROGRAM_MEMORY_LIMIT_MB} MB it may use.`);
+    }
+    const expansionMatch = EXPANSION_ERROR_LINE.exec(error.stderr);
+    if (expansionMatch) {
+      const detail = expansionMatch[1].trim().replace(/\.+$/, '');
+      return new CadExpansionLimitError(
+        detail
+          ? `The CAD model expands beyond the converter limit: ${detail}.`
+          : 'The CAD model expands beyond the converter limit.'
+      );
     }
     recordEngineOutput(PROGRAM_NAME, 'convert', error.stderr);
     return new UnprocessableCadInputError(`The CAD converter could not convert this model: ${endOfRun(error)}${refusalCode(error.stderr)}.`);
@@ -244,6 +262,9 @@ export async function convertCadWithOcct(input: Buffer, sourceFormat: string, ta
   if (from === undefined || to === undefined) {
     throw new UnprocessableCadInputError(`The CAD converter does not convert .${sourceFormat} to .${targetFormat}.`);
   }
+  if (input.byteLength > OCCT_MAX_INPUT_BYTES) {
+    throw new PayloadLimitError(`The CAD input exceeds the ${OCCT_MAX_INPUT_BYTES}-byte limit.`);
+  }
   const unit = validOutputUnit(options);
   const kernelInput = from === 'iges' ? prepareIgesForKernel(input) : input;
   const { model, materials, stem } = await runKernel({ from, to, input: kernelInput, inputExtension: sourceFormat, outputExtension: targetFormat, unit, options });
@@ -279,12 +300,13 @@ function assertMeshFitsProgram(mesh: IndexedMesh): void {
  * with more triangles than OCCT_MESH_MAX_TRIANGLES is refused before the program starts, with its size and the limit named.
  */
 export async function convertMeshToIgesWithOcct(mesh: IndexedMesh, options: OcctConverterOptions = {}): Promise<OcctOutput> {
+  const unit = validOutputUnit(options);
   if (mesh.faces.length > OCCT_MESH_MAX_TRIANGLES) {
     throw new UnprocessableCadInputError(
       `The mesh has ${mesh.faces.length.toLocaleString('en-US')} triangles; the IGES file takes at most ${OCCT_MESH_MAX_TRIANGLES.toLocaleString('en-US')}, because every triangle is a trimmed surface of its own.`
     );
   }
   assertMeshFitsProgram(mesh);
-  const { model } = await runKernel({ from: 'mesh', to: 'iges', input: meshFile(mesh), inputExtension: 'mesh', outputExtension: 'iges', unit: DEFAULT_OUTPUT_UNIT, options });
+  const { model } = await runKernel({ from: 'mesh', to: 'iges', input: meshFile(mesh), inputExtension: 'mesh', outputExtension: 'iges', unit, options });
   return { buffer: model, mimeType: OCCT_CONVERTER_MIME.iges, archive: false };
 }

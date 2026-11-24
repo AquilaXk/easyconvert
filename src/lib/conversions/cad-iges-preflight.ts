@@ -1,4 +1,4 @@
-import { UnprocessableCadInputError } from '../types';
+import { PayloadLimitError, UnprocessableCadInputError } from '../types';
 
 /**
  * What the worker checks in an IGES file before the Open CASCADE reader sees it, so that two damaged-file cases end in a typed
@@ -27,6 +27,8 @@ const GLOBAL_COLUMNS = 72;
 const COUNT_FIELD_LENGTH = 8;
 /** Digits of a Hollerith count that are read; a longer count is larger than any Global section. */
 const MAX_COUNT_DIGITS = 9;
+export const MAX_IGES_INPUT_BYTES = 256 * 1024 * 1024;
+export const MAX_IGES_RECORDS = 4_000_000;
 const SEQUENCE_FIELD = /^ *\d+ *$/;
 /** A record and the line end after it (a lone carriage return ends a record too, as in liriges.c:53-57). */
 const LINE = /([^\r\n]*)(\r\n|\r|\n|$)/g;
@@ -51,6 +53,9 @@ function recordsOf(text: string): IgesRecord[] {
   const hasLineEnds = /[\r\n]/.test(text.slice(0, 2 * RECORD_LENGTH));
   const push = (line: string, offset: number): void => {
     if (line.length <= SECTION_COLUMN + 1 || !SEQUENCE_FIELD.test(line.slice(SECTION_COLUMN + 1))) return;
+    if (records.length >= MAX_IGES_RECORDS) {
+      throw new PayloadLimitError(`The IGES file exceeds the ${MAX_IGES_RECORDS.toLocaleString('en-US')}-record limit.`);
+    }
     records.push({ section: line[SECTION_COLUMN], offset, text: line });
   };
   if (!hasLineEnds) {
@@ -192,6 +197,9 @@ function applyFixes(input: Buffer, globalRecords: readonly IgesRecord[], fixes: 
  * kernel to refuse in its own words.
  */
 export function prepareIgesForKernel(input: Buffer): Buffer {
+  if (input.byteLength > MAX_IGES_INPUT_BYTES) {
+    throw new PayloadLimitError(`The IGES file exceeds the ${MAX_IGES_INPUT_BYTES}-byte limit.`);
+  }
   const text = input.toString('latin1');
   const records = recordsOf(text);
   if (records.length === 0) return input;

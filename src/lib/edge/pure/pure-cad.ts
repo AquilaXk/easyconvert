@@ -18,7 +18,8 @@ const VERTEX_COMPONENTS = 3;
 const MIN_FACE_CORNERS = 3;
 const BINARY_STL_HEADER_BYTES = 80;
 const BINARY_STL_FACET_BYTES = 50;
-const MAX_BINARY_STL_TRIANGLES = 10_000_000;
+export const MAX_PURE_CAD_TRIANGLES = 1_000_000;
+export const MAX_PURE_CAD_VERTICES = 3_000_000;
 
 function computeUnitNormal(
   v1: readonly number[],
@@ -40,27 +41,42 @@ function computeUnitNormal(
 }
 
 /**
- * Checks that every vertex is three finite numbers and every corner of every face names a vertex that exists.
- * A face that points past the vertex list is a broken mesh, not a point at the origin: the server engine
- * converts the file instead of this one writing a surface that is not in it.
+ * Checks that vertex and expanded-triangle counts fit the edge bounds, every vertex is three finite numbers, and
+ * every corner of every face names a vertex that exists. Returns the fan-triangulated triangle count.
  */
-function assertWritableMesh(mesh: TessellatedMesh): void {
+function assertWritableMesh(mesh: TessellatedMesh): number {
   const count = mesh.vertices.length;
-  mesh.vertices.forEach((vertex, at) => {
+  if (count > MAX_PURE_CAD_VERTICES) {
+    throw new EdgeUnsupportedError(
+      `Mesh lists ${count} vertices, exceeding the ${MAX_PURE_CAD_VERTICES}-vertex edge limit.`
+    );
+  }
+  for (let at = 0; at < count; at++) {
+    const vertex = mesh.vertices[at];
     if (!Array.isArray(vertex) || vertex.length !== VERTEX_COMPONENTS || !vertex.every(Number.isFinite)) {
       throw new EdgeUnsupportedError(`Mesh vertex ${at} is not three finite coordinates; the server engine converts this file.`);
     }
-  });
-  mesh.faces.forEach((face, at) => {
-    if (face.length < MIN_FACE_CORNERS) return;
-    for (const index of face) {
+  }
+  let triangleCount = 0;
+  for (let at = 0; at < mesh.faces.length; at++) {
+    const face = mesh.faces[at];
+    if (face.length < MIN_FACE_CORNERS) continue;
+    triangleCount += face.length - 2;
+    if (triangleCount > MAX_PURE_CAD_TRIANGLES) {
+      throw new EdgeUnsupportedError(
+        `Mesh contains ${triangleCount} triangles, exceeding the ${MAX_PURE_CAD_TRIANGLES}-triangle edge limit.`
+      );
+    }
+    for (let c = 0; c < face.length; c++) {
+      const index = face[c];
       if (!Number.isInteger(index) || index < 0 || index >= count) {
         throw new EdgeUnsupportedError(
           `Mesh face ${at} has vertex index ${index}, but the mesh has ${count} vertices; the server engine converts this file.`
         );
       }
     }
-  });
+  }
+  return triangleCount;
 }
 
 /**
@@ -96,17 +112,7 @@ export function encodeStl(mesh: TessellatedMesh): string {
  * Encodes 3D TessellatedMesh to little-endian binary Stereolithography (STL) format.
  */
 export function encodeBinaryStl(mesh: TessellatedMesh): Uint8Array {
-  assertWritableMesh(mesh);
-  let triangleCount = 0;
-  for (let f = 0; f < mesh.faces.length; f++) {
-    const len = mesh.faces[f].length;
-    if (len >= MIN_FACE_CORNERS) triangleCount += len - 2;
-  }
-  if (triangleCount > MAX_BINARY_STL_TRIANGLES) {
-    throw new EdgeUnsupportedError(
-      `Mesh contains ${triangleCount} triangles, exceeding the ${MAX_BINARY_STL_TRIANGLES}-triangle edge limit.`
-    );
-  }
+  const triangleCount = assertWritableMesh(mesh);
 
   const totalBytes = BINARY_STL_HEADER_BYTES + 4 + triangleCount * BINARY_STL_FACET_BYTES;
   const out = new Uint8Array(totalBytes);

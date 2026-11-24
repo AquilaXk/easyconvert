@@ -15,8 +15,21 @@ import {
   evaluateQuadraticBezier,
   cubicBezierToBSpline,
   tessellateSvgArc,
-  verifyWatertightManifoldMesh,
 } from './cad-nurbs';
+import {
+  type CadMesh3D,
+  MAX_MESH_TRIANGLES,
+  MAX_MESH_VERTICES,
+  MAX_TEXT_MESH_BYTES,
+  MAX_OBJ_LINES,
+  MAX_OBJ_FACE_CORNERS,
+  MAX_ASCII_STL_WORDS,
+  MAX_STEP_MESH_TRIANGLES,
+  MAX_STEP_MESH_VERTICES,
+  parse3dCad,
+  encodeStep,
+  encode3dCadToDxf,
+} from './cad-mesh-step';
 import { convertCadWithOcct, convertMeshToIgesWithOcct, isOcctSource } from './cad-occt';
 import { encodeStl as pureEncodeStl, encodeObj as pureEncodeObj } from '../edge/pure/pure-cad';
 import { MAX_SVG_INPUT_CHARS } from './svg-geometry';
@@ -38,14 +51,19 @@ export {
   evaluateQuadraticBezier,
   cubicBezierToBSpline,
   tessellateSvgArc,
+  type CadMesh3D,
+  MAX_MESH_TRIANGLES,
+  MAX_MESH_VERTICES,
+  MAX_TEXT_MESH_BYTES,
+  MAX_OBJ_LINES,
+  MAX_OBJ_FACE_CORNERS,
+  MAX_ASCII_STL_WORDS,
+  MAX_STEP_MESH_TRIANGLES,
+  MAX_STEP_MESH_VERTICES,
+  parse3dCad,
+  encodeStep,
+  encode3dCadToDxf,
 };
-
-export interface CadMesh3D {
-  name: string;
-  vertices: [number, number, number][];
-  faces: [number, number, number][];
-  normals: [number, number, number][];
-}
 
 import {
   encodeEmf,
@@ -70,34 +88,90 @@ export {
   parseSvgPathToBezierPoints,
 };
 
+export const MAX_CGM_INPUT_CHARS = 16 * 1024 * 1024;
+export const MAX_CGM_VDC_EXTENT = 1_000_000;
+export const MAX_CGM_ELEMENTS = 100_000;
+export const MAX_CGM_POINTS = 500_000;
+export const MAX_CGM_TEXT_CHARS = 1_000_000;
+
+interface CgmBudget {
+  elements: number;
+  points: number;
+  textChars: number;
+}
+
+const CGM_FLOAT = '([-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?)';
+const CGM_VDCEXT_PATTERN = new RegExp(
+  `VDCEXT\\s*\\(\\s*${CGM_FLOAT}\\s*,\\s*${CGM_FLOAT}\\s*\\)\\s*\\(\\s*${CGM_FLOAT}\\s*,\\s*${CGM_FLOAT}\\s*\\)`,
+  'i'
+);
+
+function chargeCgmElement(budget: CgmBudget): void {
+  if (++budget.elements > MAX_CGM_ELEMENTS) {
+    throw new PayloadLimitError(`CGM drawing exceeds the ${MAX_CGM_ELEMENTS.toLocaleString('en-US')}-element limit.`);
+  }
+}
+
+function chargeCgmPoint(budget: CgmBudget): void {
+  if (++budget.points > MAX_CGM_POINTS) {
+    throw new PayloadLimitError(`CGM drawing exceeds the ${MAX_CGM_POINTS.toLocaleString('en-US')}-point limit.`);
+  }
+}
+
+function chargeCgmTextChars(budget: CgmBudget, count: number): void {
+  budget.textChars += count;
+  if (budget.textChars > MAX_CGM_TEXT_CHARS) {
+    throw new PayloadLimitError(`CGM drawing exceeds the ${MAX_CGM_TEXT_CHARS.toLocaleString('en-US')}-character text limit.`);
+  }
+}
+
 /**
  * The canvas size of a CGM is its VDC extent. A drawing that states none, or an empty one, has no size to
  * read, so it is refused instead of being drawn on a canvas of an invented size.
  */
 function parseCgmDimensions(cgmText: string): { width: number; height: number } {
-  const vdcRegex = /VDCEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/i;
-  const vdcMatch = vdcRegex.exec(cgmText);
+  const vdcMatch = CGM_VDCEXT_PATTERN.exec(cgmText);
   if (!vdcMatch) {
     throw new ConversionFailedError('The CGM states no VDC extent (VDCEXT), so its size cannot be read.');
   }
+  const x1 = Number(vdcMatch[1]);
+  const y1 = Number(vdcMatch[2]);
+  const x2 = Number(vdcMatch[3]);
+  const y2 = Number(vdcMatch[4]);
+  const w = Math.abs(x2 - x1);
+  const h = Math.abs(y2 - y1);
+  if (
+    !Number.isFinite(x1) ||
+    !Number.isFinite(y1) ||
+    !Number.isFinite(x2) ||
+    !Number.isFinite(y2) ||
+    !Number.isFinite(w) ||
+    !Number.isFinite(h)
+  ) {
+    throw new ConversionFailedError('The CGM has a non-finite VDC extent, so its size cannot be read.');
+  }
   // Either corner order is legal; a reversed y extent only flips the VDC axis.
-  const w = Math.abs(Number.parseFloat(vdcMatch[3]) - Number.parseFloat(vdcMatch[1]));
-  const h = Math.abs(Number.parseFloat(vdcMatch[4]) - Number.parseFloat(vdcMatch[2]));
-  if (!(Math.round(w) > 0 && Math.round(h) > 0)) {
+  const width = Math.round(w);
+  const height = Math.round(h);
+  if (!(width > 0 && height > 0)) {
     throw new ConversionFailedError('The CGM has an empty VDC extent, so its size cannot be read.');
   }
-  return { width: Math.round(w), height: Math.round(h) };
+  if (width > MAX_CGM_VDC_EXTENT || height > MAX_CGM_VDC_EXTENT) {
+    throw new PayloadLimitError(`CGM VDC extent (${width}x${height}) exceeds the ${MAX_CGM_VDC_EXTENT.toLocaleString('en-US')} limit.`);
+  }
+  return { width, height };
 }
 
-function parseCgmLines(cgmText: string): string[] {
-  const elements: string[] = [];
+function parseCgmLines(cgmText: string, budget: CgmBudget, elements: string[]): void {
   const lineRegex = /(?<![A-Z])LINE\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
   for (const lineMatch of cgmText.matchAll(lineRegex)) {
+    chargeCgmElement(budget);
+    chargeCgmPoint(budget);
+    chargeCgmPoint(budget);
     elements.push(
       `<line x1="${lineMatch[1]}" y1="${lineMatch[2]}" x2="${lineMatch[3]}" y2="${lineMatch[4]}" stroke="#111827" stroke-width="2" />`
     );
   }
-  return elements;
 }
 
 const CGM_TEXT_HEAD_PATTERN = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
@@ -107,8 +181,7 @@ const CGM_TEXT_HEAD_PATTERN = /TEXT\s*\(\s*([\d.]+)\s*,\s*([\d.]+)\s*\)/gi;
  * indexOf from the end of the head, so a missing quote ends the scan instead of
  * being re-scanned from every later TEXT keyword.
  */
-function parseCgmTextElements(cgmText: string): string[] {
-  const elements: string[] = [];
+function parseCgmTextElements(cgmText: string, budget: CgmBudget, elements: string[]): void {
   CGM_TEXT_HEAD_PATTERN.lastIndex = 0;
   let head = CGM_TEXT_HEAD_PATTERN.exec(cgmText);
   while (head) {
@@ -117,6 +190,8 @@ function parseCgmTextElements(cgmText: string): string[] {
     const close = cgmText.indexOf('"', open + 1);
     if (close < 0) break;
     if (close > open + 1) {
+      chargeCgmElement(budget);
+      chargeCgmTextChars(budget, close - open - 1);
       elements.push(
         `<text x="${head[1]}" y="${head[2]}" font-family="system-ui, -apple-system, sans-serif" font-size="14" fill="#111827">${escapeMarkupAttribute(cgmText.substring(open + 1, close))}</text>`
       );
@@ -124,7 +199,6 @@ function parseCgmTextElements(cgmText: string): string[] {
     }
     head = CGM_TEXT_HEAD_PATTERN.exec(cgmText);
   }
-  return elements;
 }
 
 const CGM_POLYGON_KEYWORD = /POLYGON\s/gi;
@@ -133,12 +207,11 @@ const CGM_STATEMENT_END = /[;\r\n]/g;
 const LEADING_WHITESPACE = /\s*/y;
 
 /**
- * Argument text of each `KEYWORD args;` statement (arguments stay on one line).
+ * Visits the argument text of each `KEYWORD args;` statement (arguments stay on one line).
  * The statement end is cached between keywords so a run of keywords without a
  * terminator costs one scan, not one per keyword.
  */
-function cgmStatementArguments(cgmText: string, keyword: RegExp): string[] {
-  const statements: string[] = [];
+function forEachCgmStatement(cgmText: string, keyword: RegExp, onStatement: (args: string) => void): void {
   keyword.lastIndex = 0;
   CGM_STATEMENT_END.lastIndex = 0;
   let endIndex = -1;
@@ -155,30 +228,30 @@ function cgmStatementArguments(cgmText: string, keyword: RegExp): string[] {
       endIndex = end.index;
     }
     if (cgmText.charAt(endIndex) !== ';' || endIndex === argsStart) continue;
-    statements.push(cgmText.substring(argsStart, endIndex));
+    onStatement(cgmText.substring(argsStart, endIndex));
     consumedUpTo = endIndex + 1;
   }
-  return statements;
 }
 
-function parseCgmPolyElements(cgmText: string, isPolygon: boolean): string[] {
-  const elements: string[] = [];
-  for (const args of cgmStatementArguments(cgmText, isPolygon ? CGM_POLYGON_KEYWORD : CGM_POLYLINE_KEYWORD)) {
-    const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
-    const pts = [...args.matchAll(ptRegex)].map((pm) => `${pm[1]},${pm[2]}`);
-    const minCount = isPolygon ? 2 : 1;
+function parseCgmPolyElements(cgmText: string, isPolygon: boolean, budget: CgmBudget, elements: string[]): void {
+  const ptRegex = /\(\s*([-+]?[\d.]+)\s*,\s*([-+]?[\d.]+)\s*\)/g;
+  const minCount = isPolygon ? 2 : 1;
+  forEachCgmStatement(cgmText, isPolygon ? CGM_POLYGON_KEYWORD : CGM_POLYLINE_KEYWORD, (args) => {
+    const pts: string[] = [];
+    for (const pm of args.matchAll(ptRegex)) {
+      chargeCgmPoint(budget);
+      pts.push(`${pm[1]},${pm[2]}`);
+    }
     if (pts.length > minCount) {
+      chargeCgmElement(budget);
       if (isPolygon) {
         elements.push(`<polygon points="${pts.join(' ')}" fill="#111827" stroke="#111827" stroke-width="2" />`);
       } else {
         elements.push(`<polyline points="${pts.join(' ')}" fill="none" stroke="#111827" stroke-width="2" />`);
       }
     }
-  }
-  return elements;
+  });
 }
-
-export const MAX_CGM_INPUT_CHARS = 16 * 1024 * 1024;
 
 export function parseCgmToSvg(cgmText: string): string | null {
   if (cgmText.length > MAX_CGM_INPUT_CHARS) {
@@ -187,12 +260,12 @@ export function parseCgmToSvg(cgmText: string): string | null {
   if (!cgmText.includes('BEGMF')) return null;
 
   const { width, height } = parseCgmDimensions(cgmText);
-  const elements = [
-    ...parseCgmLines(cgmText),
-    ...parseCgmTextElements(cgmText),
-    ...parseCgmPolyElements(cgmText, false),
-    ...parseCgmPolyElements(cgmText, true),
-  ];
+  const budget: CgmBudget = { elements: 0, points: 0, textChars: 0 };
+  const elements: string[] = [];
+  parseCgmLines(cgmText, budget, elements);
+  parseCgmTextElements(cgmText, budget, elements);
+  parseCgmPolyElements(cgmText, false, budget, elements);
+  parseCgmPolyElements(cgmText, true, budget, elements);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}">
   ${elements.join('\n  ')}
@@ -690,7 +763,7 @@ async function convert3dCad(
 
     case 'step':
     case 'stp':
-      outputBuffer = Buffer.from(encodeStep(mesh), 'utf-8');
+      outputBuffer = Buffer.from(encodeStep(mesh, options.outputUnit), 'utf-8');
       mimeType = 'model/step';
       break;
 
@@ -722,193 +795,6 @@ export function svgToDxf(svgContent: string): string {
   return encodeSvgPageToDxf(Buffer.from(svgContent, 'utf-8')).toString('utf-8');
 }
 
-/** Most triangles of a mesh read here: what a binary STL may hold, applied to an ASCII STL and to the faces of an OBJ as well. */
-export const MAX_MESH_TRIANGLES = 1_000_000;
-/** Most vertices (and normals) of a mesh read here: the three corners of every triangle at the limit. */
-export const MAX_MESH_VERTICES = 3 * MAX_MESH_TRIANGLES;
-
-function meshTooLarge(what: string, limit: number): PayloadLimitError {
-  return new PayloadLimitError(`The 3D mesh holds more than ${limit} ${what}, the most that is read.`);
-}
-
-/** Reads the blank-separated words of a text one at a time, with no copy of the text and no array of the words. */
-class StlWords {
-  private pos = 0;
-  private start = 0;
-
-  constructor(private readonly text: string) {}
-
-  /** Moves to the next word; false at the end of the text. */
-  next(): boolean {
-    const { text } = this;
-    while (this.pos < text.length && text.charCodeAt(this.pos) <= 32) this.pos++;
-    if (this.pos >= text.length) return false;
-    this.start = this.pos;
-    while (this.pos < text.length && text.charCodeAt(this.pos) > 32) this.pos++;
-    return true;
-  }
-
-  mark(): number {
-    return this.pos;
-  }
-
-  reset(mark: number): void {
-    this.pos = mark;
-  }
-
-  /** Whether the current word is `keyword`. */
-  is(keyword: string): boolean {
-    return this.pos - this.start === keyword.length && this.text.startsWith(keyword, this.start);
-  }
-
-  /** The number that the next word spells (digits, `.`, `e`, `E`, `+`, `-`), or null, in which case that word is left unread. */
-  number(): number | null {
-    const before = this.pos;
-    if (!this.next()) return null;
-    for (let i = this.start; i < this.pos; i++) {
-      const code = this.text.charCodeAt(i);
-      const spelled = (code >= 48 && code <= 57) || code === 46 || code === 101 || code === 69 || code === 43 || code === 45;
-      if (!spelled) {
-        this.pos = before;
-        return null;
-      }
-    }
-    return parseFloat(this.text.slice(this.start, this.pos));
-  }
-
-  /** Three numbers in a row, or null with the words read on from the first that is not a number. */
-  triple(): [number, number, number] | null {
-    const x = this.number();
-    const y = x === null ? null : this.number();
-    const z = y === null ? null : this.number();
-    return z === null ? null : [x as number, y as number, z];
-  }
-}
-
-/**
- * The facets of an ASCII STL, or null when it has none: `facet normal n n n`, then the next three `vertex x y z` lines
- * wherever they stand, read in one pass over the words. @throws PayloadLimitError (413) past MAX_MESH_TRIANGLES facets.
- */
-function parseAsciiStl(text: string, name: string): CadMesh3D | null {
-  const vertices: [number, number, number][] = [];
-  const faces: [number, number, number][] = [];
-  const normals: [number, number, number][] = [];
-  const words = new StlWords(text);
-  let normal: [number, number, number] | null = null;
-  let corners = 0;
-  while (words.next()) {
-    if (normal === null) {
-      if (!words.is('facet')) continue;
-      const afterFacet = words.mark();
-      if (!words.next() || !words.is('normal')) {
-        // The word after `facet` may start the next facet, so it is read again.
-        words.reset(afterFacet);
-        continue;
-      }
-      normal = words.triple();
-    } else if (words.is('vertex')) {
-      const corner = words.triple();
-      if (corner === null) continue;
-      vertices.push(corner);
-      if (++corners < 3) continue;
-      if (faces.length >= MAX_MESH_TRIANGLES) throw meshTooLarge('triangles', MAX_MESH_TRIANGLES);
-      normals.push(normal);
-      const vStart = vertices.length - 3;
-      faces.push([vStart, vStart + 1, vStart + 2]);
-      normal = null;
-      corners = 0;
-    }
-  }
-  vertices.length = faces.length * 3; // the corners of a facet that the text leaves unfinished
-  return vertices.length > 0 ? { name, vertices, faces, normals } : null;
-}
-
-/** The vertices, normals and faces of an OBJ, or null when it has no vertex. @throws PayloadLimitError (413) past the mesh limits. */
-function parseObj(text: string, name: string): CadMesh3D | null {
-  const vertices: [number, number, number][] = [];
-  const faces: [number, number, number][] = [];
-  const normals: [number, number, number][] = [];
-  // One line at a time: splitting the whole text would hold an array of every line before a limit could stop the read.
-  for (let lineStart = 0; lineStart < text.length; ) {
-    const lineEnd = text.indexOf('\n', lineStart);
-    const parts = text.slice(lineStart, lineEnd === -1 ? text.length : lineEnd).trim().split(/\s+/);
-    lineStart = lineEnd === -1 ? text.length : lineEnd + 1;
-    if (parts[0] === 'v' && parts.length >= 4) {
-      if (vertices.length >= MAX_MESH_VERTICES) throw meshTooLarge('vertices', MAX_MESH_VERTICES);
-      vertices.push([parseFloat(parts[1]) || 0, parseFloat(parts[2]) || 0, parseFloat(parts[3]) || 0]);
-    } else if (parts[0] === 'vn' && parts.length >= 4) {
-      if (normals.length >= MAX_MESH_VERTICES) throw meshTooLarge('normals', MAX_MESH_VERTICES);
-      normals.push([parseFloat(parts[1]) || 0, parseFloat(parts[2]) || 0, parseFloat(parts[3]) || 0]);
-    } else if (parts[0] === 'f' && parts.length >= 4) {
-      if (faces.length >= MAX_MESH_TRIANGLES) throw meshTooLarge('faces', MAX_MESH_TRIANGLES);
-      const v1 = parseInt(parts[1].split('/')[0], 10) - 1;
-      const v2 = parseInt(parts[2].split('/')[0], 10) - 1;
-      const v3 = parseInt(parts[3].split('/')[0], 10) - 1;
-      faces.push([Math.max(0, v1), Math.max(0, v2), Math.max(0, v3)]);
-    }
-  }
-  return vertices.length > 0 ? { name, vertices, faces, normals } : null;
-}
-
-/**
- * 3D mesh parser (STL, OBJ). STEP and IGES are read by the Open CASCADE program (cad-occt.ts), not here.
- * @throws PayloadLimitError (413) for an ASCII STL of more than MAX_MESH_TRIANGLES facets, or an OBJ of more than MAX_MESH_VERTICES vertices or
- * MAX_MESH_TRIANGLES faces: a JavaScript array is built for every one of them.
- */
-function parse3dCad(buffer: Buffer, format: string, defaultName: string): CadMesh3D {
-  const headerPrefix = buffer.subarray(0, Math.min(6, buffer.length)).toString('ascii').toLowerCase();
-  const isHeaderSolid = headerPrefix.startsWith('solid');
-
-  // 1. Binary STL fast path: check header and triangle count before decoding the full buffer as UTF-8 text.
-  if ((format === 'stl' || format === 'stlb' || isHeaderSolid) && buffer.length >= 84) {
-    const numTriangles = buffer.readUInt32LE(80);
-    const isSizeExact = buffer.length === 84 + numTriangles * 50;
-    if ((isSizeExact || (!isHeaderSolid && numTriangles > 0)) && numTriangles > 0 && numTriangles <= 1000000) {
-      const vertices: [number, number, number][] = [];
-      const faces: [number, number, number][] = [];
-      const normals: [number, number, number][] = [];
-
-      for (let i = 0; i < numTriangles; i++) {
-        const off = 84 + i * 50;
-        if (off + 48 > buffer.length) break;
-        const nx = buffer.readFloatLE(off);
-        const ny = buffer.readFloatLE(off + 4);
-        const nz = buffer.readFloatLE(off + 8);
-        normals.push([nx, ny, nz]);
-
-        const vStart = vertices.length;
-        vertices.push([buffer.readFloatLE(off + 12), buffer.readFloatLE(off + 16), buffer.readFloatLE(off + 20)]);
-        vertices.push([buffer.readFloatLE(off + 24), buffer.readFloatLE(off + 28), buffer.readFloatLE(off + 32)]);
-        vertices.push([buffer.readFloatLE(off + 36), buffer.readFloatLE(off + 40), buffer.readFloatLE(off + 44)]);
-        faces.push([vStart, vStart + 1, vStart + 2]);
-      }
-
-      if (vertices.length > 0) {
-        return { name: defaultName, vertices, faces, normals };
-      }
-    }
-  }
-
-  const text = buffer.toString('utf-8');
-
-  // 2. ASCII STL Parser
-  if (format === 'stl' || format === 'stlb' || text.startsWith('solid')) {
-    const mesh = parseAsciiStl(text, defaultName);
-    if (mesh) return mesh;
-  }
-
-  // 2. OBJ Parser
-  if (format === 'obj' || text.includes('v ') || text.includes('f ')) {
-    const mesh = parseObj(text, defaultName);
-    if (mesh) return mesh;
-  }
-
-  // Fail-closed on explicit unsupported/malformed 3D formats
-  throw new CadGeometryUnavailableError(
-    `Failed to parse 3D CAD geometry from .${format} file. Payload contains no valid vertices or facets.`
-  );
-}
-
 /**
  * Encodes 3D Mesh to ASCII Stereolithography (STL) format
  */
@@ -921,163 +807,6 @@ export function encodeStl(mesh: CadMesh3D): string {
  */
 export function encodeObj(mesh: CadMesh3D): string {
   return pureEncodeObj(mesh);
-}
-
-/**
- * Encodes 3D Mesh to ISO 10303-21 STEP AP214 format with genuine B-Rep topology.
- */
-export function encodeStep(mesh: CadMesh3D): string {
-  if (!mesh || !mesh.vertices || !mesh.faces || mesh.vertices.length === 0 || mesh.faces.length === 0) {
-    throw new CadGeometryUnavailableError('Cannot export 3D CAD mesh to STEP: Mesh contains no faces or vertices.');
-  }
-
-  const cleanName = (mesh.name || 'cad_model').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const now = new Date();
-  const timestamp = now.toISOString().replace(/\.\d{3}Z$/, '');
-
-  const topology = verifyWatertightManifoldMesh(mesh.vertices, mesh.faces);
-  const isClosed = topology.isWatertight;
-
-  function fmtReal(n: number): string {
-    if (Object.is(n, -0) || Math.abs(n) < 1e-12) return '0.0';
-    const s = n.toFixed(6).replace(/\.?0+$/, '');
-    return s.includes('.') ? s : `${s}.0`;
-  }
-
-  const lines: string[] = [
-    'ISO-10303-21;',
-    'HEADER;',
-    "FILE_DESCRIPTION(('EasyConvert CAD STEP AP214 B-Rep Model'), '2;1');",
-    `FILE_NAME('${cleanName}.step', '${timestamp}', ('EasyConvert Core'), ('EasyConvert Engine'), 'Processor 2.0', 'EasyConvert', 'Authorization');`,
-    "FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));",
-    'ENDSEC;',
-    'DATA;',
-    "#1 = APPLICATION_CONTEXT('core data for automotive mechanical design processes');",
-    "#2 = APPLICATION_PROTOCOL_DEFINITION('international standard', 'automotive_design', 1994, #1);",
-    "#3 = PRODUCT_CONTEXT('', #1, 'mechanical');",
-    `#4 = PRODUCT('${cleanName}', '${cleanName}', '', (#3));`,
-    "#5 = PRODUCT_DEFINITION_FORMATION('', '', #4);",
-    "#6 = PRODUCT_DEFINITION_CONTEXT('part definition', #1, 'design');",
-    "#7 = PRODUCT_DEFINITION('design', '', #5, #6);",
-    "#8 = PRODUCT_DEFINITION_SHAPE('', '', #7);",
-    '#9 = SHAPE_DEFINITION_REPRESENTATION(#8, #10);',
-    '#11 = ( LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI., .METRE.) );',
-    '#12 = ( NAMED_UNIT(*) PLANE_ANGLE_UNIT() SI_UNIT($, .RADIAN.) );',
-    '#13 = ( NAMED_UNIT(*) SI_UNIT($, .STERADIAN.) SOLID_ANGLE_UNIT() );',
-    "#14 = UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE(1.E-07), #11, 'distance_accuracy_value', 'confusion accuracy');",
-    "#15 = ( GEOMETRIC_REPRESENTATION_CONTEXT(3) GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#14)) GLOBAL_UNIT_ASSIGNED_CONTEXT((#11, #12, #13)) REPRESENTATION_CONTEXT('Context #1', '3D Context with UNIT and UNCERTAINTY') );",
-    "#16 = CARTESIAN_POINT('ORIGIN', (0.0, 0.0, 0.0));",
-    "#17 = DIRECTION('DIR_Z', (0.0, 0.0, 1.0));",
-    "#18 = DIRECTION('DIR_X', (1.0, 0.0, 0.0));",
-    "#19 = AXIS2_PLACEMENT_3D('AXIS', #16, #17, #18);",
-  ];
-
-  let nextId = 20;
-
-  // 1. Emit all vertices as CARTESIAN_POINT
-  const vertexPointIds: number[] = new Array(mesh.vertices.length);
-  for (let i = 0; i < mesh.vertices.length; i++) {
-    const v = mesh.vertices[i];
-    const pid = nextId++;
-    vertexPointIds[i] = pid;
-    lines.push(`#${pid} = CARTESIAN_POINT('', (${fmtReal(v[0])}, ${fmtReal(v[1])}, ${fmtReal(v[2])}));`);
-  }
-
-  // 2. Emit all triangular faces with POLY_LOOP, FACE_OUTER_BOUND, PLANE, and FACE_SURFACE
-  const faceIds: number[] = [];
-  for (let f = 0; f < mesh.faces.length; f++) {
-    const [v0, v1, v2] = mesh.faces[f];
-    const p0 = mesh.vertices[v0] || [0, 0, 0];
-    const p1 = mesh.vertices[v1] || [0, 0, 0];
-    const p2 = mesh.vertices[v2] || [0, 0, 0];
-    const id0 = vertexPointIds[v0];
-    const id1 = vertexPointIds[v1];
-    const id2 = vertexPointIds[v2];
-
-    const ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
-    const vx = p2[0] - p0[0], vy = p2[1] - p0[1], vz = p2[2] - p0[2];
-    let nx = uy * vz - uz * vy;
-    let ny = uz * vx - ux * vz;
-    let nz = ux * vy - uy * vx;
-    const nLen = Math.hypot(nx, ny, nz);
-    if (nLen > 1e-12) {
-      nx /= nLen; ny /= nLen; nz /= nLen;
-    } else {
-      nx = 0; ny = 0; nz = 1;
-    }
-
-    let rx = 1, ry = 0, rz = 0;
-    if (Math.abs(nx) >= 0.9 && Math.abs(ny) < 0.9) {
-      rx = 0; ry = 1; rz = 0;
-    } else if (Math.abs(nx) >= 0.9 && Math.abs(nz) < 0.9) {
-      rx = 0; ry = 0; rz = 1;
-    }
-    const dot = rx * nx + ry * ny + rz * nz;
-    rx -= dot * nx; ry -= dot * ny; rz -= dot * nz;
-    const rLen = Math.hypot(rx, ry, rz) || 1;
-    rx /= rLen; ry /= rLen; rz /= rLen;
-
-    const loopId = nextId++;
-    lines.push(`#${loopId} = POLY_LOOP('', (#${id0}, #${id1}, #${id2}));`);
-
-    const boundId = nextId++;
-    lines.push(`#${boundId} = FACE_OUTER_BOUND('', #${loopId}, .T.);`);
-
-    const dirNormId = nextId++;
-    lines.push(`#${dirNormId} = DIRECTION('', (${fmtReal(nx)}, ${fmtReal(ny)}, ${fmtReal(nz)}));`);
-
-    const dirRefId = nextId++;
-    lines.push(`#${dirRefId} = DIRECTION('', (${fmtReal(rx)}, ${fmtReal(ry)}, ${fmtReal(rz)}));`);
-
-    const axisId = nextId++;
-    lines.push(`#${axisId} = AXIS2_PLACEMENT_3D('', #${id0}, #${dirNormId}, #${dirRefId});`);
-
-    const planeId = nextId++;
-    lines.push(`#${planeId} = PLANE('', #${axisId});`);
-
-    const faceId = nextId++;
-    lines.push(`#${faceId} = FACE_SURFACE('', (#${boundId}), #${planeId}, .T.);`);
-    faceIds.push(faceId);
-  }
-
-  // 3. Emit topological shell & solid representation
-  if (isClosed) {
-    const shellId = nextId++;
-    lines.push(`#${shellId} = CLOSED_SHELL('', (${faceIds.map((id) => '#' + id).join(', ')}));`);
-    const solidId = nextId++;
-    lines.push(`#${solidId} = FACETED_BREP('${cleanName}', #${shellId});`);
-    lines.push(`#10 = FACETED_BREP_SHAPE_REPRESENTATION('${cleanName}', (#${solidId}, #19), #15);`);
-  } else {
-    const shellId = nextId++;
-    lines.push(`#${shellId} = OPEN_SHELL('', (${faceIds.map((id) => '#' + id).join(', ')}));`);
-    const modelId = nextId++;
-    lines.push(`#${modelId} = SHELL_BASED_SURFACE_MODEL('${cleanName}', (#${shellId}));`);
-    lines.push(`#10 = SHAPE_REPRESENTATION('${cleanName}', (#${modelId}, #19), #15);`);
-  }
-  lines.push('ENDSEC;', 'END-ISO-10303-21;', '');
-  return lines.join('\n');
-}
-
-/**
- * Encodes 3D Mesh to AutoCAD ASCII DXF using standard 3DFACE entities
- */
-export function encode3dCadToDxf(mesh: CadMesh3D): string {
-  let entitiesDxf = '';
-  mesh.faces.forEach((f) => {
-    const v1 = mesh.vertices[f[0]] || [0, 0, 0];
-    const v2 = mesh.vertices[f[1]] || [0, 0, 0];
-    const v3 = mesh.vertices[f[2]] || [0, 0, 0];
-    entitiesDxf += `  0\n3DFACE\n  8\n0\n 10\n${v1[0]}\n 20\n${v1[1]}\n 30\n${v1[2]}\n 11\n${v2[0]}\n 21\n${v2[1]}\n 31\n${v2[2]}\n 12\n${v3[0]}\n 22\n${v3[1]}\n 32\n${v3[2]}\n 13\n${v3[0]}\n 23\n${v3[1]}\n 33\n${v3[2]}\n`;
-  });
-  if (!entitiesDxf) {
-    mesh.vertices.forEach((v) => {
-      entitiesDxf += `  0\nPOINT\n  8\n0\n 10\n${v[0]}\n 20\n${v[1]}\n 30\n${v[2]}\n`;
-    });
-  }
-  if (!entitiesDxf) {
-    throw new CadGeometryUnavailableError('Cannot export 3D CAD mesh to DXF: Mesh contains no faces or vertices.');
-  }
-  return `  0\nSECTION\n  2\nHEADER\n  9\n$ACADVER\n  1\nAC1015\n  0\nENDSEC\n  0\nSECTION\n  2\nTABLES\n  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n${entitiesDxf}  0\nENDSEC\n  0\nEOF\n`;
 }
 
 function dxfToDwg(_dxfString: string): never {
