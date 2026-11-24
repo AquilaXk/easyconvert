@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import en from '../messages/en.json';
 import { refusalCodeOf, type ConversionRefusalCode } from '../src/lib/refusal-codes';
 
@@ -237,8 +237,15 @@ const CODED = [...classes.keys()].filter(isCoded).sort();
 /** Arguments one of the constructors of these classes accepts: a message, names, numbers or a page list. */
 const CONSTRUCTOR_ARGUMENTS: unknown[][] = [['x'], ['x', 'x'], ['x', 'x', 'x'], [1, 1, 1], [[1]], []];
 
+const MODULE_IMPORT_TIMEOUT_MS = 30_000;
+const loadedModules = new Map<string, Record<string, new (...args: unknown[]) => Error>>();
+
 async function instanceOf(name: string, scanned: ScannedClass): Promise<Error> {
-  const exports = (await import(scanned.file)) as Record<string, new (...args: unknown[]) => Error>;
+  let exports = loadedModules.get(scanned.file);
+  if (!exports) {
+    exports = (await import(scanned.file)) as Record<string, new (...args: unknown[]) => Error>;
+    loadedModules.set(scanned.file, exports);
+  }
   for (const args of CONSTRUCTOR_ARGUMENTS) {
     try {
       return new exports[name](...args);
@@ -250,6 +257,17 @@ async function instanceOf(name: string, scanned: ScannedClass): Promise<Error> {
 }
 
 describe('every coded error class answers the code the table names', () => {
+  beforeAll(async () => {
+    const uniqueFiles = new Set(
+      CODED.filter((name) => classes.get(name)?.exported).map((name) => classes.get(name)!.file)
+    );
+    for (const file of uniqueFiles) {
+      if (!loadedModules.has(file)) {
+        loadedModules.set(file, (await import(file)) as Record<string, new (...args: unknown[]) => Error>);
+      }
+    }
+  }, MODULE_IMPORT_TIMEOUT_MS);
+
   it('finds every refusalCode declaration in src inside a scanned class', () => {
     const declarations = sources.reduce((count, { text }) => count + (text.match(CODE_DECLARATION)?.length ?? 0), 0);
     expect(declarations).toBeGreaterThan(30);
