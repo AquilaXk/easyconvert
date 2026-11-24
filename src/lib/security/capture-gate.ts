@@ -33,6 +33,7 @@ const DEFAULT_MAX_BYTES = 256 * 1024 * 1024;
 const DEFAULT_IDLE_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const MAX_PORT = 65_535;
+const MAX_CANDIDATE_TARGETS = 16;
 /** `host:port` of a CONNECT: a name or an IPv4 address, or an IPv6 address in brackets; no user information, path or whitespace. */
 const AUTHORITY = /^(\[[0-9a-fA-F:.]+(?:%[0-9A-Za-z._~-]+)?\]|[^\s:@/\\?#[\]]+):(\d{1,5})$/;
 const HOP_BY_HOP: ReadonlySet<string> = new Set(['connection', 'proxy-connection', 'proxy-authorization', 'proxy-authenticate', 'keep-alive', 'te', 'trailer', 'upgrade']);
@@ -69,6 +70,7 @@ export interface CaptureGateOptions {
   maxConnections?: number;
   maxBytes?: number;
   idleMs?: number;
+  connectTimeoutMs?: number;
 }
 
 export interface CaptureGate {
@@ -120,6 +122,182 @@ function bareHost(host: string): string {
   return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
 }
 
+function uniqueTargets(addresses: ReadonlyArray<GateTarget>, port: number): GateTarget[] {
+  const seen = new Set<string>();
+  const targets: GateTarget[] = [];
+  for (const entry of addresses) {
+    const family = entry.family === 4 || entry.family === 6 ? entry.family : net.isIP(entry.address);
+    const key = `${entry.address.toLowerCase()}:${family}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({ address: entry.address, family, port });
+    if (targets.length >= MAX_CANDIDATE_TARGETS) break;
+  }
+  return targets;
+}
+
+function buildForwardHeaders(incoming: http.IncomingHttpHeaders, hostHeader: string): http.OutgoingHttpHeaders {
+  const headers: http.OutgoingHttpHeaders = {};
+  for (const [name, value] of Object.entries(incoming)) {
+    if (!HOP_BY_HOP.has(name) && name !== 'host') headers[name] = value;
+  }
+  headers.host = hostHeader;
+  return headers;
+}
+
+function buildAnswerHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
+  const headers: http.OutgoingHttpHeaders = {};
+  for (const [name, value] of Object.entries(incoming)) {
+    if (!HOP_BY_HOP.has(name)) headers[name] = value;
+  }
+  return headers;
+}
+
+interface DialFallbackContext {
+  host: string;
+  port: number;
+  connectTimeoutMs: number;
+  idleMs: number;
+  dial: (target: GateTarget) => net.Socket;
+  track: (socket: net.Socket) => void;
+  recordPassed: (target: GateTarget) => void;
+  recordRefusal: (host: string, port: number, reason: GateRefusalReason) => void;
+  isStopped: () => boolean;
+}
+
+interface DialFallbackCallbacks {
+  onConnected: (socket: net.Socket) => void;
+  onFailed: (error: unknown) => void;
+}
+
+function dialWithFallback(
+  targets: readonly GateTarget[],
+  ctx: DialFallbackContext,
+  callbacks: DialFallbackCallbacks
+): () => void {
+  const deadline = Date.now() + ctx.connectTimeoutMs;
+  let cancelled = false;
+  let activeSocket: net.Socket | null = null;
+  let activeTimer: NodeJS.Timeout | null = null;
+
+  const isStopped = (): boolean => cancelled || ctx.isStopped();
+
+  const tryAt = (index: number, lastError?: unknown): void => {
+    if (isStopped()) {
+      callbacks.onFailed(new GateError('limit'));
+      return;
+    }
+    if (index >= targets.length) {
+      callbacks.onFailed(lastError ?? new Error('All target addresses failed'));
+      return;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      callbacks.onFailed(lastError ?? new Error('Connect timeout'));
+      return;
+    }
+    const attemptTimeoutMs = Math.max(1, Math.floor(remainingMs / (targets.length - index)));
+    const target = targets[index];
+    ctx.recordPassed(target);
+
+    let socket: net.Socket;
+    try {
+      socket = ctx.dial(target);
+    } catch (error) {
+      if (error instanceof GateError) {
+        ctx.recordRefusal(ctx.host, ctx.port, error.reason);
+        callbacks.onFailed(error);
+        return;
+      }
+      tryAt(index + 1, error);
+      return;
+    }
+
+    activeSocket = socket;
+    ctx.track(socket);
+    socket.setTimeout(0);
+
+    let settled = false;
+    const clearTimer = (): void => {
+      if (activeTimer === null) return;
+      clearTimeout(activeTimer);
+      activeTimer = null;
+    };
+
+    const failAttempt = (error: unknown, fatal: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimer();
+      socket.removeListener('connect', onConnect);
+      socket.removeListener('error', onError);
+      socket.removeListener('close', onClose);
+      socket.on('error', () => undefined);
+      socket.destroy();
+      if (activeSocket === socket) activeSocket = null;
+      if (fatal || isStopped()) callbacks.onFailed(error);
+      else tryAt(index + 1, error);
+    };
+
+    const onConnect = (): void => {
+      if (settled || socket.destroyed) return;
+      if (isStopped()) {
+        failAttempt(new GateError('limit'), true);
+        return;
+      }
+      settled = true;
+      clearTimer();
+      socket.removeListener('connect', onConnect);
+      socket.removeListener('close', onClose);
+      if (activeSocket === socket) activeSocket = null;
+      socket.setTimeout(ctx.idleMs);
+      callbacks.onConnected(socket);
+      socket.removeListener('error', onError);
+    };
+
+    const onError = (error: unknown): void => {
+      if (settled) return;
+      if (error instanceof GateError) {
+        ctx.recordRefusal(ctx.host, ctx.port, error.reason);
+        failAttempt(error, true);
+        return;
+      }
+      failAttempt(error, false);
+    };
+
+    const onClose = (): void => {
+      failAttempt(new Error('Connection closed before connect'), false);
+    };
+
+    activeTimer = setTimeout(() => {
+      failAttempt(new Error('Connect timeout'), false);
+    }, attemptTimeoutMs);
+
+    socket.once('connect', onConnect);
+    socket.on('error', onError);
+    socket.once('close', onClose);
+
+    if (!socket.connecting && socket.remoteAddress !== undefined && !socket.destroyed) {
+      onConnect();
+    }
+  };
+
+  tryAt(0);
+
+  return () => {
+    cancelled = true;
+    if (activeTimer !== null) {
+      clearTimeout(activeTimer);
+      activeTimer = null;
+    }
+    if (activeSocket !== null) {
+      const sock = activeSocket;
+      activeSocket = null;
+      sock.on('error', () => undefined);
+      sock.destroy();
+    }
+  };
+}
+
 export async function startCaptureGate(options: CaptureGateOptions = {}): Promise<CaptureGate> {
   const lookup = options.lookup ?? ssrfSafeLookup;
   const permitPort = options.permitPort ?? defaultPermitPort;
@@ -127,6 +305,10 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
   const maxConnections = options.maxConnections ?? DEFAULT_MAX_CONNECTIONS;
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
+  const connectTimeoutMs =
+    options.connectTimeoutMs !== undefined && Number.isFinite(options.connectTimeoutMs) && options.connectTimeoutMs > 0
+      ? options.connectTimeoutMs
+      : CONNECT_TIMEOUT_MS;
 
   const refusals: GateRefusal[] = [];
   const passed: GateTarget[] = [];
@@ -140,12 +322,12 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
     if (refusals.length < MAX_RECORDED_REFUSALS) refusals.push({ host, port, reason });
   };
 
-  /** The address a request to `host:port` is connected to, or a GateError saying why not. Resolves once. */
-  async function vet(host: string, port: number): Promise<GateTarget> {
+  /** All vetted candidate addresses for `host:port`, or a GateError saying why not. Resolves once. */
+  async function vet(host: string, port: number): Promise<GateTarget[]> {
     if (!Number.isInteger(port) || port < 1 || port > MAX_PORT || !permitPort(port)) throw new GateError('port');
     if (clients.size > maxConnections || relayed > maxBytes) throw new GateError('limit');
-    const [first] = await lookupAll(lookup, bareHost(host));
-    return { address: first.address, family: first.family, port };
+    const addresses = await lookupAll(lookup, bareHost(host));
+    return uniqueTargets(addresses, port);
   }
 
   function track(socket: net.Socket): void {
@@ -160,6 +342,18 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
     });
     socket.once('close', () => open.delete(socket));
   }
+
+  const dialContext = (host: string, port: number, isAborted: () => boolean): DialFallbackContext => ({
+    host,
+    port,
+    connectTimeoutMs,
+    idleMs,
+    dial,
+    track,
+    recordPassed: (target) => passed.push(target),
+    recordRefusal: refuse,
+    isStopped: () => closed || isAborted(),
+  });
 
   const server = http.createServer();
   server.on('connection', (socket: net.Socket) => {
@@ -182,29 +376,43 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
       return;
     }
     vet(host, port).then(
-      (target) => {
+      (targets) => {
         if (closed || clientSocket.destroyed) return;
-        passed.push(target);
-        const upstream = dial(target);
-        track(upstream);
-        upstream.setTimeout(CONNECT_TIMEOUT_MS, () => upstream.destroy());
-        upstream.once('connect', () => {
-          if (upstream.destroyed) return;
-          upstream.setTimeout(idleMs, () => upstream.destroy());
-          clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-          if (head.length > 0) upstream.write(head);
-          upstream.pipe(clientSocket);
-          clientSocket.pipe(upstream);
+        let cancelDial: (() => void) | undefined;
+        let upstreamSocket: net.Socket | undefined;
+        const onClientClose = (): void => {
+          cancelDial?.();
+          upstreamSocket?.destroy();
+        };
+        clientSocket.once('close', onClientClose);
+        cancelDial = dialWithFallback(targets, dialContext(host, port, () => clientSocket.destroyed), {
+          onConnected: (upstream) => {
+            if (closed || clientSocket.destroyed) {
+              upstream.destroy();
+              return;
+            }
+            upstreamSocket = upstream;
+            upstream.on('error', (error) => {
+              if (error instanceof GateError) refuse(host, port, error.reason);
+              if (!clientSocket.destroyed && clientSocket.writable && !clientSocket.bytesWritten) {
+                clientSocket.end(`HTTP/1.1 ${BAD_GATEWAY} Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+              }
+              clientSocket.destroy();
+            });
+            upstream.once('close', () => clientSocket.destroy());
+            clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+            if (head.length > 0) upstream.write(head);
+            upstream.pipe(clientSocket);
+            clientSocket.pipe(upstream);
+          },
+          onFailed: () => {
+            clientSocket.removeListener('close', onClientClose);
+            if (!clientSocket.destroyed && clientSocket.writable && !clientSocket.bytesWritten) {
+              clientSocket.end(`HTTP/1.1 ${BAD_GATEWAY} Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+            }
+            clientSocket.destroy();
+          },
         });
-        upstream.on('error', (error) => {
-          if (error instanceof GateError) refuse(host, port, error.reason);
-          if (!clientSocket.destroyed && clientSocket.writable && !clientSocket.bytesWritten) {
-            clientSocket.end(`HTTP/1.1 ${BAD_GATEWAY} Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-          }
-          clientSocket.destroy();
-        });
-        upstream.once('close', () => clientSocket.destroy());
-        clientSocket.once('close', () => upstream.destroy());
       },
       (error: unknown) => deny(error instanceof GateError ? error.reason : 'unresolved')
     );
@@ -233,50 +441,71 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
       return;
     }
     vet(url.hostname, port).then(
-      (target) => {
+      (targets) => {
         if (closed || response.destroyed || request.socket.destroyed) return;
-        passed.push(target);
-        const headers: http.OutgoingHttpHeaders = {};
-        for (const [name, value] of Object.entries(request.headers)) {
-          if (!HOP_BY_HOP.has(name) && name !== 'host') headers[name] = value;
-        }
-        headers.host = url.host;
-        const upstream = http.request({
-          method: request.method,
-          path: `${url.pathname}${url.search}`,
-          headers,
-          // No agent: the request is made on the socket `dial` returns (an agent would open its own, by the name).
-          createConnection: () => {
-            const socket = dial(target);
-            track(socket);
-            return socket;
-          },
-        });
-        const abortUpstreamIfPremature = () => {
-          if (!response.writableEnded && !upstream.destroyed) {
-            upstream.destroy();
-          }
+        const headers = buildForwardHeaders(request.headers, url.host);
+        let aborted = false;
+        let upstream: http.ClientRequest | undefined;
+        let cancelDial: (() => void) | undefined;
+        const cleanupAbortListeners = (): void => {
+          response.removeListener('close', abortUpstreamIfPremature);
+          response.removeListener('finish', cleanupAbortListeners);
+          request.socket.removeListener('close', abortUpstreamIfPremature);
+        };
+        const abortUpstreamIfPremature = (): void => {
+          cleanupAbortListeners();
+          if (response.writableEnded) return;
+          aborted = true;
+          cancelDial?.();
+          if (upstream && !upstream.destroyed) upstream.destroy();
         };
         response.once('close', abortUpstreamIfPremature);
+        response.once('finish', cleanupAbortListeners);
         request.socket.once('close', abortUpstreamIfPremature);
-        upstream.setTimeout(CONNECT_TIMEOUT_MS, () => upstream.destroy());
-        upstream.on('response', (answer) => {
-          const answerHeaders: http.OutgoingHttpHeaders = {};
-          for (const [name, value] of Object.entries(answer.headers)) {
-            if (!HOP_BY_HOP.has(name)) answerHeaders[name] = value;
+
+        cancelDial = dialWithFallback(
+          targets,
+          dialContext(url.hostname, port, () => aborted || response.destroyed || request.socket.destroyed),
+          {
+            onConnected: (socket) => {
+              if (aborted || closed || response.destroyed || request.socket.destroyed) {
+                socket.destroy();
+                return;
+              }
+              upstream = http.request({
+                method: request.method,
+                path: `${url.pathname}${url.search}`,
+                headers,
+                // No agent: the request uses the already-connected vetted socket.
+                createConnection: () => socket,
+              });
+              upstream.setTimeout(CONNECT_TIMEOUT_MS, () => upstream?.destroy());
+              upstream.on('response', (answer) => {
+                response.writeHead(answer.statusCode ?? BAD_GATEWAY, buildAnswerHeaders(answer.headers));
+                answer.on('error', () => {
+                  if (!response.destroyed) response.destroy();
+                });
+                answer.pipe(response);
+              });
+              upstream.on('error', (error) => {
+                cleanupAbortListeners();
+                if (error instanceof GateError) refuse(url.hostname, port, error.reason);
+                if (!response.headersSent) response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
+                if (!response.destroyed) response.end();
+              });
+              request.pipe(upstream);
+            },
+            onFailed: () => {
+              cleanupAbortListeners();
+              if (!aborted && !response.destroyed && !response.headersSent) {
+                response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
+                response.end();
+              } else if (!response.destroyed) {
+                response.destroy();
+              }
+            },
           }
-          response.writeHead(answer.statusCode ?? BAD_GATEWAY, answerHeaders);
-          answer.on('error', () => {
-            if (!response.destroyed) response.destroy();
-          });
-          answer.pipe(response);
-        });
-        upstream.on('error', (error) => {
-          if (error instanceof GateError) refuse(url.hostname, port, error.reason);
-          if (!response.headersSent) response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
-          response.end();
-        });
-        request.pipe(upstream);
+        );
       },
       (error: unknown) => deny(url.hostname, port, error instanceof GateError ? error.reason : 'unresolved')
     );

@@ -58,8 +58,55 @@ describe('the capture driver', () => {
     expect(/max\(200, min\(int\(viewport\.get\('width', 1280\)\), (\d+)\)\)/.exec(source)?.[1]).toBe('3840');
   });
 
-  it.skipIf(skipUnless('a Python 3 interpreter', PYTHON !== undefined))('is valid Python 3', () => {
-    const checked = execFileSync(PYTHON as string, ['-I', '-c', 'import ast, sys; ast.parse(open(sys.argv[1]).read()); print("parsed")', DRIVER], { encoding: 'utf8' });
-    expect(checked.trim()).toBe('parsed');
+  it('runs page height probes in an isolated JS world with guarded null-safe script', () => {
+    expect(source).toContain('QWebEngineScript');
+    expect(source).toMatch(/page\.runJavaScript\(\s*PAGE_HEIGHT_SCRIPT,\s*QWebEngineScript\.ScriptWorldId\.ApplicationWorld,\s*grab\s*\)/);
+    expect(source).toContain('document.documentElement ? Number(document.documentElement.scrollHeight) || 0 : 0');
+    expect(source).toContain('document.body ? Number(document.body.scrollHeight) || 0 : 0');
+  });
+
+  it.skipIf(skipUnless('a Python 3 interpreter', PYTHON !== undefined))('is valid Python 3 and guards page-height and integer parsing against hostile or non-finite inputs', () => {
+    const script = `
+import importlib.util, json, math, sys
+spec = importlib.util.spec_from_file_location('capture_driver', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert mod.parse_page_height(2400, 800) == 2400
+assert mod.parse_page_height(2400.9, 800) == 2400
+assert mod.parse_page_height(50000, 800) == mod.MAX_FULL_PAGE_HEIGHT
+assert mod.parse_page_height(10**500, 800) == mod.MAX_FULL_PAGE_HEIGHT
+assert mod.parse_page_height(0, 800) == 800
+assert mod.parse_page_height(-50, 800) == 800
+assert mod.parse_page_height(None, 800) == 800
+assert mod.parse_page_height(True, 800) == 800
+assert mod.parse_page_height(False, 800) == 800
+assert mod.parse_page_height(float('nan'), 800) == 800
+assert mod.parse_page_height(float('inf'), 800) == 800
+assert mod.parse_page_height(float('-inf'), 800) == 800
+assert mod.parse_page_height('not-a-number', 800) == 800
+assert mod.parse_page_height('NaN', 800) == 800
+assert mod.parse_page_height('Infinity', 800) == 800
+assert mod.parse_page_height('9' * 5000, 800) == 800
+assert mod.parse_page_height('2500.7', 800) == 2500
+assert mod.parse_page_height({'scrollHeight': 1000}, 800) == 800
+assert mod.parse_page_height([1000], 800) == 800
+assert mod.parse_guarded_float(float('nan'), 1.0) == 1.0
+assert mod.parse_guarded_float(True, 1.0) == 1.0
+assert mod.parse_guarded_float('2.5', 1.0) == 2.5
+
+flags = mod.chromium_flags({'proxyPort': 9})
+assert '--proxy-server=http://127.0.0.1:9' in flags
+for bad_port in (None, True, 0, -1, 65536, 'bad'):
+    try:
+        mod.chromium_flags({'proxyPort': bad_port})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('expected ValueError for proxyPort=' + repr(bad_port))
+print('ok')
+`;
+    const checked = execFileSync(PYTHON as string, ['-I', '-c', script, DRIVER], { encoding: 'utf8' });
+    expect(checked.trim()).toBe('ok');
   });
 });

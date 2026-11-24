@@ -445,3 +445,230 @@ describe('the guard behind the gate is the project guard', () => {
     expect(asked).toEqual(['internal-name.example']);
   });
 });
+
+describe('multi-address connection fallback', () => {
+  async function closedPort(): Promise<number> {
+    const server = net.createServer();
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return port;
+  }
+
+  it('falls back across validated addresses for CONNECT when the first address refuses the connection', async () => {
+    const PUBLIC_V4_ALT = '93.184.216.35';
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+      { address: PUBLIC_V4_ALT, family: 4 },
+    ]);
+    const dead = await closedPort();
+    const echo = net.createServer((socket) => socket.pipe(socket));
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    const echoPort = (echo.address() as net.AddressInfo).port;
+    try {
+      const target = await openGate({
+        dial: (entry) => {
+          dialed.push(entry);
+          return net.connect({ host: '127.0.0.1', port: entry.address === PUBLIC_V4_ALT ? echoPort : dead });
+        },
+      });
+      const socket = net.connect({ host: '127.0.0.1', port: target.port });
+      socket.write(`CONNECT dual.example:${HTTPS_PORT} HTTP/1.1\r\nHost: dual.example:${HTTPS_PORT}\r\n\r\n`);
+      const echoed = await new Promise<string>((resolve) => {
+        let text = '';
+        socket.on('data', (chunk: Buffer) => {
+          text += chunk.toString('latin1');
+          if (text.includes('\r\n\r\n') && !text.endsWith('\r\n\r\n')) resolve(text.split('\r\n\r\n')[1]);
+          else if (text.endsWith('\r\n\r\n')) socket.write('fallback tunnel ok');
+        });
+      });
+      socket.destroy();
+      expect(echoed).toBe('fallback tunnel ok');
+      expect(dialed).toEqual([
+        { address: PUBLIC_V6, family: 6, port: HTTPS_PORT },
+        { address: PUBLIC_V4, family: 4, port: HTTPS_PORT },
+        { address: PUBLIC_V4_ALT, family: 4, port: HTTPS_PORT },
+      ]);
+      expect(target.refusals).toEqual([]);
+    } finally {
+      await new Promise<void>((resolve) => echo.close(() => resolve()));
+    }
+  });
+
+  it('falls back across validated addresses for plain HTTP GET and POST requests without losing the body', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const dead = await closedPort();
+    const port = await upstream((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/plain' });
+        response.end(`${request.method}:${Buffer.concat(chunks).toString('utf8')}`);
+      });
+    });
+    const target = await openGate({
+      dial: (entry) => {
+        dialed.push(entry);
+        return net.connect({ host: '127.0.0.1', port: entry.address === PUBLIC_V4 ? port : dead });
+      },
+    });
+    const getAnswer = await getVia(target, 'http://dual-http.example/item');
+    expect(getAnswer.status).toMatch(/^HTTP\/1\.1 200 /);
+
+    const postBody = 'payload-through-fallback';
+    const postRaw = await new Promise<string>((resolve, reject) => {
+      const socket = net.connect({ host: '127.0.0.1', port: target.port });
+      let raw = '';
+      socket.on('data', (chunk: Buffer) => {
+        raw += chunk.toString('utf8');
+      });
+      socket.on('end', () => resolve(raw));
+      socket.on('error', reject);
+      socket.write(
+        `POST http://dual-http.example/submit HTTP/1.1\r\nHost: ignored.example\r\nContent-Length: ${Buffer.byteLength(postBody)}\r\nConnection: close\r\n\r\n${postBody}`
+      );
+    });
+    expect(postRaw.split('\r\n')[0]).toMatch(/^HTTP\/1\.1 200 /);
+    expect(postRaw).toContain(`POST:${postBody}`);
+    expect(dialed).toEqual([
+      { address: PUBLIC_V6, family: 6, port: HTTP_PORT },
+      { address: PUBLIC_V4, family: 4, port: HTTP_PORT },
+      { address: PUBLIC_V6, family: 6, port: HTTP_PORT },
+      { address: PUBLIC_V4, family: 4, port: HTTP_PORT },
+    ]);
+  });
+
+  it('falls back after a per-attempt connect timeout when the first address blackholes connections', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const port = await upstream((_request, response) => response.end('recovered'));
+    const stalledSockets: net.Socket[] = [];
+    const target = await openGate({
+      connectTimeoutMs: 500,
+      dial: (entry) => {
+        dialed.push(entry);
+        if (entry.address === PUBLIC_V6) {
+          const stalled = new net.Socket();
+          stalledSockets.push(stalled);
+          return stalled;
+        }
+        return net.connect({ host: '127.0.0.1', port });
+      },
+    });
+    try {
+      const answer = await getVia(target, 'http://blackhole.example/check');
+      expect(answer.status).toMatch(/^HTTP\/1\.1 200 /);
+      expect(dialed).toEqual([
+        { address: PUBLIC_V6, family: 6, port: HTTP_PORT },
+        { address: PUBLIC_V4, family: 4, port: HTTP_PORT },
+      ]);
+      expect(stalledSockets[0]?.destroyed).toBe(true);
+    } finally {
+      for (const sock of stalledSockets) sock.destroy();
+    }
+  });
+
+  it('answers 502 Bad Gateway when every candidate address fails', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const dead = await closedPort();
+    const target = await openGate({
+      dial: (entry) => {
+        dialed.push(entry);
+        return net.connect({ host: '127.0.0.1', port: dead });
+      },
+    });
+    const connectAnswer = await connect(target, `all-dead.example:${HTTPS_PORT}`);
+    expect(connectAnswer.status).toMatch(/^HTTP\/1\.1 502 /);
+    const httpAnswer = await getVia(target, 'http://all-dead.example/');
+    expect(httpAnswer.status).toMatch(/^HTTP\/1\.1 502 /);
+    expect(dialed).toHaveLength(4);
+  });
+
+  it('aborts immediately without falling back to the second address on a post-connect peer mismatch', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const echo = net.createServer((socket) => socket.pipe(socket));
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    const echoPort = (echo.address() as net.AddressInfo).port;
+    const realConnect = net.connect.bind(net) as (...args: unknown[]) => net.Socket;
+    const hostsAttempted: string[] = [];
+    vi.spyOn(net, 'connect').mockImplementation(((options: { host?: string }, ...rest: unknown[]) => {
+      if (options.host === PUBLIC_V6 || options.host === PUBLIC_V4) {
+        hostsAttempted.push(options.host);
+        return realConnect({ host: '127.0.0.1', port: echoPort }, ...rest);
+      }
+      return realConnect(options, ...rest);
+    }) as never);
+    try {
+      gate = await startCaptureGate();
+      const answer = await connect(gate, `peer-multi.example:${HTTPS_PORT}`);
+      expect(answer.status).toMatch(/^HTTP\/1\.1 502 /);
+      expect(hostsAttempted).toEqual([PUBLIC_V6]);
+      expect(gate.refusals).toEqual([{ host: 'peer-multi.example', port: HTTPS_PORT, reason: 'peer' }]);
+    } finally {
+      await new Promise<void>((resolve) => echo.close(() => resolve()));
+    }
+  });
+
+  it('deduplicates repeated addresses and caps candidate targets at 16', async () => {
+    const many: LookupAddress[] = [
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V6, family: 6 },
+    ];
+    for (let i = 1; i <= 25; i++) {
+      many.push({ address: `93.184.216.${i}`, family: 4 });
+    }
+    nameServer(many);
+    const dead = await closedPort();
+    const target = await openGate({
+      dial: (entry) => {
+        dialed.push(entry);
+        return net.connect({ host: '127.0.0.1', port: dead });
+      },
+    });
+    const answer = await connect(target, `many.example:${HTTPS_PORT}`);
+    expect(answer.status).toMatch(/^HTTP\/1\.1 502 /);
+    expect(dialed).toHaveLength(16);
+    expect(dialed[0].address).toBe(PUBLIC_V6);
+    expect(dialed[1].address).toBe('93.184.216.1');
+  });
+
+  it('cancels in-flight fallback dialing and skips later addresses when the client disconnects', async () => {
+    nameServer([
+      { address: PUBLIC_V6, family: 6 },
+      { address: PUBLIC_V4, family: 4 },
+    ]);
+    const stalledSockets: net.Socket[] = [];
+    const target = await openGate({
+      connectTimeoutMs: 5_000,
+      dial: (entry) => {
+        dialed.push(entry);
+        const sock = new net.Socket();
+        stalledSockets.push(sock);
+        return sock;
+      },
+    });
+    try {
+      const client = net.connect({ host: '127.0.0.1', port: target.port });
+      await new Promise<void>((resolve) => client.once('connect', resolve));
+      client.write('GET http://abort-fallback.example/ HTTP/1.1\r\nHost: abort-fallback.example\r\n\r\n');
+      await vi.waitFor(() => expect(dialed).toHaveLength(1));
+      client.destroy();
+      await vi.waitFor(() => expect(stalledSockets[0]?.destroyed).toBe(true));
+      expect(dialed).toHaveLength(1);
+    } finally {
+      for (const sock of stalledSockets) sock.destroy();
+    }
+  });
+});

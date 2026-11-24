@@ -51,6 +51,10 @@ if path.startswith('subresource-private'):
     status2 = through_proxy('localhost:80')
     open(out, 'wb').write(${PNG_BYTES} if request['format'] == 'png' else b'%PDF-1.7 stand-in')
     say({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': status + ' / ' + status2, 'blocked': ['file:///etc/passwd']}); sys.exit(0)
+if path.startswith('fallback'):
+    status = through_proxy('dual.example:443')
+    open(out, 'wb').write(${PNG_BYTES} if request['format'] == 'png' else b'%PDF-1.7 stand-in')
+    say({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': status, 'blocked': []}); sys.exit(0)
 if path.startswith('symlink'):
     import os
     secret = sys.argv[1].rsplit('/', 1)[0] + '/../secret-of-the-worker.txt'
@@ -151,6 +155,45 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
       '2 request(s) of the page to addresses that are not public were refused and left out.',
       '1 request(s) of the page for a resource that is not on the web (file, ftp, ...) were refused.',
     ]);
+  });
+
+  it('falls back across validated public addresses when the first address refuses the connection', async () => {
+    useStandIn();
+    const deadServer = net.createServer();
+    await new Promise<void>((resolve) => deadServer.listen(0, '127.0.0.1', resolve));
+    const deadPort = (deadServer.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve) => deadServer.close(() => resolve()));
+
+    const echo = net.createServer((socket) => socket.pipe(socket));
+    await new Promise<void>((resolve) => echo.listen(0, '127.0.0.1', resolve));
+    const echoPort = (echo.address() as net.AddressInfo).port;
+
+    const dialedTargets: Array<{ address: string; family: number; port: number }> = [];
+    const dualAddrs: LookupAddress[] = [
+      { address: '2606:2800:21f:cb07:6820:80da:af6b:8b2c', family: 6 },
+      { address: '93.184.216.34', family: 4 },
+    ];
+    try {
+      const result = await captureWebsite({
+        url: 'https://dual.example/fallback',
+        format: 'png',
+        gate: {
+          lookup: (_name, _opts, cb) => process.nextTick(() => (cb as (e: null, a: LookupAddress[]) => void)(null, dualAddrs)),
+          dial: (target) => {
+            dialedTargets.push(target);
+            return net.connect({ host: '127.0.0.1', port: target.family === 4 ? echoPort : deadPort });
+          },
+        },
+      });
+      expect(result.title).toBe('HTTP/1.1 200 Connection Established');
+      expect(result.warnings).toEqual([]);
+      expect(dialedTargets).toEqual([
+        { address: '2606:2800:21f:cb07:6820:80da:af6b:8b2c', family: 6, port: 443 },
+        { address: '93.184.216.34', family: 4, port: 443 },
+      ]);
+    } finally {
+      await new Promise<void>((resolve) => echo.close(() => resolve()));
+    }
   });
 
   it('answers a navigation that was refused at a hop as blocked, not as a failed load', async () => {

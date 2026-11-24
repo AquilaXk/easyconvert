@@ -12,6 +12,7 @@ fullPage, quality, userAgent, pdf {paper|width+height (mm), landscape, margin (m
 Result fields: ok, output, finalUrl, title, blocked (URLs the browser refused), or ok=false with code and detail.
 """
 import json
+import math
 import os
 import sys
 
@@ -23,6 +24,12 @@ DEFAULT_TIMEOUT_MS = 30000
 MM_PER_INCH = 25.4
 PAPERS = {'A3': 'A3', 'A4': 'A4', 'A5': 'A5', 'Letter': 'Letter', 'Legal': 'Legal', 'Tabloid': 'Tabloid'}
 ALLOWED_SCHEMES = ('http', 'https', 'data', 'about', 'blob')
+PAGE_HEIGHT_SCRIPT = (
+    'Math.max('
+    'document.documentElement ? Number(document.documentElement.scrollHeight) || 0 : 0, '
+    'document.body ? Number(document.body.scrollHeight) || 0 : 0'
+    ')'
+)
 
 CHROMIUM_FLAGS = [
     '--no-sandbox',  # the process runs inside the worker's own sandbox; Chromium's needs namespaces that sandbox does not give it
@@ -50,8 +57,54 @@ def fail(code, detail):
     return 0
 
 
+def parse_guarded_int(value, fallback):
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) else fallback
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        try:
+            numeric = float(text)
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+        return int(numeric) if math.isfinite(numeric) else fallback
+    return fallback
+
+
+def parse_guarded_float(value, fallback):
+    if value is None or isinstance(value, bool):
+        return fallback
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else fallback
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        try:
+            numeric = float(text)
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+        return numeric if math.isfinite(numeric) else fallback
+    return fallback
+
+
+def parse_page_height(value, fallback, maximum=MAX_FULL_PAGE_HEIGHT):
+    parsed = parse_guarded_int(value, fallback)
+    if parsed <= 0:
+        return fallback
+    return min(parsed, maximum)
+
+
 def chromium_flags(request):
-    port = int(request['proxyPort'])
+    port = parse_guarded_int(request.get('proxyPort'), 0)
+    if port < 1 or port > 65535:
+        raise ValueError('proxyPort must be between 1 and 65535')
     flags = list(CHROMIUM_FLAGS)
     flags.append('--proxy-server=http://127.0.0.1:%d' % port)
     # Chromium does not send loopback and link-local destinations to a proxy unless this rule says so; the gate must see them too.
@@ -73,6 +126,7 @@ def main():
     from PyQt6.QtWebEngineCore import (
         QWebEnginePage,
         QWebEngineProfile,
+        QWebEngineScript,
         QWebEngineSettings,
         QWebEngineUrlRequestInterceptor,
     )
@@ -105,6 +159,8 @@ def main():
     page = QWebEnginePage(profile)
     attribute = QWebEngineSettings.WebAttribute
     settings = page.settings()
+    raw_pdf = request.get('pdf')
+    pdf_spec = raw_pdf if isinstance(raw_pdf, dict) else {}
     for name, value in (
         ('JavascriptCanOpenWindows', False),
         ('JavascriptCanAccessClipboard', False),
@@ -116,7 +172,7 @@ def main():
         ('DnsPrefetchEnabled', False),
         ('ErrorPageEnabled', False),
         ('PdfViewerEnabled', False),
-        ('PrintElementBackgrounds', bool(request.get('pdf', {}).get('printBackground', True))),
+        ('PrintElementBackgrounds', bool(pdf_spec.get('printBackground', True))),
     ):
         member = getattr(attribute, name, None)
         if member is not None:
@@ -129,7 +185,7 @@ def main():
     if hasattr(page, 'authenticationRequired'):
         page.authenticationRequired.connect(lambda url, auth: None)
 
-    timeout_ms = max(1000, min(int(request.get('timeoutMs', DEFAULT_TIMEOUT_MS)), 120000))
+    timeout_ms = max(1000, min(parse_guarded_int(request.get('timeoutMs'), DEFAULT_TIMEOUT_MS), 120000))
     result = {}
 
     def finish(value):
@@ -159,17 +215,21 @@ def main():
         finish(info)
 
     def write_pdf():
-        spec = request.get('pdf', {})
-        if spec.get('width') and spec.get('height'):
-            size = QPageSize(QSizeF(float(spec['width']), float(spec['height'])), QPageSize.Unit.Millimeter)
+        pdf_width = parse_guarded_float(pdf_spec.get('width'), 0.0)
+        pdf_height = parse_guarded_float(pdf_spec.get('height'), 0.0)
+        if pdf_width > 0.0 and pdf_height > 0.0:
+            size = QPageSize(QSizeF(pdf_width, pdf_height), QPageSize.Unit.Millimeter)
         else:
-            size = QPageSize(getattr(QPageSize.PageSizeId, PAPERS.get(spec.get('paper', 'A4'), 'A4')))
-        margin = float(spec.get('margin', 10))
-        orientation = QPageLayout.Orientation.Landscape if spec.get('landscape') else QPageLayout.Orientation.Portrait
+            paper_name = pdf_spec.get('paper') if isinstance(pdf_spec.get('paper'), str) else 'A4'
+            size = QPageSize(getattr(QPageSize.PageSizeId, PAPERS.get(paper_name, 'A4')))
+        margin = max(0.0, parse_guarded_float(pdf_spec.get('margin'), 10.0))
+        orientation = QPageLayout.Orientation.Landscape if pdf_spec.get('landscape') else QPageLayout.Orientation.Portrait
         layout = QPageLayout(size, orientation, QMarginsF(margin, margin, margin, margin), QPageLayout.Unit.Millimeter)
-        page.setZoomFactor(max(0.1, min(float(spec.get('scale', 1.0)), 2.0)))
+        page.setZoomFactor(max(0.1, min(parse_guarded_float(pdf_spec.get('scale'), 1.0), 2.0)))
 
         def done(data):
+            if state['done']:
+                return
             payload = bytes(data)
             if not payload.startswith(b'%PDF-'):
                 finish({'ok': False, 'code': 'capture_failed', 'detail': 'The browser wrote no PDF.'})
@@ -183,7 +243,12 @@ def main():
     def write_picture():
         from PyQt6.QtWebEngineWidgets import QWebEngineView
 
-        viewport = request.get('viewport', {})
+        raw_viewport = request.get('viewport')
+        raw_viewport = raw_viewport if isinstance(raw_viewport, dict) else {}
+        viewport = {
+            'width': parse_guarded_int(raw_viewport.get('width'), 1280),
+            'height': parse_guarded_int(raw_viewport.get('height'), 800),
+        }
         width = max(200, min(int(viewport.get('width', 1280)), 3840))
         height = max(200, min(int(viewport.get('height', 800)), MAX_FULL_PAGE_HEIGHT))
         view = QWebEngineView()
@@ -192,11 +257,16 @@ def main():
         view.show()
 
         def grab(total_height):
-            view.resize(width, max(height, min(int(total_height or height), MAX_FULL_PAGE_HEIGHT)))
+            if state['done']:
+                return
+            target_height = max(height, parse_page_height(total_height, height))
+            view.resize(width, target_height)
 
             def snap():
+                if state['done']:
+                    return
                 pixmap = view.grab()
-                quality = max(1, min(int(request.get('quality', 85)), 100))
+                quality = max(1, min(parse_guarded_int(request.get('quality'), 85), 100))
                 if pixmap.isNull() or not pixmap.save(output_path, 'PNG' if fmt == 'png' else 'JPG', quality):
                     finish({'ok': False, 'code': 'capture_failed', 'detail': 'The browser drew no picture.'})
                     return
@@ -205,7 +275,7 @@ def main():
             QTimer.singleShot(SETTLE_MS, snap)
 
         if request.get('fullPage'):
-            page.runJavaScript('Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)', grab)
+            page.runJavaScript(PAGE_HEIGHT_SCRIPT, QWebEngineScript.ScriptWorldId.ApplicationWorld, grab)
         else:
             grab(height)
 
@@ -216,7 +286,7 @@ def main():
         if not ok:
             finish({'ok': False, 'code': 'load_failed', 'detail': 'The page could not be loaded.'})
             return
-        delay = max(0, min(int(request.get('delayMs', 0)), MAX_DELAY_MS))
+        delay = max(0, min(parse_guarded_int(request.get('delayMs'), 0), MAX_DELAY_MS))
         if request.get('waitUntil') == 'idle':
             wait_idle(delay)
         else:
