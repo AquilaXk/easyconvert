@@ -131,7 +131,7 @@ import {
   isArchivePasswordFailure,
 } from './archive-password';
 import {
-  assertCreatedArchiveEncrypted,
+  assertCreatedArchiveEncrypted, resolveEncryptedStagingEntries,
   createEncryptedArchiveVia7z,
   createEncryptedArchiveVia7zAsync,
 } from './archive-encrypted';
@@ -284,26 +284,22 @@ export async function createZipArchive(
 ): Promise<ConversionResult> {
   // Before the truthiness check below: a falsy non-string such as 0 must not silently skip encryption.
   assertArchivePasswordSafe(options.password);
-  const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   if (options.password) {
-    const p7z = get7zBinaryPath();
-    if (!p7z) {
-      throw new ArchiveEncryptionUnavailableError(
-        'Archive encryption is unavailable: native 7z binary is required for encrypted ZIP archives.'
-      );
-    }
+    const { p7z, collisionPolicy, resolvedFiles } = prepareEncryptedArchiveInput(files, options, 'zip');
     const encRes = await createEncryptedArchiveVia7zAsync(resolvedFiles, {
       p7z,
       archiveName,
       archiveType: 'zip',
       mimeType: 'application/zip',
       password: options.password,
+      collisionPolicy,
       signal: options.signal,
     });
     if (encRes) return encRes;
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted ZIP archive.');
   }
 
+  const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
   if (resolvedFiles.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
     // The extractor refuses archives past this count, so the writer does not produce one.
     throw new PayloadLimitError(`ZIP archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
@@ -2294,6 +2290,26 @@ interface SevenZipPackedStream {
   props: Buffer;
 }
 
+/** Normalizes encrypted staging paths, checks MAX_FILES, and requires native 7z before staging plaintext. */
+function prepareEncryptedArchiveInput(
+  files: { filename: string; buffer: Buffer }[],
+  options: ConversionOptions,
+  format: 'zip' | '7z'
+): { p7z: string; collisionPolicy: ArchiveCollisionPolicy; resolvedFiles: { filename: string; buffer: Buffer }[] } {
+  const collisionPolicy = options.collisionPolicy || 'rename';
+  const resolvedFiles = resolveEncryptedStagingEntries(files, collisionPolicy);
+  if (resolvedFiles.length > ARCHIVE_SECURITY_LIMITS.MAX_FILES) {
+    throw new PayloadLimitError(`${format === 'zip' ? 'ZIP' : '7z'} archive would hold ${resolvedFiles.length} entries; the limit is ${ARCHIVE_SECURITY_LIMITS.MAX_FILES}.`);
+  }
+  const p7z = get7zBinaryPath();
+  if (!p7z) {
+    throw new ArchiveEncryptionUnavailableError(
+      `Archive encryption is unavailable: native 7z binary is required for encrypted ${format} archives.`
+    );
+  }
+  return { p7z, collisionPolicy, resolvedFiles };
+}
+
 /** The checks and the plan shared by the synchronous and the pool-backed writers; the encrypted path is complete here. */
 function prepare7zArchive(
   files: { filename: string; buffer: Buffer }[],
@@ -2301,25 +2317,16 @@ function prepare7zArchive(
   archiveName: string
 ): { encrypted: ConversionResult } | { plan: SevenZipPlan } {
   assertArchivePasswordSafe(options.password);
-  const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
-  files = resolvedFiles;
   if (options.password) {
-    const p7z = get7zBinaryPath();
-    if (!p7z) {
-      throw new ArchiveEncryptionUnavailableError(
-        'Archive encryption is unavailable: native 7z binary is required for encrypted 7z archives.'
-      );
-    }
+    const { p7z, collisionPolicy, resolvedFiles } = prepareEncryptedArchiveInput(files, options, '7z');
     const encRes = createEncryptedArchiveVia7z(resolvedFiles, {
-      p7z,
-      archiveName,
-      archiveType: '7z',
-      mimeType: 'application/x-7z-compressed',
-      password: options.password,
+      p7z, archiveName, archiveType: '7z', mimeType: 'application/x-7z-compressed',
+      password: options.password, collisionPolicy,
     });
     if (encRes) return { encrypted: encRes };
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
   }
+  files = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
 
   const compressionLevel = resolveArchiveCompressionLevel(options.compressionLevel);
   const isCompressed = compressionLevel > 0;
@@ -2477,20 +2484,13 @@ export async function create7zArchiveAsync(
 ): Promise<ConversionResult> {
   assertArchivePasswordSafe(options.password);
   if (options.password) {
-    const p7z = get7zBinaryPath();
-    if (!p7z) {
-      throw new ArchiveEncryptionUnavailableError(
-        'Archive encryption is unavailable: native 7z binary is required for encrypted 7z archives.'
-      );
-    }
-    const resolvedFiles = resolveArchiveEntryCollisions(files, options.collisionPolicy || 'rename');
+    const { p7z, collisionPolicy, resolvedFiles } = prepareEncryptedArchiveInput(files, options, '7z');
     const encRes = await createEncryptedArchiveVia7zAsync(resolvedFiles, {
       p7z,
       archiveName,
       archiveType: '7z',
       mimeType: 'application/x-7z-compressed',
-      password: options.password,
-      signal: runtime.signal ?? options.signal,
+      password: options.password, collisionPolicy, signal: runtime.signal ?? options.signal,
     });
     if (encRes) return encRes;
     throw new ArchiveEncryptionUnavailableError('Failed to create encrypted 7z archive.');
@@ -3742,7 +3742,7 @@ export async function convertArchive(
     };
   } else if (tgt === '7z' || tgt === 'tar.7z') {
     // 4. Target 7Z
-    result = await create7zArchiveAsync(files, options, `${baseName}.${tgt}`);
+    result = await create7zArchiveAsync(files, options, `${baseName}.${tgt}`, { signal: options.signal });
   } else if (tgt === 'rar') {
     // 5. Target RAR
     throw new ConversionFailedError(

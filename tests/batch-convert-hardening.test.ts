@@ -364,6 +364,7 @@ describe('async encrypted archive creation off the event loop', () => {
       const password = 'Batch-Zip-Password-9';
 
       let ticks = 0;
+      const mkdtempSpy = vi.spyOn(fs.promises, 'mkdtemp');
       const mkdirSpy = vi.spyOn(fs.promises, 'mkdir');
       const timer = setInterval(() => {
         ticks += 1;
@@ -373,15 +374,22 @@ describe('async encrypted archive creation off the event loop', () => {
         clearInterval(timer);
 
         expect(ticks).toBeGreaterThan(0);
-        const workDirCall = mkdirSpy.mock.calls.find(
-          ([dir]) => typeof dir === 'string' && path.basename(dir).startsWith('easyconvert_zip_create_')
+        const mkdtempCall = mkdtempSpy.mock.calls.find(
+          ([prefix]) => typeof prefix === 'string' && path.basename(prefix).startsWith('easyconvert-zip-create-')
         );
-        expect(workDirCall?.[1]).toEqual({ recursive: true, mode: 0o700 });
+        expect(path.basename(String(mkdtempCall?.[0] ?? ''))).toMatch(/^easyconvert-zip-create-\d+-$/);
+        const stagingCall = mkdirSpy.mock.calls.find(
+          ([dir]) =>
+            typeof dir === 'string' &&
+            path.basename(dir) === 'staging' &&
+            path.basename(path.dirname(dir)).startsWith('easyconvert-zip-create-')
+        );
+        expect(stagingCall?.[1]).toEqual({ recursive: true, mode: 0o700 });
         expect(result.filename).toBe('encrypted_batch.zip');
         expect(result.mimeType).toBe('application/zip');
         expect(result.size).toBe(result.buffer.length);
 
-        const leftover = fs.readdirSync(isolatedTmp).filter((name) => name.startsWith('easyconvert_zip_create_'));
+        const leftover = fs.readdirSync(isolatedTmp).filter((name) => name.startsWith('easyconvert-zip-create-'));
         expect(leftover).toEqual([]);
 
         const archivePath = path.join(verifyDir, 'out.zip');
@@ -439,7 +447,7 @@ describe('async encrypted archive creation off the event loop', () => {
         expect(result.filename).toBe('encrypted_batch.7z');
         expect(result.mimeType).toBe('application/x-7z-compressed');
 
-        const leftover = fs.readdirSync(isolatedTmp).filter((name) => name.startsWith('easyconvert_7z_create_'));
+        const leftover = fs.readdirSync(isolatedTmp).filter((name) => name.startsWith('easyconvert-7z-create-'));
         expect(leftover).toEqual([]);
 
         const archivePath = path.join(verifyDir, 'out.7z');
@@ -470,6 +478,7 @@ describe('async encrypted archive creation off the event loop', () => {
   });
 
   oracleTest('synchronous create7zArchive creates workDir with mode 0o700', ['7z'], () => {
+    const mkdtempSyncSpy = vi.spyOn(fs, 'mkdtempSync');
     const mkdirSyncSpy = vi.spyOn(fs, 'mkdirSync');
     const result = create7zArchive(
       [{ filename: 'a.txt', buffer: Buffer.from('secret sync 7z') }],
@@ -477,9 +486,16 @@ describe('async encrypted archive creation off the event loop', () => {
       'sync_encrypted.7z'
     );
     expect(result.filename).toBe('sync_encrypted.7z');
-    const workDirCall = mkdirSyncSpy.mock.calls.find(
-      ([dir]) => typeof dir === 'string' && path.basename(dir).startsWith('easyconvert_7z_create_')
+    const mkdtempCall = mkdtempSyncSpy.mock.calls.find(
+      ([prefix]) => typeof prefix === 'string' && path.basename(prefix).startsWith('easyconvert-7z-create-')
     );
-    expect(workDirCall?.[1]).toEqual({ recursive: true, mode: 0o700 });
+    expect(path.basename(String(mkdtempCall?.[0] ?? ''))).toMatch(/^easyconvert-7z-create-\d+-$/);
+    const stagingCall = mkdirSyncSpy.mock.calls.find(
+      ([dir]) =>
+        typeof dir === 'string' &&
+        path.basename(dir) === 'staging' &&
+        path.basename(path.dirname(dir)).startsWith('easyconvert-7z-create-')
+    );
+    expect(stagingCall?.[1]).toEqual({ recursive: true, mode: 0o700 });
   });
 });
