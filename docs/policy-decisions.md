@@ -473,6 +473,7 @@ Security
 422. [POST /api/v1/archives/inspect authorizes capability and intermediate keys via mayUseStorageKeyAsJobInput, releases fetched objects, and dispatches inspections to workers in queue-only mode](#422-post-apiv1archivesinspect-authorizes-capability-and-intermediate-keys-via-mayusestoragekeyasjobinput-releases-fetched-objects-and-dispatches-inspections-to-workers-in-queue-only-mode)
 423. [Atomic tool job state transitions against cancellation, withinSingleRequest on POST /api/tools/jobs, 404 on foreign /api/v1/jobs/[id], and POST /api/storage/bundle auth, expiry, and deadline hardening](#423-atomic-tool-job-state-transitions-against-cancellation-withinsinglerequest-on-post-apitoolsjobs-404-on-foreign-apiv1jobsid-and-post-apistoragebundle-auth-expiry-and-deadline-hardening)
 424. [Normalize encrypted archive staging paths before collision and ancestor-directory resolution, stage in atomic 0o700/0o600 mkdtemp directories, and forward AbortSignal in convertArchive](#424-normalize-encrypted-archive-staging-paths-before-collision-and-ancestor-directory-resolution-stage-in-atomic-0o7000o600-mkdtemp-directories-and-forward-abortsignal-in-convertarchive)
+425. [Disable global libvips operation cache (sharp.cache(false)) in pinBaseImageThreads](#425-disable-global-libvips-operation-cache-sharpcachefalse-in-pinbaseimagethreads)
 
 ---
 
@@ -12501,3 +12502,21 @@ Security
   - **Importing `ARCHIVE_SECURITY_LIMITS` directly from `archive.ts` inside `archive-encrypted.ts`**: introduces a runtime circular import between `archive.ts` and `archive-encrypted.ts`.
 - **Verified by**: `tests/encrypted-archive-staging-and-async.test.ts`, `tests/batch-convert-hardening.test.ts`, `tests/archive-encryption-fail-closed.test.ts`, `tests/archive-unsafe-entry-names.test.ts`, `tests/archive-create-extract-inspect.test.ts`, `tests/archive-7z-oracle.test.ts`, `tests/policy-decisions-numbering.test.ts`, `tests/refusal-code-inventory.test.ts`, `tests/redis-suites-registered.test.ts`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells -- --check-base /Volumes/MACSSD/Projects/GitProjects/easyconvert/.github/code-smell-baseline.json`, `npm run guard:code-smells`, `npm run licenses:check`, `npm run sdk:check`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `scripts/ci-parity-families.mjs`.
 - **Revisit when**: encrypted archive packing streams entries directly into 7-Zip without temporary disk staging.
+
+## 425. Disable global libvips operation cache (sharp.cache(false)) in pinBaseImageThreads
+
+- **Date**: 2026-11-24
+- **Status**: Implemented, decided 2026-11-24 (`P1-11`: disable global libvips operation cache inside `pinBaseImageThreads()` in `src/lib/conversions/image-threads.ts`); nothing is deployed.
+- **Decision**:
+  - **Three-tier OSS and reference alignment**:
+    1. Tier 1: no external dependency is needed; `sharp` directly exposes libvips' cache control (`sharp.cache(false)` -> `vips_cache_set_max(0)` in `lovell/sharp` `lib/utility.js`).
+    2. Tier 2: reuses the process-wide `pinBaseImageThreads()` initializer in `src/lib/conversions/image-threads.ts`, called on module load by `src/lib/conversions/image.ts`.
+    3. Tier 3: calls `sharp.cache(false)` inside `pinBaseImageThreads()` immediately before `return sharp.concurrency(baseImageThreads())`.
+- **Why**:
+  - EasyConvert converts uploaded or queued inputs once per job rather than repeatedly serving identical cached image URLs. Leaving libvips' default operation cache (`100` operations / `50 MiB` memory / `20` files) enabled retains decoded intermediate buffers across distinct conversions with near-zero cache hits, inflating worker RSS unnecessarily.
+- **Trade-offs**:
+  - Repeated calls to an identical in-process operation sequence on the same cached `VipsImage` no longer share global LRU entries; callers that decode multiple derivatives of one input already hold their own decoded buffer or pipeline (`src/lib/conversions/image.ts`, `image-decoded-source.ts`).
+- **Alternatives rejected**:
+  - **Calling `sharp.cache(false)` only in `src/worker/index.ts`**: misses web-process inline conversions (`/api/v1/convert`, `/api/convert`), `cpu-worker`, and test/CLI paths that import `src/lib/conversions/image.ts` directly.
+- **Verified by**: `tests/image-sharp-cache.test.ts`, `tests/image-threads.test.ts`, `tests/cpu-thread-budget.test.ts`, `tests/image-compression.test.ts`, `tests/policy-decisions-numbering.test.ts`, `tests/refusal-code-inventory.test.ts`, `tests/redis-suites-registered.test.ts`, strict `ORACLE_STRICT_MODE=1 npm run bench:quality -- --parity` across `image`, `raw`, and `vectorize`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells -- --check-base /Volumes/MACSSD/Projects/GitProjects/easyconvert/.github/code-smell-baseline.json`, `npm run guard:code-smells`, `npm run licenses:check`, `npm run sdk:check`, `npm run lint`, `npx tsc --noEmit`, `npm run build`, and `scripts/ci-parity-families.mjs`.
+- **Revisit when**: a long-lived worker route deliberately serves repeated identical crops on a single immutable source and profiles an operation-cache win under a strict memory ceiling.

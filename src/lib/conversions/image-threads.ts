@@ -72,11 +72,13 @@ export function memoryLimitBytes(): number {
 }
 
 /**
- * Pins the image library to its base thread count. Its own default is one thread on glibc Linux, but a deployment that
- * sets `MALLOC_ARENA_MAX` (the way to bound the heap the threads grow) lifts that default to one thread per core for every
- * operation, which made WebP slower; the count is therefore set here, not inherited.
+ * Pins the image library to its base thread count and disables the global libvips operation cache (`sharp.cache(false)`,
+ * calling libvips `vips_cache_set_max(0)` per `lovell/sharp` `lib/utility.js`). On glibc Linux `MALLOC_ARENA_MAX` raises
+ * the default thread count to one per core (slowing WebP), so concurrency is pinned here; conversions run on one-shot
+ * distinct inputs, so keeping decoded intermediate tiles in the global LRU only retains RSS without reuse.
  */
 export function pinBaseImageThreads(): number {
+  sharp.cache(false);
   return sharp.concurrency(baseImageThreads());
 }
 
