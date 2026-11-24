@@ -7,9 +7,9 @@ import { startS3StubServer, type S3StubServer, type StubRequestRecord } from './
 /**
  * Final-review findings on the object-store routes, each driven against the signature-verifying
  * stub S3 server: storage outages on the remaining routes answer 503 without provider text and
- * settle the quota, an archive can be inspected only by the owner of its key, an upload that grew
- * between two listings is refused, presigned part URLs are short-lived, and caller mistakes are
- * 400s rather than 500s.
+ * settle the quota, an archive can be inspected only by the owner of its key or a holder of a
+ * capability upload key, an upload that grew between two listings is refused, presigned part URLs
+ * are short-lived, and caller mistakes are 400s rather than 500s.
  */
 
 const ROUTE_TEST_TIMEOUT_MS = 30_000;
@@ -194,25 +194,32 @@ describe('object-store routes after the final review', () => {
       expect((await res.json()).entries.map((entry: { name: string }) => entry.name)).toEqual(['inside.txt']);
     });
 
-    it('answers another user\'s conversion, an ownerless upload and an unresolvable job result like a missing object and never reads them', async () => {
+    it('answers another user\'s conversion, another user\'s upload and an unresolvable job result like a missing object and never reads them, while allowing capability uploads', async () => {
       const owner = await loadUser('inspectowner');
       const stranger = await loadUser('inspectstranger');
       const storage = await import('../src/lib/storage');
       const bytes = await zipBytes();
-      const keys = [
+      const forbiddenKeys = [
         `conversions/${owner.user.id}/secret.zip`,
-        `uploads/${Date.now()}_public.zip`,
+        `uploads/${owner.user.id}/secret.zip`,
         'results/00000000-dead-beef-0000-000000000000/out.zip',
       ];
-      for (const key of keys) await storage.storageProvider.saveObject(key, bytes, 'application/zip', 'x.zip', 3_600_000);
+      const capabilityKey = `uploads/${Date.now()}_public.zip`;
+      for (const key of [...forbiddenKeys, capabilityKey]) {
+        await storage.storageProvider.saveObject(key, bytes, 'application/zip', 'x.zip', 3_600_000);
+      }
       server.requests.length = 0;
       const { POST } = await import('../src/app/api/v1/archives/inspect/route');
-      for (const key of keys) {
+      for (const key of forbiddenKeys) {
         const res = await POST(jsonPost('/api/v1/archives/inspect', stranger.cookie, { storageKey: key }));
         expect(res.status).toBe(HTTP_NOT_FOUND);
         expect((await res.json()).detail).toBe('Storage object not found.');
       }
       expect(server.requests.filter((req) => req.method === 'GET' || req.method === 'HEAD')).toEqual([]);
+
+      const capRes = await POST(jsonPost('/api/v1/archives/inspect', stranger.cookie, { storageKey: capabilityKey }));
+      expect(capRes.status).toBe(HTTP_OK);
+      expect((await capRes.json()).entries.map((entry: { name: string }) => entry.name)).toEqual(['inside.txt']);
     });
   });
 

@@ -2,16 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Job } from './bullmq-engine';
 import { isFinalFailure } from './job-failure';
-import type {
-  ConversionJobData,
-  ConversionJobResult,
-  ConversionOptions,
-  ConversionResult,
+import {
+  ConversionFailedError,
+  type ConversionJobData,
+  type ConversionJobResult,
+  type ConversionOptions,
+  type ConversionResult,
 } from '../types';
 import type { IStorageBackend, StoredObject } from '../storage/types';
 import { storageProvider } from '../storage';
 import { scopeStorageObjects } from '../storage/scoped-storage';
-import { convertFile } from '../conversions';
+import { convertFile, inspectArchive } from '../conversions';
 import { PayloadTooLargeForMemoryError, getMaxInMemoryBytes } from '../storage/errors';
 import { secureShredBuffer } from '../security/memory-shredder';
 import { resolveRetentionPolicy } from '../storage/result-retention';
@@ -170,6 +171,46 @@ async function logConversionDiagnostics(
   }
 }
 
+/**
+ * Executes a queued archive inspection inside a Worker, scoping temporary storage reads
+ * so staged objects are released deterministically on both success and failure.
+ */
+export async function processQueuedArchiveInspection(
+  job: Job<ConversionJobData, ConversionJobResult>,
+  rootStorage: IStorageBackend = storageProvider
+): Promise<ConversionJobResult> {
+  const payload = job.data.archiveInspect!;
+  const startedAt = Date.now();
+  const scope = scopeStorageObjects(rootStorage);
+  try {
+    job.signal?.throwIfAborted();
+    const stored = await scope.storage.getObject(payload.storageKey);
+    if (!stored) {
+      throw new ConversionFailedError(`Storage object not found for key: "${payload.storageKey}".`);
+    }
+    const opened = openPasswordOption(payload.options ?? {}, job.id);
+    const inspection = await inspectArchive(stored.buffer, {
+      filename: payload.filename ?? stored.filename,
+      password: opened.password,
+      signal: job.signal,
+    });
+    job.signal?.throwIfAborted();
+    return {
+      jobId: job.id,
+      status: 'completed',
+      resultKey: '',
+      downloadUrl: '',
+      filename: payload.filename ?? stored.filename ?? 'archive',
+      mimeType: 'application/json',
+      size: stored.buffer.length,
+      durationMs: Date.now() - startedAt,
+      archiveInspection: inspection,
+    };
+  } finally {
+    await scope.releaseAll();
+  }
+}
+
 function dispatchSpecializedNodeJob(
   job: Job<ConversionJobData, ConversionJobResult>,
   baseEngine: ConversionEnginePort,
@@ -180,6 +221,9 @@ function dispatchSpecializedNodeJob(
   }
   if (job.data?.toolJob) {
     return processQueuedToolJob(job, rootStorage);
+  }
+  if (job.data?.archiveInspect) {
+    return processQueuedArchiveInspection(job, rootStorage);
   }
   return null;
 }

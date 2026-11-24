@@ -1,19 +1,24 @@
 import crypto from 'node:crypto';
+import { inspectArchive } from '../conversions';
 import { dispatchConversion } from '../conversions/dispatch';
 import { CONVERSION_REFUSAL_CODES, isCodeOf, type ConversionRefusalCode } from '../refusal-codes';
 import { maskServerText } from '../security/server-paths';
 import { storageProvider } from '../storage';
+import { StorageNotFoundError } from '../storage/adapters/adapter-interface';
 import { eraseOwnedFile } from '../storage/retention-service';
 import type { WorkerConversionResult, WorkerEngineOptions } from '../../worker/worker-types';
 import type {
+  ArchiveInspectResponse,
   ConversionJobData,
   ConversionJobResult,
 } from '../types';
 import {
+  ArchiveEncryptedHeaderError,
   ArchiveInputUnprocessableError,
   ConversionFailedError,
   EncryptedOfficeDocumentError,
   EngineMissingError,
+  MissingVolumeError,
   PayloadLimitError,
   QueueUnavailableError,
   WORKER_OUTPUT_MISSING_DETAIL,
@@ -108,10 +113,16 @@ export function rehydrateQueuedJobFailure(info: RehydrateQueuedFailureInfo): Err
       return err;
     }
     if (status === HTTP_UNPROCESSABLE_ENTITY) {
-      const err =
-        refusalCode === 'encrypted_input'
-          ? new EncryptedOfficeDocumentError(maskedMessage)
-          : new ArchiveInputUnprocessableError(maskedMessage);
+      let err: ConversionFailedError;
+      if (info.failedCode === 'ArchiveEncryptedHeaderError') {
+        err = new ArchiveEncryptedHeaderError(maskedMessage);
+      } else if (info.failedCode === 'MissingVolumeError' || refusalCode === 'missing_volume') {
+        err = new MissingVolumeError('', maskedMessage);
+      } else if (refusalCode === 'encrypted_input') {
+        err = new EncryptedOfficeDocumentError(maskedMessage);
+      } else {
+        err = new ArchiveInputUnprocessableError(maskedMessage);
+      }
       err.name = code;
       (err as { refusalCode: ConversionRefusalCode }).refusalCode = refusalCode;
       return err;
@@ -535,6 +546,117 @@ export async function dispatchSyncWebTool(params: {
       jobId,
       inputKeys: cleanupKeys,
       resultKeysToErase,
+      aborted: Boolean(params.signal?.aborted || pendingCancel) && enqueued,
+      pendingCancel,
+    });
+  }
+}
+
+export interface SyncArchiveInspectParams {
+  archiveBuffer?: Buffer;
+  storageKey?: string;
+  inputBytes: number;
+  filename?: string;
+  password?: string;
+  userId: string;
+  tier: string;
+  signal?: AbortSignal;
+  deadlineAt?: number;
+}
+
+export async function dispatchSyncArchiveInspection(
+  params: SyncArchiveInspectParams
+): Promise<ArchiveInspectResponse> {
+  if (!isQueueOnlyWebMode()) {
+    if (params.archiveBuffer) {
+      return inspectArchive(params.archiveBuffer, {
+        filename: params.filename,
+        password: params.password,
+        signal: params.signal,
+      });
+    }
+    if (!params.storageKey) {
+      throw new ConversionFailedError('Archive buffer or storageKey is required for inspection.');
+    }
+    const stored = await storageProvider.getObject(params.storageKey);
+    if (!stored) {
+      throw new StorageNotFoundError(params.storageKey, storageProvider.providerName);
+    }
+    try {
+      return await inspectArchive(stored.buffer, {
+        filename: params.filename ?? stored.filename,
+        password: params.password,
+        signal: params.signal,
+      });
+    } finally {
+      await stored.release?.().catch(() => undefined);
+    }
+  }
+
+  if (!(await hasLiveQueueWorker())) {
+    throw new QueueUnavailableError(
+      'worker-pool',
+      'No live conversion worker is available to process WEB_EXECUTION_MODE=queue-only archive inspections.'
+    );
+  }
+
+  params.signal?.throwIfAborted();
+  const jobId = `syncinspect_${crypto.randomUUID()}`;
+  const inputKeys: string[] = [];
+  let effectiveStorageKey = params.storageKey;
+  const resourceClass = resolveResourceClass('zip', 'zip', params.inputBytes, {});
+  const targetQueue = getQueueForResourceClass(resourceClass);
+  let enqueued = false;
+  let pendingCancel: Promise<unknown> | undefined;
+  try {
+    if (!effectiveStorageKey) {
+      if (!params.archiveBuffer) {
+        throw new ConversionFailedError('Archive buffer or storageKey is required for inspection.');
+      }
+      const safeName = sanitizeNodeOutputFilename(params.filename ?? 'archive.zip', 'archive.zip');
+      const tempInputKey = stagedInputKey(params.userId, `sync_inspect_${jobId}_${safeName}`);
+      await storageProvider.saveObject(tempInputKey, params.archiveBuffer, 'application/octet-stream', safeName);
+      effectiveStorageKey = tempInputKey;
+      inputKeys.push(tempInputKey);
+    }
+
+    await enqueueConversionJob(
+      targetQueue,
+      'archive-inspect-sync',
+      {
+        jobId,
+        originalFilename: params.filename ?? 'archive',
+        sourceFormat: 'zip',
+        targetFormat: 'zip',
+        fileSize: params.inputBytes,
+        options: {},
+        userId: params.userId,
+        resourceClass,
+        transientSyncWait: true,
+        archiveInspect: {
+          storageKey: effectiveStorageKey,
+          ...(params.filename ? { filename: params.filename } : {}),
+          ...(params.password ? { options: { password: params.password } } : {}),
+        },
+      },
+      { jobId, priority: tierToPriority(params.tier) },
+      { tier: params.tier, inputBytes: params.inputBytes, notAfter: params.deadlineAt }
+    );
+    enqueued = true;
+
+    const completed = await waitForQueuedJobResult(jobId, params.signal, targetQueue, (promise) => {
+      pendingCancel = promise;
+    });
+    if (!completed.archiveInspection) {
+      throw new ConversionFailedError('Worker completed archive inspection without returning archiveInspection.');
+    }
+    return completed.archiveInspection as ArchiveInspectResponse;
+  } finally {
+    await settleQueueOnlyCleanup({
+      targetQueue,
+      jobId,
+      inputKeys,
+      resultKeysToErase: [],
       aborted: Boolean(params.signal?.aborted || pendingCancel) && enqueued,
       pendingCancel,
     });

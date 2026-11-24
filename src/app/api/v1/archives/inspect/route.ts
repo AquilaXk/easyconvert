@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { validateApiAccess, authErrorHeaders } from '@/lib/api-keys/guard';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { buildRateLimitHeaders, withRateLimitHeaders } from '@/lib/api/rate-limit';
-import { createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { createEngineUnavailableResponse, createProblemDetailsResponse } from '@/lib/api/problem-details';
+import { queueErrorResponse } from '@/lib/api/queue-error-response';
 import { readJsonObject } from '@/lib/api/json-body';
 import { readMultipartForm, releaseMultipartForm } from '@/lib/api/multipart-body';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
@@ -10,15 +11,18 @@ import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-l
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { jobDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
-import { SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
+import { dispatchSyncArchiveInspection } from '@/lib/queue/wait-for-job';
+import { isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
+import { SINGLE_REQUEST_FILE_MAX_BYTES, type PlanCaller } from '@/lib/plan-limits';
 import { storageErrorResponse } from '@/lib/api/storage-error-response';
-import { STORAGE_OBJECT_NOT_FOUND, resolveObjectOwnership } from '@/lib/api-keys/owner-access';
-import { inspectArchive } from '@/lib/conversions';
+import { STORAGE_OBJECT_NOT_FOUND, mayUseStorageKeyAsJobInput } from '@/lib/api-keys/owner-access';
 import { storageProvider } from '@/lib/storage';
+import type { ObjectStat } from '@/lib/storage/types';
 import {
   ArchiveEncryptedHeaderError,
   MissingVolumeError,
   ConversionFailedError,
+  EngineMissingError,
   RequestAbortedError,
 } from '@/lib/types';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
@@ -28,11 +32,28 @@ export const dynamic = 'force-dynamic';
 const MIB = 1024 * 1024;
 
 type MultipartArchive =
-  | { problem: NextResponse; archiveBuffer?: undefined }
-  | { problem?: undefined; archiveBuffer: Buffer; filename: string; password: string | undefined };
+  | { problem: NextResponse; archiveBuffer?: undefined; inputBytes?: undefined; filename?: undefined; password?: undefined }
+  | { problem?: undefined; archiveBuffer: Buffer; inputBytes: number; filename: string; password: string | undefined };
 
-/** The archive, its file name and its password from a multipart form, or the 400 for a form that is malformed or has no file. */
-async function readMultipartArchive(req: NextRequest, instanceUri: string): Promise<MultipartArchive> {
+function inspectSizeProblem(
+  user: PlanCaller,
+  size: number,
+  kind: 'uploaded' | 'stored',
+  instanceUri: string
+): NextResponse | null {
+  if (size === 0) {
+    return createProblemDetailsResponse(400, 'Archive buffer is empty.', instanceUri, 'Bad Request');
+  }
+  // Checked before plan limits so > SINGLE_REQUEST_FILE_MAX_BYTES keeps its single-request guidance.
+  if (size > SINGLE_REQUEST_FILE_MAX_BYTES) {
+    const detail = `The ${kind} archive is ${Math.ceil(size / MIB)} MiB, over the ${SINGLE_REQUEST_FILE_MAX_BYTES / MIB} MiB that an inspection reads. Convert it with a job (POST /api/v1/jobs) instead.`;
+    return createProblemDetailsResponse(413, detail, instanceUri, 'Payload Too Large');
+  }
+  return fileSizeLimitProblem(user, size, instanceUri);
+}
+
+/** The archive, its file name and its password from a multipart form, or the problem for a form that is malformed, missing a file, or oversized. */
+async function readMultipartArchive(req: NextRequest, user: PlanCaller, instanceUri: string): Promise<MultipartArchive> {
   const multipart = await readMultipartForm(req);
   if (multipart.malformed) {
     return { problem: createProblemDetailsResponse(400, 'Invalid or malformed multipart/form-data body.', instanceUri, 'Bad Request') };
@@ -44,43 +65,84 @@ async function readMultipartArchive(req: NextRequest, instanceUri: string): Prom
       problem: createProblemDetailsResponse(400, 'Missing required "file" in multipart form data.', instanceUri, 'Bad Request'),
     };
   }
+  const sizeProblem = inspectSizeProblem(user, fileEntry.size, 'uploaded', instanceUri);
+  if (sizeProblem) {
+    return { problem: sizeProblem };
+  }
   const password = formData.get('password');
+  let archiveBuffer: Buffer;
+  try {
+    archiveBuffer = Buffer.from(await fileEntry.arrayBuffer());
+  } catch (err: unknown) {
+    if (req.signal.aborted) throw new RequestAbortedError({ cause: err });
+    return { problem: createProblemDetailsResponse(400, 'Invalid or malformed multipart/form-data body.', instanceUri, 'Bad Request') };
+  }
   return {
-    archiveBuffer: Buffer.from(await fileEntry.arrayBuffer()),
+    archiveBuffer,
+    inputBytes: archiveBuffer.length,
     filename: (fileEntry as File).name,
     password: typeof password === 'string' && password ? password : undefined,
   };
 }
 
 type StoredArchive =
-  | { problem: NextResponse; buffer?: undefined; filename?: undefined }
-  | { problem?: undefined; buffer: Buffer; filename: string };
+  | { problem: NextResponse; buffer?: undefined; storageKey?: undefined; inputBytes?: undefined; filename?: undefined; release?: undefined }
+  | { problem?: undefined; buffer?: Buffer; storageKey?: string; inputBytes: number; filename: string; release?: () => Promise<void> | undefined };
 
-/** The archive stored under `storageKey`, or the problem for a key `userId` does not own, an object that is missing, or one too large to inspect. */
-async function readStoredArchive(storageKey: unknown, userId: string, instanceUri: string): Promise<StoredArchive> {
-  // Only the owner of a stored object may read it; every other caller is answered as if it did not exist.
-  const ownership = typeof storageKey === 'string' ? await resolveObjectOwnership(storageKey) : ({ resolved: false } as const);
-  if (typeof storageKey !== 'string' || !ownership.resolved || ownership.ownerUserId !== userId) {
+/** The archive stored under `storageKey` (or key metadata in queue-only mode), or the problem for an unauthorized, missing, empty, or oversized key. */
+async function readStoredArchive(
+  storageKey: unknown,
+  user: PlanCaller & { id: string },
+  instanceUri: string
+): Promise<StoredArchive> {
+  if (typeof storageKey !== 'string') {
     return { problem: createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found') };
   }
-  // The size is asked of the store first: a stored object is read whole, up to the 512 MiB the store allows in memory.
-  const info = await storageProvider.stat(storageKey);
-  if (info && info.size > SINGLE_REQUEST_FILE_MAX_BYTES) {
-    const detail = `The stored archive is ${Math.ceil(info.size / MIB)} MiB, over the ${SINGLE_REQUEST_FILE_MAX_BYTES / MIB} MiB that an inspection reads. Convert it with a job (POST /api/v1/jobs) instead.`;
-    return { problem: createProblemDetailsResponse(413, detail, instanceUri, 'Payload Too Large') };
+  // Follow the same capability/ownership rule as job inputs; answer unauthorized and missing keys identically.
+  let info: ObjectStat | null = null;
+  const allowed = await mayUseStorageKeyAsJobInput(storageKey, user.id, async (key) => {
+    info = await storageProvider.stat(key);
+    return info;
+  });
+  const stat = info as ObjectStat | null;
+  if (!allowed || !stat) {
+    return { problem: createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found') };
   }
-  const stored = info ? await storageProvider.getObject(storageKey) : undefined;
+  const sizeProblem = inspectSizeProblem(user, stat.size, 'stored', instanceUri);
+  if (sizeProblem) {
+    return { problem: sizeProblem };
+  }
+  if (isQueueOnlyWebMode()) {
+    return { storageKey, inputBytes: stat.size, filename: stat.filename };
+  }
+  const stored = await storageProvider.getObject(storageKey);
   if (!stored) {
-    return { problem: createProblemDetailsResponse(404, `Storage file not found for key: "${storageKey}".`, instanceUri, 'Not Found') };
+    return { problem: createProblemDetailsResponse(404, STORAGE_OBJECT_NOT_FOUND, instanceUri, 'Not Found') };
   }
-  return { buffer: stored.buffer, filename: stored.filename };
+  let archiveBuffer: Buffer;
+  try {
+    archiveBuffer = stored.buffer;
+  } catch (err) {
+    await stored.release?.().catch(() => undefined);
+    throw err;
+  }
+  return {
+    buffer: archiveBuffer,
+    inputBytes: archiveBuffer.length,
+    filename: stored.filename,
+    release: () => stored.release?.(),
+  };
 }
 
 type ParsedInspectInput =
-  | { problem: NextResponse; archiveBuffer?: undefined; filename?: undefined; password?: undefined }
-  | { problem?: undefined; archiveBuffer: Buffer; filename: string | undefined; password: string | undefined };
+  | { problem: NextResponse; archiveBuffer?: undefined; storageKey?: undefined; inputBytes?: undefined; filename?: undefined; password?: undefined; release?: undefined }
+  | { problem?: undefined; archiveBuffer?: Buffer; storageKey?: string; inputBytes: number; filename: string | undefined; password: string | undefined; release?: () => Promise<void> | undefined };
 
-async function readJsonInspectInput(req: NextRequest, userId: string, instanceUri: string): Promise<ParsedInspectInput> {
+async function readJsonInspectInput(
+  req: NextRequest,
+  user: PlanCaller & { id: string },
+  instanceUri: string
+): Promise<ParsedInspectInput> {
   const body = await readJsonObject(req);
   if (!body) {
     return { problem: createProblemDetailsResponse(400, 'Invalid JSON request payload.', instanceUri, 'Bad Request') };
@@ -88,13 +150,16 @@ async function readJsonInspectInput(req: NextRequest, userId: string, instanceUr
   if (!body.storageKey) {
     return { problem: createProblemDetailsResponse(400, 'JSON inspection request must include a "storageKey".', instanceUri, 'Bad Request') };
   }
-  const stored = await readStoredArchive(body.storageKey, userId, instanceUri);
+  const stored = await readStoredArchive(body.storageKey, user, instanceUri);
   if (stored.problem) return { problem: stored.problem };
   const requestedFilename = typeof body.filename === 'string' && body.filename ? body.filename : undefined;
   return {
     archiveBuffer: stored.buffer,
+    storageKey: stored.storageKey,
+    inputBytes: stored.inputBytes,
     filename: requestedFilename ?? stored.filename,
-    password: typeof body.password === 'string' ? body.password : undefined,
+    password: typeof body.password === 'string' && body.password ? body.password : undefined,
+    release: stored.release,
   };
 }
 
@@ -109,20 +174,26 @@ async function readRawInspectInput(req: NextRequest, instanceUri: string): Promi
   if (raw.byteLength === 0) {
     return { problem: createProblemDetailsResponse(400, 'Empty archive payload provided for inspection.', instanceUri, 'Bad Request') };
   }
+  const archiveBuffer = Buffer.from(raw);
   return {
-    archiveBuffer: Buffer.from(raw),
+    archiveBuffer,
+    inputBytes: archiveBuffer.length,
     filename: req.headers.get('x-archive-filename') || req.nextUrl.searchParams.get('filename') || undefined,
     password: req.headers.get('x-archive-password') || req.nextUrl.searchParams.get('password') || undefined,
   };
 }
 
-async function parseInspectInput(req: NextRequest, userId: string, instanceUri: string): Promise<ParsedInspectInput> {
+async function parseInspectInput(
+  req: NextRequest,
+  user: PlanCaller & { id: string },
+  instanceUri: string
+): Promise<ParsedInspectInput> {
   const contentType = req.headers.get('content-type') || '';
   if (contentType.includes('multipart/form-data')) {
-    return readMultipartArchive(req, instanceUri);
+    return readMultipartArchive(req, user, instanceUri);
   }
   if (contentType.includes('application/json')) {
-    return readJsonInspectInput(req, userId, instanceUri);
+    return readJsonInspectInput(req, user, instanceUri);
   }
   return readRawInspectInput(req, instanceUri);
 }
@@ -132,6 +203,11 @@ function inspectErrorResponse(err: unknown, instanceUri: string): NextResponse {
   if (deadlineProblem) return deadlineProblem;
   const storageProblem = storageErrorResponse(err, instanceUri);
   if (storageProblem) return storageProblem;
+  const queueProblem = queueErrorResponse(err, instanceUri);
+  if (queueProblem) return queueProblem;
+  if (err instanceof EngineMissingError) {
+    return createEngineUnavailableResponse(err, instanceUri);
+  }
   if (err instanceof ArchiveEncryptedHeaderError) {
     return createProblemDetailsResponse(
       422,
@@ -155,6 +231,11 @@ function inspectErrorResponse(err: unknown, instanceUri: string): NextResponse {
     return createProblemDetailsResponse(limitStatus, err instanceof Error ? err.message : String(err), instanceUri);
   }
   if (err instanceof ConversionFailedError) {
+    const status = (err as { status?: unknown }).status;
+    if (typeof status === 'number' && status >= 500) {
+      console.error('[archives/inspect] Worker fault:', err);
+      return createProblemDetailsResponse(500, 'Failed to inspect archive.', instanceUri, 'Internal Server Error');
+    }
     return createProblemDetailsResponse(
       422,
       err.message,
@@ -195,21 +276,32 @@ async function postInspectAuthorized(req: NextRequest, instanceUri: string, user
   const slot = await acquireSyncSlot(user.id, user.tier);
   if (!slot.granted) return concurrencyLimitResponse(slot.limit, instanceUri);
 
+  let parsed: ParsedInspectInput | undefined;
   try {
-    const parsed = await parseInspectInput(req, user.id, instanceUri);
+    parsed = await parseInspectInput(req, user, instanceUri);
     if (parsed.problem) return parsed.problem;
 
-    const { archiveBuffer, filename, password } = parsed;
-    if (archiveBuffer.length === 0) {
+    const { archiveBuffer, storageKey, inputBytes, filename, password } = parsed;
+    if (inputBytes === 0 || (archiveBuffer && archiveBuffer.length === 0)) {
       return createProblemDetailsResponse(400, 'Archive buffer is empty.', instanceUri, 'Bad Request');
     }
 
-    const tooLarge = fileSizeLimitProblem(user, archiveBuffer.length, instanceUri);
+    const tooLarge = fileSizeLimitProblem(user, inputBytes, instanceUri);
     if (tooLarge) return tooLarge;
 
-    const deadlineMs = syncDeadlineMs(jobDeadlineMs({ tier: user.tier, family: 'bytes', inputBytes: archiveBuffer.length }));
+    const deadlineMs = syncDeadlineMs(jobDeadlineMs({ tier: user.tier, family: 'bytes', inputBytes }));
     const inspection = await runUnderDeadline(req, deadlineMs, (limits) =>
-      inspectArchive(archiveBuffer, { filename, password, signal: limits.signal })
+      dispatchSyncArchiveInspection({
+        archiveBuffer,
+        storageKey,
+        inputBytes,
+        filename,
+        password,
+        userId: user.id,
+        tier: user.tier,
+        signal: limits.signal,
+        deadlineAt: limits.deadlineAt,
+      })
     );
     return NextResponse.json({
       success: true,
@@ -218,6 +310,7 @@ async function postInspectAuthorized(req: NextRequest, instanceUri: string, user
   } catch (err: unknown) {
     return inspectErrorResponse(err, instanceUri);
   } finally {
+    await parsed?.release?.()?.catch(() => undefined);
     slot.release();
     await releaseMultipartForm(req);
   }

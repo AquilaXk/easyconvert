@@ -136,11 +136,15 @@ function sealJobDataSecretsUnchecked(data: ConversionJobData, jobId: string): Co
   const toolJob = data.toolJob
     ? { ...data.toolJob, options: sealPasswordOption(data.toolJob.options, jobId) }
     : undefined;
+  const archiveInspect = data.archiveInspect?.options
+    ? { ...data.archiveInspect, options: sealPasswordOption(data.archiveInspect.options, jobId) }
+    : data.archiveInspect;
   return {
     ...data,
     options: sealPasswordOption(data.options, jobId),
     ...(tasks === undefined ? {} : { tasks }),
     ...(toolJob === undefined ? {} : { toolJob }),
+    ...(archiveInspect === undefined ? {} : { archiveInspect }),
     ...(data.webhookSecret ? { webhookSecret: sealWebhookSecret(data.webhookSecret, jobId) } : {}),
   };
 }

@@ -143,7 +143,7 @@ describe('no conversion job is queued without a deadline', () => {
       visit(sf);
     }
 
-    expect(checkedCalls).toBe(7);
+    expect(checkedCalls).toBe(8);
     expect(offenders).toEqual([]);
   });
 

@@ -16,7 +16,7 @@ export async function recordJobResultInHistory(
   result: ConversionJobResult
 ): Promise<void> {
   const userId = job.data?.userId;
-  if (!userId || isAnonymousUserId(userId) || job.data.graphId || job.data.toolJob || job.data.transientSyncWait) return;
+  if (!userId || isAnonymousUserId(userId) || job.data.graphId || job.data.toolJob || job.data.archiveInspect || job.data.transientSyncWait) return;
   try {
     await redisKeyStore.recordUserFile({
       id: job.id,

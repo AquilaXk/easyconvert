@@ -2,13 +2,7 @@ import type { PIPELINE_OPERATIONS } from './api/contracts/enums';
 import { refusalCodeOf, type ConversionRefusalCode } from './refusal-codes';
 import type { VectorizeOptions } from './conversions/raster-vectorize-options';
 import type {
-  AspectRatioOptions,
-  AudioEncodingOptions,
-  MediaPackagingOptions,
-  MediaTrimOptions,
-  SubtitleOptions,
-  ThumbnailOptions,
-  VideoEncodingOptions,
+  AspectRatioOptions, AudioEncodingOptions, MediaPackagingOptions, MediaTrimOptions, SubtitleOptions, ThumbnailOptions, VideoEncodingOptions,
 } from './media-options';
 
 export type * from './media-options';
@@ -404,6 +398,8 @@ import type { GraphNode, NodeId } from './queue/graph/types';
 import type { QueuedToolJobPayload } from './tools/queued-tool-types';
 export type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy, GraphNode, NodeId, QueuedToolJobPayload };
 
+export interface QueuedArchiveInspectPayload { storageKey: string; filename?: string; options?: { password?: string }; }
+
 export interface ConversionJobData {
   jobId: string;
   originalFilename: string;
@@ -426,6 +422,7 @@ export interface ConversionJobData {
   inputArtifacts?: string[];
   resourceClass?: ResourceClass;
   toolJob?: QueuedToolJobPayload;
+  archiveInspect?: QueuedArchiveInspectPayload;
   transientSyncWait?: boolean;
 }
 
@@ -456,6 +453,7 @@ export interface ConversionJobResult {
   /** One entry per artifact an optimize node handled: whether its optimiser made it smaller, and both sizes. */
   optimizations?: Array<{ key: string; optimized: boolean; inputBytes: number; outputBytes: number }>;
   toolResult?: unknown;
+  archiveInspection?: unknown;
 }
 
 export class ConversionFailedError extends Error {

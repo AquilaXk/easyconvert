@@ -147,13 +147,16 @@ export async function mayUseStorageKeyAsJobInput(
   if (classified.namespace === 'other') {
     return false;
   }
+  if (classified.namespace !== 'upload') {
+    const ownership = await resolveObjectOwnership(key);
+    if (!ownership.resolved) return false;
+    const authorized =
+      isAnonymousUserId(ownership.ownerUserId) ||
+      (callerUserId !== undefined && ownership.ownerUserId === callerUserId);
+    if (!authorized) return false;
+  }
   if (!(await statKey(key)) || (await isResultDeleted(key))) {
     return false;
   }
-  if (classified.namespace === 'upload') {
-    return true;
-  }
-  const ownership = await resolveObjectOwnership(key);
-  if (!ownership.resolved) return false;
-  return isAnonymousUserId(ownership.ownerUserId) || (callerUserId !== undefined && ownership.ownerUserId === callerUserId);
+  return true;
 }
