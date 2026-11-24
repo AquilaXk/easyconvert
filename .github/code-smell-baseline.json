@@ -94,25 +94,6 @@
     "count": 2
   },
   {
-    "file": "src/lib/client-converter.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "processL1AWebGpuConversion",
-    "count": 3
-  },
-  {
-    "file": "src/lib/client-converter.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "processL2Conversion",
-    "count": 6
-  },
-  {
-    "file": "src/lib/client-converter.ts",
-    "rule": "max-depth",
-    "function": "processL2Conversion",
-    "count": 2,
-    "maxValue": 6
-  },
-  {
     "file": "src/lib/conversions/archive-sevenzip-filters.ts",
     "rule": "no-nested-ternary",
     "function": "decodeBcj2",
@@ -1257,12 +1238,6 @@
     "rule": "@typescript-eslint/no-explicit-any",
     "function": "isWebGpuComputeSupported",
     "count": 1
-  },
-  {
-    "file": "src/lib/edge/pure/pure-canvas.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "convertPureCanvas",
-    "count": 2
   },
   {
     "file": "src/lib/edge/pure/pure-data.ts",

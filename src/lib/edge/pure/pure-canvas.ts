@@ -8,7 +8,11 @@
 import { canvasToBlob } from '../pipelines/canvas-blob';
 import { assertEncodedBlob, canvasMimeType } from '../canvas-encoding';
 import { EdgeUnsupportedError } from '../workers/worker-errors';
-import { assertCanvasInputSupported, HEX_BACKGROUND_PATTERN } from './canvas-header-guard';
+import {
+  assertBrowserCanvasDimensions,
+  assertCanvasInputSupported,
+  HEX_BACKGROUND_PATTERN,
+} from './canvas-header-guard';
 
 export interface PureCanvasResult {
   data: Uint8Array;
@@ -223,34 +227,35 @@ export async function convertPureCanvas(
   await assertCanvasInputSupported(input, src, options.stripMetadata === true);
 
   const srcMime = CANVAS_MIME_MAP[src] || 'application/octet-stream';
-  const blob = input instanceof Blob ? input : new Blob([input as any], { type: srcMime });
+  const blob = input instanceof Blob ? input : new Blob([input as BlobPart], { type: srcMime });
 
   const bitmap = await createImageBitmap(blob);
-  const { canvasW, canvasH, drawX, drawY, drawW, drawH } = computeCanvasDrawGeometry(
-    bitmap.width,
-    bitmap.height,
-    options
-  );
-
   let canvas: HTMLCanvasElement | OffscreenCanvas;
   let ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
-
-  if (typeof OffscreenCanvas !== 'undefined') {
-    canvas = new OffscreenCanvas(canvasW, canvasH);
-    ctx = canvas.getContext('2d');
-  } else {
-    canvas = document.createElement('canvas');
-    canvas.width = canvasW;
-    canvas.height = canvasH;
-    ctx = canvas.getContext('2d');
-  }
-
-  if (!ctx) {
-    bitmap.close();
-    throw new EdgeUnsupportedError('Failed to acquire 2D canvas context.');
-  }
+  let canvasW: number;
+  let canvasH: number;
 
   try {
+    assertBrowserCanvasDimensions(bitmap.width, bitmap.height, 'Decoded image');
+    const geom = computeCanvasDrawGeometry(bitmap.width, bitmap.height, options);
+    canvasW = geom.canvasW;
+    canvasH = geom.canvasH;
+    assertBrowserCanvasDimensions(canvasW, canvasH, 'Target canvas');
+
+    if (typeof OffscreenCanvas !== 'undefined') {
+      canvas = new OffscreenCanvas(canvasW, canvasH);
+      ctx = canvas.getContext('2d');
+    } else {
+      canvas = document.createElement('canvas');
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+      ctx = canvas.getContext('2d');
+    }
+
+    if (!ctx) {
+      throw new EdgeUnsupportedError('Failed to acquire 2D canvas context.');
+    }
+
     // Fill background for opaque targets (JPEG/BMP) or when an explicit background colour is requested
     const isOpaqueTarget = tgt === 'jpg' || tgt === 'jpeg' || tgt === 'bmp';
     if (isOpaqueTarget || customBackground !== undefined) {
@@ -261,9 +266,9 @@ export async function convertPureCanvas(
     // Shrinking with the default (low) filter skips source pixels; the high-quality filter averages them.
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, drawX, drawY, drawW, drawH);
+    ctx.drawImage(bitmap, geom.drawX, geom.drawY, geom.drawW, geom.drawH);
   } finally {
-    bitmap.close();
+    if (typeof bitmap.close === 'function') bitmap.close();
   }
 
   const normalizedTgt = tgt === 'jpg' ? 'jpeg' : tgt;
@@ -273,7 +278,7 @@ export async function convertPureCanvas(
   if (normalizedTgt === 'bmp') {
     const imgData = ctx.getImageData(0, 0, canvasW, canvasH);
     const bmpBytes = encodeBmpFromImageData(imgData);
-    const outBlob = new Blob([bmpBytes as any], { type: 'image/bmp' });
+    const outBlob = new Blob([bmpBytes as BlobPart], { type: 'image/bmp' });
 
     return {
       data: bmpBytes,

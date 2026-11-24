@@ -1041,12 +1041,53 @@ export const internalPaths = {
     },
   },
   '/api/storage/bundle': {
+    get: {
+      ...INTERNAL,
+      summary: 'Stream Prepared Storage Bundle Ticket as ZIP Archive',
+      description: 'Consumes a single-use bundle ticket issued by POST /api/storage/bundle?prepare=1 and streams the ZIP archive directly.',
+      operationId: 'downloadPreparedStorageBundle',
+      security: [...requireScope('storage:download'), {}],
+      parameters: [
+        {
+          name: 'ticket',
+          in: 'query',
+          required: true,
+          schema: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          description: 'Single-use bundle ticket returned by POST /api/storage/bundle?prepare=1.',
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Streaming ZIP archive containing requested files.',
+          content: {
+            'application/zip': { schema: { type: 'string', format: 'binary' } },
+          },
+        },
+        '400': createErrorResponse('Malformed forwarding headers for anonymous ticket verification.'),
+        '401': createErrorResponse('Invalid, expired, or missing explicit credentials.'),
+        '403': createErrorResponse('API key lacks the "storage:download" scope or account is suspended.'),
+        '404': createErrorResponse('Ticket invalid, expired, owned by another caller, or referenced files missing.'),
+        '410': createErrorResponse('One or more retained files have already expired and been deleted.'),
+        '413': createErrorResponse('Total bundle size exceeds 2 GiB.'),
+        '429': createErrorResponse('Sync concurrency slot limit exceeded.'),
+        '503': createErrorResponse('Authentication store or sync concurrency backend temporarily unavailable.'),
+      },
+    },
     post: {
       ...INTERNAL,
       summary: 'Stream Storage Files as ZIP Archive',
-      description: 'Bundles multiple stored files into a streaming ZIP archive on caller request without buffering in memory.',
+      description: 'Bundles multiple stored files into a streaming ZIP archive on caller request without buffering in memory, or issues a single-use download ticket when prepare=1.',
       operationId: 'bundleStorageFiles',
       security: [...requireScope('storage:download'), {}],
+      parameters: [
+        {
+          name: 'prepare',
+          in: 'query',
+          required: false,
+          schema: { type: 'string', enum: ['1'] },
+          description: 'When set to "1", verifies files and returns a single-use ticket URL instead of streaming the ZIP immediately.',
+        },
+      ],
       requestBody: {
         required: true,
         content: {
@@ -1074,9 +1115,19 @@ export const internalPaths = {
       },
       responses: {
         '200': {
-          description: 'Streaming ZIP archive containing requested files.',
+          description: 'Streaming ZIP archive containing requested files, or JSON ticket payload when prepare=1.',
           content: {
             'application/zip': { schema: { type: 'string', format: 'binary' } },
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['success', 'downloadUrl'],
+                properties: {
+                  success: { type: 'boolean' },
+                  downloadUrl: { type: 'string' },
+                },
+              },
+            },
           },
         },
         '400': createErrorResponse('Invalid request body or files array.'),

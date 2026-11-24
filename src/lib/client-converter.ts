@@ -4,7 +4,11 @@ import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } fr
 import { isInAppWebView } from './edge/mobile-browser-guard';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
-import { assertCanvasInputSupported, HEX_BACKGROUND_PATTERN } from './edge/pure/canvas-header-guard';
+import {
+  assertBrowserCanvasDimensions,
+  assertCanvasInputSupported,
+  HEX_BACKGROUND_PATTERN,
+} from './edge/pure/canvas-header-guard';
 import { warnBrowserFailure } from './browser-failure';
 import { conversionFailureOf, type ConversionFailure } from './conversion-failure';
 import { convertWithWebCodecs } from './edge/pipelines/webcodecs-pipeline';
@@ -379,6 +383,37 @@ function selectWebGpuTask(item: ConversionQueueItem): WebGpuComputeTask | null {
   return null;
 }
 
+async function rasterizeBitmapToFilterCanvas(file: Blob): Promise<{
+  canvas: OffscreenCanvas | HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+  width: number;
+  height: number;
+} | null> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const { width, height } = bitmap;
+    assertBrowserCanvasDimensions(width, height, 'Decoded image');
+    let canvas: OffscreenCanvas | HTMLCanvasElement;
+    let ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
+    if (typeof OffscreenCanvas !== 'undefined') {
+      canvas = new OffscreenCanvas(width, height);
+      ctx = canvas.getContext('2d');
+    } else {
+      canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      ctx = canvas.getContext('2d');
+    }
+    if (!ctx) {
+      return null;
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    return { canvas, ctx, width, height };
+  } finally {
+    if (typeof bitmap.close === 'function') bitmap.close();
+  }
+}
+
 /**
  * Helper to process Level 1A (WebGPU Compute Shader) conversion.
  */
@@ -411,29 +446,11 @@ async function processL1AWebGpuConversion(
   signal?.throwIfAborted();
 
   onProgress?.(10);
-  const bitmap = await createImageBitmap(item.file);
-  const width = bitmap.width;
-  const height = bitmap.height;
-
-  let canvas: any;
-  let ctx: any;
-  if (typeof OffscreenCanvas !== 'undefined') {
-    canvas = new OffscreenCanvas(width, height);
-    ctx = canvas.getContext('2d');
-  } else {
-    canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    ctx = canvas.getContext('2d');
-  }
-
-  if (!ctx) {
-    if (typeof bitmap.close === 'function') bitmap.close();
+  const rasterized = await rasterizeBitmapToFilterCanvas(item.file);
+  if (!rasterized) {
     return null;
   }
-
-  ctx.drawImage(bitmap, 0, 0);
-  if (typeof bitmap.close === 'function') bitmap.close();
+  const { canvas, ctx, width, height } = rasterized;
 
   const imgData = ctx.getImageData(0, 0, width, height);
   const pixelBytes = new Uint8Array(
@@ -459,7 +476,7 @@ async function processL1AWebGpuConversion(
 
   onProgress?.(80);
   const processedClamped = new Uint8ClampedArray(computeRes.data);
-  const newImgData = new ImageData(processedClamped as any, width, height);
+  const newImgData = new ImageData(processedClamped, width, height);
   ctx.putImageData(newImgData, 0, 0);
 
   const resultBlob = await encodeEdgeImage({
@@ -511,117 +528,105 @@ async function processL2Conversion(
       tier: 'L2',
       tierName: 'Edge L2 (SIMD Wasm)',
     };
-  } else {
-    const isImage = EDGE_FILTER_IMAGE_SOURCES.has(src);
-    if (isImage) {
-      try {
-        if (typeof createImageBitmap !== 'undefined' && (typeof OffscreenCanvas !== 'undefined' || typeof document !== 'undefined')) {
-          assertNoResizeRequested(item);
-          assertEdgeImageTargetEncodable(tgt);
-          await assertCanvasInputSupported(item.file, src, item.options.stripMetadata === true);
-          signal?.throwIfAborted();
-          const bitmap = await createImageBitmap(item.file);
-          const width = bitmap.width;
-          const height = bitmap.height;
+  }
 
-          let canvas: any;
-          let ctx: any;
-          if (typeof OffscreenCanvas !== 'undefined') {
-            canvas = new OffscreenCanvas(width, height);
-            ctx = canvas.getContext('2d');
-          } else {
-            canvas = document.createElement('canvas');
-            canvas.width = width;
-            canvas.height = height;
-            ctx = canvas.getContext('2d');
-          }
+  if (
+    !EDGE_FILTER_IMAGE_SOURCES.has(src) ||
+    typeof createImageBitmap === 'undefined' ||
+    (typeof OffscreenCanvas === 'undefined' && typeof document === 'undefined')
+  ) {
+    return null;
+  }
 
-          if (!ctx) {
-            if (typeof bitmap.close === 'function') bitmap.close();
-            return null;
-          }
-
-          ctx.drawImage(bitmap, 0, 0);
-          if (typeof bitmap.close === 'function') bitmap.close();
-
-          const imgData = ctx.getImageData(0, 0, width, height);
-          const pixelBuffer = imgData.data.buffer;
-
-          // Determine appropriate Wasm task based on requested options
-          let task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | null = null;
-          const wasmOpts: {
-            width: number;
-            height: number;
-            colors?: number;
-            palette?: boolean;
-            dither?: boolean;
-            colorDepth?: number;
-            brightnessDelta?: number;
-          } = {
-            width,
-            height,
-            colors: item.options.colors,
-            palette: item.options.palette,
-            dither: item.options.dither,
-            colorDepth: item.options.colorDepth,
-          };
-
-          if (item.options.colorDepth === 1 || (item.options as any).grayscale === true) {
-            task = 'rgba-grayscale';
-          } else if ((item.options as any).invert === true) {
-            task = 'rgba-invert';
-          } else if ((item.options as any).brightnessDelta !== undefined) {
-            task = 'rgba-brightness';
-            wasmOpts.brightnessDelta = (item.options as any).brightnessDelta;
-          } else if (
-            item.options.palette === true ||
-            item.options.dither === true ||
-            item.options.colorDepth !== undefined ||
-            item.options.colors !== undefined
-          ) {
-            task = 'rgba-quantize';
-            if (!wasmOpts.colors && item.options.colorDepth) {
-              wasmOpts.colors = Math.min(256, 1 << item.options.colorDepth);
-            }
-          }
-
-          if (task) {
-            const taskRes = await executeWasmTask(task, pixelBuffer, wasmOpts, onProgress, signal);
-            const processedClamped = new Uint8ClampedArray(taskRes.buffer);
-            const newImgData = new ImageData(processedClamped, width, height);
-            ctx.putImageData(newImgData, 0, 0);
-          }
-
-          const resultBlob = await encodeEdgeImage({
-            canvas,
-            ctx,
-            width,
-            height,
-            tgt,
-            quality: (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT,
-            background: item.options.background,
-          });
-          signal?.throwIfAborted();
-
-          const resultUrl = URL.createObjectURL(resultBlob);
-          return {
-            resultUrl,
-            resultSize: resultBlob.size,
-            tier: 'L2',
-            tierName: 'Edge L2 (SIMD Wasm)',
-          };
-        }
-      } catch (err: unknown) {
-        if (signal?.aborted) throw err;
-        // The browser cannot produce this file (no encoder, a substituted or empty result): the server converts it.
-        if (resolveTierAfterEdgeFailure('L2', err)) {
-          throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
-        }
-        // If bitmap decoding or canvas operation fails, gracefully fall back to serverless bridge
-        return null;
-      }
+  try {
+    assertNoResizeRequested(item);
+    assertEdgeImageTargetEncodable(tgt);
+    await assertCanvasInputSupported(item.file, src, item.options.stripMetadata === true);
+    signal?.throwIfAborted();
+    const rasterized = await rasterizeBitmapToFilterCanvas(item.file);
+    if (!rasterized) {
       return null;
     }
+    const { canvas, ctx, width, height } = rasterized;
+
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const pixelBuffer = imgData.data.buffer;
+
+    // Determine appropriate Wasm task based on requested options
+    let task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | null = null;
+    const wasmOpts: {
+      width: number;
+      height: number;
+      colors?: number;
+      palette?: boolean;
+      dither?: boolean;
+      colorDepth?: number;
+      brightnessDelta?: number;
+    } = {
+      width,
+      height,
+      colors: item.options.colors,
+      palette: item.options.palette,
+      dither: item.options.dither,
+      colorDepth: item.options.colorDepth,
+    };
+
+    const filterOptions = item.options as ConversionQueueItem['options'] & {
+      grayscale?: boolean;
+      invert?: boolean;
+      brightnessDelta?: number;
+    };
+    if (filterOptions.colorDepth === 1 || filterOptions.grayscale === true) {
+      task = 'rgba-grayscale';
+    } else if (filterOptions.invert === true) {
+      task = 'rgba-invert';
+    } else if (filterOptions.brightnessDelta !== undefined) {
+      task = 'rgba-brightness';
+      wasmOpts.brightnessDelta = filterOptions.brightnessDelta;
+    } else if (
+      filterOptions.palette === true ||
+      filterOptions.dither === true ||
+      filterOptions.colorDepth !== undefined ||
+      filterOptions.colors !== undefined
+    ) {
+      task = 'rgba-quantize';
+      if (!wasmOpts.colors && filterOptions.colorDepth) {
+        wasmOpts.colors = Math.min(256, 1 << filterOptions.colorDepth);
+      }
+    }
+
+    if (task) {
+      const taskRes = await executeWasmTask(task, pixelBuffer, wasmOpts, onProgress, signal);
+      const processedClamped = new Uint8ClampedArray(taskRes.buffer);
+      const newImgData = new ImageData(processedClamped, width, height);
+      ctx.putImageData(newImgData, 0, 0);
+    }
+
+    const resultBlob = await encodeEdgeImage({
+      canvas,
+      ctx,
+      width,
+      height,
+      tgt,
+      quality: (item.options.quality || EDGE_FILTER_DEFAULT_QUALITY) / PERCENT,
+      background: item.options.background,
+    });
+    signal?.throwIfAborted();
+
+    const resultUrl = URL.createObjectURL(resultBlob);
+    return {
+      resultUrl,
+      resultSize: resultBlob.size,
+      tier: 'L2',
+      tierName: 'Edge L2 (SIMD Wasm)',
+    };
+  } catch (err: unknown) {
+    if (signal?.aborted) throw err;
+    // The browser cannot produce this file (no encoder, a substituted or empty result): the server converts it.
+    if (resolveTierAfterEdgeFailure('L2', err)) {
+      throw new ClientEdgeEscalationError('L2', describeEdgeError(err));
+    }
+    // If bitmap decoding or canvas operation fails, gracefully fall back to serverless bridge
     return null;
   }
 }

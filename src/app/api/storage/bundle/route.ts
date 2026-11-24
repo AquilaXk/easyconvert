@@ -3,9 +3,10 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { storageProvider as s3Storage } from '@/lib/storage';
 import { resolveObjectOwnership } from '@/lib/api-keys/owner-access';
-import { authErrorHeaders, extractApiKeySecret, validateApiAccess, type ApiAuthResult } from '@/lib/api-keys/guard';
-import { isAnonymousUserId } from '@/lib/auth/anonymous-identity';
-import type { User } from '@/lib/auth/types';
+import { authErrorHeaders, extractApiKeySecret, extractClientIp, validateApiAccess, type ApiAuthResult } from '@/lib/api-keys/guard';
+import { anonymousUserId, isAnonymousUserId } from '@/lib/auth/anonymous-identity';
+import type { User, UserTier } from '@/lib/auth/types';
+import { CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS, ClientIpError, rateLimitKey } from '@/lib/security/client-ip';
 import { DOWNLOAD_SECURITY_HEADERS, attachmentContentDisposition } from '@/lib/api/content-disposition';
 import { deliveryTrackedStream } from '@/lib/api/delivery-stream';
 import { readBoundedJsonText } from '@/lib/api/json-body-bounds';
@@ -13,6 +14,7 @@ import { SMALL_REQUEST_BODY_MAX_BYTES } from '@/lib/api/request-body-limit';
 import { acquireSyncSlot, concurrencyLimitResponse } from '@/lib/queue/concurrency-limit';
 import { jobDeadlineMs, syncDeadlineMs } from '@/lib/queue/job-deadline';
 import { MAX_EXTRACTED_ENTRIES } from '@/lib/tools/tool-names';
+import { consumeBundleTicket, createBundleTicket } from '@/lib/storage/bundle-ticket-store';
 import { deleteResult, recordServed, resultAvailability } from '@/lib/storage/retention-service';
 import { isRetainedKey, type RetentionReason } from '@/lib/storage/result-retention';
 import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
@@ -63,20 +65,6 @@ function deduplicateFileNames(items: readonly BundleFileRequest[]): string[] {
   });
 }
 
-function buildNotFoundResponse(key: string): NextResponse {
-  return NextResponse.json(
-    { success: false, error: `Object not found for key: "${key}"` },
-    { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
-  );
-}
-
-function buildGoneResponse(reason: RetentionReason | undefined): NextResponse {
-  return NextResponse.json(
-    { success: false, error: reason === 'capacity' ? CAPACITY_GONE_MESSAGE : GONE_MESSAGE, reason },
-    { status: 410, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
-  );
-}
-
 function sanitizeArchiveName(rawName?: string): string {
   if (!rawName || typeof rawName !== 'string') return 'files.zip';
   const leaf = path.basename(rawName.trim());
@@ -84,26 +72,34 @@ function sanitizeArchiveName(rawName?: string): string {
   return sanitized.toLowerCase().endsWith('.zip') ? sanitized : `${sanitized}.zip`;
 }
 
+interface UnavailableKeyFailure {
+  status: 404 | 410;
+  body: { success: false; error: string; reason?: RetentionReason };
+}
+
 type VerifiedKeyCheck =
   | { ok: true; size: number }
-  | { ok: false; response: NextResponse };
+  | { ok: false; kind: 'auth'; response: NextResponse }
+  | ({ ok: false; kind: 'unavailable' } & UnavailableKeyFailure);
 
 function checkOwnerAccess(
   auth: ApiAuthResult,
-  ownerUserId: string | undefined,
-  notFound: () => NextResponse
-): NextResponse | null {
+  ownerUserId: string | undefined
+): { kind: 'auth'; response: NextResponse } | { kind: 'unavailable'; failure: UnavailableKeyFailure } | null {
   if (!ownerUserId || isAnonymousUserId(ownerUserId)) {
     return null;
   }
   if (auth.user?.id !== ownerUserId) {
-    return notFound();
+    return { kind: 'unavailable', failure: { status: 404, body: { success: false, error: '' } } };
   }
   if (!auth.authorized) {
-    return NextResponse.json(
-      { success: false, error: auth.error ?? 'Unauthorized' },
-      { status: auth.status ?? 401, headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(auth) } }
-    );
+    return {
+      kind: 'auth',
+      response: NextResponse.json(
+        { success: false, error: auth.error ?? 'Unauthorized' },
+        { status: auth.status ?? 401, headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(auth) } }
+      ),
+    };
   }
   return null;
 }
@@ -112,14 +108,20 @@ async function verifySingleBundleKey(
   key: string,
   auth: ApiAuthResult
 ): Promise<VerifiedKeyCheck> {
-  const notFound = () => buildNotFoundResponse(key);
+  const notFoundFailure = (): VerifiedKeyCheck => ({
+    ok: false,
+    kind: 'unavailable',
+    status: 404,
+    body: { success: false, error: `Object not found for key: "${key}"` },
+  });
   const ownership = await resolveObjectOwnership(key);
   if (!ownership.resolved) {
-    return { ok: false, response: notFound() };
+    return notFoundFailure();
   }
-  const denied = checkOwnerAccess(auth, ownership.ownerUserId, notFound);
+  const denied = checkOwnerAccess(auth, ownership.ownerUserId);
   if (denied) {
-    return { ok: false, response: denied };
+    if (denied.kind === 'auth') return { ok: false, kind: 'auth', response: denied.response };
+    return notFoundFailure();
   }
   const stat = await s3Storage.stat(key);
   const availability = await resultAvailability(key);
@@ -129,10 +131,19 @@ async function verifySingleBundleKey(
         console.warn(`[StorageBundle] Could not delete the expired result "${key}"; the sweep tries again:`, error);
       });
     }
-    return { ok: false, response: buildGoneResponse(availability.reason) };
+    return {
+      ok: false,
+      kind: 'unavailable',
+      status: 410,
+      body: {
+        success: false,
+        error: availability.reason === 'capacity' ? CAPACITY_GONE_MESSAGE : GONE_MESSAGE,
+        ...(availability.reason ? { reason: availability.reason } : {}),
+      },
+    };
   }
   if (!stat) {
-    return { ok: false, response: notFound() };
+    return notFoundFailure();
   }
   return { ok: true, size: stat.size };
 }
@@ -179,13 +190,17 @@ async function parseBundleRequest(
   return { body };
 }
 
+function hasExplicitAuthCredential(req: NextRequest): boolean {
+  return Boolean(
+    extractApiKeySecret(req) || req.headers.get('authorization')?.trim() || req.headers.get('x-api-key')?.trim()
+  );
+}
+
 async function authenticateBundleCaller(
   req: NextRequest
 ): Promise<{ auth: ApiAuthResult; user: User } | { response: NextResponse }> {
   const callerAuth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: STORAGE_DOWNLOAD_SCOPE });
-  const hasExplicitCredential = Boolean(
-    extractApiKeySecret(req) || req.headers.get('authorization')?.trim() || req.headers.get('x-api-key')?.trim()
-  );
+  const hasExplicitCredential = hasExplicitAuthCredential(req);
   if ((hasExplicitCredential || callerAuth.user || callerAuth.status === 503) && !callerAuth.authorized) {
     return {
       response: NextResponse.json(
@@ -222,17 +237,35 @@ async function verifyBundleFiles(
 ): Promise<{ verifiedFiles: VerifiedBundleFile[]; totalBytes: number } | { response: NextResponse }> {
   const uniqueKeys = [...new Set(files.map((item) => item.key))];
   const verifiedByKey = new Map<string, number>();
+  const unavailableKeys: string[] = [];
+  let firstUnavailable: UnavailableKeyFailure | undefined;
 
   for (let start = 0; start < uniqueKeys.length; start += VERIFICATION_BATCH_CONCURRENCY) {
     const batch = uniqueKeys.slice(start, start + VERIFICATION_BATCH_CONCURRENCY);
     const checks = await Promise.all(batch.map((key) => verifySingleBundleKey(key, auth)));
     for (let i = 0; i < batch.length; i++) {
       const result = checks[i];
-      if (!result.ok) {
+      if (result.ok) {
+        verifiedByKey.set(batch[i], result.size);
+        continue;
+      }
+      if (result.kind === 'auth') {
         return { response: result.response };
       }
-      verifiedByKey.set(batch[i], result.size);
+      unavailableKeys.push(batch[i]);
+      if (!firstUnavailable) {
+        firstUnavailable = { status: result.status, body: result.body };
+      }
     }
+  }
+
+  if (unavailableKeys.length > 0 && firstUnavailable) {
+    return {
+      response: NextResponse.json(
+        { ...firstUnavailable.body, unavailableKeys },
+        { status: firstUnavailable.status, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+      ),
+    };
   }
 
   const uniqueNames = deduplicateFileNames(files);
@@ -403,6 +436,171 @@ function createBundleZipResponse(
   });
 }
 
+function invalidTicketResponse(): NextResponse {
+  return NextResponse.json(
+    { success: false, error: 'Bundle download ticket is invalid or expired.' },
+    { status: 404, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+  );
+}
+
+async function authorizeBundleTicketCaller(
+  req: NextRequest,
+  callerUserId: string
+): Promise<{ auth: ApiAuthResult } | { response: NextResponse }> {
+  const hasExplicitCredential = hasExplicitAuthCredential(req);
+  if (hasExplicitCredential || !isAnonymousUserId(callerUserId)) {
+    const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: STORAGE_DOWNLOAD_SCOPE });
+    if (!auth.authorized) {
+      if (hasExplicitCredential || auth.status === 503 || Boolean(auth.user)) {
+        return {
+          response: NextResponse.json(
+            { success: false, error: auth.error ?? 'Unauthorized' },
+            {
+              status: auth.status ?? 401,
+              headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(auth) },
+            }
+          ),
+        };
+      }
+      return { response: invalidTicketResponse() };
+    }
+    if (auth.user?.id !== callerUserId) {
+      return { response: invalidTicketResponse() };
+    }
+    return { auth };
+  }
+
+  let clientIp: string;
+  try {
+    clientIp = extractClientIp(req);
+  } catch (error) {
+    if (!(error instanceof ClientIpError)) throw error;
+    const malformed = error.status === 400;
+    return {
+      response: NextResponse.json(
+        {
+          success: false,
+          error: malformed
+            ? 'Bad Request: malformed client address in forwarding headers.'
+            : 'Server misconfiguration: client IP trust settings are invalid.',
+        },
+        {
+          status: error.status,
+          headers: malformed
+            ? { 'Cache-Control': PRIVATE_NO_STORE }
+            : { 'Cache-Control': PRIVATE_NO_STORE, 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) },
+        }
+      ),
+    };
+  }
+
+  const anonUserId = anonymousUserId(rateLimitKey(clientIp));
+  if (anonUserId !== callerUserId) {
+    return { response: invalidTicketResponse() };
+  }
+  return {
+    auth: {
+      authorized: true,
+      user: {
+        id: anonUserId,
+        email: 'anonymous@easyconvert.local',
+        name: 'Anonymous Client',
+        tier: 'free',
+        provider: 'email',
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      authMethod: 'session',
+    },
+  };
+}
+
+interface RunBundleInput {
+  req: NextRequest;
+  files: readonly BundleFileRequest[];
+  archiveName: string;
+  callerUserId: string;
+  callerTier: UserTier;
+  verifyAuth: ApiAuthResult;
+  prepareOnly: boolean;
+}
+
+async function runBundleWithSlot({
+  req,
+  files,
+  archiveName,
+  callerUserId,
+  callerTier,
+  verifyAuth,
+  prepareOnly,
+}: RunBundleInput): Promise<NextResponse> {
+  const instanceUri = req.nextUrl?.pathname || '/api/storage/bundle';
+  let releaseSlotRaw: (() => void) | undefined;
+  let slotReleased = false;
+  const releaseSlotOnce = () => {
+    if (slotReleased) return;
+    slotReleased = true;
+    releaseSlotRaw?.();
+  };
+
+  const slot = await acquireSyncSlot(callerUserId, callerTier);
+  if (!slot.granted) {
+    return concurrencyLimitResponse(slot.limit, instanceUri);
+  }
+  releaseSlotRaw = slot.release;
+
+  try {
+    const verified = await verifyBundleFiles(files, verifyAuth);
+    if ('response' in verified) {
+      releaseSlotOnce();
+      return verified.response;
+    }
+    if (prepareOnly) {
+      const ticket = await createBundleTicket({
+        files: verified.verifiedFiles.map(({ key, name }) => ({ key, name })),
+        archiveName,
+        callerUserId,
+        callerTier,
+      });
+      releaseSlotOnce();
+      return NextResponse.json(
+        { success: true, downloadUrl: `/api/storage/bundle?ticket=${ticket}` },
+        { status: 200, headers: { 'Cache-Control': PRIVATE_NO_STORE } }
+      );
+    }
+    const streamDeadlineMs = syncDeadlineMs(
+      jobDeadlineMs({ tier: callerTier, family: 'bytes', inputBytes: verified.totalBytes })
+    );
+    return createBundleZipResponse(req, verified.verifiedFiles, archiveName, streamDeadlineMs, releaseSlotOnce);
+  } catch (err) {
+    releaseSlotOnce();
+    throw err;
+  }
+}
+
+export async function GET(req: NextRequest) {
+  const ticket = req.nextUrl?.searchParams?.get('ticket') ?? '';
+  const record = await consumeBundleTicket(ticket);
+  if (!record) {
+    return invalidTicketResponse();
+  }
+
+  const verifiedCaller = await authorizeBundleTicketCaller(req, record.callerUserId);
+  if ('response' in verifiedCaller) {
+    return verifiedCaller.response;
+  }
+
+  return runBundleWithSlot({
+    req,
+    files: record.files,
+    archiveName: record.archiveName,
+    callerUserId: record.callerUserId,
+    callerTier: record.callerTier,
+    verifyAuth: verifiedCaller.auth,
+    prepareOnly: false,
+  });
+}
+
 export async function POST(req: NextRequest) {
   const instanceUri = req.nextUrl?.pathname || '/api/storage/bundle';
   const parsed = await parseBundleRequest(req, instanceUri);
@@ -415,33 +613,15 @@ export async function POST(req: NextRequest) {
     return caller.response;
   }
 
-  let releaseSlotRaw: (() => void) | undefined;
-  let slotReleased = false;
-  const releaseSlotOnce = () => {
-    if (slotReleased) return;
-    slotReleased = true;
-    releaseSlotRaw?.();
-  };
-
-  const slot = await acquireSyncSlot(caller.user.id, caller.user.tier);
-  if (!slot.granted) {
-    return concurrencyLimitResponse(slot.limit, instanceUri);
-  }
-  releaseSlotRaw = slot.release;
-
-  try {
-    const verified = await verifyBundleFiles(parsed.body.files, caller.auth);
-    if ('response' in verified) {
-      releaseSlotOnce();
-      return verified.response;
-    }
-    const streamDeadlineMs = syncDeadlineMs(
-      jobDeadlineMs({ tier: caller.user.tier, family: 'bytes', inputBytes: verified.totalBytes })
-    );
-    const archiveName = sanitizeArchiveName(parsed.body.archiveName);
-    return createBundleZipResponse(req, verified.verifiedFiles, archiveName, streamDeadlineMs, releaseSlotOnce);
-  } catch (err) {
-    releaseSlotOnce();
-    throw err;
-  }
+  const prepareOnly = req.nextUrl?.searchParams?.get('prepare') === '1';
+  const archiveName = sanitizeArchiveName(parsed.body.archiveName);
+  return runBundleWithSlot({
+    req,
+    files: parsed.body.files,
+    archiveName,
+    callerUserId: caller.user.id,
+    callerTier: caller.user.tier,
+    verifyAuth: caller.auth,
+    prepareOnly,
+  });
 }

@@ -15,10 +15,10 @@ import { useFileTooLargeMessage, useFormatBytes } from '@/components/i18n/format
 import { useConversionFailureWording } from '@/components/i18n/error-wording';
 import { isSingleFileTool, useToolRun, type ToolFileItem } from '@/hooks/useToolRun';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
-import { streamZipReadable } from '@/lib/archive/streaming-zip';
+import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import type { ConversionFailure } from '@/lib/conversion-failure';
-import { downloadBlob } from '@/lib/download-blob';
+import { downloadZipStream, triggerAnchorDownload } from '@/lib/download-blob';
 import { maxFileBytes, SINGLE_REQUEST_FILE_MAX_BYTES } from '@/lib/plan-limits';
 import { toolInputProblem, type ToolResult, type ToolResultFile } from '@/lib/tools/tool-client';
 import { MAX_TOOL_FILES, MIN_MERGE_FILES, TOOLS_WITH_OPTIONS, type WebTool, type WebToolOptions } from '@/lib/tools/tool-names';
@@ -130,39 +130,58 @@ function ResultList({ result }: Readonly<{ result: ToolResult }>) {
   );
 }
 
-/** Every file of an unpacked archive in one ZIP, streamed via /api/storage/bundle or client-zip. */
-async function zipOfEntries(entries: readonly ToolResultFile[]): Promise<Blob> {
+/** Every file of an unpacked archive in one ZIP, streamed via a single-use /api/storage/bundle ticket or streaming OPFS ZIP. */
+async function downloadEntriesBundle(entries: readonly ToolResultFile[]): Promise<void> {
   const hasKeys = entries.length > 0 && entries.every((e) => Boolean(e.key));
   if (hasKeys) {
+    const res = await fetch('/api/storage/bundle?prepare=1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        files: entries.map((e) => ({ key: e.key!, name: e.name })),
+        archiveName: 'files.zip',
+      }),
+    });
+    if (!res.ok) {
+      const errorBody = (await res.json().catch(() => null)) as { error?: unknown } | null;
+      const message =
+        typeof errorBody?.error === 'string' && errorBody.error ? errorBody.error : `Could not bundle files (${res.status})`;
+      throw new Error(message);
+    }
+    const body = (await res.json().catch(() => null)) as { downloadUrl?: unknown } | null;
+    if (typeof body?.downloadUrl !== 'string' || body.downloadUrl.length === 0) {
+      throw new Error('Bundle download URL missing from server response.');
+    }
+    triggerAnchorDownload(body.downloadUrl, 'files.zip');
+    return;
+  }
+
+  async function* generateEntries(): AsyncGenerator<StreamingZipEntry, void, undefined> {
+    let activeBody: ReadableStream<Uint8Array> | null = null;
     try {
-      const res = await fetch('/api/storage/bundle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          files: entries.map((e) => ({ key: e.key!, name: e.name })),
-          archiveName: 'files.zip',
-        }),
-      });
-      if (res.ok) return await res.blob();
-    } catch {
-      // Fall through to browser streaming
+      for (const entry of entries) {
+        const res = await fetch(entry.url);
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => undefined);
+          throw new Error(`Could not fetch "${entry.name}"`);
+        }
+        if (res.body) {
+          activeBody = res.body;
+          yield { name: entry.name, data: res.body };
+          activeBody = null;
+        } else {
+          const blob = await res.blob();
+          yield { name: entry.name, data: blob, size: blob.size };
+        }
+      }
+    } finally {
+      if (activeBody) {
+        await activeBody.cancel().catch(() => undefined);
+      }
     }
   }
 
-  async function* generateEntries() {
-    for (const entry of entries) {
-      const res = await fetch(entry.url);
-      if (!res.ok) throw new Error(`Could not fetch "${entry.name}"`);
-      const blob = await res.blob();
-      yield {
-        name: entry.name,
-        data: blob,
-        size: blob.size,
-      };
-    }
-  }
-
-  return await new Response(streamZipReadable(generateEntries())).blob();
+  await downloadZipStream(streamZipReadable(generateEntries()), 'files.zip');
 }
 
 interface ToolBarProps {
@@ -197,7 +216,7 @@ function ToolBar({ summary, failure, rawFailure, busy, done, canRun, actionLabel
     if (!entries) return;
     setBundleFailed(false);
     try {
-      downloadBlob(await zipOfEntries(entries), 'files.zip');
+      await downloadEntriesBundle(entries);
     } catch (error: unknown) {
       warnBrowserFailure('Bundling the unpacked files into a ZIP failed', error);
       setBundleFailed(true);

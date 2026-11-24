@@ -402,6 +402,81 @@ describe('download all of an unpacked archive', () => {
     button.click();
     await vi.waitFor(() => expect(bar().querySelector('[role=alert]')?.textContent).toBe('Could not build the ZIP archive.'));
   });
+
+  it('prepares a single-use bundle ticket for server-keyed unpacked entries without buffering res.blob() or falling back per file', async () => {
+    const serverEntries = {
+      entries: [
+        { name: 'a.txt', size: 1, mimeType: 'text/plain', key: 'k/a.txt', url: '/api/storage/file/k%2Fa.txt' },
+        { name: 'b.txt', size: 1, mimeType: 'text/plain', key: 'k/b.txt', url: '/api/storage/file/k%2Fb.txt' },
+      ],
+    };
+    const host = await mountSlug(ConverterPageView, 'extract-zip-archive');
+    await inQueue(host, [new File(['x'], 'bundle.zip')]);
+    buttonNamed('Extract')!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    calls[0].settle(Response.json(serverEntries));
+    await vi.waitFor(() => expect(buttons().find((button) => button.textContent?.includes('Download all'))).toBeDefined());
+    const button = buttons().find((btn) => btn.textContent?.includes('Download all'))!;
+
+    const clicked: Array<{ href: string; download: string }> = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click(this: HTMLAnchorElement) {
+      clicked.push({ href: this.getAttribute('href') ?? '', download: this.download });
+    });
+
+    const requestedUrls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        requestedUrls.push(String(url));
+        const res = new Response(JSON.stringify({ success: true, downloadUrl: '/api/storage/bundle?ticket=tok123' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+        vi.spyOn(res, 'blob').mockImplementation(() => {
+          throw new Error('res.blob() must not be called for server-keyed tool bundles');
+        });
+        return res;
+      })
+    );
+
+    button.click();
+    await vi.waitFor(() => expect(clicked).toEqual([{ href: '/api/storage/bundle?ticket=tok123', download: 'files.zip' }]));
+    expect(requestedUrls).toEqual(['/api/storage/bundle?prepare=1']);
+
+    // Failure on prepare=1 reports error without falling back to individual file fetches
+    requestedUrls.length = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        requestedUrls.push(String(url));
+        return new Response(JSON.stringify({ success: false, error: 'expired' }), { status: 410 });
+      })
+    );
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    button.click();
+    await vi.waitFor(() => expect(bar().querySelector('[role=alert]')?.textContent).toBe('Could not build the ZIP archive.'));
+    expect(requestedUrls).toEqual(['/api/storage/bundle?prepare=1']);
+  });
+
+  it('streams local unpacked entries via res.body without calling res.blob()', async () => {
+    const button = await unpacked();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const res = new Response('entry-stream-content');
+        vi.spyOn(res, 'blob').mockImplementation(() => {
+          throw new Error('res.blob() must not be called when res.body is available');
+        });
+        return res;
+      })
+    );
+    const clicked: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function click(this: HTMLAnchorElement) {
+      clicked.push(this.download);
+    });
+    button.click();
+    await vi.waitFor(() => expect(clicked).toEqual(['files.zip']));
+  });
 });
 
 describe('operation-scoped conversion OptionsModal', () => {

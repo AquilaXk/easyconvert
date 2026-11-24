@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { streamZipReadable } from '@/lib/archive/streaming-zip';
+import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
+import { materializeZipStreamUrl, triggerAnchorDownload } from '@/lib/download-blob';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
@@ -157,16 +158,6 @@ function storedKeyOfResultUrl(url: string): string | null {
   }
 }
 
-function triggerZipAnchorDownload(zipUrl: string, archiveName: string): string {
-  const anchor = document.createElement('a');
-  anchor.href = zipUrl;
-  anchor.download = archiveName;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  return zipUrl;
-}
-
 /** Thrown when a result can no longer be fetched (expired or deleted): no ZIP is built, and `ids` name the rows to mark failed. */
 class ExpiredResultsError extends Error {
   constructor(readonly ids: ReadonlySet<string>) {
@@ -174,51 +165,100 @@ class ExpiredResultsError extends Error {
   }
 }
 
-async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: string): Promise<string> {
+async function prepareServerBundleDownload(
+  readyItems: ReadonlyArray<ConversionQueueItem & { resultUrl: string }>,
+  serverKeys: readonly string[],
+  archiveName: string
+): Promise<null> {
+  const used = new Set<string>();
+  const res = await fetch('/api/storage/bundle?prepare=1', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      archiveName,
+      files: readyItems.map((item, idx) => ({
+        key: serverKeys[idx]!,
+        name: buildUniqueArchiveName(item.name, item.targetFormat, used),
+      })),
+    }),
+  });
+  if (res.ok) {
+    const body = (await res.json().catch(() => null)) as { downloadUrl?: unknown } | null;
+    if (typeof body?.downloadUrl !== 'string' || body.downloadUrl.length === 0) {
+      throw new Error('Bundle download URL missing from server response.');
+    }
+    triggerAnchorDownload(body.downloadUrl, archiveName);
+    return null;
+  }
+
+  const errorBody = (await res.json().catch(() => null)) as { error?: unknown; unavailableKeys?: unknown } | null;
+  if ((res.status === 404 || res.status === 410) && Array.isArray(errorBody?.unavailableKeys)) {
+    const missing = new Set(errorBody.unavailableKeys.filter((k): k is string => typeof k === 'string'));
+    const expiredIds = new Set(readyItems.filter((_, idx) => missing.has(serverKeys[idx]!)).map((item) => item.id));
+    if (expiredIds.size > 0) {
+      throw new ExpiredResultsError(expiredIds);
+    }
+  }
+  const message =
+    typeof errorBody?.error === 'string' && errorBody.error ? errorBody.error : `Bundle download failed (${res.status})`;
+  throw new Error(message);
+}
+
+async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: string): Promise<string | null> {
   const readyItems = items.filter((item): item is ConversionQueueItem & { resultUrl: string } => Boolean(item.resultUrl));
   const archiveName = `${prefix}_${Date.now()}.zip`;
   const serverKeys = readyItems.map((item) => storedKeyOfResultUrl(item.resultUrl));
   if (readyItems.length > 0 && serverKeys.every((key): key is string => Boolean(key))) {
-    const used = new Set<string>();
-    const res = await fetch('/api/storage/bundle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        archiveName,
-        files: readyItems.map((item, idx) => ({
-          key: serverKeys[idx]!,
-          name: buildUniqueArchiveName(item.name, item.targetFormat, used),
-        })),
-      }),
-    });
-    if (res.ok) {
-      const zipBlob = await res.blob();
-      return triggerZipAnchorDownload(URL.createObjectURL(zipBlob), archiveName);
-    }
+    return prepareServerBundleDownload(readyItems, serverKeys, archiveName);
   }
 
-  const fetched = await Promise.all(
+  const settled = await Promise.allSettled(
     readyItems.map(async (item) => {
       const res = await fetch(item.resultUrl);
       return { item, res };
     })
   );
+  const fetched: Array<{ item: ConversionQueueItem & { resultUrl: string }; res: Response }> = [];
+  let firstError: unknown = null;
+  for (const outcome of settled) {
+    if (outcome.status === 'fulfilled') fetched.push(outcome.value);
+    else if (firstError === null) firstError = outcome.reason;
+  }
+  if (firstError !== null) {
+    await Promise.all(fetched.map(({ res }) => res.body?.cancel().catch(() => undefined)));
+    throw firstError;
+  }
+
   const unavailable = fetched.filter(({ res }) => !res.ok);
-  if (unavailable.length > 0) throw new ExpiredResultsError(new Set(unavailable.map(({ item }) => item.id)));
-  const resolvedEntries = await Promise.all(fetched.map(async ({ item, res }) => ({ item, blob: await res.blob() })));
+  if (unavailable.length > 0) {
+    await Promise.all(fetched.map(({ res }) => res.body?.cancel().catch(() => undefined)));
+    throw new ExpiredResultsError(new Set(unavailable.map(({ item }) => item.id)));
+  }
+
   const used = new Set<string>();
-  async function* generateEntries() {
-    for (const { item, blob } of resolvedEntries) {
-      yield {
-        name: buildUniqueArchiveName(item.name, item.targetFormat, used),
-        data: blob,
-        size: blob.size,
-      };
+  let nextYieldIndex = 0;
+  async function* generateEntries(): AsyncGenerator<StreamingZipEntry, void, undefined> {
+    try {
+      for (; nextYieldIndex < fetched.length; nextYieldIndex++) {
+        const { item, res } = fetched[nextYieldIndex];
+        const name = buildUniqueArchiveName(item.name, item.targetFormat, used);
+        if (res.body) {
+          yield { name, data: res.body };
+        } else {
+          const blob = await res.blob();
+          yield { name, data: blob, size: blob.size };
+        }
+      }
+    } finally {
+      for (let i = nextYieldIndex; i < fetched.length; i++) {
+        await fetched[i].res.body?.cancel().catch(() => undefined);
+      }
     }
   }
+
   const stream = streamZipReadable(generateEntries());
-  const zipBlob = await new Response(stream).blob();
-  return triggerZipAnchorDownload(URL.createObjectURL(zipBlob), archiveName);
+  const zipUrl = await materializeZipStreamUrl(stream, archiveName);
+  return triggerAnchorDownload(zipUrl, archiveName);
 }
 
 function isRunning(item: ConversionQueueItem): boolean {
@@ -412,8 +452,14 @@ export function createDownloadAllZipHandler(ctx: QueueMutationContext) {
     ctx.setZipError(false);
     try {
       const zipUrl = await downloadCompletedBundle(done, ctx.bundlePrefix || 'easyconvert_bundle');
+      if (zipUrl === null) return;
       if (!ctx.mountedRef.current) {
-        URL.revokeObjectURL(zipUrl);
+        if (typeof ctx.revokeBlobUrl === 'function') {
+          ctx.revokeBlobUrl(zipUrl);
+        } else {
+          void releaseEdgeResultResources(zipUrl);
+          URL.revokeObjectURL(zipUrl);
+        }
         return;
       }
       ctx.blobUrlsRef.current.add(zipUrl);
