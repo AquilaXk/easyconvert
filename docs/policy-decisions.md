@@ -469,11 +469,8 @@ Security
 418. [SFTP adapter persists TOFU host keys after authentication, tries all validated DNS addresses, confines sftp runs, and sweeps unconsumed download spools](#418-sftp-adapter-persists-tofu-host-keys-after-authentication-tries-all-validated-dns-addresses-confines-sftp-runs-and-sweeps-unconsumed-download-spools)
 419. [Graph URL nodes and BYOS http credentials enforce shared RFC 9110 and forbidden HTTP header guards, and unused byos-operations is removed](#419-graph-url-nodes-and-byos-http-credentials-enforce-shared-rfc-9110-and-forbidden-http-header-guards-and-unused-byos-operations-is-removed)
 420. [POST /api/queue/jobs validates request fields, format pairs, size limits, and spoofing before reserving quota and releases local stored objects on every path](#420-post-apiqueuejobs-validates-request-fields-format-pairs-size-limits-and-spoofing-before-reserving-quota-and-releases-local-stored-objects-on-every-path)
-<<<<<<< HEAD
 421. [Azure 0-byte SharedKey signing, retryable 429 and 5xx StorageServiceError mapping across GCS, Azure Blob, and WebDAV, and WebDAV basePath segment encoding](#421-azure-0-byte-sharedkey-signing-retryable-429-and-5xx-storageserviceerror-mapping-across-gcs-azure-blob-and-webdav-and-webdav-basepath-segment-encoding)
-=======
-421. [POST /api/v1/archives/inspect authorizes capability and intermediate keys via mayUseStorageKeyAsJobInput, releases fetched objects, and dispatches inspections to workers in queue-only mode](#421-post-apiv1archivesinspect-authorizes-capability-and-intermediate-keys-via-mayusestoragekeyasjobinput-releases-fetched-objects-and-dispatches-inspections-to-workers-in-queue-only-mode)
->>>>>>> 113e848d (Authorize capability upload and intermediate keys in archive inspect and dispatch queue-only runs to workers)
+422. [POST /api/v1/archives/inspect authorizes capability and intermediate keys via mayUseStorageKeyAsJobInput, releases fetched objects, and dispatches inspections to workers in queue-only mode](#422-post-apiv1archivesinspect-authorizes-capability-and-intermediate-keys-via-mayusestoragekeyasjobinput-releases-fetched-objects-and-dispatches-inspections-to-workers-in-queue-only-mode)
 
 ---
 
