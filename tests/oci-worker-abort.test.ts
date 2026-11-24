@@ -13,7 +13,7 @@ const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
 // Delay each job briefly so the test can instrument it before the OCI worker picks it up.
 const PICKUP_DELAY_MS = 20;
 // Progress the OCI processor reports after loading the input and after converting it.
-const INPUT_LOADED_PROGRESS = 30;
+const INPUT_LOADED_PROGRESS = 35;
 const CONVERTED_PROGRESS = 75;
 
 function nextEvent(emitter: EventEmitter, event: string): Promise<unknown[]> {
@@ -98,12 +98,14 @@ describe('OCI worker processor honours the attempt abort signal', () => {
     const paused = pauseAt(job, INPUT_LOADED_PROGRESS);
 
     await paused.reached;
+    expect(job.progress).toBe(INPUT_LOADED_PROGRESS);
     const drained = nextEvent(ociWorker, 'drained');
     expect(await conversionQueue.cancelJob(job.id, 'client cancelled')).toBe(true);
     paused.resume();
     await drained;
 
     expect((await conversionQueue.getJob(job.id))?.state).toBe('cancelled');
+    expect(job.progress).toBe(INPUT_LOADED_PROGRESS);
     expect(job.logs.some((line) => line.includes('Conversion completed'))).toBe(false);
     expect(resultWritesFor(job.id, saveSpy, saveFromFileSpy)).toEqual([]);
   });
@@ -113,24 +115,29 @@ describe('OCI worker processor honours the attempt abort signal', () => {
     const saveFromFileSpy = vi.spyOn(s3Storage, 'saveObjectFromFile');
     const outputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'oci-abort-'));
     const outputPath = path.join(outputDir, 'scores.json');
-    const job = await addCsvJob({ outputPath } as ConversionJobData['options']);
-    const paused = pauseAt(job, CONVERTED_PROGRESS);
+    try {
+      const job = await addCsvJob({ outputPath } as ConversionJobData['options']);
+      const paused = pauseAt(job, CONVERTED_PROGRESS);
 
-    await paused.reached;
-    expect(JSON.parse(fs.readFileSync(outputPath, 'utf-8'))).toEqual([
-      { name: 'Alice', score: '100' },
-      { name: 'Bob', score: '95' },
-    ]);
-    const drained = nextEvent(ociWorker, 'drained');
-    expect(await conversionQueue.cancelJob(job.id, 'client cancelled')).toBe(true);
-    paused.resume();
-    await drained;
+      await paused.reached;
+      expect(job.progress).toBe(CONVERTED_PROGRESS);
+      expect(JSON.parse(fs.readFileSync(outputPath, 'utf-8'))).toEqual([
+        { name: 'Alice', score: '100' },
+        { name: 'Bob', score: '95' },
+      ]);
+      const drained = nextEvent(ociWorker, 'drained');
+      expect(await conversionQueue.cancelJob(job.id, 'client cancelled')).toBe(true);
+      paused.resume();
+      await drained;
 
-    expect((await conversionQueue.getJob(job.id))?.state).toBe('cancelled');
-    expect(job.logs.some((line) => line.includes('Conversion completed'))).toBe(true);
-    expect(job.logs.some((line) => line.includes('Output saved'))).toBe(false);
-    expect(resultWritesFor(job.id, saveSpy, saveFromFileSpy)).toEqual([]);
-    expect(fs.existsSync(outputPath)).toBe(false);
-    fs.rmSync(outputDir, { recursive: true, force: true });
+      expect((await conversionQueue.getJob(job.id))?.state).toBe('cancelled');
+      expect(job.progress).toBe(CONVERTED_PROGRESS);
+      expect(job.logs.some((line) => line.includes('Conversion completed'))).toBe(true);
+      expect(job.logs.some((line) => line.includes('Output saved'))).toBe(false);
+      expect(resultWritesFor(job.id, saveSpy, saveFromFileSpy)).toEqual([]);
+      expect(fs.existsSync(outputPath)).toBe(false);
+    } finally {
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
   });
 });
