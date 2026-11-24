@@ -4,6 +4,7 @@ import type { GcsCredentials } from '../credentials-vault';
 import {
   IStorageAdapter,
   StorageAdapterMetadata,
+  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageAdapterError,
@@ -28,6 +29,13 @@ import {
 
 const MAX_GCS_LIST_PAGES = 20;
 const MAX_GCS_PAGE_RESULTS = 1000;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_SERVER_ERROR_MIN = 500;
+const HTTP_SERVER_ERROR_MAX = 599;
+
+function isRetryableHttpStatus(statusCode: number): boolean {
+  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
+}
 
 /** The object name of a remote path: dot segments are refused, as the other adapters and the S3 client do. */
 function toObjectName(remotePath: string): string {
@@ -139,6 +147,12 @@ export class GcsStorageAdapter implements IStorageAdapter {
 
         if (res.statusCode !== 200) {
           const errBody = await readErrorText(res.body, this.providerName);
+          if (isRetryableHttpStatus(res.statusCode)) {
+            throw new StorageServiceError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName, {
+              statusCode: res.statusCode,
+              retryable: true,
+            });
+          }
           throw new StorageAuthenticationError(`Token exchange failed (${res.statusCode}): ${errBody}`, this.providerName);
         }
 
@@ -187,7 +201,10 @@ export class GcsStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         const errText = await readErrorText(res.body, this.providerName);
-        throw new Error(`[GcsAdapter] Download failed (${res.statusCode}): ${errText}`);
+        throw new StorageServiceError(`[GcsAdapter] Download failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: isRetryableHttpStatus(res.statusCode),
+        });
       }
 
       const bodyStream = res.body as unknown as NodeJS.ReadableStream;
@@ -213,6 +230,9 @@ export class GcsStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
+    if (options?.size !== undefined && (!Number.isFinite(options.size) || !Number.isInteger(options.size) || options.size < 0)) {
+      throw new StorageInputError(`Invalid upload size: ${options.size}`, this.providerName);
+    }
     const cleanPath = toObjectName(remotePath);
     const url = `${this.endpoint}/upload/storage/v1/b/${encodeURIComponent(this.bucket)}/o?uploadType=media&name=${encodeURIComponent(cleanPath)}`;
     await this.assertSsrfSafe(url);
@@ -242,9 +262,15 @@ export class GcsStorageAdapter implements IStorageAdapter {
         dispatcher,
       });
 
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         const errText = await readErrorText(res.body, this.providerName);
-        throw new Error(`[GcsAdapter] Upload failed (${res.statusCode}): ${errText}`);
+        throw new StorageServiceError(`[GcsAdapter] Upload failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: isRetryableHttpStatus(res.statusCode),
+        });
       }
 
       const data = await readJsonBody<{ size?: string; etag?: string; contentType?: string; updated?: string }>(res.body, this.providerName);
@@ -279,6 +305,13 @@ export class GcsStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode === 401 || res.statusCode === 403) {
         throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (isRetryableHttpStatus(res.statusCode)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[GcsAdapter] Head failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: true,
+        });
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         return null;
@@ -326,7 +359,7 @@ export class GcsStorageAdapter implements IStorageAdapter {
           const errText = await readErrorText(res.body, this.providerName);
           throw new StorageServiceError(`[GcsAdapter] List failed (${res.statusCode}): ${errText}`, this.providerName, {
             statusCode: res.statusCode,
-            retryable: res.statusCode >= 500 || res.statusCode === 429,
+            retryable: isRetryableHttpStatus(res.statusCode),
           });
         }
 
@@ -374,7 +407,20 @@ export class GcsStorageAdapter implements IStorageAdapter {
         dispatcher,
       });
 
-      return res.statusCode === 204 || res.statusCode === 200;
+      if (res.statusCode === 204 || res.statusCode === 200) {
+        return true;
+      }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (isRetryableHttpStatus(res.statusCode)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[GcsAdapter] Delete failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: true,
+        });
+      }
+      return false;
     } finally {
       await releaseDispatcher(dispatcher);
     }

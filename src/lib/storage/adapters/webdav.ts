@@ -4,6 +4,7 @@ import {
   IStorageAdapter,
   StorageAdapterError,
   StorageAdapterMetadata,
+  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageInvalidKeyError,
@@ -24,30 +25,48 @@ import {
 } from './http-guard';
 
 const WEBDAV_PROPFIND_BODY = '<?xml version="1.0" encoding="utf-8"?><D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/><D:getcontentlength/></D:prop></D:propfind>';
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_SERVER_ERROR_MIN = 500;
+const HTTP_SERVER_ERROR_MAX = 599;
+const FORBIDDEN_PATH_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\\]/u;
+
+function isRetryableHttpStatus(statusCode: number): boolean {
+  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
+}
 
 function trimTrailingSlash(pathname: string): string {
   return pathname.endsWith('/') && pathname.length > 1 ? pathname.slice(0, -1) : pathname;
 }
 
-function extractWebDavChildName(href: string, targetUrl: URL, basePathNorm: string): string | null {
+function splitDecodedPathSegments(pathname: string): string[] | null {
+  const norm = trimTrailingSlash(pathname);
+  if (norm === '/') return [];
+  const rawSegments = norm.slice(1).split('/');
+  const decoded: string[] = [];
+  for (const raw of rawSegments) {
+    try {
+      decoded.push(decodeURIComponent(raw));
+    } catch {
+      return null;
+    }
+  }
+  return decoded;
+}
+
+function extractWebDavChildName(href: string, targetUrl: URL, baseSegments: readonly string[]): string | null {
   let entryUrl: URL;
   try {
     entryUrl = new URL(href, targetUrl);
   } catch {
     return null;
   }
-  const entryPathNorm = trimTrailingSlash(entryUrl.pathname);
-  if (entryPathNorm === basePathNorm) return null;
-  const prefix = basePathNorm === '/' ? '/' : `${basePathNorm}/`;
-  if (!entryPathNorm.startsWith(prefix)) return null;
-  const rawRelative = entryPathNorm.slice(prefix.length);
-  if (!rawRelative || rawRelative.includes('/')) return null;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(rawRelative);
-  } catch {
-    return null;
+  if (entryUrl.origin !== targetUrl.origin) return null;
+  const entrySegments = splitDecodedPathSegments(entryUrl.pathname);
+  if (!entrySegments || entrySegments.length !== baseSegments.length + 1) return null;
+  for (let i = 0; i < baseSegments.length; i++) {
+    if (entrySegments[i] !== baseSegments[i]) return null;
   }
+  const decoded = entrySegments[baseSegments.length];
   if (!decoded || decoded.startsWith('.') || decoded === '..' || decoded.includes('/') || decoded.includes('\\') || decoded.includes('\0')) {
     return null;
   }
@@ -75,13 +94,27 @@ function stripSlashes(s: string): string {
 }
 
 function encodeSafePathSegments(remotePath: string, provider: string): string {
-  if (!remotePath || remotePath.includes('\\') || remotePath.includes('\0')) {
-    throw new StorageAdapterError(`Invalid remote path "${remotePath}"`, provider);
+  if (!remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
+    throw new StorageInvalidKeyError(`Invalid remote path "${remotePath}"`, provider);
   }
   const cleanPath = stripLeadingSlashes(remotePath);
   const segments = cleanPath.split('/');
   if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
-    throw new StorageAdapterError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
+    throw new StorageInvalidKeyError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
+  }
+  return segments.map((seg) => encodeURIComponent(seg)).join('/');
+}
+
+function encodeBasePath(basePath: unknown, provider: string): string {
+  if (basePath === undefined || basePath === '') return '';
+  if (typeof basePath !== 'string' || !basePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(basePath)) {
+    throw new StorageInputError('Invalid WebDAV basePath: control characters, backslashes, or unpaired surrogates rejected', provider);
+  }
+  const cleanBase = stripSlashes(basePath);
+  if (!cleanBase) return '';
+  const segments = cleanBase.split('/');
+  if (segments.some((seg) => !seg || seg === '.' || seg === '..')) {
+    throw new StorageInputError('Invalid WebDAV basePath: path traversal or empty segment rejected', provider);
   }
   return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
@@ -92,13 +125,11 @@ export class WebDavStorageAdapter implements IStorageAdapter {
   private readonly authHeader?: string;
 
   constructor(credentials: WebDavCredentials) {
-    parseCleanBaseEndpointUrl(credentials.url, this.providerName);
-    let base = stripTrailingSlashes(credentials.url);
-    if (credentials.basePath) {
-      const cleanBase = stripSlashes(credentials.basePath);
-      if (cleanBase) {
-        base = `${base}/${cleanBase}`;
-      }
+    const parsedUrl = parseCleanBaseEndpointUrl(credentials.url, this.providerName);
+    let base = stripTrailingSlashes(parsedUrl.href);
+    const encodedBasePath = encodeBasePath(credentials.basePath, this.providerName);
+    if (encodedBasePath) {
+      base = `${base}/${encodedBasePath}`;
     }
     this.baseUrl = base;
 
@@ -146,7 +177,10 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         const errText = await readErrorText(res.body, this.providerName);
-        throw new Error(`[WebDavAdapter] Download failed (${res.statusCode}): ${errText}`);
+        throw new StorageServiceError(`[WebDavAdapter] Download failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: isRetryableHttpStatus(res.statusCode),
+        });
       }
 
       const bodyStream = res.body as unknown as NodeJS.ReadableStream;
@@ -172,6 +206,9 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
+    if (options?.size !== undefined && (!Number.isFinite(options.size) || !Number.isInteger(options.size) || options.size < 0)) {
+      throw new StorageInputError(`Invalid upload size: ${options.size}`, this.providerName);
+    }
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
@@ -203,7 +240,10 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         const errText = await readErrorText(res.body, this.providerName);
-        throw new Error(`[WebDavAdapter] Upload failed (${res.statusCode}): ${errText}`);
+        throw new StorageServiceError(`[WebDavAdapter] Upload failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: isRetryableHttpStatus(res.statusCode),
+        });
       }
 
       const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
@@ -236,6 +276,13 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       if (res.statusCode === 401 || res.statusCode === 403) {
         throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
       }
+      if (isRetryableHttpStatus(res.statusCode)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[WebDavAdapter] Head failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: true,
+        });
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
       const lenStr = res.headers['content-length'] as string | undefined;
@@ -267,7 +314,10 @@ export class WebDavStorageAdapter implements IStorageAdapter {
     await this.assertSsrfSafe(url);
 
     const targetUrl = new URL(url);
-    const basePathNorm = trimTrailingSlash(targetUrl.pathname);
+    const baseSegments = splitDecodedPathSegments(targetUrl.pathname);
+    if (!baseSegments) {
+      throw new StorageAdapterError('Invalid WebDAV base URL path encoding', this.providerName);
+    }
     const dispatcher = adapterDispatcher(url);
     try {
       const res = await guardedRequest(url, {
@@ -285,7 +335,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         const errText = await readErrorText(res.body, this.providerName);
         throw new StorageServiceError(`[WebDavAdapter] PROPFIND failed (${res.statusCode}): ${errText}`, this.providerName, {
           statusCode: res.statusCode,
-          retryable: res.statusCode >= 500 || res.statusCode === 429,
+          retryable: isRetryableHttpStatus(res.statusCode),
         });
       }
 
@@ -299,7 +349,7 @@ export class WebDavStorageAdapter implements IStorageAdapter {
       const files: Array<{ name: string; size: number }> = [];
       for (const entry of parseWebDavPropfindXml(text)) {
         if (entry.isCollection || entry.href.endsWith('/')) continue;
-        const name = extractWebDavChildName(entry.href, targetUrl, basePathNorm);
+        const name = extractWebDavChildName(entry.href, targetUrl, baseSegments);
         if (!name) continue;
         files.push({ name, size: entry.size });
         if (files.length > maxFiles) {
@@ -324,7 +374,20 @@ export class WebDavStorageAdapter implements IStorageAdapter {
         dispatcher,
       });
 
-      return res.statusCode === 204 || res.statusCode === 200;
+      if (res.statusCode === 204 || res.statusCode === 200) {
+        return true;
+      }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (isRetryableHttpStatus(res.statusCode)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[WebDavAdapter] Delete failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: true,
+        });
+      }
+      return false;
     } finally {
       await releaseDispatcher(dispatcher);
     }

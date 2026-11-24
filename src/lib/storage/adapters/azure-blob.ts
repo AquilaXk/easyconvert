@@ -5,6 +5,7 @@ import {
   IStorageAdapter,
   StorageAdapterError,
   StorageAdapterMetadata,
+  StorageInputError,
   StorageNotFoundError,
   StorageAuthenticationError,
   StorageInvalidKeyError,
@@ -27,6 +28,21 @@ import {
 const AZURE_REST_VERSION = '2023-11-03';
 const MAX_AZURE_LIST_PAGES = 20;
 const MAX_AZURE_PAGE_RESULTS = 5000;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_SERVER_ERROR_MIN = 500;
+const HTTP_SERVER_ERROR_MAX = 599;
+const FORBIDDEN_PATH_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\\]/u;
+
+function isRetryableHttpStatus(statusCode: number): boolean {
+  return statusCode === HTTP_TOO_MANY_REQUESTS || (statusCode >= HTTP_SERVER_ERROR_MIN && statusCode <= HTTP_SERVER_ERROR_MAX);
+}
+
+function compareAsciiLower(a: string, b: string): number {
+  const al = a.toLowerCase();
+  const bl = b.toLowerCase();
+  if (al < bl) return -1;
+  return al > bl ? 1 : 0;
+}
 
 function extractConnectionStringPart(connStr: string | undefined, key: string): string | undefined {
   if (!connStr) return undefined;
@@ -60,13 +76,13 @@ function stripLeadingSlashes(pathStr: string): string {
 }
 
 function encodeSafePathSegments(remotePath: string, provider: string): string {
-  if (!remotePath || remotePath.includes('\\') || remotePath.includes('\0')) {
-    throw new StorageAdapterError(`Invalid remote path "${remotePath}"`, provider);
+  if (!remotePath || !remotePath.isWellFormed() || FORBIDDEN_PATH_CHAR.test(remotePath)) {
+    throw new StorageInvalidKeyError(`Invalid remote path "${remotePath}"`, provider);
   }
   const cleanPath = stripLeadingSlashes(remotePath);
   const segments = cleanPath.split('/');
   if (segments.length === 0 || segments.some((seg) => !seg || seg === '.' || seg === '..')) {
-    throw new StorageAdapterError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
+    throw new StorageInvalidKeyError(`Path traversal or empty segment rejected in "${remotePath}"`, provider);
   }
   return segments.map((seg) => encodeURIComponent(seg)).join('/');
 }
@@ -124,7 +140,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       : `/${this.storageAccount}/${encodeURIComponent(this.containerName)}`;
     const queryLines = queryParams
       ? Object.keys(queryParams)
-          .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+          .sort(compareAsciiLower)
           .map((k) => `${k.toLowerCase()}:${queryParams[k]}`)
       : [];
     const canonicalizedResource = queryLines.length > 0 ? `${baseResource}\n${queryLines.join('\n')}` : baseResource;
@@ -132,15 +148,20 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     // Canonicalize x-ms-* headers in lexicographical order
     const msHeaders = Object.keys(headers)
       .filter((k) => k.toLowerCase().startsWith('x-ms-'))
-      .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+      .sort(compareAsciiLower)
       .map((k) => `${k.toLowerCase()}:${headers[k]}`)
       .join('\n');
+
+    // Azure SharedKey (API version >= 2015-02-21) keeps Content-Length: 0 on the wire
+    // while requiring an empty Content-Length line in StringToSign when the length is 0.
+    const rawContentLength = contentLength || headers['Content-Length'] || '';
+    const canonicalContentLength = rawContentLength === '0' ? '' : rawContentLength;
 
     const stringToSign = [
       method.toUpperCase(),
       headers['Content-Encoding'] || '',
       headers['Content-Language'] || '',
-      contentLength,
+      canonicalContentLength,
       headers['Content-MD5'] || '',
       headers['Content-Type'] || '',
       '', // Date is empty if x-ms-date is set
@@ -192,7 +213,10 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         const errText = await readErrorText(res.body, this.providerName);
-        throw new Error(`[AzureBlobAdapter] Download failed (${res.statusCode}): ${errText}`);
+        throw new StorageServiceError(`[AzureBlobAdapter] Download failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: isRetryableHttpStatus(res.statusCode),
+        });
       }
 
       const bodyStream = res.body as unknown as NodeJS.ReadableStream;
@@ -218,6 +242,9 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
     stream: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
     options?: { contentType?: string; size?: number }
   ): Promise<StorageAdapterMetadata> {
+    if (options?.size !== undefined && (!Number.isFinite(options.size) || !Number.isInteger(options.size) || options.size < 0)) {
+      throw new StorageInputError(`Invalid upload size: ${options.size}`, this.providerName);
+    }
     const url = this.buildUrl(remotePath);
     await this.assertSsrfSafe(url);
 
@@ -253,9 +280,15 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         dispatcher,
       });
 
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
       if (res.statusCode < 200 || res.statusCode >= 300) {
         const errText = await readErrorText(res.body, this.providerName);
-        throw new Error(`[AzureBlobAdapter] Upload failed (${res.statusCode}): ${errText}`);
+        throw new StorageServiceError(`[AzureBlobAdapter] Upload failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: isRetryableHttpStatus(res.statusCode),
+        });
       }
 
       const etag = (res.headers.etag as string | undefined)?.replace(/"/g, '');
@@ -296,6 +329,13 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
       if (res.statusCode === 404) return null;
       if (res.statusCode === 401 || res.statusCode === 403) {
         throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (isRetryableHttpStatus(res.statusCode)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[AzureBlobAdapter] Head failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: true,
+        });
       }
       if (res.statusCode < 200 || res.statusCode >= 300) return null;
 
@@ -358,7 +398,7 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
           const errText = await readErrorText(res.body, this.providerName);
           throw new StorageServiceError(`[AzureBlobAdapter] List failed (${res.statusCode}): ${errText}`, this.providerName, {
             statusCode: res.statusCode,
-            retryable: res.statusCode >= 500 || res.statusCode === 429,
+            retryable: isRetryableHttpStatus(res.statusCode),
           });
         }
 
@@ -407,7 +447,20 @@ export class AzureBlobStorageAdapter implements IStorageAdapter {
         dispatcher,
       });
 
-      return res.statusCode === 202 || res.statusCode === 200 || res.statusCode === 204;
+      if (res.statusCode === 202 || res.statusCode === 200 || res.statusCode === 204) {
+        return true;
+      }
+      if (res.statusCode === 401 || res.statusCode === 403) {
+        throw new StorageAuthenticationError(`HTTP ${res.statusCode}`, this.providerName);
+      }
+      if (isRetryableHttpStatus(res.statusCode)) {
+        const errText = await readErrorText(res.body, this.providerName);
+        throw new StorageServiceError(`[AzureBlobAdapter] Delete failed (${res.statusCode}): ${errText}`, this.providerName, {
+          statusCode: res.statusCode,
+          retryable: true,
+        });
+      }
+      return false;
     } finally {
       await releaseDispatcher(dispatcher);
     }

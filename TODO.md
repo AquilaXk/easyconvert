@@ -38,7 +38,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Switch queue Lua scripts to EVALSHA, round-robin popNextEligibleJob across queues, poll targetQueue directly in waitForQueuedJobResult, and drop duplicate progress writes.
 - Enforce active API key cap atomically in Lua on POST /api/keys and cap initial presigned part URLs in POST /api/v1/uploads/direct.
 - Stream TUS remote multipart part flushes from file descriptors in 8 MiB slices and persist part progress incrementally.
-- Fix Azure 0-byte SharedKey signing, map GCS/Azure/WebDAV 429 and 5xx responses to retryable StorageServiceError, and encode WebDAV basePath segments.
 
 ## Tests, CI and code health
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
