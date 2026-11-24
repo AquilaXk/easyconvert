@@ -13,7 +13,7 @@ import {
   EngineUnavailableError,
 } from '../../types';
 import {
-  OFFICE_PIPE_DIR,
+  libreOfficeSandboxPipeScope,
   rethrowSandboxUnavailable,
   executeSandboxedBinary,
   SandboxedProcessError,
@@ -308,6 +308,7 @@ export async function convertToPdfA(
     const profileDir = path.join(workDir, 'profile');
     writeOfficeProfile(profileDir);
     try {
+      const pipeScope = libreOfficeSandboxPipeScope(workDir);
       await executeSandboxedBinary(
         soffice,
         [
@@ -327,11 +328,11 @@ export async function convertToPdfA(
           timeoutMs: SOFFICE_TIMEOUT_MS,
           cwd: workDir,
           workDir,
-          socketDirs: [OFFICE_PIPE_DIR],
+          readDirs: pipeScope.readDirs,
           memoryLimitMb: 1536,
           maxFileSize: ARCHIVE_SECURITY_LIMITS.MAX_UNCOMPRESSED_SIZE,
           rlimits: { asBytes: 16 * 1024 * 1024 * 1024 },
-          env: { HOME: workDir, TMPDIR: workDir, SAL_USE_VCLPLUGIN: 'svp' },
+          env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp', ...pipeScope.env },
           networkIsolated: true,
         }
       );

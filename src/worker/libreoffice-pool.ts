@@ -13,7 +13,7 @@ import { readSandboxOutputIfPresent } from '../lib/security/sandbox-output';
 import { findOfficeOutput, getMimeType, resolveOfficeInputContext } from './worker-output';
 import {
   executeSandboxedBinary,
-  OFFICE_PIPE_DIR,
+  libreOfficeSandboxPipeScope,
   rethrowSandboxUnavailable,
   SandboxedExecutionOptions,
   SandboxedExecutionResult,
@@ -444,6 +444,9 @@ export class LibreOfficePoolManager {
           '--help',
         ];
 
+        const pipeScope = libreOfficeSandboxPipeScope(workDir, {
+          usesDefaultExecutor: this.executor === executeSandboxedBinary,
+        });
         await this.executor(
           this.sofficePath,
           warmArgs,
@@ -451,12 +454,12 @@ export class LibreOfficePoolManager {
             cwd: workDir,
             workDir,
             writeDirs: [userProfileDir],
-            socketDirs: [OFFICE_PIPE_DIR],
+            readDirs: pipeScope.readDirs,
             timeoutMs: 15000,
             memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
             maxFileSize: LIBREOFFICE_MAX_FILE_SIZE,
             rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES },
-            env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
+            env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp', ...pipeScope.env },
             networkIsolated: true,
           }
         );
@@ -544,16 +547,19 @@ export class LibreOfficePoolManager {
 
       fs.writeFileSync(inputPath, READINESS_PROBE_TEXT);
       try {
+        const pipeScope = libreOfficeSandboxPipeScope(workDir, {
+          usesDefaultExecutor: this.executor === executeSandboxedBinary,
+        });
         await this.executor(sofficePath, args, {
           cwd: workDir,
           workDir,
           writeDirs: [profileDir],
-          socketDirs: [OFFICE_PIPE_DIR],
+          readDirs: pipeScope.readDirs,
           timeoutMs,
           memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
           maxFileSize: LIBREOFFICE_MAX_FILE_SIZE,
           rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES },
-          env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp' },
+          env: { HOME: workDir, SAL_USE_VCLPLUGIN: 'svp', ...pipeScope.env },
           networkIsolated: true,
         });
       } catch (err) {
@@ -900,6 +906,9 @@ export class LibreOfficePoolManager {
       ];
 
       const diskBudgetBytes = libreOfficeDiskBudgetBytes(officeInputBytes(inputPath));
+      const pipeScope = libreOfficeSandboxPipeScope(jobSubdir, {
+        usesDefaultExecutor: this.executor === executeSandboxedBinary,
+      });
       await runWithDirectoryGrowthWatch(
         { root: jobSubdir, limits: { maxBytes: diskBudgetBytes, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'LibreOffice', callerSignal: options.signal },
         (watchSignal) =>
@@ -913,14 +922,13 @@ export class LibreOfficePoolManager {
                 workDir: jobSubdir,
                 writeDirs: [worker.userProfileDir],
                 // The input of a file of the store is a link to it, which the ruleset reads through to the file.
-                readDirs: [fs.realpathSync(inputPath)],
-                socketDirs: [OFFICE_PIPE_DIR],
+                readDirs: [fs.realpathSync(inputPath), ...pipeScope.readDirs],
                 timeoutMs: timeout,
                 maxBuffer,
                 memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
                 maxFileSize: LIBREOFFICE_MAX_FILE_SIZE,
                 rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES },
-                env: { HOME: jobSubdir, TMPDIR: jobSubdir, SAL_USE_VCLPLUGIN: 'svp' },
+                env: { HOME: jobSubdir, SAL_USE_VCLPLUGIN: 'svp', ...pipeScope.env },
                 networkIsolated: true,
                 signal: watchSignal,
               }

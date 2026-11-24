@@ -299,6 +299,10 @@
       "match": "^native/tmpfile-redirect/"
     },
     {
+      "families": ["document", "pdf-ops"],
+      "match": "^native/osl-pipe-redirect/"
+    },
+    {
       "families": ["cad"],
       "match": "^src/lib/conversions/(bitmap-glyph-text|cad-[^/]*|vector-dxf)\\.ts$|^native/cad-convert/"
     },

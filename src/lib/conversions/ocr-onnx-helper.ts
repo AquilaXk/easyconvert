@@ -172,12 +172,129 @@ function runtimePresent(): boolean {
   }
 }
 
-type ChildEntry = { binary: string; args: string[] };
+export interface ChildEntry {
+  binary: string;
+  args: string[];
+  readDirs?: readonly string[];
+  env?: Readonly<Record<string, string>>;
+}
+
+function safeRealpath(targetPath: string): string {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    return path.resolve(targetPath);
+  }
+}
+
+function isInsideDirectory(candidatePath: string, directoryPath: string): boolean {
+  const rel = path.relative(directoryPath, candidatePath);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+function matchesEntryKind(targetPath: string, kind: 'file' | 'dir'): boolean {
+  try {
+    const stat = fs.statSync(targetPath);
+    return kind === 'file' ? stat.isFile() : stat.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Walks up from `starts` to locate the nearest real file or directory named `targetName`. */
+function findUpwards(starts: readonly string[], targetName: string, kind: 'file' | 'dir'): string | null {
+  const visited = new Set<string>();
+  const tmpRoot = path.resolve(os.tmpdir());
+  for (const start of starts) {
+    let dir = path.resolve(start);
+    for (;;) {
+      if (visited.has(dir)) break;
+      visited.add(dir);
+      const fsRoot = path.parse(dir).root;
+      if (dir === fsRoot || dir === tmpRoot) break;
+      const candidate = path.join(dir, targetName);
+      if (matchesEntryKind(candidate, kind)) return safeRealpath(candidate);
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return null;
+}
+
+function resolveWorkspaceRuntimePaths(starts: readonly string[] = []): {
+  nodeModules: string | null;
+  packageJson: string | null;
+  tsconfigJson: string | null;
+} {
+  const searchStarts = [...starts, __dirname, process.cwd()];
+  return {
+    nodeModules: findUpwards(searchStarts, 'node_modules', 'dir'),
+    packageJson: findUpwards(searchStarts, 'package.json', 'file'),
+    tsconfigJson: findUpwards(searchStarts, 'tsconfig.json', 'file'),
+  };
+}
+
+function dedupePaths(paths: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const p of paths) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      result.push(p);
+    }
+  }
+  return result;
+}
+
+function existingPathArgTargets(args: readonly string[]): string[] {
+  const tmpRoot = path.resolve(os.tmpdir());
+  const found: string[] = [];
+  for (const arg of args) {
+    if (!arg || arg.startsWith('-') || !path.isAbsolute(arg)) continue;
+    const resolved = path.resolve(arg);
+    const fsRoot = path.parse(resolved).root;
+    if (resolved === fsRoot || resolved === tmpRoot) continue;
+    if (fs.existsSync(resolved)) found.push(safeRealpath(resolved));
+  }
+  return found;
+}
+
+/**
+ * Computes the narrowest readable Landlock scope and environment for an ONNX OCR helper process: the model directory,
+ * the child entrypoint bundle (or `src` + `tsconfig.json` + `tsx` in source mode), `node_modules` (`NODE_PATH`), and the
+ * single `package.json` file needed by Node's module package-config check, never widening to `process.cwd()`.
+ */
+export function onnxHelperReadScope(
+  entry: ChildEntry,
+  modelDir: string
+): { readDirs: string[]; env: Record<string, string> } {
+  const resolvedModel = path.resolve(modelDir);
+  const effectiveModel = fs.existsSync(resolvedModel) ? safeRealpath(resolvedModel) : resolvedModel;
+  const baseEnv: Record<string, string> = entry.env ? { ...entry.env } : {};
+  if (entry.readDirs !== undefined) {
+    return { readDirs: dedupePaths([effectiveModel, ...entry.readDirs]), env: baseEnv };
+  }
+  const argPaths = existingPathArgTargets(entry.args);
+  const runtime = resolveWorkspaceRuntimePaths(argPaths.map((p) => path.dirname(p)));
+  const candidates = [...argPaths];
+  if (runtime.nodeModules) {
+    candidates.push(runtime.nodeModules);
+    if (!('NODE_PATH' in baseEnv)) {
+      return {
+        readDirs: dedupePaths([effectiveModel, ...candidates, ...(runtime.packageJson ? [runtime.packageJson] : [])]),
+        env: { NODE_PATH: runtime.nodeModules, ...baseEnv },
+      };
+    }
+  }
+  if (runtime.packageJson) candidates.push(runtime.packageJson);
+  return { readDirs: dedupePaths([effectiveModel, ...candidates]), env: baseEnv };
+}
 
 let childEntry: ChildEntry | null | undefined;
 
 /** How to start a helper: the bundled file next to this module or under `dist/`, otherwise the source through tsx; null when neither exists. */
-function resolveChildEntry(): ChildEntry | null {
+export function resolveChildEntry(): ChildEntry | null {
   if (childEntry !== undefined) return childEntry;
   const heap = `--max-old-space-size=${CHILD_HEAP_MB}`;
   const compiled = [path.join(__dirname, `${CHILD_FILE}.js`), path.join(process.cwd(), 'dist', `${CHILD_FILE}.js`)].find((candidate) => fs.existsSync(candidate));
@@ -190,9 +307,41 @@ function resolveChildEntry(): ChildEntry | null {
   } catch {
     tsxApi = null;
   }
-  if (compiled && !(tsxApi && olderThanSource(compiled, source))) childEntry = { binary: process.execPath, args: [heap, compiled] };
-  else if (source && tsxApi) childEntry = { binary: process.execPath, args: [heap, '-e', `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});`] };
-  else childEntry = null;
+  if (compiled && !(tsxApi && olderThanSource(compiled, source))) {
+    const realCompiled = safeRealpath(compiled);
+    const runtime = resolveWorkspaceRuntimePaths([path.dirname(realCompiled)]);
+    const readDirs = dedupePaths([
+      realCompiled,
+      ...(runtime.nodeModules ? [runtime.nodeModules] : []),
+      ...(runtime.packageJson ? [runtime.packageJson] : []),
+    ]);
+    childEntry = {
+      binary: process.execPath,
+      args: [heap, compiled],
+      readDirs,
+      env: runtime.nodeModules ? { NODE_PATH: runtime.nodeModules } : {},
+    };
+  } else if (source && tsxApi) {
+    const realSource = safeRealpath(source);
+    const realTsxApi = safeRealpath(tsxApi);
+    const srcRoot = path.dirname(path.dirname(path.dirname(realSource)));
+    const runtime = resolveWorkspaceRuntimePaths([path.dirname(realSource)]);
+    const readDirs = dedupePaths([
+      fs.existsSync(srcRoot) ? srcRoot : path.dirname(realSource),
+      ...(runtime.tsconfigJson ? [runtime.tsconfigJson] : []),
+      ...(runtime.nodeModules ? [runtime.nodeModules] : []),
+      ...(!runtime.nodeModules || !isInsideDirectory(realTsxApi, runtime.nodeModules) ? [realTsxApi] : []),
+      ...(runtime.packageJson ? [runtime.packageJson] : []),
+    ]);
+    childEntry = {
+      binary: process.execPath,
+      args: [heap, '-e', `require(${JSON.stringify(tsxApi)}).register(); require(${JSON.stringify(source)});`],
+      readDirs,
+      env: runtime.nodeModules ? { NODE_PATH: runtime.nodeModules } : {},
+    };
+  } else {
+    childEntry = null;
+  }
   return childEntry;
 }
 
@@ -256,15 +405,16 @@ class OnnxHelper {
 
   constructor(entry: ChildEntry, modelDir: string, threads: number) {
     const cpuSeconds = ONNX_HELPER_MAX_PAGES * CPU_SECONDS_PER_PAGE * threads;
+    const scope = onnxHelperReadScope(entry, modelDir);
     let command: ReturnType<typeof resolveSandboxedCommand>;
     try {
       command = resolveSandboxedCommand(entry.binary, [...entry.args, '--', `--models=${modelDir}`, `--threads=${threads}`], {
       networkIsolated: true,
       // The address space is not the resident memory (that is watched below): the runtime reserves far more than it uses.
       rlimits: { asBytes: ONNX_HELPER_ADDRESS_SPACE_MB * 1024 * 1024, cpuSeconds, fsizeBytes: 1024 * 1024, coreBytes: 0 },
-      // It writes nothing but what the runtime and the source runner keep in its home and temporary directory. It reads its models and the application it runs from (the bundle and the runtime's native module below the working directory of the worker).
+      // It writes only in its own scratch directory and reads strictly its models, entry bundle/source, node_modules, and package.json (never process.cwd()).
       workDir: this.scratch,
-      readDirs: process.cwd() === path.parse(process.cwd()).root ? [modelDir] : [modelDir, process.cwd()],
+      readDirs: scope.readDirs,
     });
     } catch (error) {
       fs.rmSync(this.scratch, { recursive: true, force: true });
@@ -274,7 +424,7 @@ class OnnxHelper {
     // Directly, without a shell, in its own process group, with the three standard streams and the sanitized environment only.
     this.process = spawn(command.binary, command.args, {
       cwd: this.scratch,
-      env: getSanitizedEnvironment({}, true, this.scratch),
+      env: getSanitizedEnvironment(scope.env, true, this.scratch),
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
       detached: true,

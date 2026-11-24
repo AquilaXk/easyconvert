@@ -47,8 +47,8 @@ export interface SandboxFileScope {
   /** More directories the program may read and run files from, beyond the system (model files, an installed tool outside the system paths). */
   readDirs?: readonly string[];
   /**
-   * Directories in which the program may make and remove sockets, for a program that binds one at a place it cannot choose (the office suite:
-   * `OFFICE_PIPE_DIR`). Rights cannot be limited to a name, so it may also remove the other files there; it can neither read nor write them.
+   * Directories in which the program may make and remove AF_UNIX sockets outside `workDir` / `writeDirs`, when a program cannot be
+   * redirected into its job directory. Rights cannot be limited to a name, so any caller should prefer job-local socket redirection.
    */
   socketDirs?: readonly string[];
   /** The worker's SANDBOX_CONFINE_FILES=false, handed to the launcher helper, whose own environment does not carry it. */
@@ -60,8 +60,48 @@ function fileScopeOf(options: SandboxFileScope): SandboxFileScope {
   return { workDir: options.workDir, writeDirs: options.writeDirs, readDirs: options.readDirs, socketDirs: options.socketDirs, fileConfinementOff: options.fileConfinementOff };
 }
 
-/** Where the office suite binds its single-instance pipe, whatever TMPDIR says (sal's osl pipes are made below /tmp). */
-export const OFFICE_PIPE_DIR = '/tmp';
+/** Preload library built by native/osl-pipe-redirect that redirects LibreOffice /tmp/OSL_PIPE_* paths into TMPDIR. */
+export const OSL_PIPE_REDIRECT_LIBRARY = '/usr/local/lib/libeasyconvert-osl-pipe.so';
+
+export interface LibreOfficePipeScopeOptions {
+  usesDefaultExecutor?: boolean;
+  libraryPath?: string;
+  existingLdPreload?: string;
+}
+
+/**
+ * Environment and readable file scope that isolates LibreOffice OSL_PIPE sockets inside `pipeDir` instead of `/tmp`.
+ * Fails closed when an explicit `libraryPath` is missing on Linux, or when active Linux file confinement runs through the
+ * default executor without the preload library present.
+ */
+export function libreOfficeSandboxPipeScope(
+  pipeDir: string,
+  options: LibreOfficePipeScopeOptions = {}
+): { env: Record<string, string>; readDirs: string[] } {
+  const resolvedPipeDir = confinedDirectory(pipeDir, 'LibreOffice pipe directory');
+  if (process.platform !== 'linux') {
+    return { env: { TMPDIR: resolvedPipeDir }, readDirs: [] };
+  }
+  const candidate = options.libraryPath ?? OSL_PIPE_REDIRECT_LIBRARY;
+  if (options.libraryPath !== undefined) {
+    confinedDirectory(candidate, 'OSL pipe redirect library');
+    if (!fs.existsSync(candidate)) {
+      throw sandboxUnavailable(`LibreOffice OSL pipe redirect library (${candidate}) is missing; the confined office run is not started.`);
+    }
+  }
+  if (fs.existsSync(candidate)) {
+    const realLib = fs.realpathSync(candidate);
+    const ldPreload = options.existingLdPreload ? `${realLib}:${options.existingLdPreload}` : realLib;
+    return { env: { TMPDIR: resolvedPipeDir, LD_PRELOAD: ldPreload }, readDirs: [realLib] };
+  }
+  const requiresConfinement =
+    options.usesDefaultExecutor !== false &&
+    (strictSandboxEnabled() || (!fileConfinementDisabled() && getUnshareCapability().confinesFiles));
+  if (requiresConfinement) {
+    throw sandboxUnavailable(`LibreOffice OSL pipe redirect library (${candidate}) is missing; the confined office run is not started.`);
+  }
+  return { env: { TMPDIR: resolvedPipeDir }, readDirs: [] };
+}
 
 export interface SandboxedExecutionOptions extends SandboxFileScope {
   timeoutMs?: number;
@@ -784,7 +824,7 @@ export function confinedDirectory(directory: string, what: string): string {
   return resolved;
 }
 
-/** A directory a run uses for local AF_UNIX IPC (such as LibreOffice's `/tmp/OSL_PIPE_*`, policy entry 248): absolute, without NUL, and never `/`. */
+/** A directory a run uses for local AF_UNIX IPC: absolute, without NUL, and never `/`. */
 export function confinedSocketDirectory(directory: string, what: string): string {
   if (typeof directory !== 'string' || !path.isAbsolute(directory) || directory.includes('\0')) {
     throw sandboxUnavailable(`The ${what} of a sandboxed run must be an absolute path without NUL (got ${JSON.stringify(directory)}); the program is not started.`);

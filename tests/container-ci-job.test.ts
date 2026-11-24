@@ -54,6 +54,8 @@ const RELEVANT_PATHS = [
   'native/cad-convert/cad-convert.cpp',
   'native/qpdf-runner/build.sh',
   'native/pid-init/pid-init.c',
+  'native/tmpfile-redirect/tmpfile-redirect.c',
+  'native/osl-pipe-redirect/osl-pipe-redirect.c',
   'scripts/install-ffmpeg.sh',
   'scripts/install-verapdf.sh',
   'scripts/install-vtracer-pixels.sh',

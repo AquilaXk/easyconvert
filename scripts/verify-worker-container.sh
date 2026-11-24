@@ -371,13 +371,20 @@ fi
 
 if [ "${VERIFY_LIBREOFFICE:-0}" = "1" ]; then
   printf '%s\n' "$MARKER_TEXT" > "$work_dir/document.txt"
-  if HOME="$work_dir" sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" soffice --headless --norestore --nofirststartwizard --nologo \
-      "-env:UserInstallation=file://$work_dir/lo-profile" --convert-to pdf --outdir "$work_dir" "$work_dir/document.txt" \
+  lo_work="$work_dir/lo-work"
+  mkdir -p "$lo_work"
+  if [ -s /usr/local/lib/libeasyconvert-osl-pipe.so ] \
+    && unshare -r -n -- pid-init --confine --require --write "$lo_work" --read "$work_dir/document.txt" --read /usr/local/lib/libeasyconvert-osl-pipe.so \
+      -- prlimit --as="$ADDRESS_SPACE_LIMIT_BYTES" -- timeout "$CONVERSION_TIMEOUT_SECONDS" \
+      env HOME="$lo_work" TMPDIR="$lo_work" LD_PRELOAD=/usr/local/lib/libeasyconvert-osl-pipe.so \
+      soffice --headless --norestore --nofirststartwizard --nologo \
+      "-env:UserInstallation=file://$lo_work/lo-profile" --convert-to pdf --outdir "$lo_work" "$work_dir/document.txt" \
       >"$work_dir/soffice.out" 2>&1 \
-    && head -c 5 "$work_dir/document.pdf" | grep -q '%PDF-'; then
-    pass "LibreOffice $(soffice --version 2>/dev/null | head -n 1) converted a text file to PDF inside the sandbox"
+    && head -c 5 "$lo_work/document.pdf" | grep -q '%PDF-' \
+    && [ -z "$(find /tmp -maxdepth 1 -name 'OSL_PIPE_*' -print -quit 2>/dev/null)" ]; then
+    pass "LibreOffice $(soffice --version 2>/dev/null | head -n 1) converted a text file to PDF inside the confined sandbox without /tmp sockets"
   else
-    fail "LibreOffice did not convert inside the sandbox: $(head -c 300 "$work_dir/soffice.out" 2>/dev/null)"
+    fail "LibreOffice did not convert inside the confined sandbox: $(head -c 300 "$work_dir/soffice.out" 2>/dev/null)"
   fi
 fi
 
@@ -590,7 +597,19 @@ child.stdout.on('data', (chunk) => {
   }
 });
 PROBE
-  onnx_output="$(timeout 120 node "$work_dir/onnx-probe.js" unshare -r -n -- pid-init -- prlimit --as=$((10 * 1024 * 1024 * 1024)) --cpu=300 -- node "$APP_DIR/dist/ocr-onnx-child.js" --models=/opt/ocr-onnx --threads=1 2>&1 | head -c 600)"
+  onnx_scratch="$work_dir/onnx-scratch"
+  mkdir -p "$onnx_scratch"
+  onnx_reads=(--read /opt/ocr-onnx --read "$(readlink -f "$APP_DIR/dist/ocr-onnx-child.js")")
+  onnx_node_path=""
+  if [ -e "$APP_DIR/node_modules" ]; then
+    onnx_real_nm="$(readlink -f "$APP_DIR/node_modules")"
+    onnx_reads+=(--read "$onnx_real_nm")
+    onnx_node_path="$onnx_real_nm"
+  fi
+  if [ -e "$APP_DIR/package.json" ]; then
+    onnx_reads+=(--read "$(readlink -f "$APP_DIR/package.json")")
+  fi
+  onnx_output="$(timeout 120 node "$work_dir/onnx-probe.js" unshare -r -n -- pid-init --confine --require --write "$onnx_scratch" "${onnx_reads[@]}" -- prlimit --as=$((10 * 1024 * 1024 * 1024)) --cpu=300 -- env HOME="$onnx_scratch" TMPDIR="$onnx_scratch" ${onnx_node_path:+NODE_PATH="$onnx_node_path"} node "$APP_DIR/dist/ocr-onnx-child.js" --models=/opt/ocr-onnx --threads=1 2>&1 | head -c 600)"
   if [ "$onnx_output" = "ONNX-OK" ]; then
     pass "the ONNX OCR helper loaded its models and read a page (detector and recogniser) in a sandbox of its own under this container's seccomp profile"
   else

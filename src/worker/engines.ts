@@ -63,7 +63,7 @@ import { runFfmpegTranscode } from '../lib/conversions/media-ffmpeg-run';
 import { mediaReadDirs, openMediaInput, runFfmpeg } from '../lib/conversions/media-process';
 import { runTwoPass, TWO_PASS_LOG_PREFIX, twoPassBudgetMs } from '../lib/conversions/media-two-pass';
 import {
-  executeSandboxedBinary, OFFICE_PIPE_DIR, rethrowSandboxUnavailable, SandboxedMemoryLimitError,
+  executeSandboxedBinary, libreOfficeSandboxPipeScope, rethrowSandboxUnavailable, SandboxedMemoryLimitError,
   SandboxedProcessError, SandboxedTimeoutError, SandboxedBufferLimitError,
 } from './sandbox';
 import { convertPostScript, type PostScriptJob } from './postscript-render';
@@ -323,7 +323,7 @@ async function runHeadlessOffice(
       const { inputPath } = resolveOfficeInputContext(input, src, tempDir);
       const timeout = sizedStageTimeoutMs(options, officeInputBytes(inputPath), OFFICE_STAGE);
       const maxBuffer = Math.min(options.maxBufferBytes || 100 * 1024 * 1024, 500 * 1024 * 1024);
-      const diskLimit = libreOfficeDiskBudgetBytes(officeInputBytes(inputPath));
+      const diskLimit = libreOfficeDiskBudgetBytes(officeInputBytes(inputPath)), pipeScope = libreOfficeSandboxPipeScope(tempDir);
       await runWithDirectoryGrowthWatch(
         { root: tempDir, limits: { maxBytes: diskLimit, maxEntries: ARCHIVE_SECURITY_LIMITS.MAX_FILES }, label: 'LibreOffice', callerSignal: options.signal },
         (watchSignal) =>
@@ -331,9 +331,9 @@ async function runHeadlessOffice(
             sofficeBin,
             ['--headless', '--norestore', '--nofirststartwizard', '--nologo', ...standaloneProfileArguments(tempDir, options, src, inputPath), '--convert-to', filterSpec, '--outdir', tempDir, inputPath],
             {
-              cwd: tempDir, workDir: tempDir, readDirs: [fs.realpathSync(inputPath)], socketDirs: [OFFICE_PIPE_DIR],
+              cwd: tempDir, workDir: tempDir, readDirs: [fs.realpathSync(inputPath), ...pipeScope.readDirs],
               timeoutMs: timeout, maxBuffer, maxFileSize: LIBREOFFICE_MAX_FILE_SIZE, memoryLimitMb: LIBREOFFICE_MEMORY_LIMIT_MB,
-              rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES }, env: { HOME: tempDir, TMPDIR: tempDir, SAL_USE_VCLPLUGIN: 'svp' },
+              rlimits: { asBytes: LIBREOFFICE_ADDRESS_SPACE_BYTES }, env: { HOME: tempDir, SAL_USE_VCLPLUGIN: 'svp', ...pipeScope.env },
               networkIsolated: true, signal: watchSignal,
             }
           )

@@ -5,7 +5,8 @@ import crypto from 'node:crypto';
 
 export {
   executeSandboxedBinary,
-  OFFICE_PIPE_DIR,
+  libreOfficeSandboxPipeScope,
+  OSL_PIPE_REDIRECT_LIBRARY,
   detectSandboxEnvironment,
   getSanitizedEnvironment,
   killProcessGroup,

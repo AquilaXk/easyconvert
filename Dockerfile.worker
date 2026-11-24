@@ -328,6 +328,10 @@ RUN /src/pid-init/build.sh /usr/local/bin/pid-init
 # where a program under the file confinement of pid-init may not write.
 COPY native/tmpfile-redirect/ /src/tmpfile-redirect/
 RUN /src/tmpfile-redirect/build.sh /usr/local/lib/libeasyconvert-tmpfile.so
+# The preload library that redirects LibreOffice OSL_PIPE sockets from /tmp into TMPDIR (native/osl-pipe-redirect),
+# so LibreOffice runs under pid-init --confine without widening Landlock socket/unlink permissions on /tmp.
+COPY native/osl-pipe-redirect/ /src/osl-pipe-redirect/
+RUN /src/osl-pipe-redirect/build.sh /usr/local/lib/libeasyconvert-osl-pipe.so
 
 # ==============================================================================
 # Stage 4b, second part: Models of the ONNX OCR engine
@@ -641,6 +645,8 @@ RUN qpdf-runner --check | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
 # pid-init (built in the qpdfrunner stage). Run without arguments it prints its usage and exits 2; that line is the sign that it starts.
 COPY --from=qpdfrunner /usr/local/bin/pid-init /usr/local/bin/pid-init
 COPY --from=qpdfrunner /usr/local/lib/libeasyconvert-tmpfile.so /usr/local/lib/libeasyconvert-tmpfile.so
+COPY --from=qpdfrunner /usr/local/lib/libeasyconvert-osl-pipe.so /usr/local/lib/libeasyconvert-osl-pipe.so
+RUN test -s /usr/local/lib/libeasyconvert-tmpfile.so && test -s /usr/local/lib/libeasyconvert-osl-pipe.so
 RUN pid-init 2>&1 | grep -q '^usage: pid-init'
 
 # Models of the ONNX OCR engine, at the fixed directory the worker reads (src/lib/conversions/ocr-onnx-helper.ts). The engine runs in a

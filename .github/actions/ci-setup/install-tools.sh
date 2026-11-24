@@ -167,6 +167,8 @@ task_apt() {
   { pid-init 2>&1 || true; } | grep -q '^usage: pid-init' || { echo "pid-init does not start" >&2; return 1; }
   # The preload library that makes tmpfile() use TMPDIR (native/tmpfile-redirect), which FontForge needs under the file confinement of pid-init.
   sudo "$action_path/../../../native/tmpfile-redirect/build.sh" /usr/local/lib/libeasyconvert-tmpfile.so || return 1
+  # The preload library that redirects LibreOffice OSL_PIPE sockets into TMPDIR (native/osl-pipe-redirect), avoiding /tmp socket rules under pid-init --confine.
+  sudo "$action_path/../../../native/osl-pipe-redirect/build.sh" /usr/local/lib/libeasyconvert-osl-pipe.so || return 1
 }
 
 # DjVu input is drawn by djvulibre built from the Debian source of 3.5.28 with two patches (scripts/install-djvulibre.sh), against the
