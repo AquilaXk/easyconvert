@@ -6,7 +6,7 @@ Full licence text is embedded for every non-optional package. Optional platform 
 prebuilt image-processing and rendering binaries) are listed without text because they are installed only on
 matching hosts; their licence files and bundled library notices ship in the package itself.
 
-Total packages: 287
+Total packages: 288
 
 ---
 
@@ -106,6 +106,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+---
+
+### @emnapi/runtime@1.11.3
+
+- **License**: `MIT`
+- **Source**: https://registry.npmjs.org/@emnapi/runtime/-/runtime-1.11.3.tgz
+
+Licence text: not embedded (optional platform package that is not installed on every host); the full text ships in the package.
 
 ---
 
