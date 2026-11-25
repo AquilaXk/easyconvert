@@ -37,6 +37,7 @@ const read = (...parts: string[]): string => readFileSync(path.join(ROOT, ...par
 const workflow = (name: string): Workflow => parse(read('.github', 'workflows', name)) as Workflow;
 const ci = workflow('ci.yml');
 const nightly = workflow('nightly.yml');
+const regressionCorpus = workflow('regression-corpus.yml');
 const reusable = workflow('sharp-libvips.yml');
 const action = parse(read('.github', 'actions', 'sharp-libvips', 'action.yml')) as { runs: { steps: Step[] } };
 const dockerfile = read('Dockerfile.worker');
@@ -694,8 +695,9 @@ describe('the jobs that convert pictures', () => {
   const CONSUMERS: Array<[string, Workflow, string]> = [
     ...['tests', 'conformance', 'parity-quality'].map((job): [string, Workflow, string] => ['ci.yml', ci, job]),
     ...['perf', 'bench', 'bench-parity-quality', 'bench-parity-speed', 'bench-ab-speed', 'realworld'].map((job): [string, Workflow, string] => ['nightly.yml', nightly, job]),
+    ['regression-corpus.yml', regressionCorpus, 'shard'],
   ];
-  const converts = (step: Step): boolean => /vitest run|bench:quality|bench:realworld/.test(step.run ?? '');
+  const converts = (step: Step): boolean => /vitest run|bench:quality|bench:realworld|bench:regression/.test(step.run ?? '');
 
   it.each(CONSUMERS)('%s %s waits for the build and puts it into node_modules after the install and before any conversion', (_file, flow, name) => {
     const job = flow.jobs[name];
@@ -729,12 +731,14 @@ describe('the jobs that convert pictures', () => {
     expect(build?.with?.['build-contexts']).toBe(`sharplibvips=${String(restore?.with?.path)}`);
   });
 
-  it('is fed by one reusable workflow that both workflows call, and whose failure fails the run', () => {
+  it('is fed by one reusable workflow that the picture workflows call, and whose failure fails the run', () => {
     expect(ci.jobs['sharp-libvips'].uses).toBe('./.github/workflows/sharp-libvips.yml');
     expect(nightly.jobs['sharp-libvips'].uses).toBe('./.github/workflows/sharp-libvips.yml');
+    expect(regressionCorpus.jobs['sharp-libvips'].uses).toBe('./.github/workflows/sharp-libvips.yml');
     expect(ci.jobs.verify.needs).toContain('sharp-libvips');
     // The nightly has no report job any more: a failed sharp-libvips job fails the run itself, and every picture job waits on it.
     for (const job of ['perf', 'bench', 'bench-parity-quality', 'bench-parity-speed', 'realworld']) expect(nightly.jobs[job].needs).toContain('sharp-libvips');
+    expect(regressionCorpus.jobs.shard.needs).toContain('sharp-libvips');
     expect(Object.keys(reusable.on)).toEqual(['workflow_call']);
   });
 });

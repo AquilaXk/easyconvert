@@ -45,6 +45,10 @@ env:
   BASELINE_BRANCH: main
 
 jobs:
+  # The libvips the worker image ships (.github/workflows/sharp-libvips.yml). Shards wait for it.
+  sharp-libvips:
+    uses: ./.github/workflows/sharp-libvips.yml
+
   plan:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -78,7 +82,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   shard:
-    needs: [plan]
+    needs: [plan, sharp-libvips]
     name: shard (${{ matrix.shard }}/${{ needs.plan.outputs.count }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -100,8 +104,16 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
+      # The library the worker image ships (Dockerfile.worker, stage 4c), not the copy of the npm package.
+      - name: Use the libvips of the worker image
+        uses: ./.github/actions/sharp-libvips
+
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+
+      # Run compiled worker and sandbox helper bundles so sub-workers do not spawn tsx per child.
+      - name: Build worker bundles
+        run: npm run build:pdf-text-worker && npm run build:ocr-onnx-child && npm run build:cpu-worker && npm run build:raw-worker && npm run build:sandbox-launcher
 
       # Files are fetched in batches into a directory of the runner and deleted after they are judged.
       - name: Run the corpus shard
@@ -112,6 +124,8 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.count }}
           LIMIT: ${{ inputs.limit }}
+          # Match the production worker allocator arena ceiling (docker-compose.yml / nightly.yml).
+          MALLOC_ARENA_MAX: '2'
         run: |
           args=(--mode "$MODE" --date "$RUN_DATE" --shard "$SHARD/$SHARDS" --cache "$RUNNER_TEMP/regression-corpus" --out "regression-shard-$SHARD.json")
           if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi

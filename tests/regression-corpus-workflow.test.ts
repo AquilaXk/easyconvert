@@ -118,6 +118,17 @@ describe('shards', () => {
     expect(run?.run).toContain('if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi');
     expect(run?.run).toContain('--cache "$RUNNER_TEMP/regression-corpus"');
   });
+
+  it('matches worker runtime parity with MALLOC_ARENA_MAX=2 and compiled worker bundles before running', () => {
+    const steps = workflow.jobs.shard.steps;
+    const runIndex = steps.findIndex((step) => step.name === 'Run the corpus shard');
+    const buildIndex = steps.findIndex((step) => step.name === 'Build worker bundles');
+    expect(buildIndex).toBeGreaterThan(-1);
+    expect(buildIndex).toBeLessThan(runIndex);
+    expect(steps[buildIndex].run).toContain('npm run build:pdf-text-worker');
+    expect(steps[buildIndex].run).toContain('npm run build:ocr-onnx-child');
+    expect(steps[runIndex].env?.MALLOC_ARENA_MAX).toBe('2');
+  });
 });
 
 describe('storage', () => {

@@ -389,10 +389,10 @@ describe('the runner image of every workflow job', () => {
       return Object.entries(workflow.jobs).map(([id, job]) => ({ where: `${file} ${id}`, job }));
     });
 
-  it('reads every job of every workflow file: 30 on a runner and 2 that call a reusable workflow', () => {
-    expect(jobs).toHaveLength(32);
+  it('reads every job of every workflow file: 30 on a runner and 3 that call a reusable workflow', () => {
+    expect(jobs).toHaveLength(33);
     expect(jobs.filter(({ job }) => job['runs-on'] !== undefined)).toHaveLength(30);
-    expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(2);
+    expect(jobs.filter(({ job }) => job.uses !== undefined)).toHaveLength(3);
   });
 
   it('points every local uses, of a job and of a step, at a file of this repository (a step names the folder of its action.yml)', () => {
