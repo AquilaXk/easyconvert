@@ -316,6 +316,7 @@ async function runPipelineTasks(params: {
     await job.log(
       `[${engine.name}] [Stage ${i + 1}/${tasks.length}] Task "${task.name}" (${task.operation}): ${currentSourceFormat} -> ${stageTarget}`
     );
+    throwIfAttemptAborted(job.id, attemptSignal, lastResult, intermediateFilePaths);
 
     const mergedOptions: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean } = {
       ...openPasswordOption(job.data.options, job.id),
@@ -430,10 +431,12 @@ export async function processNodeJob(
   const intermediateFilePaths: string[] = [];
 
   try {
+    throwIfAttemptAborted(job.id, attemptSignal);
     // 1. Fetch input from Storage backend or Base64 payload
     if (job.data.storageKey) {
       await takeInputHold(job.data.storageKey, job.id);
       const stored = await storage.getObject(job.data.storageKey);
+      throwIfAttemptAborted(job.id, attemptSignal);
       if (!stored) {
         throw new Error(`Storage object not found for key: "${job.data.storageKey}"`);
       }

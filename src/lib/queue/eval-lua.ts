@@ -98,7 +98,13 @@ export async function ensureQueueLuaLoaded(client: Redis, script: string): Promi
     if (hasLoadedSha(preloadedClusterMastersByClient, target, sha)) {
       return sha;
     }
-    if (typeof (client as { once?: unknown }).once === 'function' && typeof (client as { status?: unknown }).status === 'string') {
+    const c = client as { once?: unknown; off?: unknown; status?: unknown; connect?: unknown };
+    if (
+      typeof c.once === 'function' &&
+      typeof c.off === 'function' &&
+      typeof c.status === 'string' &&
+      (c.status !== 'wait' || typeof c.connect === 'function')
+    ) {
       await whenReady(client);
     }
     if (typeof target.nodes === 'function') {

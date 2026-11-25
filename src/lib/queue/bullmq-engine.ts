@@ -228,7 +228,7 @@ export class Job<T = any, R = any> {
     if (next === this.progress) return;
     this.progress = next;
     this.emitter.emit('progress', this, this.progress);
-    if (this.onUpdateHook) {
+    if (this.onUpdateHook && !this.signal?.aborted && !TERMINAL_JOB_STATES.has(this.state)) {
       try { await this.onUpdateHook(this); } catch {}
     }
   }
@@ -1303,6 +1303,7 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
               if (!payload.jobId) return;
               const localJob = this.localActiveJobs.get(payload.jobId);
               if (payload.event === 'progress') {
+                if (localJob && (localJob.signal?.aborted || TERMINAL_JOB_STATES.has(localJob.state))) return;
                 const prog = Number(payload.progress || 0);
                 if (localJob) localJob.progress = prog;
                 this.emit('progress', localJob ?? { id: payload.jobId, progress: prog, state: 'active' }, prog);
@@ -1467,23 +1468,21 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
   /** Aborts the attempt this process is running for `jobId`, if any, as cancelled. */
   private abortLocalActiveJob(jobId: string, reason: string): void {
     const job = this.localActiveJobs.get(jobId);
-    if (!job) {
-      return;
-    }
+    if (!job) return;
     job.state = 'cancelled';
     job.failedReason = reason;
     job._abortAttempt(new JobCancelledError(reason));
   }
 
   private readonly persistProgressHook = async (j: Job<T, R>): Promise<void> => {
-    if (!this.redisClient || !this.redisConnected) return;
+    if (!this.redisClient || !this.redisConnected || j.signal?.aborted || TERMINAL_JOB_STATES.has(j.state)) return;
     if ((j.data as { transientSyncWait?: boolean } | undefined)?.transientSyncWait) return;
     if (j._attemptToken && j.progress >= 100) return;
     try {
       const jobKey = this.getJobKey(j.id);
       if (typeof this.redisClient.eval === 'function' && j._attemptToken) {
         const updated = await evalQueueLua(this.redisClient, UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT, 1, jobKey, j._attemptToken, String(j.progress));
-        if (Number(updated) === 0) return;
+        if (Number(updated) === 0 || j.signal?.aborted || TERMINAL_JOB_STATES.has(j.state)) return;
       } else if (typeof this.redisClient.eval === 'function') await this.redisClient.hset(jobKey, 'progress', String(j.progress));
       else await this.redisClient.hset(jobKey, 'progress', String(j.progress), 'logs', JSON.stringify(j.logs));
       await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });

@@ -7,10 +7,12 @@ import { describe, it, expect, vi, afterEach, afterAll } from 'vitest';
 import { ociWorker, stopHeartbeat } from '../src/worker/index';
 import { allConversionQueues, conversionQueue } from '../src/lib/queue/conversion-queue';
 import { s3Storage } from '../src/lib/storage/s3-storage';
+import { closeRetentionLedger, getRetentionLedger } from '../src/lib/storage/retention-ledger';
 import { Job } from '../src/lib/queue/bullmq-engine';
 import { unregisterLiveWorkerHeartbeat } from '../src/lib/queue/worker-presence';
 import { webhookDispatcher } from '../src/lib/api-keys/webhook-dispatcher';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 const CSV_INPUT = 'name,score\nAlice,100\nBob,95\n';
@@ -31,12 +33,14 @@ function nextEvent(emitter: EventEmitter, event: string): Promise<unknown[]> {
 function waitForCompleted(
   emitter: EventEmitter,
   jobId: string
-): Promise<[Job<ConversionJobData, ConversionJobResult>, ConversionJobResult]> {
+): Promise<[Job<ConversionJobData, ConversionJobResult>, ConversionJobResult, Promise<unknown[]>]> {
   return new Promise((resolve) => {
     const handler = (job: Job<ConversionJobData, ConversionJobResult>, result: ConversionJobResult) => {
       if (job.id === jobId) {
         emitter.off('completed', handler);
-        resolve([job, result]);
+        // completeJob emits 'completed' before executeJob's finally decrements activeCount.
+        const drained = nextEvent(emitter, 'drained');
+        resolve([job, result, drained]);
       }
     };
     emitter.on('completed', handler);
@@ -103,6 +107,7 @@ describe('OCI worker processor honours the attempt abort signal', () => {
     vi.restoreAllMocks();
     for (const key of createdResultKeys.splice(0)) {
       s3Storage.deleteObject(key);
+      await getRetentionLedger().forget(key).catch(() => undefined);
     }
     for (const id of createdJobIds.splice(0)) {
       await conversionQueue.remove(id).catch(() => undefined);
@@ -115,7 +120,9 @@ describe('OCI worker processor honours the attempt abort signal', () => {
     await ociWorker.close();
     await webhookDispatcher.close();
     await Promise.all(allConversionQueues.map((q) => q.close()));
+    await closeRetentionLedger();
     await redisKeyStore.close();
+    await redisUserStore.close();
     s3Storage.stopGc();
   });
 
@@ -126,8 +133,9 @@ describe('OCI worker processor honours the attempt abort signal', () => {
     const completed = waitForCompleted(ociWorker, jobId);
     const job = await addCsvJob(jobId);
 
-    const [, result] = await completed;
+    const [, result, drained] = await completed;
     createdResultKeys.push(result.resultKey);
+    await drained;
 
     expect(resultWritesFor(job.id, saveSpy, saveFromFileSpy)).toHaveLength(1);
     expect(JSON.parse(s3Storage.getObject(result.resultKey)!.buffer.toString('utf-8'))).toEqual([

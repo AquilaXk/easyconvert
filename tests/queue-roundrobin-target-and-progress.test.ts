@@ -2,10 +2,10 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Redis from 'ioredis';
 import { DistributedBullMQAdapter, Job, JobCancelledError, Queue, Worker } from '../src/lib/queue/bullmq-engine';
-import { conversionQueue, processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
+import { allConversionQueues, conversionQueue, processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
 import { ensureQueueLuaLoaded, evalQueueLua, execPipelineEvalQueueLua, luaScriptSha1 } from '../src/lib/queue/eval-lua';
 import { UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
 import { processNodeJob, type ConversionEnginePort } from '../src/lib/queue/node-processor';
@@ -16,6 +16,10 @@ import {
 } from '../src/lib/queue/wait-for-job';
 import * as workerPresence from '../src/lib/queue/worker-presence';
 import { storageProvider } from '../src/lib/storage';
+import { closeRetentionLedger, getRetentionLedger } from '../src/lib/storage/retention-ledger';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { redisUserStore } from '../src/lib/auth/redis-user-store';
 import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 
 describe('Queue scheduling fairness, direct targetQueue polling, and progress deduplication', () => {
@@ -45,6 +49,14 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     if (savedExecMode === undefined) delete process.env.WEB_EXECUTION_MODE;
     else process.env.WEB_EXECUTION_MODE = savedExecMode;
     vi.restoreAllMocks();
+  });
+
+  afterAll(async () => {
+    await Promise.all(allConversionQueues.map((q) => q.close()));
+    await closeRetentionLedger();
+    await redisKeyStore.close();
+    await redisUserStore.close();
+    s3Storage.stopGc();
   });
 
   it('round-robins popNextEligibleJob across queues instead of starving later queues', async () => {
@@ -399,6 +411,30 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
         ],
       })
     ).rejects.toThrow(/retry pipeline returned 1 replies for 2 commands/);
+
+    const extraRepliesClient = {
+      eval: vi.fn(),
+      evalsha: vi.fn(),
+      script: vi.fn().mockResolvedValue(expectedSha),
+      pipeline: () => ({
+        evalsha: vi.fn().mockReturnThis(),
+        exec: vi.fn().mockResolvedValue([
+          [null, 1],
+          [null, 2],
+          [null, 3],
+        ]),
+      }),
+    } as unknown as Redis;
+
+    await expect(
+      execPipelineEvalQueueLua(extraRepliesClient, {
+        script,
+        calls: [
+          { numKeys: 1, args: ['k1'] },
+          { numKeys: 1, args: ['k2'] },
+        ],
+      })
+    ).rejects.toThrow(/returned 3 replies for 2 commands/);
   });
 
   it('suppresses Job.updateProgress after abort or terminal state and suppresses Redis Pub/Sub when Lua returns 0', async () => {
@@ -519,6 +555,29 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     luaProgressReply = 0;
     await added.updateProgress(75);
     expect(publishedPayloads).toEqual([]);
+
+    // 4. Aborting while UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT is in flight suppresses Pub/Sub even when Lua returns 1.
+    const inFlightJob = await adapter.add('convert', {
+      jobId: 'j_redis_inflight_abort',
+      originalFilename: 'a.csv',
+      sourceFormat: 'csv',
+      targetFormat: 'json',
+      fileSize: 8,
+      options: {},
+    });
+    inFlightJob.state = 'active';
+    inFlightJob._attemptToken = 'tok_inflight';
+    const origEval = fakeRedis.eval as (...args: unknown[]) => Promise<unknown>;
+    vi.spyOn(fakeRedis, 'eval').mockImplementationOnce((async (scriptArg: string | Buffer, ...rest: unknown[]) => {
+      if (scriptArg === UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT) {
+        inFlightJob.state = 'cancelled';
+        inFlightJob._abortAttempt(new JobCancelledError('cancelled mid-Lua'));
+        return 1;
+      }
+      return origEval(scriptArg, ...rest);
+    }) as typeof fakeRedis.eval);
+    await inFlightJob.updateProgress(55);
+    expect(publishedPayloads).toEqual([]);
   });
 
   it('aborts post-storage, post-engine, diagnostic, and pre-100% progress writes cleanly in processNodeJob', async () => {
@@ -566,6 +625,21 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     await expect(processNodeJob(getJob, uncalledEngine, fakeGetStorage as never)).rejects.toThrow(/cancelled/i);
     expect(getProgressCalls).toEqual([10]);
     expect(uncalledEngine.convert).not.toHaveBeenCalled();
+
+    const missingAfterAbortJob = await q.add(
+      'convert',
+      makeBaseJobData('j_abort_get_missing', { storageKey: `${uploadKey}-missing`, inputBufferBase64: undefined })
+    );
+    const fakeMissingAbortStorage = {
+      ...storageProvider,
+      getObject: vi.fn(async () => {
+        missingAfterAbortJob._abortAttempt(new JobCancelledError('cancelled and purged during getObject'));
+        return undefined;
+      }),
+    };
+    await expect(processNodeJob(missingAfterAbortJob, uncalledEngine, fakeMissingAbortStorage as never)).rejects.toThrow(
+      /cancelled and purged during getObject/i
+    );
 
     // 2. Single-stage post-engine abort discards output file and skips updateProgress(75) and (100).
     const singleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-abort-single-'));
@@ -689,6 +763,64 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     expect(diagJob.logs.some((l) => l.includes('Warning: warn-1'))).toBe(false);
     expect(diagJob.logs.some((l) => l.includes('Engine fallback'))).toBe(false);
 
+    // Multi-stage pipeline emits diagnostics before final updateProgress(80) and aborts cleanly if cancelled mid-diagnostics.
+    const multiDiagDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-abort-multi-diag-'));
+    tempDirs.push(multiDiagDir);
+    const multiDiagOut = path.join(multiDiagDir, 'final.yaml');
+    const multiDiagJob = await q.add(
+      'convert',
+      makeBaseJobData('j_abort_multi_diag', {
+        targetFormat: 'yaml',
+        tasks: [
+          { name: 's1', operation: 'convert', targetFormat: 'json' },
+          { name: 's2', operation: 'convert', targetFormat: 'yaml' },
+        ],
+      })
+    );
+    const multiDiagProgressCalls: number[] = [];
+    vi.spyOn(multiDiagJob, 'updateProgress').mockImplementation(async (p) => {
+      multiDiagProgressCalls.push(p);
+    });
+    const origMultiDiagLog = multiDiagJob.log.bind(multiDiagJob);
+    vi.spyOn(multiDiagJob, 'log').mockImplementation(async (row) => {
+      await origMultiDiagLog(row);
+      if (row.includes('Conversion completed')) {
+        multiDiagJob._abortAttempt(new JobCancelledError('cancelled during multi-stage diagnostics'));
+      }
+    });
+    let diagStage = 0;
+    const multiDiagEngine: ConversionEnginePort = {
+      name: 'mock-multi-diag',
+      async convert() {
+        diagStage++;
+        if (diagStage === 1) {
+          return {
+            buffer: Buffer.from('[]'),
+            size: 2,
+            mimeType: 'application/json',
+            filename: 's1.json',
+            engineUsed: 'mock-multi-diag',
+            executionTimeMs: 1,
+          };
+        }
+        fs.writeFileSync(multiDiagOut, 'ok: true\n');
+        return {
+          buffer: Buffer.from('ok: true\n'),
+          filePath: multiDiagOut,
+          size: 9,
+          mimeType: 'application/yaml',
+          filename: 'final.yaml',
+          engineUsed: 'mock-multi-diag',
+          executionTimeMs: 2,
+          metadata: { warnings: ['multi-warn-1'] },
+        };
+      },
+    };
+    await expect(processNodeJob(multiDiagJob, multiDiagEngine, storageProvider)).rejects.toThrow(/cancelled/i);
+    expect(multiDiagProgressCalls).toEqual([10, 35, 58]);
+    expect(fs.existsSync(multiDiagOut)).toBe(false);
+    expect(multiDiagJob.logs.some((l) => l.includes('Warning: multi-warn-1'))).toBe(false);
+
     // 5. Normal run emits "Output saved" log BEFORE updateProgress(100), and aborting inside "Output saved" skips 100%.
     const orderJob = await q.add('convert', makeBaseJobData('j_log_before_100'));
     let outputSavedBefore100 = false;
@@ -714,6 +846,7 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     });
     const okRes = await processNodeJob(orderJob, orderEngine, storageProvider);
     storageProvider.deleteObject(okRes.resultKey);
+    await getRetentionLedger().forget(okRes.resultKey).catch(() => undefined);
     expect(outputSavedBefore100).toBe(true);
 
     const lateAbortJob = await q.add('convert', makeBaseJobData('j_abort_before_100'));
@@ -730,6 +863,7 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     });
     const lateRes = await processNodeJob(lateAbortJob, orderEngine, storageProvider);
     storageProvider.deleteObject(lateRes.resultKey);
+    await getRetentionLedger().forget(lateRes.resultKey).catch(() => undefined);
     expect(lateProgressCalls).toEqual([10, 35, 75]);
   });
 
@@ -831,5 +965,24 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     // After Cluster NOSCRIPT, preloadedClusterMastersByClient was cleared so ensureQueueLuaLoaded loads all masters again.
     expect(await ensureQueueLuaLoaded(clusterWithPipeline, script)).toBe(expectedSha);
     expect(masterLoadCalls).toEqual(['m1:LOAD', 'm2:LOAD', 'm1:LOAD', 'm2:LOAD']);
+
+    // 3. Single-key evalQueueLua NOSCRIPT -> eval fallback on Cluster still leaves ensureQueueLuaLoaded loading all masters.
+    const fallbackScript = 'return redis.call("EXISTS", KEYS[1])';
+    const fallbackSha = luaScriptSha1(fallbackScript);
+    const fallbackMasterCalls: string[] = [];
+    const fallbackCluster = Object.assign(new EventEmitter(), {
+      isCluster: true,
+      status: 'ready',
+      evalsha: vi.fn().mockRejectedValueOnce(new Error('NOSCRIPT No matching script')),
+      eval: vi.fn(async () => 1),
+      nodes: vi.fn(() => [
+        { script: vi.fn(async (op: unknown) => fallbackMasterCalls.push(`m1:${String(op)}`)) },
+        { script: vi.fn(async (op: unknown) => fallbackMasterCalls.push(`m2:${String(op)}`)) },
+      ]),
+    }) as unknown as Redis;
+    expect(await evalQueueLua(fallbackCluster, fallbackScript, 1, 'k2')).toBe(1);
+    expect(fallbackMasterCalls).toEqual([]);
+    expect(await ensureQueueLuaLoaded(fallbackCluster, fallbackScript)).toBe(fallbackSha);
+    expect(fallbackMasterCalls).toEqual(['m1:LOAD', 'm2:LOAD']);
   });
 });

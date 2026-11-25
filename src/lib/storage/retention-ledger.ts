@@ -454,6 +454,14 @@ export class RedisRetentionLedger implements RetentionLedger {
     }
     return [...keys];
   }
+
+  async close(): Promise<void> {
+    try {
+      await this.redis.quit();
+    } catch {
+      this.redis.disconnect();
+    }
+  }
 }
 
 let activeLedger: RetentionLedger | undefined;
@@ -471,4 +479,12 @@ export function getRetentionLedger(): RetentionLedger {
 /** Replaces the ledger; `undefined` makes the next use select one from the environment. For tests. */
 export function setRetentionLedger(ledger: RetentionLedger | undefined): void {
   activeLedger = ledger;
+}
+
+export async function closeRetentionLedger(): Promise<void> {
+  const current = activeLedger;
+  activeLedger = undefined;
+  if (current instanceof RedisRetentionLedger) {
+    await current.close().catch(() => undefined);
+  }
 }
