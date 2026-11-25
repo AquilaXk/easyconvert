@@ -3,15 +3,17 @@ import { PdfStructureError } from './pdf-values';
 
 /**
  * Draws one page may make, counted as pdf.js executes them: each `Do` that leads to an image or form XObject and each inline
- * image, a form's own draws again on every invocation. The page that draws most of the 1,310 PDFs of the real-world corpus and
- * the test fixtures (1,244 as they are, 66 encrypted ones after qpdf decrypts them) draws 31,854 times (a map of small
- * pictures), and the cap is three times that. pdf.js builds an operator for each draw (a 12 KB file whose page draws one picture
- * a million times gives it 1,001,002 operators) and the page reader walks every one, so the size of the file does not show the
- * work.
+ * image, a form's own draws again on every invocation. Real Distiller documents with dense 1-bit `/ImageMask` stipple
+ * hatching reach 103,258 draws on a single page (`gd-754270.pdf`, p. 24) and 115,886 draws on a single page (`gd-297219.pdf`,
+ * p. 42), so per Policy #205/#442 the per-page cap keeps ~2.2x headroom above those measurements while still stopping runaway
+ * million-draw pages before `pdf.js` builds unbounded operator arrays.
  */
-export const MAX_PDF_DRAWS_PER_PAGE = 100_000;
-/** Draws all pages of one document may make together, counted as `MAX_PDF_DRAWS_PER_PAGE` counts them; the most any of those documents makes is 123,697 (20 pages). */
-export const MAX_PDF_DRAWS = 500_000;
+export const MAX_PDF_DRAWS_PER_PAGE = 250_000;
+/**
+ * Draws all pages of one document may make together, counted as `MAX_PDF_DRAWS_PER_PAGE` counts them; `gd-754270.pdf` makes
+ * 1,005,782 draws across 45 pages, so the document cap keeps ~2.5x headroom above that measurement.
+ */
+export const MAX_PDF_DRAWS = 2_500_000;
 
 /** The draws of one page, added to those of its document. */
 export class PageDraws {

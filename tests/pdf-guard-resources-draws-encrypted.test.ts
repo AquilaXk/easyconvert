@@ -176,6 +176,20 @@ describe('every draw counts against the limits of a page and of a document', () 
     expect(() => drawn(pdf)).toThrow(/PDF draws more than/);
   });
 
+  it('allows dense stipple hatching above 100,000 per page and 500,000 total within the Policy #442 bounds', () => {
+    expect(drawn(pdfWithResourcesOn('page', doOperators(120_000))).draws).toEqual([120_000]);
+    const pages = 5;
+    const perPage = 220_000;
+    const objects: CraftObject[] = [
+      { id: 1, dict: '/Type /Catalog /Pages 2 0 R' },
+      { id: 2, dict: `/Type /Pages /Kids [${Array.from({ length: pages }, (_, i) => `${20 + i} 0 R`).join(' ')}] /Count ${pages} /Resources << /XObject << /Im1 10 0 R >> >>` },
+      { id: 4, stream: Buffer.from(doOperators(perPage)) },
+      IMAGE,
+    ];
+    for (let i = 0; i < pages; i++) objects.push({ id: 20 + i, dict: '/Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R' });
+    expect(drawn(buildPdf(objects, 1).buffer).draws).toEqual(Array(pages).fill(perPage));
+  });
+
   it('refuses the file before the picture decoders or pdf.js read it', () => {
     const pdf = pdfWithResourcesOn('page', doOperators(MAX_PDF_DRAWS_PER_PAGE + 1));
     expect(() => pdfjsReadableBytes(pdf, { content: true, pictures: true })).toThrow(PdfStructureError);

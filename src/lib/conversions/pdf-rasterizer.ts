@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConversionFailedError } from '../types';
 import { InputPixelLimitError, assertInputPixels, maxInputPixels } from './image-input-limits';
-import { encodePdfPicturePng } from './pdf-text-png';
+import { encodePdfPicture1BitPng, encodePdfPicturePng } from './pdf-text-png';
 import { readEnclosingDictionary, readWindowEntries, type DictionaryValue, type EnclosingDictionary } from './pdf-image-dictionary';
 
 // pdfjs-dist needs Promise.withResolvers and ArrayBuffer.prototype.transferToFixedLength, which Node.js 20 lacks.
@@ -240,6 +240,11 @@ async function imageObjectToPng(imgObj: any, pageNumber: number, targetDpi: numb
   if (!imgObj?.data || !imgObj.width || !imgObj.height) return undefined;
   const { width, height } = imgObj;
   assertInputPixels(width, height);
+  if (imgObj.kind === IMAGE_KIND_GRAYSCALE_1BPP) {
+    const packed = new Uint8Array(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
+    const bilevel = encodePdfPicture1BitPng(width, height, packed, targetDpi);
+    if (bilevel) return { pageNumber, buffer: bilevel, width, height };
+  }
   const { rawData, channels } = rawSamplesOf(imgObj, width, height);
   const small = rawData.length <= inlineMaxBytes ? encodePdfPicturePng(width, height, channels, rawData, targetDpi) : null;
   if (small) return { pageNumber, buffer: small, width, height };

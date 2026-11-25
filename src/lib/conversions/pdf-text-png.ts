@@ -10,6 +10,7 @@ import zlib from 'node:zlib';
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const BIT_DEPTH = 8;
+const BIT_DEPTH_1 = 1;
 /** PNG colour types (section 11.2.2) of 1, 3 and 4 samples for each pixel. */
 const COLOUR_TYPE_BY_CHANNELS = { 1: 0, 3: 2, 4: 6 } as const;
 const FILTER_NONE = 0;
@@ -30,25 +31,51 @@ function chunk(type: string, data: Buffer): Buffer {
   return out;
 }
 
-/** The PNG of `samples` (8 bits, `channels` for each pixel, rows in order), or null when the samples are not as many as the size says. */
-export function encodePdfPicturePng(width: number, height: number, channels: PngChannels, samples: Uint8Array, dpi: number): Buffer | null {
-  const rowBytes = width * channels;
-  if (width < 1 || height < 1 || samples.length !== rowBytes * height) return null;
-  const rows = Buffer.alloc((rowBytes + 1) * height);
-  for (let y = 0; y < height; y++) {
-    const at = y * (rowBytes + 1);
-    rows[at] = FILTER_NONE;
-    rows.set(samples.subarray(y * rowBytes, (y + 1) * rowBytes), at + 1);
-  }
+function finishPng(width: number, height: number, bitDepth: number, colourType: number, rows: Buffer, dpi: number): Buffer {
   const header = Buffer.alloc(IHDR_DATA_BYTES);
   header.writeUInt32BE(width, 0);
   header.writeUInt32BE(height, 4);
-  header[8] = BIT_DEPTH;
-  header[9] = COLOUR_TYPE_BY_CHANNELS[channels];
+  header[8] = bitDepth;
+  header[9] = colourType;
   const density = Buffer.alloc(PHYS_DATA_BYTES);
   const pixelsPerMetre = Math.round(dpi / METRES_PER_INCH);
   density.writeUInt32BE(pixelsPerMetre, 0);
   density.writeUInt32BE(pixelsPerMetre, 4);
   density[8] = PHYS_UNIT_METRE;
   return Buffer.concat([SIGNATURE, chunk('IHDR', header), chunk('pHYs', density), chunk('IDAT', zlib.deflateSync(rows)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/** The PNG of `samples` (8 bits, `channels` for each pixel, rows in order), or null when the samples are not as many as the size says. */
+export function encodePdfPicturePng(width: number, height: number, channels: PngChannels, samples: Uint8Array, dpi: number): Buffer | null {
+  const rowBytes = width * channels;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || !Number.isFinite(dpi) || dpi <= 0 || samples.length !== rowBytes * height) return null;
+  const rows = Buffer.alloc((rowBytes + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const at = y * (rowBytes + 1);
+    rows[at] = FILTER_NONE;
+    rows.set(samples.subarray(y * rowBytes, (y + 1) * rowBytes), at + 1);
+  }
+  return finishPng(width, height, BIT_DEPTH, COLOUR_TYPE_BY_CHANNELS[channels], rows, dpi);
+}
+
+/**
+ * The 1-bit grayscale PNG (colour type 0, bit depth 1) of MSB-first packed `packed` pixels (`0` = black, `1` = white),
+ * or null when dimensions, density, or byte count do not match `Math.ceil(width / 8) * height`.
+ */
+export function encodePdfPicture1BitPng(width: number, height: number, packed: Uint8Array, dpi: number): Buffer | null {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || !Number.isFinite(dpi) || dpi <= 0) return null;
+  const rowBytes = Math.ceil(width / 8);
+  if (packed.length !== rowBytes * height) return null;
+  const tailBits = width & 7;
+  const tailMask = tailBits === 0 ? 0xff : (0xff << (8 - tailBits)) & 0xff;
+  const rows = Buffer.alloc((rowBytes + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const at = y * (rowBytes + 1);
+    rows[at] = FILTER_NONE;
+    rows.set(packed.subarray(y * rowBytes, (y + 1) * rowBytes), at + 1);
+    if (tailBits !== 0) {
+      rows[at + rowBytes] &= tailMask;
+    }
+  }
+  return finishPng(width, height, BIT_DEPTH_1, COLOUR_TYPE_BY_CHANNELS[1], rows, dpi);
 }
