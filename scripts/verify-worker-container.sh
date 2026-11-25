@@ -638,7 +638,7 @@ fi
 
 # --- 14. website capture in relay-only network namespace and file confinement ---------------------------
 CAPTURE_DRIVER_SCRIPT="/usr/local/lib/easyconvert/capture-website.py"
-CAPTURE_AS_BYTES=$((192 * 1024 * 1024 * 1024))
+CAPTURE_AS_BYTES=$((2048 * 1024 * 1024 * 1024))
 if [ ! -r "$CAPTURE_DRIVER_SCRIPT" ] || ! command -v python3 >/dev/null 2>&1 || ! command -v pid-init >/dev/null 2>&1; then
   fail "website capture prerequisites are missing ($CAPTURE_DRIVER_SCRIPT, python3, or pid-init)"
 else
@@ -655,7 +655,7 @@ const http = require('node:http');
 const net = require('node:net');
 
 const [socketPath, infoPath, statsPath] = process.argv.slice(2);
-const stats = { allowed: 0, blocked: 0 };
+const stats = { allowed: 0, blocked: 0, blockedMeta: 0, connectBlocked: 0 };
 const writeStats = () => fs.writeFileSync(statsPath, JSON.stringify(stats));
 writeStats();
 
@@ -669,12 +669,14 @@ const unixGate = http.createServer((req, res) => {
     return;
   }
   stats.blocked += 1;
+  if (typeof req.url === 'string' && req.url.includes('169.254.169.254')) stats.blockedMeta += 1;
   writeStats();
   res.writeHead(403, { 'content-length': '0', connection: 'close', 'x-capture-gate': 'blocked' });
   res.end();
 });
 unixGate.on('connect', (_req, clientSocket) => {
   stats.blocked += 1;
+  stats.connectBlocked += 1;
   writeStats();
   clientSocket.end('HTTP/1.1 403 Refused\r\nx-capture-gate: blocked\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
 });
@@ -733,15 +735,22 @@ try:
     os.unlink(sock_path); unlink_res = 'unlinked'
 except OSError:
     unlink_res = 'denied'
-print(host_res, meta_res, dir_res, unlink_res)
+u = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); u.settimeout(2.0)
+try:
+    u.connect(sock_path)
+    u.sendall(b'CONNECT 169.254.169.254:80 HTTP/1.1\r\nHost: 169.254.169.254:80\r\n\r\n')
+    unix_res = u.recv(200).split(b'\r\n')[0].decode('latin1')
+finally:
+    u.close()
+print(host_res, meta_res, dir_res, unlink_res, unix_res)
 " "$host_loopback_port" "$capture_sock" "$capture_gate_dir" 2>&1)"
-    if [ "$netns_probe" != "refused refused denied denied" ]; then
-      fail "the capture sandbox did not block host loopback, metadata routing, gate directory listing or unlink: $(printf '%s' "$netns_probe" | head -c 300)"
+    if [ "$netns_probe" != "refused refused denied denied HTTP/1.1 403 Refused" ]; then
+      fail "the capture sandbox did not block direct routes/gate dir or reach AF_UNIX gate: $(printf '%s' "$netns_probe" | head -c 300)"
     else
       capture_ok=1
       for fmt in pdf png jpg; do
         printf '{"url":"http://capture-check.example/","format":"%s","proxySocket":"%s","timeoutMs":60000,"output":"out.%s"}\n' "$fmt" "$capture_sock" "$fmt" > "$capture_work/request.json"
-        cap_out="$(timeout 120 unshare -r -n -- pid-init --confine --require --write "$capture_work" --read "$CAPTURE_DRIVER_SCRIPT" -- prlimit --as="$CAPTURE_AS_BYTES" -- env PATH="$PATH" HOME="$capture_work/home" XDG_CONFIG_HOME="$capture_work/config" XDG_CACHE_HOME="$capture_work/cache" XDG_DATA_HOME="$capture_work/home" XDG_RUNTIME_DIR="$capture_work/runtime" TMPDIR="$capture_work" DBUS_SESSION_BUS_ADDRESS=disabled: QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 python3 -I "$CAPTURE_DRIVER_SCRIPT" "$capture_work/request.json" 2>"$work_dir/capture-${fmt}.err")"
+        cap_out="$(timeout 120 unshare -r -n -- pid-init --confine --require --write "$capture_work" --read "$CAPTURE_DRIVER_SCRIPT" -- prlimit --as="$CAPTURE_AS_BYTES" --core=1 -- env PATH="$PATH" HOME="$capture_work/home" XDG_CONFIG_HOME="$capture_work/config" XDG_CACHE_HOME="$capture_work/cache" XDG_DATA_HOME="$capture_work/home" XDG_RUNTIME_DIR="$capture_work/runtime" TMPDIR="$capture_work" TEMP="$capture_work" TMP="$capture_work" DBUS_SESSION_BUS_ADDRESS=disabled: QT_QPA_PLATFORM=offscreen PYTHONDONTWRITEBYTECODE=1 PYTHONNOUSERSITE=1 python3 -I "$CAPTURE_DRIVER_SCRIPT" "$capture_work/request.json" 2>"$work_dir/capture-${fmt}.err")"
         cap_rc=$?
         if [ "$cap_rc" -ne 0 ] || ! printf '%s' "$cap_out" | grep -q '"ok": true' || ! printf '%s' "$cap_out" | grep -q '"title": "NetNS Probe"'; then
           fail "confined website capture ($fmt) failed (rc=$cap_rc): $(printf '%s %s' "$cap_out" "$(tail -c 250 "$work_dir/capture-${fmt}.err" 2>/dev/null)" | tr '\n' ' ')"
@@ -753,7 +762,7 @@ print(host_res, meta_res, dir_res, unlink_res)
         if [ "$(head -c 5 "$capture_work/out.pdf" 2>/dev/null)" = "%PDF-" ] \
           && [ "$(od -An -tx1 -N4 "$capture_work/out.png" 2>/dev/null | tr -d ' \n')" = "89504e47" ] \
           && [ "$(od -An -tx1 -N3 "$capture_work/out.jpg" 2>/dev/null | tr -d ' \n')" = "ffd8ff" ] \
-          && node -e "const s=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if (s.allowed < 3 || s.blocked < 3) process.exit(1);" "$capture_stats"; then
+          && node -e "const s=JSON.parse(require('node:fs').readFileSync(process.argv[1],'utf8')); if (s.allowed < 3 || s.blockedMeta < 3 || s.connectBlocked < 1) process.exit(1);" "$capture_stats"; then
           pass "website capture drew PDF, PNG and JPEG over the AF_UNIX gate relay inside unshare -r -n and pid-init --confine --require with direct network and gate dir denied"
         else
           fail "website capture outputs or gate relay counters did not verify ($(cat "$capture_stats" 2>/dev/null))"

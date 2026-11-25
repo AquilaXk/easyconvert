@@ -20,7 +20,7 @@ import { isBlockedIp, ssrfSafeLookup } from './ssrf';
  * - A redirect is never followed here: the 3xx answer goes back to the browser, which asks for the new address through this gate
  *   again, so every hop is checked like the first.
  * - Per capture: a cap on open connections, on the bytes relayed, and an idle time for each socket. The gate listens on the loopback
- *   interface only.
+ *   interface or a permissioned AF_UNIX socket path.
  */
 
 const HTTP_PORT = 80;
@@ -36,7 +36,7 @@ const DEFAULT_IDLE_MS = 30_000;
 const CONNECT_TIMEOUT_MS = 15_000;
 const MAX_PORT = 65_535;
 const MAX_CANDIDATE_TARGETS = 16;
-const MAX_UNIX_SOCKET_PATH_BYTES = 103;
+const MAX_UNIX_SOCKET_PATH_BYTES = process.platform === 'linux' ? 107 : 103;
 const UNIX_SOCKET_MODE = 0o600;
 /** `host:port` of a CONNECT: a name or an IPv4 address, or an IPv6 address in brackets; no user information, path or whitespace. */
 const AUTHORITY = /^(\[[0-9a-fA-F:.]+(?:%[0-9A-Za-z._~-]+)?\]|[^\s:@/\\?#[\]]+):(\d{1,5})$/;

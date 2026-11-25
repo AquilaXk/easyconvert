@@ -28,10 +28,11 @@ MAX_DELAY_MS = 30000
 IDLE_QUIET_MS = 500
 SETTLE_MS = 300
 DEFAULT_TIMEOUT_MS = 30000
-MAX_UNIX_SOCKET_PATH_BYTES = 107
+MAX_UNIX_SOCKET_PATH_BYTES = 107 if sys.platform.startswith('linux') else 103
 MAX_RELAY_CONNECTIONS = 128
 RELAY_BUFFER_BYTES = 65536
 RELAY_HIGH_WATER_BYTES = 262144
+RELAY_DISCARD_LIMIT_BYTES = 2 * 1024 * 1024
 IFF_UP = 0x1
 SIOCGIFFLAGS = 0x8913
 SIOCSIFFLAGS = 0x8914
@@ -147,6 +148,7 @@ class _RelayPair:
         self.unix_eof = False
         self.client_wr_closed = False
         self.unix_wr_closed = False
+        self.discarded_client_bytes = 0
         self.closed = False
 
 
@@ -155,20 +157,38 @@ class GateRelay:
 
     def __init__(self, socket_path):
         self._socket_path = validate_proxy_socket(socket_path)
-        self._selector = selectors.DefaultSelector()
-        self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._server.bind(('127.0.0.1', 0))
-        self._server.listen(MAX_RELAY_CONNECTIONS)
-        self._server.setblocking(False)
-        self.port = self._server.getsockname()[1]
-        self._wake_r, self._wake_w = socket.socketpair()
-        self._wake_r.setblocking(False)
-        self._wake_w.setblocking(False)
+        self._selector = None
+        self._server = None
+        self._wake_r = None
+        self._wake_w = None
         self._registered = {}
         self._conns = set()
         self._stop = False
         self._thread = None
+        try:
+            self._selector = selectors.DefaultSelector()
+            self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self._server.bind(('127.0.0.1', 0))
+            self._server.listen(MAX_RELAY_CONNECTIONS)
+            self._server.setblocking(False)
+            self.port = self._server.getsockname()[1]
+            self._wake_r, self._wake_w = socket.socketpair()
+            self._wake_r.setblocking(False)
+            self._wake_w.setblocking(False)
+        except Exception:
+            for sock in (self._server, self._wake_r, self._wake_w):
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+            if self._selector is not None:
+                try:
+                    self._selector.close()
+                except OSError:
+                    pass
+            raise
 
     def start(self):
         self._set_events(self._server, selectors.EVENT_READ, ('accept', None))
@@ -240,7 +260,7 @@ class GateRelay:
             self._close_pair(pair)
             return
         client_events = 0
-        if not pair.client_eof and len(pair.to_unix) < RELAY_HIGH_WATER_BYTES:
+        if not pair.client_eof and (pair.unix_wr_closed or len(pair.to_unix) < RELAY_HIGH_WATER_BYTES):
             client_events |= selectors.EVENT_READ
         if pair.to_client:
             client_events |= selectors.EVENT_WRITE
@@ -250,7 +270,7 @@ class GateRelay:
         else:
             if not pair.unix_eof and len(pair.to_client) < RELAY_HIGH_WATER_BYTES:
                 unix_events |= selectors.EVENT_READ
-            if pair.to_unix:
+            if not pair.unix_wr_closed and pair.to_unix:
                 unix_events |= selectors.EVENT_WRITE
         if client_events == 0 and unix_events == 0:
             self._close_pair(pair)
@@ -322,15 +342,24 @@ class GateRelay:
             except BlockingIOError:
                 chunk = None
             except OSError:
-                self._close_pair(pair)
-                return
+                if not is_client and pair.unix_wr_closed and pair.to_client:
+                    pair.unix_eof = True
+                    chunk = None
+                else:
+                    self._close_pair(pair)
+                    return
             if chunk == b'':
                 if is_client:
                     pair.client_eof = True
                 else:
                     pair.unix_eof = True
             elif chunk:
-                outbuf.extend(chunk)
+                if is_client and pair.unix_wr_closed:
+                    pair.discarded_client_bytes += len(chunk)
+                    if pair.discarded_client_bytes >= RELAY_DISCARD_LIMIT_BYTES:
+                        pair.client_eof = True
+                else:
+                    outbuf.extend(chunk)
         if mask & selectors.EVENT_WRITE:
             if is_client and pair.to_client:
                 try:
@@ -342,7 +371,7 @@ class GateRelay:
                 except OSError:
                     self._close_pair(pair)
                     return
-            elif not is_client and pair.unix_connected and pair.to_unix:
+            elif not is_client and pair.unix_connected and not pair.unix_wr_closed and pair.to_unix:
                 try:
                     sent = pair.unix.send(memoryview(pair.to_unix))
                     if sent > 0:
@@ -350,8 +379,9 @@ class GateRelay:
                 except BlockingIOError:
                     pass
                 except OSError:
-                    self._close_pair(pair)
-                    return
+                    # Keep reading and flushing any early response (e.g. 403 Refused) before tearing down the client socket.
+                    pair.unix_wr_closed = True
+                    pair.to_unix.clear()
         self._sync_events(pair)
 
     def _run(self):
@@ -420,6 +450,8 @@ def chromium_flags(request):
 def main():
     with open(sys.argv[1], 'r', encoding='utf-8') as handle:
         request = json.load(handle)
+    if not isinstance(request, dict):
+        raise ValueError('capture request must be a JSON object')
     relay = None
     try:
         flag_request = request

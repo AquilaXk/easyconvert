@@ -117,6 +117,15 @@ describe('sweepWorkerSandboxDirs', () => {
     expect(sweepWorkerSandboxDirs({ directory: path.join(tmp, 'missing') })).toEqual([]);
   });
 
+  it('removes stale capture gate scratch directories while keeping fresh ones', () => {
+    const staleGate = foreignDir('easyconvert-gate-', 5 * HOUR);
+    const youngGate = foreignDir('easyconvert-gate-', 60_000);
+    const removed = sweepWorkerSandboxDirs();
+    expect(removed).toEqual([path.basename(staleGate)]);
+    expect(fs.existsSync(staleGate)).toBe(false);
+    expect(fs.existsSync(youngGate)).toBe(true);
+  });
+
   it('takes the stale age and the clock as options', () => {
     const dir = foreignDir('easyconvert_worker_sandbox_', 1000);
     expect(sweepWorkerSandboxDirs({ staleAfterMs: 5000 })).toEqual([]);

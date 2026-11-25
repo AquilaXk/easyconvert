@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { startCaptureGate, type CaptureGate, type CaptureGateOptions } from '../security/capture-gate';
+import { sandboxUnavailable } from '../security/process-sandbox';
 import { OUTPUT_READ_FLAGS } from '../security/sandbox-output';
 import { assertPublicOutboundUrl, OutboundRequestBlockedError } from '../security/safe-fetch';
 import {
@@ -47,8 +48,10 @@ const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 const MAX_STDOUT_BYTES = 1024 * 1024;
 /** Resident memory cap enforced by the sandbox RSS monitor while RLIMIT_AS stays wide enough for Chromium's V8 cage. */
 const MAX_MEMORY_MB = 2048;
-/** Chromium reserves tens of GiB of address space and uses a few hundred MiB; the limit only stops a runaway mapping. */
-const ADDRESS_SPACE_BYTES = 192 * 1024 * 1024 * 1024;
+/** Chromium reserves tens of GiB on arm64 and ~1.4 TiB per V8 sandbox on x86_64 (policy 307/375); 2 TiB keeps the V8 cage intact while RSS is watched. */
+const ADDRESS_SPACE_BYTES = 2048 * 1024 * 1024 * 1024;
+/** Skip Linux piped crash collectors (apport/systemd-coredump) on Chromium faults without writing core dumps (policy 401). */
+const CORE_LIMIT_BYTES = 1;
 const PDF_MAGIC = Buffer.from('%PDF-', 'latin1');
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff]);
@@ -171,12 +174,23 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
   const python = resolveProgram(PYTHON_VARIABLE, PYTHON_CANDIDATES);
   const driver = resolveProgram(DRIVER_VARIABLE, DRIVER_CANDIDATES);
   if (python === null || driver === null) throw new EngineUnavailableError('capture-website', 'The browser driver or its Python interpreter is not installed.');
+  request.signal?.throwIfAborted();
 
   const timeoutMs = Math.min(request.timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-  const { gateDir, socketPath } = createGateSocketDir();
+  let gateDir: string | undefined;
   let gate: CaptureGate | undefined;
   try {
-    gate = await startCaptureGate({ socketPath, ...request.gate });
+    try {
+      const created = createGateSocketDir();
+      gateDir = created.gateDir;
+      gate = await startCaptureGate({ socketPath: created.socketPath, ...request.gate });
+    } catch (error) {
+      if (request.gate?.socketPath === undefined) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw sandboxUnavailable(`Website capture gate socket could not be created (${message}).`);
+      }
+      throw error;
+    }
     const proxySocket = gate.socketPath;
     return await withWorkerSandbox(
       async (sandbox) => {
@@ -184,7 +198,7 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
         const requestFile = path.join(sandbox.sandboxDir, 'request.json');
         fs.writeFileSync(
           requestFile,
-          JSON.stringify({ ...request.options, url: url.href, format, proxySocket, timeoutMs, output: outputName })
+          JSON.stringify({ ...request.options, url: url.href, format, proxySocket, proxyPort: undefined, timeoutMs, output: outputName })
         );
         let stdout: string;
         try {
@@ -193,7 +207,7 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
             maxBuffer: MAX_STDOUT_BYTES,
             maxFileSize: MAX_OUTPUT_BYTES,
             memoryLimitMb: MAX_MEMORY_MB,
-            rlimits: { asBytes: ADDRESS_SPACE_BYTES },
+            rlimits: { asBytes: ADDRESS_SPACE_BYTES, coreBytes: CORE_LIMIT_BYTES },
             env: browserEnvironment(sandbox.sandboxDir),
             readDirs: [driver],
             signal: request.signal,
@@ -211,7 +225,7 @@ export async function runCapture(url: URL, request: WebsiteCaptureRequest): Prom
     );
   } finally {
     await gate?.close();
-    fs.rmSync(gateDir, { recursive: true, force: true });
+    if (gateDir !== undefined) fs.rmSync(gateDir, { recursive: true, force: true });
   }
 }
 

@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { assertCaptureUrl, captureWebsite } from '../src/lib/capture/website-capture';
 import { CaptureFailedError, CaptureTargetBlockedError, CaptureUnavailableError } from '../src/lib/capture/website-capture-errors';
 import * as processSandbox from '../src/lib/security/process-sandbox';
-import { CpuTaskTimeoutError, EngineUnavailableError } from '../src/lib/types';
+import { CpuTaskTimeoutError, EngineUnavailableError, SandboxUnavailableError } from '../src/lib/types';
 import { refusalCodeOf } from '../src/lib/refusal-codes';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 import { skipUnless } from './helpers/strict-skip';
@@ -133,7 +133,7 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     const result = await captureWebsite({
       url: 'https://site.example/echo',
       format: 'pdf',
-      options: { fullPage: true, viewport: { width: 900, height: 500 }, waitUntil: 'idle', delayMs: 250, pdf: { paper: 'Letter', landscape: true, margin: 12 } },
+      options: { fullPage: true, viewport: { width: 900, height: 500 }, waitUntil: 'idle', delayMs: 250, pdf: { paper: 'Letter', landscape: true, margin: 12 }, proxyPort: 9999 } as never,
       timeoutMs: 15_000,
     });
     const sent = JSON.parse(result.buffer.toString('latin1').slice('%PDF-1.7 '.length));
@@ -154,18 +154,52 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     const afterGateDirs = readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-') && !beforeGateDirs.has(entry));
     expect(afterGateDirs).toEqual([]);
     expect(execSpy).toHaveBeenCalledTimes(1);
-    const sandboxArg = execSpy.mock.calls[0]?.[2] as { networkIsolated?: boolean; sandboxOptions?: { keepNetwork?: boolean } };
+    const sandboxArg = execSpy.mock.calls[0]?.[2] as { networkIsolated?: boolean; sandboxOptions?: { keepNetwork?: boolean }; rlimits?: { asBytes?: number; coreBytes?: number } };
     expect(sandboxArg.networkIsolated).toBe(true);
     expect(sandboxArg.sandboxOptions?.keepNetwork).toBeUndefined();
+    expect(sandboxArg.rlimits).toEqual({ asBytes: 2048 * 1024 * 1024 * 1024, coreBytes: 1 });
     expect(result.finalUrl).toBe('https://example.org/final');
   });
 
-  it('cleans up the ephemeral gate directory and socket when the driver crashes', async () => {
+  it('cleans up the ephemeral gate directory and socket when the driver crashes or aborts mid-run', async () => {
     useStandIn();
     const beforeGateDirs = new Set(readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-')));
     await expect(captureWebsite({ url: 'https://site.example/crash', format: 'png' })).rejects.toBeInstanceOf(CaptureFailedError);
     const afterGateDirs = readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-') && !beforeGateDirs.has(entry));
     expect(afterGateDirs).toEqual([]);
+
+    const slowDriver = path.join(dir, 'capture-abort.py');
+    writeFileSync(slowDriver, 'import time\ntime.sleep(30)\n');
+    chmodSync(slowDriver, 0o755);
+    vi.stubEnv('CAPTURE_DRIVER_PATH', slowDriver);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('client aborted')), 80);
+    await expect(captureWebsite({ url: 'https://site.example/slow-abort', format: 'png', signal: controller.signal })).rejects.toThrow('client aborted');
+    const afterAbortDirs = readdirSync(os.tmpdir()).filter((entry) => entry.startsWith('easyconvert-gate-') && !beforeGateDirs.has(entry));
+    expect(afterAbortDirs).toEqual([]);
+  });
+
+  it('fails closed with SandboxUnavailableError when TMPDIR exceeds the AF_UNIX sun_path bound', async () => {
+    useStandIn();
+    const execSpy = vi.spyOn(processSandbox, 'executeSandboxedBinary');
+    const deepRoot = mkdtempSync(path.join(os.tmpdir(), 'ecg-deep-'));
+    const deepTmp = path.join(deepRoot, 'x'.repeat(90));
+    try {
+      const fsMod = await import('node:fs');
+      fsMod.mkdirSync(deepTmp, { recursive: true });
+      vi.stubEnv('TMPDIR', deepTmp);
+      const run = captureWebsite({ url: 'https://site.example/deep', format: 'png' });
+      await expect(run).rejects.toBeInstanceOf(SandboxUnavailableError);
+      await expect(run).rejects.toThrow(/gate socket could not be created/i);
+      const caught = await run.then(() => undefined, (error: unknown) => error as { name?: string; engineName?: string; reason?: string });
+      expect(caught).toMatchObject({ name: 'SandboxUnavailableError', engineName: 'sandbox' });
+      expect(caught?.reason).toMatch(/exceeds \d+ bytes/);
+      expect(refusalCodeOf(caught)).toBe('engine_unavailable');
+      expect(execSpy).not.toHaveBeenCalled();
+      expect(readdirSync(deepTmp)).toEqual([]);
+    } finally {
+      rmSync(deepRoot, { recursive: true, force: true });
+    }
   });
 
   const CAN_NETNS = process.platform === 'linux' && processSandbox.getUnshareCapability().available;

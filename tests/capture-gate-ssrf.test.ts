@@ -792,8 +792,10 @@ describe('Unix domain socket gate', () => {
     const dir = makeSocketDir();
     const regularFile = path.join(dir, 'not-a-socket');
     fs.writeFileSync(regularFile, 'occupied');
+    const maxBytes = process.platform === 'linux' ? 107 : 103;
+    const justOver = path.join(dir, 'a'.repeat(Math.max(1, maxBytes + 1 - dir.length - 1)));
     const overlong = path.join(dir, 'a'.repeat(110) + '.sock');
-    for (const bad of ['', 'relative.sock', path.join(dir, 'bad\0.sock'), regularFile, overlong]) {
+    for (const bad of ['', 'relative.sock', path.join(dir, 'bad\0.sock'), regularFile, justOver, overlong]) {
       await expect(startCaptureGate({ socketPath: bad })).rejects.toThrow();
     }
     expect(fs.readFileSync(regularFile, 'utf8')).toBe('occupied');

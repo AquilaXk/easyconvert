@@ -121,13 +121,15 @@ for bad_port in (None, True, False, float('nan'), float('inf'), 0, -1, 65536, 'b
         pass
     else:
         raise AssertionError('expected ValueError for proxyPort=' + repr(bad_port))
-for bad_sock in (None, '', '   ', 'relative.sock', '/tmp/with\\x00nul.sock', '/tmp/' + 'x' * 110 + '.sock', 123):
+for bad_sock in (None, '', '   ', 'relative.sock', '/tmp/with\\x00nul.sock', '/' + 'x' * mod.MAX_UNIX_SOCKET_PATH_BYTES + '.sock', 123):
     try:
         mod.validate_proxy_socket(bad_sock)
     except ValueError:
         pass
     else:
         raise AssertionError('expected ValueError for proxySocket=' + repr(bad_sock))
+max_ok = '/' + 'x' * (mod.MAX_UNIX_SOCKET_PATH_BYTES - 1)
+assert mod.validate_proxy_socket(max_ok) == max_ok
 print('ok')
 `;
     const checked = execFileSync(PYTHON as string, ['-I', '-c', script, DRIVER], { encoding: 'utf8' });
@@ -157,6 +159,9 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
                 if not data:
                     break
                 chunks.append(data)
+                if b'\\r\\n\\r\\n' in b''.join(chunks[:1]) and b'EARLY403' in chunks[0]:
+                    conn.sendall(b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n')
+                    return
             payload = b''.join(chunks)
             conn.sendall(b'ECHO:' + payload)
             conn.shutdown(socket.SHUT_WR)
@@ -217,6 +222,31 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
         for t in ts: t.start()
         for t in ts: t.join(timeout=5)
         assert not errs and len(results) == 16 and all(results)
+
+        # Early 403 response before reading a 512 KiB POST body must reach the client intact (not ECONNRESET / empty)
+        early = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        early_resp = bytearray()
+        early_errs = []
+        def early_reader():
+            while True:
+                try:
+                    d = early.recv(4096)
+                    if not d:
+                        break
+                    early_resp.extend(d)
+                except OSError as e:
+                    early_errs.append(repr(e))
+                    break
+        rt = threading.Thread(target=early_reader, daemon=True)
+        rt.start()
+        early_body = b'Y' * (512 * 1024)
+        try:
+            early.sendall(b'POST http://169.254.169.254/EARLY403 HTTP/1.1\\r\\nHost: 169.254.169.254\\r\\nContent-Length: ' + str(len(early_body)).encode() + b'\\r\\n\\r\\n' + early_body)
+        except OSError:
+            pass
+        rt.join(timeout=5)
+        early.close()
+        assert bytes(early_resp).startswith(b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked'), f'early403={early_resp!r} errs={early_errs!r}'
 
         # Fail-closed when AF_UNIX target disappears
         stop_srv.set()
