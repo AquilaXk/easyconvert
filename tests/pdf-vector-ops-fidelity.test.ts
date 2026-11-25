@@ -7,7 +7,7 @@ import { PDFDict, PDFDocument, PDFName, PDFNumber, StandardFonts } from 'pdf-lib
 import { OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { documentToDocx } from '../src/lib/conversions/document-model/docx';
-import { shapeProperties } from '../src/lib/conversions/document-model/shape-xml';
+import { shapeProperties, extentOf } from '../src/lib/conversions/document-model/shape-xml';
 import { pdfToPptx, writePackage, type SlidePage } from '../src/lib/conversions/office/pdf-pptx';
 import type { LayoutLine, Paragraph, TableCell } from '../src/lib/conversions/pdf-layout/types';
 import { FontTable, readPageContent } from '../src/lib/conversions/pdf-text-content';
@@ -698,5 +698,105 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     expect(subpathHullBox({ points: [{ x: 0, y: 0 }], closed: false, curved: true, segments: [2, 0, 0, 10] }, (p) => p)).toBeNull();
     expect(subpathHullBox({ points: [{ x: Number.NaN, y: 0 }], closed: false }, (p) => p)).toBeNull();
     expect(clipBoxOfSubpaths([{ points: [{ x: 0, y: 0 }], closed: false, curved: true, segments: [2, 0, 0, 10] }], (p) => p)).toBeNull();
+  });
+
+  it('preserves curved axial gradients across control-point hulls, keeps closed single-Bezier loops, drops thin radial/pattern black rules, and restores overflow smask depth', async () => {
+    const pdf = await pdfFromContentStream((ctx, resources) => {
+      const fnAxial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([1, 0, 0]), C1: ctx.obj([0, 0, 1]), N: PDFNumber.of(1) });
+      const shAxial = ctx.obj({
+        ShadingType: 2,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([100, 420, 100, 580]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnAxial),
+      });
+      const patAxial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shAxial) });
+
+      const fnRadial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0, 1, 0]), C1: ctx.obj([1, 1, 0]), N: PDFNumber.of(1) });
+      const shRadial = ctx.obj({
+        ShadingType: 3,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([200, 300, 5, 200, 300, 90]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnRadial),
+      });
+      const patRadial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shRadial) });
+
+      resources.set(PDFName.of('Pattern'), ctx.obj({ PA: ctx.register(patAxial), PR: ctx.register(patRadial) }));
+      return [
+        // 1. 2-arc Bezier oval with horizontal endpoints (y=500) filled with vertical axial gradient [y=420..580]
+        'q /Pattern cs /PA scn 100 500 m 100 580 200 580 200 500 c 200 420 100 420 100 500 c h f Q',
+        // 2. Single-cubic closed Bezier loop whose start and end points coincide at (350, 500)
+        'q 0.2 0.5 0.8 rg 350 500 m 470 620 470 380 350 500 c h f Q',
+        // 3. Thin 2pt bar filled with radial shading must NOT emit a black rule placeholder
+        'q /Pattern cs /PR scn 100 300 200 2 re f Q',
+      ].join('\n');
+    });
+
+    const extracted = await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: true });
+    const page = extracted.content[0];
+    const shapes = page.shapes ?? [];
+
+    const gradOval = shapes.find((s) => s.kind === 'path' && s.gradient !== undefined);
+    expect(gradOval).toBeDefined();
+    expect(gradOval?.y0).toBeCloseTo(220, 1);
+    expect(gradOval?.y1).toBeCloseTo(380, 1);
+    expect(gradOval?.gradient?.angleDeg).toBeCloseTo(270, 1);
+    expect(gradOval?.gradient?.stops[0].color).toBe(0xff0000);
+    expect(gradOval?.gradient?.stops.at(-1)?.color).toBe(0x0000ff);
+
+    const loopShape = shapes.find((s) => s.kind === 'path' && s.fill === 0x3380cc);
+    expect(loopShape).toBeDefined();
+    expect(loopShape?.x1).toBeCloseTo(470, 1);
+
+    // Only the solid/gradient shapes exist; radial thin bar emitted zero black rules.
+    expect(page.rules).toHaveLength(0);
+
+    // 256 saves + nested >256 smask groups in overflow + matching endGroups -> visible image after endGroup survives.
+    const saves = Array.from({ length: PDF_CONTENT_MAX_STATE_DEPTH }, () => OPS.save);
+    const restores = Array.from({ length: PDF_CONTENT_MAX_STATE_DEPTH }, () => OPS.restore);
+    const nestedSmasks = Array.from({ length: PDF_CONTENT_MAX_STATE_DEPTH + 10 }, () => OPS.beginGroup);
+    const nestedEnds = Array.from({ length: PDF_CONTENT_MAX_STATE_DEPTH + 10 }, () => OPS.endGroup);
+    const overflowPage = await readPageContent(
+      OPS,
+      {
+        getViewport: () => ({ width: 200, height: 200, convertToViewportPoint: (x: number, y: number) => [x, 200 - y] as [number, number] }),
+        commonObjs: { has: () => false, get: () => undefined },
+        objs: { has: () => false, get: () => undefined },
+        getOperatorList: async () => ({
+          fnArray: [
+            ...saves,
+            ...nestedSmasks,
+            OPS.paintImageXObject,
+            OPS.constructPath,
+            ...nestedEnds,
+            OPS.paintImageXObject,
+            ...restores,
+          ],
+          argsArray: [
+            ...saves.map(() => []),
+            ...nestedSmasks.map(() => [{ smask: { subtype: 'Alpha' } }]),
+            ['mask_img', 10, 10],
+            [OPS.fill, [new Float32Array([0, 10, 10, 2, 20, 30])], null],
+            ...nestedEnds.map(() => []),
+            ['visible_after_overflow_smask', 88, 88],
+            ...restores.map(() => []),
+          ],
+        }),
+      },
+      { items: [], styles: {} },
+      1,
+      new FontTable(),
+      { readOperators: true, imageExtractor: null, unmappedMark: '', colour: true }
+    );
+    expect(overflowPage.images).toHaveLength(1);
+    expect(overflowPage.images[0].pixelWidth).toBe(88);
+
+    // Fail-closed extentOf on truncated/unknown/NaN paths.
+    expect(Number.isFinite(extentOf([2, 0, 0, 10]).x0)).toBe(false);
+    expect(Number.isFinite(extentOf([99, 0, 0]).x0)).toBe(false);
+    expect(Number.isFinite(extentOf([0, Number.NaN, 0]).x0)).toBe(false);
   });
 });

@@ -1,5 +1,5 @@
 import { hexOf } from '../pdf-content-colours';
-import { CLOSE, COORDINATES_OF, CURVE_TO, LINE_TO, MOVE_TO, QUADRATIC_TO } from '../pdf-content-shapes';
+import { CLOSE, COORDINATES_OF, CURVE_TO, extentOf, LINE_TO, MOVE_TO, QUADRATIC_TO } from '../pdf-content-shapes';
 import type { PdfContentShape, PdfLinearGradient } from '../pdf-text-types';
 import type { PageShape } from './model';
 
@@ -69,26 +69,6 @@ function pathCommands(path: readonly number[], to: (x: number, y: number) => str
     }
   }
   return out;
-}
-
-/** The corners of the box of all the coordinates of a path, control points included. */
-function extentOf(path: readonly number[]): { x0: number; y0: number; x1: number; y1: number } {
-  let x0 = Infinity;
-  let y0 = Infinity;
-  let x1 = -Infinity;
-  let y1 = -Infinity;
-  let at = 0;
-  while (at < path.length) {
-    const count = COORDINATES_OF[path[at++]] ?? 0;
-    for (let i = 0; i < count; i += 2) {
-      x0 = Math.min(x0, path[at + i]);
-      x1 = Math.max(x1, path[at + i]);
-      y0 = Math.min(y0, path[at + i + 1]);
-      y1 = Math.max(y1, path[at + i + 1]);
-    }
-    at += count;
-  }
-  return { x0, y0, x1, y1 };
 }
 
 /** The rectangle of all the coordinates of a path, control points included. */

@@ -1,5 +1,5 @@
 import { BLACK, GlyphColours, ItemColours, parseColour, type Rgb } from './pdf-content-colours';
-import { isLightColour, markFillBehindLightText, ShapeCollector, type Paint, type Subpath } from './pdf-content-shapes';
+import { extentOf, isLightColour, markFillBehindLightText, ShapeCollector, type Paint, type Subpath } from './pdf-content-shapes';
 import { hasUnmappedGlyphs, recoverUnmappedGlyphs, type RecoverableFont } from './pdf-glyph-recovery';
 import { ImageExtractor, type ImageSource } from './pdf-text-images';
 import {
@@ -347,6 +347,14 @@ function pathArrays(operand: unknown): ArrayLike<number>[] {
   return operand.filter(isNumberList);
 }
 
+const SUBPATH_OPERANDS: Readonly<Record<number, number>> = {
+  [PATH_MOVE_TO]: POINT_OPERANDS,
+  [PATH_LINE_TO]: POINT_OPERANDS,
+  [PATH_CURVE_TO]: CURVE_OPERANDS,
+  [PATH_QUADRATIC_TO]: QUADRATIC_OPERANDS,
+  [PATH_CLOSE]: 0,
+};
+
 /**
  * Subpaths (lists of points, with a closed flag) of a pdfjs path array; curves are reduced to their end points. With `keepSegments`
  * each subpath also keeps its segments as pdf.js encodes them, for the shapes of the page.
@@ -355,7 +363,6 @@ function subpathsOf(data: ArrayLike<number>, limit: number, keepSegments: boolea
   const subpaths: Subpath[] = [];
   let current: Subpath | null = null;
   let at = 0;
-  const readPoint = (offset: number): Point => ({ x: data[at + offset], y: data[at + offset + 1] });
   const keep = (code: number, count: number): void => {
     if (!current?.segments) return;
     current.segments.push(code);
@@ -363,31 +370,19 @@ function subpathsOf(data: ArrayLike<number>, limit: number, keepSegments: boolea
   };
   while (at < data.length && subpaths.length < limit) {
     const op = data[at++];
+    const count = SUBPATH_OPERANDS[op];
+    if (count === undefined || at + count > data.length) break;
     if (op === PATH_MOVE_TO) {
-      current = { points: [readPoint(0)], closed: false, ...(keepSegments ? { segments: [] } : {}) };
+      current = { points: [{ x: data[at], y: data[at + 1] }], closed: false, ...(keepSegments ? { segments: [] } : {}) };
       subpaths.push(current);
-      keep(op, POINT_OPERANDS);
-      at += POINT_OPERANDS;
-    } else if (op === PATH_LINE_TO) {
-      current?.points.push(readPoint(0));
-      keep(op, POINT_OPERANDS);
-      at += POINT_OPERANDS;
-    } else if (op === PATH_CURVE_TO) {
-      current?.points.push({ x: data[at + CURVE_OPERANDS - 2], y: data[at + CURVE_OPERANDS - 1] });
-      keep(op, CURVE_OPERANDS);
-      if (current) current.curved = true;
-      at += CURVE_OPERANDS;
-    } else if (op === PATH_QUADRATIC_TO) {
-      current?.points.push({ x: data[at + QUADRATIC_OPERANDS - 2], y: data[at + QUADRATIC_OPERANDS - 1] });
-      keep(op, QUADRATIC_OPERANDS);
-      if (current) current.curved = true;
-      at += QUADRATIC_OPERANDS;
     } else if (op === PATH_CLOSE) {
       if (current) current.closed = true;
-      keep(op, 0);
-    } else {
-      break;
+    } else if (current) {
+      current.points.push({ x: data[at + count - 2], y: data[at + count - 1] });
+      if (op === PATH_CURVE_TO || op === PATH_QUADRATIC_TO) current.curved = true;
     }
+    keep(op, count);
+    at += count;
   }
   return subpaths;
 }
@@ -503,6 +498,7 @@ class RuleCollector {
 
   /** `inShape[i]` tells that subpath `i` is drawn by a shape of its own. */
   stroke(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
+    if (this.colour && state.stroke === null) return;
     const thickness = Math.max(state.lineWidth * RuleCollector.scaleOf(state.ctm), HAIRLINE_FLOOR);
     const strokeAlpha = state.strokeAlpha < 1 ? state.strokeAlpha : undefined;
     subpaths.forEach((subpath, index) => {
@@ -521,8 +517,9 @@ class RuleCollector {
 
   /** A filled rectangle thin enough to be a line is a rule; larger fills are backgrounds and are ignored. */
   fill(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
-    if (state.fill !== null && isLightColour(state.fill)) return;
+    if (state.fill === null || isLightColour(state.fill)) return;
     subpaths.forEach((subpath, index) => {
+      if (subpath.curved) return;
       const ink: RuleInk = { color: state.fill, z, ...(inShape[index] ? { inShape: true as const } : {}) };
       this.addFilled(subpath, state, ink);
     });
@@ -655,6 +652,7 @@ class OperatorScanner {
   private readonly sources: ImageSource[] = [];
   private readonly stack: GraphicsState[] = [];
   private overflowDepth = 0;
+  private readonly overflowSmaskAtDepth: number[] = [];
   private pendingClip = false;
   private state: GraphicsState = {
     ctm: MATRIX_IDENTITY,
@@ -694,10 +692,29 @@ class OperatorScanner {
   private popState(): void {
     this.pendingClip = false;
     if (this.overflowDepth > 0) {
+      if (this.overflowSmaskAtDepth.at(-1) === this.overflowDepth) {
+        this.overflowSmaskAtDepth.pop();
+        this.state = { ...this.state, smaskDepth: Math.max(0, this.state.smaskDepth - 1) };
+      }
       this.overflowDepth--;
       return;
     }
     this.state = this.stack.pop() ?? this.state;
+  }
+
+  private enterGroup(raw: unknown): void {
+    const prevSmaskDepth = this.state.smaskDepth;
+    this.pushState();
+    const next = beginGroupState(raw, this.state, this.collector);
+    if (this.overflowDepth > 0 && next.smaskDepth > prevSmaskDepth) {
+      if (this.overflowSmaskAtDepth.length < PDF_CONTENT_MAX_STATE_DEPTH) {
+        this.overflowSmaskAtDepth.push(this.overflowDepth);
+      } else {
+        next.smaskDepth = prevSmaskDepth;
+      }
+    }
+    this.state = next;
+    this.pendingClip = false;
   }
 
   private subpathBox(subpath: Subpath): RectBox | null {
@@ -712,7 +729,9 @@ class OperatorScanner {
   }
 
   private applyResolvedShading(shape: PdfContentShape, shading: ShadingRef): boolean {
-    const resolved = this.resolveShading(shading, shape);
+    const box = shape.path ? extentOf(shape.path) : shape;
+    if (!Number.isFinite(box.x0)) return false;
+    const resolved = this.resolveShading(shading, box);
     if (resolved?.kind === 'gradient') {
       delete shape.fill;
       delete shape.alpha;
@@ -854,9 +873,7 @@ class OperatorScanner {
     } else if (fn === ops.paintFormXObjectEnd || fn === ops.endGroup) {
       this.popState();
     } else if (fn === ops.beginGroup) {
-      this.pushState();
-      this.state = beginGroupState(args?.[0], state, this.collector);
-      this.pendingClip = false;
+      this.enterGroup(args?.[0]);
     } else if (fn === ops.clip || fn === ops.eoClip) {
       this.pendingClip = true;
     } else if (fn === ops.setLineWidth) {

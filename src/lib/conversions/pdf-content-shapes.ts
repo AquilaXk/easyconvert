@@ -149,6 +149,60 @@ const closesOnItself = (points: readonly (readonly [number, number])[]): boolean
   return Math.abs(first[0] - last[0]) < COINCIDENT && Math.abs(first[1] - last[1]) < COINCIDENT;
 };
 
+/** The corners of the box of all the coordinates of a path, control points included. */
+export function extentOf(path: readonly number[]): BoxLike {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  let at = 0;
+  while (at < path.length) {
+    const count = COORDINATES_OF[path[at++]];
+    if (count === undefined || at + count > path.length) return { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    for (let i = 0; i < count; i += 2) {
+      const x = path[at + i];
+      const y = path[at + i + 1];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+    at += count;
+  }
+  return { x0, y0, x1, y1 };
+}
+
+function isEmptyBox(box: BoxLike): boolean {
+  return !Number.isFinite(box.x0) || (box.x0 === box.x1 && box.y0 === box.y1);
+}
+
+function shapeStrokeOf(paint: Paint, state: ShapeState, item: LTCurve, subpath: Subpath, fill: number | undefined): number | undefined {
+  if (!paint.stroke || state.stroke === null) return undefined;
+  if (fill === undefined && isAxisPolyline(item.pts, subpath.curved === true)) return undefined;
+  return state.stroke;
+}
+
+function buildPathShape(
+  hull: BoxLike,
+  path: number[],
+  fill: number | undefined,
+  stroke: number | undefined,
+  state: ShapeState,
+  loop: boolean
+): Omit<PdfContentShape, 'z'> {
+  return {
+    kind: 'path',
+    ...hull,
+    ...(fill === undefined ? {} : { fill }),
+    ...(stroke === undefined ? {} : { stroke, strokeWidth: strokeWidthOf(state) }),
+    ...(fill !== undefined && state.fillAlpha < 1 ? { alpha: state.fillAlpha } : {}),
+    ...(state.strokeAlpha !== undefined && state.strokeAlpha < 1 ? { strokeAlpha: state.strokeAlpha } : {}),
+    ...(state.dashed ? { dashed: true } : {}),
+    path: loop ? closed(path) : path,
+  };
+}
+
 /** Collects the shapes of one page; the rules of a page are the `RuleCollector`'s. */
 export class ShapeCollector {
   readonly shapes: PdfContentShape[] = [];
@@ -212,31 +266,20 @@ export class ShapeCollector {
     // A line is a rule, and the rule collector draws it.
     if (!item || item instanceof LTLine) return [false, false];
     const box = { x0: item.x0, y0: item.y0, x1: item.x1, y1: item.y1 };
-    if (box.x0 === box.x1 && box.y0 === box.y1) return [false, false];
+    if (isEmptyBox(box) && !subpath.curved) return [false, false];
     if (item instanceof LTRect) {
       // A rectangle's stroke is four rules.
       if (fill !== undefined) this.addRectangle(box, fill, state, z);
       return [fill !== undefined, false];
     }
     const loop = subpath.closed || paint.fill || closesOnItself(item.pts);
-    const stroke = paint.stroke && state.stroke !== null && !(fill === undefined && isAxisPolyline(item.pts, subpath.curved === true)) ? state.stroke : undefined;
+    const stroke = shapeStrokeOf(paint, state, item, subpath, fill);
     if (fill === undefined && stroke === undefined) return [false, false];
-    if (fill !== undefined && this.isPaper(fill, box)) return [false, false];
     const path = pagePath(item.original_path ?? []);
+    const hull = subpath.curved ? extentOf(path) : box;
+    if (isEmptyBox(hull) || (fill !== undefined && this.isPaper(fill, hull))) return [false, false];
     this.coordinates += path.length;
-    this.add(
-      {
-        kind: 'path',
-        ...box,
-        ...(fill === undefined ? {} : { fill }),
-        ...(stroke === undefined ? {} : { stroke, strokeWidth: strokeWidthOf(state) }),
-        ...(fill !== undefined && state.fillAlpha < 1 ? { alpha: state.fillAlpha } : {}),
-        ...(state.strokeAlpha !== undefined && state.strokeAlpha < 1 ? { strokeAlpha: state.strokeAlpha } : {}),
-        ...(state.dashed ? { dashed: true } : {}),
-        path: loop ? closed(path) : path,
-      },
-      z
-    );
+    this.add(buildPathShape(hull, path, fill, stroke, state, loop), z);
     return [false, stroke !== undefined];
   }
 
