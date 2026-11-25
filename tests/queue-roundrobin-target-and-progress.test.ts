@@ -1,8 +1,14 @@
+import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Redis from 'ioredis';
-import { Job, Queue, Worker } from '../src/lib/queue/bullmq-engine';
+import { DistributedBullMQAdapter, Job, JobCancelledError, Queue, Worker } from '../src/lib/queue/bullmq-engine';
 import { conversionQueue, processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
-import { ensureQueueLuaLoaded, execPipelineEvalQueueLua, luaScriptSha1 } from '../src/lib/queue/eval-lua';
+import { ensureQueueLuaLoaded, evalQueueLua, execPipelineEvalQueueLua, luaScriptSha1 } from '../src/lib/queue/eval-lua';
+import { UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT } from '../src/lib/queue/lua-scripts';
+import { processNodeJob, type ConversionEnginePort } from '../src/lib/queue/node-processor';
 import {
   dispatchSyncArchiveInspection,
   dispatchSyncRouteConversion,
@@ -15,6 +21,8 @@ import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
 describe('Queue scheduling fairness, direct targetQueue polling, and progress deduplication', () => {
   const openWorkers: Worker<any, any>[] = [];
   const openQueues: Queue<any, any>[] = [];
+  const openAdapters: DistributedBullMQAdapter<any, any>[] = [];
+  const tempDirs: string[] = [];
   let savedExecMode: string | undefined;
 
   beforeEach(() => {
@@ -27,6 +35,12 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     }
     while (openQueues.length > 0) {
       await openQueues.pop()!.close().catch(() => undefined);
+    }
+    while (openAdapters.length > 0) {
+      await openAdapters.pop()!.close().catch(() => undefined);
+    }
+    while (tempDirs.length > 0) {
+      fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
     }
     if (savedExecMode === undefined) delete process.env.WEB_EXECUTION_MODE;
     else process.env.WEB_EXECUTION_MODE = savedExecMode;
@@ -385,5 +399,437 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
         ],
       })
     ).rejects.toThrow(/retry pipeline returned 1 replies for 2 commands/);
+  });
+
+  it('suppresses Job.updateProgress after abort or terminal state and suppresses Redis Pub/Sub when Lua returns 0', async () => {
+    const q = new Queue<ConversionJobData, ConversionJobResult>('progress-abort-gate');
+    openQueues.push(q);
+
+    const emitted: number[] = [];
+    const hookCalls: number[] = [];
+    q.on('progress', (_j, p) => emitted.push(p));
+
+    const makeJob = (id: string) =>
+      new Job<ConversionJobData, ConversionJobResult>(
+        id,
+        'convert',
+        {
+          jobId: id,
+          originalFilename: 'a.csv',
+          sourceFormat: 'csv',
+          targetFormat: 'json',
+          fileSize: 8,
+          options: {},
+          inputBufferBase64: Buffer.from('a,b\n1,2\n').toString('base64'),
+        },
+        {},
+        q,
+        async (j) => {
+          hookCalls.push(j.progress);
+        }
+      );
+
+    // 1. Aborted signal while still marked active blocks mutation, event emission, and hook calls.
+    const abortedJob = makeJob('j_aborted_sig');
+    abortedJob.state = 'active';
+    await abortedJob.updateProgress(25);
+    abortedJob._abortAttempt(new JobCancelledError('client cancelled'));
+    await abortedJob.updateProgress(75);
+    expect(abortedJob.progress).toBe(25);
+    expect(emitted).toEqual([25]);
+    expect(hookCalls).toEqual([25]);
+
+    // 2. Terminal states ('cancelled', 'failed', 'completed') block updateProgress even with a fresh signal.
+    for (const terminalState of ['cancelled', 'failed', 'completed'] as const) {
+      const terminalJob = makeJob(`j_terminal_${terminalState}`);
+      terminalJob.state = 'active';
+      await terminalJob.updateProgress(40);
+      terminalJob.state = terminalState;
+      await terminalJob.updateProgress(90);
+      expect(terminalJob.progress).toBe(40);
+    }
+    expect(emitted).toEqual([25, 40, 40, 40]);
+    expect(hookCalls).toEqual([25, 40, 40, 40]);
+
+    // 3. DistributedBullMQAdapter suppresses Pub/Sub 'progress' when UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT returns 0.
+    let luaProgressReply = 1;
+    const publishedPayloads: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+    const fakeRedis = {
+      status: 'ready',
+      on: vi.fn(),
+      evalsha: vi.fn(async () => {
+        throw new Error('NOSCRIPT No matching script');
+      }),
+      eval: vi.fn(async (scriptArg: string) => {
+        if (scriptArg === UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT) {
+          return luaProgressReply;
+        }
+        return [1];
+      }),
+      pipeline: vi.fn(() => {
+        const queued: Array<{ channel: string; message: string }> = [];
+        return {
+          publish(channel: string, message: string) {
+            queued.push({ channel, message });
+            return this;
+          },
+          async exec() {
+            for (const entry of queued) {
+              publishedPayloads.push({ channel: entry.channel, payload: JSON.parse(entry.message) });
+            }
+            return queued.map(() => [null, 1]);
+          },
+        };
+      }),
+      publish: vi.fn(async (channel: string, message: string) => {
+        publishedPayloads.push({ channel, payload: JSON.parse(message) });
+        return 1;
+      }),
+      quit: vi.fn(async () => 'OK'),
+      disconnect: vi.fn(),
+    } as unknown as Redis;
+
+    const adapter = new DistributedBullMQAdapter<ConversionJobData, ConversionJobResult>('q-pubsub-gate', {
+      redisClient: fakeRedis,
+      keyPrefix: 'gate:',
+    });
+    openAdapters.push(adapter);
+
+    const added = await adapter.add('convert', {
+      jobId: 'j_redis_gate',
+      originalFilename: 'a.csv',
+      sourceFormat: 'csv',
+      targetFormat: 'json',
+      fileSize: 8,
+      options: {},
+    });
+    added.state = 'active';
+    added._attemptToken = 'tok_active';
+
+    await added.updateProgress(35);
+    expect(publishedPayloads.filter((p) => p.payload.event === 'progress')).toEqual([
+      { channel: 'gate:q-pubsub-gate:events', payload: { event: 'progress', jobId: added.id, progress: 35 } },
+      {
+        channel: `gate:q-pubsub-gate:job:${added.id}:events`,
+        payload: { event: 'progress', jobId: added.id, progress: 35 },
+      },
+    ]);
+
+    publishedPayloads.length = 0;
+    luaProgressReply = 0;
+    await added.updateProgress(75);
+    expect(publishedPayloads).toEqual([]);
+  });
+
+  it('aborts post-storage, post-engine, diagnostic, and pre-100% progress writes cleanly in processNodeJob', async () => {
+    const q = new Queue<ConversionJobData, ConversionJobResult>('processor-abort-gates');
+    openQueues.push(q);
+
+    const makeBaseJobData = (id: string, extra: Partial<ConversionJobData> = {}): ConversionJobData => ({
+      jobId: id,
+      originalFilename: 'scores.csv',
+      sourceFormat: 'csv',
+      targetFormat: 'json',
+      fileSize: 12,
+      options: {},
+      inputBufferBase64: Buffer.from('a,b\n1,2\n').toString('base64'),
+      ...extra,
+    });
+
+    // 1. Abort during storage.getObject stops before updateProgress(35) and engine.convert.
+    const uploadKey = `uploads/abort-get-${Date.now()}.csv`;
+    const getJob = await q.add('convert', makeBaseJobData('j_abort_get', { storageKey: uploadKey, inputBufferBase64: undefined }));
+    const getProgressCalls: number[] = [];
+    vi.spyOn(getJob, 'updateProgress').mockImplementation(async (p) => {
+      getProgressCalls.push(p);
+    });
+    const fakeGetStorage = {
+      ...storageProvider,
+      getObject: vi.fn(async () => {
+        getJob._abortAttempt(new JobCancelledError('cancelled during getObject'));
+        return {
+          key: uploadKey,
+          filename: 'scores.csv',
+          mimeType: 'text/csv',
+          buffer: Buffer.from('a,b\n1,2\n'),
+          size: 8,
+          etag: '"1"',
+          uploadedAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        };
+      }),
+    };
+    const uncalledEngine: ConversionEnginePort = {
+      name: 'mock-engine',
+      convert: vi.fn(),
+    };
+    await expect(processNodeJob(getJob, uncalledEngine, fakeGetStorage as never)).rejects.toThrow(/cancelled/i);
+    expect(getProgressCalls).toEqual([10]);
+    expect(uncalledEngine.convert).not.toHaveBeenCalled();
+
+    // 2. Single-stage post-engine abort discards output file and skips updateProgress(75) and (100).
+    const singleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-abort-single-'));
+    tempDirs.push(singleDir);
+    const singleDiskOut = path.join(singleDir, 'out.json');
+    const singleJob = await q.add('convert', makeBaseJobData('j_abort_single'));
+    const singleProgressCalls: number[] = [];
+    vi.spyOn(singleJob, 'updateProgress').mockImplementation(async (p) => {
+      singleProgressCalls.push(p);
+    });
+    const saveSpy = vi.spyOn(storageProvider, 'saveObject');
+    const singleAbortEngine: ConversionEnginePort = {
+      name: 'mock-single',
+      async convert() {
+        fs.writeFileSync(singleDiskOut, '{"ok":true}');
+        singleJob._abortAttempt(new JobCancelledError('cancelled mid-convert'));
+        return {
+          buffer: Buffer.from('{"ok":true}'),
+          filePath: singleDiskOut,
+          size: 11,
+          mimeType: 'application/json',
+          filename: 'out.json',
+          engineUsed: 'mock-single',
+          executionTimeMs: 5,
+        };
+      },
+    };
+    await expect(processNodeJob(singleJob, singleAbortEngine, storageProvider)).rejects.toThrow(/cancelled/i);
+    expect(singleProgressCalls).toEqual([10, 35]);
+    expect(fs.existsSync(singleDiskOut)).toBe(false);
+    expect(singleJob.logs.some((l) => l.includes('Conversion completed'))).toBe(false);
+    expect(saveSpy.mock.calls.filter(([k]) => String(k).startsWith(`results/${singleJob.id}/`))).toEqual([]);
+
+    // 3. Multi-stage post-engine abort discards all produced stage files and skips updateProgress(80) and (100).
+    const multiDir = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-abort-multi-'));
+    tempDirs.push(multiDir);
+    const stage1Out = path.join(multiDir, 'stage1.json');
+    const stage2Out = path.join(multiDir, 'stage2.yaml');
+    const multiJob = await q.add(
+      'convert',
+      makeBaseJobData('j_abort_multi', {
+        targetFormat: 'yaml',
+        tasks: [
+          { name: 's1', operation: 'convert', targetFormat: 'json' },
+          { name: 's2', operation: 'convert', targetFormat: 'yaml' },
+        ],
+      })
+    );
+    const multiProgressCalls: number[] = [];
+    vi.spyOn(multiJob, 'updateProgress').mockImplementation(async (p) => {
+      multiProgressCalls.push(p);
+    });
+    let stageNum = 0;
+    const multiAbortEngine: ConversionEnginePort = {
+      name: 'mock-multi',
+      async convert() {
+        stageNum++;
+        if (stageNum === 1) {
+          fs.writeFileSync(stage1Out, '{"ok":1}');
+          return {
+            buffer: Buffer.from('{"ok":1}'),
+            filePath: stage1Out,
+            size: 8,
+            mimeType: 'application/json',
+            filename: 'stage1.json',
+            engineUsed: 'mock-multi',
+            executionTimeMs: 3,
+          };
+        }
+        fs.writeFileSync(stage2Out, 'ok: 1\n');
+        multiJob._abortAttempt(new JobCancelledError('cancelled stage 2'));
+        return {
+          buffer: Buffer.from('ok: 1\n'),
+          filePath: stage2Out,
+          size: 6,
+          mimeType: 'application/yaml',
+          filename: 'stage2.yaml',
+          engineUsed: 'mock-multi',
+          executionTimeMs: 4,
+        };
+      },
+    };
+    await expect(processNodeJob(multiJob, multiAbortEngine, storageProvider)).rejects.toThrow(/cancelled/i);
+    expect(multiProgressCalls).toEqual([10, 35, 58]);
+    expect(fs.existsSync(stage1Out)).toBe(false);
+    expect(fs.existsSync(stage2Out)).toBe(false);
+    expect(multiJob.logs.some((l) => l.includes('Conversion completed'))).toBe(false);
+
+    // 4. Sequential diagnostic logging aborts cleanly before warning/fallback logs and updateProgress(75).
+    const diagJob = await q.add('convert', makeBaseJobData('j_abort_diag'));
+    const diagProgressCalls: number[] = [];
+    vi.spyOn(diagJob, 'updateProgress').mockImplementation(async (p) => {
+      diagProgressCalls.push(p);
+    });
+    const origLog = diagJob.log.bind(diagJob);
+    vi.spyOn(diagJob, 'log').mockImplementation(async (row) => {
+      await origLog(row);
+      if (row.includes('Conversion completed')) {
+        diagJob._abortAttempt(new JobCancelledError('cancelled during diagnostics'));
+      }
+    });
+    const diagEngine: ConversionEnginePort = {
+      name: 'mock-diag',
+      async convert() {
+        return {
+          buffer: Buffer.from('[]'),
+          size: 2,
+          mimeType: 'application/json',
+          filename: 'out.json',
+          engineUsed: 'mock-diag',
+          executionTimeMs: 2,
+          skippedLinks: ['http://example.com'],
+          fallbackChain: ['step-a'],
+          metadata: { warnings: ['warn-1'] },
+        };
+      },
+    };
+    await expect(processNodeJob(diagJob, diagEngine, storageProvider)).rejects.toThrow(/cancelled/i);
+    expect(diagProgressCalls).toEqual([10, 35]);
+    expect(diagJob.logs.some((l) => l.includes('Skipped 1 link entries'))).toBe(false);
+    expect(diagJob.logs.some((l) => l.includes('Warning: warn-1'))).toBe(false);
+    expect(diagJob.logs.some((l) => l.includes('Engine fallback'))).toBe(false);
+
+    // 5. Normal run emits "Output saved" log BEFORE updateProgress(100), and aborting inside "Output saved" skips 100%.
+    const orderJob = await q.add('convert', makeBaseJobData('j_log_before_100'));
+    let outputSavedBefore100 = false;
+    const orderEngine: ConversionEnginePort = {
+      name: 'mock-ok',
+      async convert() {
+        return {
+          buffer: Buffer.from('[]'),
+          size: 2,
+          mimeType: 'application/json',
+          filename: 'out.json',
+          engineUsed: 'mock-ok',
+          executionTimeMs: 1,
+        };
+      },
+    };
+    const origOrderUpdate = orderJob.updateProgress.bind(orderJob);
+    vi.spyOn(orderJob, 'updateProgress').mockImplementation(async (p) => {
+      if (p === 100) {
+        outputSavedBefore100 = orderJob.logs.some((l) => l.includes('Output saved'));
+      }
+      await origOrderUpdate(p);
+    });
+    const okRes = await processNodeJob(orderJob, orderEngine, storageProvider);
+    storageProvider.deleteObject(okRes.resultKey);
+    expect(outputSavedBefore100).toBe(true);
+
+    const lateAbortJob = await q.add('convert', makeBaseJobData('j_abort_before_100'));
+    const lateProgressCalls: number[] = [];
+    vi.spyOn(lateAbortJob, 'updateProgress').mockImplementation(async (p) => {
+      lateProgressCalls.push(p);
+    });
+    const origLateLog = lateAbortJob.log.bind(lateAbortJob);
+    vi.spyOn(lateAbortJob, 'log').mockImplementation(async (row) => {
+      await origLateLog(row);
+      if (row.includes('Output saved')) {
+        lateAbortJob._abortAttempt(new JobCancelledError('cancelled right after save log'));
+      }
+    });
+    const lateRes = await processNodeJob(lateAbortJob, orderEngine, storageProvider);
+    storageProvider.deleteObject(lateRes.resultKey);
+    expect(lateProgressCalls).toEqual([10, 35, 75]);
+  });
+
+  it('keeps Cluster preload cache isolated from evalQueueLua, awaits whenReady before nodes(master), and retries every multi-shard NOSCRIPT entry with eval', async () => {
+    const script = 'return redis.call("GET", KEYS[1])';
+    const expectedSha = luaScriptSha1(script);
+
+    // 1. Lazy-connecting Cluster client: evalQueueLua loads only one shard; ensureQueueLuaLoaded must await whenReady and load all masters.
+    const emitter = new EventEmitter();
+    const masterLoadCalls: string[] = [];
+    let connected = false;
+    const clusterClient = Object.assign(emitter, {
+      isCluster: true,
+      status: 'wait',
+      connect: vi.fn(async () => {
+        connected = true;
+        clusterClient.status = 'ready';
+        emitter.emit('ready');
+      }),
+      evalsha: vi.fn(async () => 'val'),
+      eval: vi.fn(async () => 'val'),
+      nodes: vi.fn((role: 'master' | 'slave' | 'all') => {
+        if (!connected || role !== 'master') return [];
+        return [
+          {
+            script: vi.fn(async (...args: unknown[]) => {
+              masterLoadCalls.push(`m1:${String(args[0])}`);
+              return expectedSha;
+            }),
+          },
+          {
+            script: vi.fn(async (...args: unknown[]) => {
+              masterLoadCalls.push(`m2:${String(args[0])}`);
+              return expectedSha;
+            }),
+          },
+        ];
+      }),
+    }) as unknown as Redis;
+
+    expect(await evalQueueLua(clusterClient, script, 1, 'k1')).toBe('val');
+    expect(masterLoadCalls).toEqual([]);
+
+    expect(await ensureQueueLuaLoaded(clusterClient, script)).toBe(expectedSha);
+    expect((clusterClient as unknown as { connect: ReturnType<typeof vi.fn> }).connect).toHaveBeenCalledTimes(1);
+    expect(masterLoadCalls).toEqual(['m1:LOAD', 'm2:LOAD']);
+
+    // Second ensureQueueLuaLoaded hits preloadedClusterMastersByClient.
+    expect(await ensureQueueLuaLoaded(clusterClient, script)).toBe(expectedSha);
+    expect(masterLoadCalls).toEqual(['m1:LOAD', 'm2:LOAD']);
+
+    // 2. Multi-entry NOSCRIPT retry in execPipelineEvalQueueLua uses retry.eval for EVERY missed index (pos === 0 and pos > 0)
+    // and clears Cluster preload cache so subsequent ensureQueueLuaLoaded reloads all masters.
+    const retryOps: Array<{ op: 'eval' | 'evalsha'; firstArg: unknown; args: unknown[] }> = [];
+    const clusterWithPipeline = Object.assign(clusterClient, {
+      pipeline: vi
+        .fn()
+        .mockReturnValueOnce({
+          evalsha: vi.fn().mockReturnThis(),
+          exec: vi.fn().mockResolvedValue([
+            [new Error('NOSCRIPT No matching script'), null],
+            [new Error('NOSCRIPT No matching script'), null],
+            [new Error('NOSCRIPT No matching script'), null],
+          ]),
+        })
+        .mockReturnValueOnce({
+          eval: vi.fn(function (this: unknown, ...args: unknown[]) {
+            retryOps.push({ op: 'eval', firstArg: args[0], args });
+            return this;
+          }),
+          evalsha: vi.fn(function (this: unknown, ...args: unknown[]) {
+            retryOps.push({ op: 'evalsha', firstArg: args[0], args });
+            return this;
+          }),
+          exec: vi.fn().mockResolvedValue([
+            [null, 'r0'],
+            [null, 'r1'],
+            [null, 'r2'],
+          ]),
+        }),
+    }) as unknown as Redis;
+
+    const replies = await execPipelineEvalQueueLua(clusterWithPipeline, {
+      script,
+      calls: [
+        { numKeys: 1, args: ['{a}:k'] },
+        { numKeys: 1, args: ['{b}:k'] },
+        { numKeys: 1, args: ['{c}:k'] },
+      ],
+    });
+    expect(replies).toEqual(['r0', 'r1', 'r2']);
+    expect(retryOps.map((r) => r.op)).toEqual(['eval', 'eval', 'eval']);
+    expect(retryOps.map((r) => r.args)).toEqual([
+      [script, 1, '{a}:k'],
+      [script, 1, '{b}:k'],
+      [script, 1, '{c}:k'],
+    ]);
+
+    // After Cluster NOSCRIPT, preloadedClusterMastersByClient was cleared so ensureQueueLuaLoaded loads all masters again.
+    expect(await ensureQueueLuaLoaded(clusterWithPipeline, script)).toBe(expectedSha);
+    expect(masterLoadCalls).toEqual(['m1:LOAD', 'm2:LOAD', 'm1:LOAD', 'm2:LOAD']);
   });
 });

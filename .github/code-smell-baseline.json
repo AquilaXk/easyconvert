@@ -1525,7 +1525,7 @@
     "rule": "max-lines",
     "function": "<module>",
     "count": 1,
-    "maxValue": 2173
+    "maxValue": 2170
   },
   {
     "file": "src/lib/queue/conversion-queue.ts",
@@ -1576,19 +1576,6 @@
     "function": "processGraphNodeJob",
     "count": 1,
     "maxValue": 337
-  },
-  {
-    "file": "src/lib/queue/node-processor.ts",
-    "rule": "complexity",
-    "function": "processNodeJob",
-    "count": 1,
-    "maxValue": 47
-  },
-  {
-    "file": "src/lib/queue/node-processor.ts",
-    "rule": "no-nested-ternary",
-    "function": "processNodeJob",
-    "count": 2
   },
   {
     "file": "src/lib/queue/resource-class.ts",

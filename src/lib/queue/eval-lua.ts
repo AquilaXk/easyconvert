@@ -2,9 +2,11 @@ import crypto from 'node:crypto';
 import type Redis from 'ioredis';
 import type { ChainableCommander } from 'ioredis';
 import { isClusterRedis } from '../redis/cluster-ops';
+import { whenReady } from '../redis/when-ready';
 
 const sha1ByScript = new Map<string, string>();
 const loadedByClient = new WeakMap<object, Set<string>>();
+const preloadedClusterMastersByClient = new WeakMap<object, Set<string>>();
 
 type EvalCapableClient = Pick<Redis, 'eval'> & {
   evalsha?: (...args: unknown[]) => Promise<unknown>;
@@ -33,21 +35,22 @@ export function isNoScriptError(err: unknown): boolean {
   return err instanceof Error && err.message.includes('NOSCRIPT');
 }
 
-function getLoadedShas(client: object): Set<string> | undefined {
-  return loadedByClient.get(client);
+function hasLoadedSha(cache: WeakMap<object, Set<string>>, client: object, sha: string): boolean {
+  return Boolean(cache.get(client)?.has(sha));
 }
 
-function markLoadedSha(client: object, sha: string): void {
-  let loaded = loadedByClient.get(client);
+function markLoadedSha(cache: WeakMap<object, Set<string>>, client: object, sha: string): void {
+  let loaded = cache.get(client);
   if (!loaded) {
     loaded = new Set<string>();
-    loadedByClient.set(client, loaded);
+    cache.set(client, loaded);
   }
   loaded.add(sha);
 }
 
 function clearLoadedSha(client: object, sha: string): void {
   loadedByClient.get(client)?.delete(sha);
+  preloadedClusterMastersByClient.get(client)?.delete(sha);
 }
 
 /**
@@ -68,7 +71,7 @@ export async function evalQueueLua(
   const sha = luaScriptSha1(script);
   try {
     const result = await target.evalsha(sha, numKeys, ...args);
-    markLoadedSha(target, sha);
+    markLoadedSha(loadedByClient, target, sha);
     return result;
   } catch (err) {
     if (!isNoScriptError(err)) {
@@ -76,7 +79,7 @@ export async function evalQueueLua(
     }
     clearLoadedSha(target, sha);
     const result = await target.eval(script, numKeys, ...args);
-    markLoadedSha(target, sha);
+    markLoadedSha(loadedByClient, target, sha);
     return result;
   }
 }
@@ -88,18 +91,29 @@ export async function evalQueueLua(
 export async function ensureQueueLuaLoaded(client: Redis, script: string): Promise<string> {
   const sha = luaScriptSha1(script);
   const target = client as unknown as ClusterCapableClient;
-  if (!getLoadedShas(target)?.has(sha) && typeof target.evalsha === 'function') {
-    if (isClusterRedis(client) && typeof target.nodes === 'function') {
+  if (typeof target.evalsha !== 'function') {
+    return sha;
+  }
+  if (isClusterRedis(client)) {
+    if (hasLoadedSha(preloadedClusterMastersByClient, target, sha)) {
+      return sha;
+    }
+    if (typeof (client as { once?: unknown }).once === 'function' && typeof (client as { status?: unknown }).status === 'string') {
+      await whenReady(client);
+    }
+    if (typeof target.nodes === 'function') {
       const masters = await Promise.resolve(target.nodes('master'));
       const loaders = masters.filter((node) => typeof (node as unknown as EvalCapableClient).script === 'function');
       if (loaders.length > 0) {
         await Promise.all(loaders.map((node) => (node as unknown as EvalCapableClient).script!('LOAD', script)));
-        markLoadedSha(target, sha);
+        markLoadedSha(preloadedClusterMastersByClient, target, sha);
       }
-    } else if (typeof target.script === 'function') {
-      await target.script('LOAD', script);
-      markLoadedSha(target, sha);
+      return sha;
     }
+  }
+  if (!hasLoadedSha(loadedByClient, target, sha) && typeof target.script === 'function') {
+    await target.script('LOAD', script);
+    markLoadedSha(loadedByClient, target, sha);
   }
   return sha;
 }
@@ -122,7 +136,7 @@ type PipelineWithEval = ChainableCommander & {
 
 /**
  * Executes optional prefix commands plus a batch of identical-script Lua calls in one Redis
- * pipeline using `EVALSHA`, recovering automatically via `EVAL` + `EVALSHA` if Redis flushed its
+ * pipeline using `EVALSHA`, recovering automatically via `EVAL` if Redis flushed its
  * script cache between `SCRIPT LOAD` and pipeline execution.
  */
 export async function execPipelineEvalQueueLua(
@@ -174,14 +188,10 @@ export async function execPipelineEvalQueueLua(
   if (missedIndices.length > 0) {
     clearLoadedSha(target, sha);
     const retry = client.pipeline() as PipelineWithEval;
-    missedIndices.forEach((callIdx, pos) => {
+    for (const callIdx of missedIndices) {
       const call = calls[callIdx];
-      if (pos === 0) {
-        retry.eval(script, call.numKeys, ...call.args);
-      } else {
-        retry.evalsha(sha, call.numKeys, ...call.args);
-      }
-    });
+      retry.eval(script, call.numKeys, ...call.args);
+    }
     const retryRaw = (await retry.exec()) ?? [];
     if (retryRaw.length !== missedIndices.length) {
       throw new Error(`Redis EVALSHA retry pipeline returned ${retryRaw.length} replies for ${missedIndices.length} commands.`);
@@ -191,7 +201,9 @@ export async function execPipelineEvalQueueLua(
       if (err) throw err;
       answers[callIdx] = reply;
     });
-    markLoadedSha(target, sha);
+    if (!isClusterRedis(client)) {
+      markLoadedSha(loadedByClient, target, sha);
+    }
   }
 
   return answers;

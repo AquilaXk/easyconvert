@@ -223,14 +223,13 @@ export class Job<T = any, R = any> {
   }
 
   async updateProgress(progress: number): Promise<void> {
+    if (this.signal?.aborted || TERMINAL_JOB_STATES.has(this.state) || !Number.isFinite(progress)) return;
     const next = Math.max(0, Math.min(100, Math.round(progress)));
-    if (!Number.isFinite(progress) || next === this.progress) return;
+    if (next === this.progress) return;
     this.progress = next;
     this.emitter.emit('progress', this, this.progress);
     if (this.onUpdateHook) {
-      try {
-        await this.onUpdateHook(this);
-      } catch {}
+      try { await this.onUpdateHook(this); } catch {}
     }
   }
 
@@ -1483,12 +1482,10 @@ export class DistributedBullMQAdapter<T = any, R = any> extends EventEmitter imp
     try {
       const jobKey = this.getJobKey(j.id);
       if (typeof this.redisClient.eval === 'function' && j._attemptToken) {
-        await evalQueueLua(this.redisClient, UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT, 1, jobKey, j._attemptToken, String(j.progress));
-      } else if (typeof this.redisClient.eval === 'function') {
-        await this.redisClient.hset(jobKey, 'progress', String(j.progress));
-      } else {
-        await this.redisClient.hset(jobKey, 'progress', String(j.progress), 'logs', JSON.stringify(j.logs));
-      }
+        const updated = await evalQueueLua(this.redisClient, UPDATE_ATTEMPT_PROGRESS_LUA_SCRIPT, 1, jobKey, j._attemptToken, String(j.progress));
+        if (Number(updated) === 0) return;
+      } else if (typeof this.redisClient.eval === 'function') await this.redisClient.hset(jobKey, 'progress', String(j.progress));
+      else await this.redisClient.hset(jobKey, 'progress', String(j.progress), 'logs', JSON.stringify(j.logs));
       await this.publishEvent({ event: 'progress', jobId: j.id, progress: j.progress });
     } catch {}
   };

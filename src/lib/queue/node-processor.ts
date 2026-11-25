@@ -117,9 +117,9 @@ async function discardResultOfAbortedAttempt(
   storage: IStorageBackend,
   resultKey: string,
   written: StoredObject,
-  signal: AbortSignal
+  signal?: AbortSignal
 ): Promise<void> {
-  if (!signal.aborted) return;
+  if (!signal?.aborted) return;
   await storage.deleteObjectIfUnchanged?.(resultKey, written);
   signal.throwIfAborted();
 }
@@ -144,30 +144,64 @@ function cleanupProcessorAttemptFiles(params: {
   }
 }
 
+function throwIfAttemptAborted(
+  jobId: string,
+  signal: AbortSignal | undefined,
+  produced?: EngineResult,
+  intermediateFilePaths?: readonly string[]
+): void {
+  if (!signal?.aborted) return;
+  if (intermediateFilePaths) {
+    for (const p of intermediateFilePaths) {
+      try {
+        fs.rmSync(p, { force: true });
+      } catch {}
+    }
+  }
+  if (produced) {
+    discardConversionOutput(jobId, produced);
+  }
+  signal.throwIfAborted();
+}
+
 async function logConversionDiagnostics(
   job: Job<ConversionJobData, ConversionJobResult>,
   engineName: string,
   finalResult: EngineResult,
-  startTime: number
+  startTime: number,
+  attemptSignal?: AbortSignal
 ): Promise<void> {
-  if (job.signal?.aborted) return;
-  await job.log(
-    `[${engineName}] Conversion completed via [${finalResult.engineUsed || engineName}] in ${finalResult.executionTimeMs || Date.now() - startTime}ms. Size: ${finalResult.size} bytes`
-  );
+  const signal = attemptSignal ?? job.signal;
+  const logIfAlive = async (line: string): Promise<boolean> => {
+    if (signal?.aborted) return false;
+    await job.log(line);
+    return true;
+  };
+  if (
+    !(await logIfAlive(
+      `[${engineName}] Conversion completed via [${finalResult.engineUsed || engineName}] in ${finalResult.executionTimeMs || Date.now() - startTime}ms. Size: ${finalResult.size} bytes`
+    ))
+  ) {
+    return;
+  }
   if (finalResult.skippedLinks && finalResult.skippedLinks.length > 0) {
-    await job.log(
-      `[${engineName}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
-    );
+    if (
+      !(await logIfAlive(
+        `[${engineName}] Skipped ${finalResult.skippedLinks.length} link entries: ${finalResult.skippedLinks.join(', ')}`
+      ))
+    ) {
+      return;
+    }
   }
   const warnings = finalResult.metadata?.warnings;
   if (Array.isArray(warnings)) {
     for (const warning of warnings) {
-      if (typeof warning === 'string') await job.log(`[${engineName}] Warning: ${warning}`);
+      if (typeof warning === 'string' && !(await logIfAlive(`[${engineName}] Warning: ${warning}`))) return;
     }
   }
   if (finalResult.fallbackChain && finalResult.fallbackChain.length > 0) {
     for (const step of finalResult.fallbackChain) {
-      await job.log(`[${engineName}] Engine fallback: ${step}`);
+      if (!(await logIfAlive(`[${engineName}] Engine fallback: ${step}`))) return;
     }
   }
 }
@@ -242,6 +276,120 @@ function dispatchSpecializedNodeJob(
 const PIPELINE_INPUT_LOADED_PROGRESS = 35;
 const PIPELINE_STAGES_END_PROGRESS = 80;
 
+function resolveStageTarget(
+  task: NonNullable<ConversionJobData['tasks']>[number],
+  fallbackTarget: string
+): string {
+  if (task.targetFormat) return task.targetFormat;
+  if (task.operation === 'ocr') return 'pdf';
+  if (task.operation === 'media.thumbnail') return task.options?.thumbnail?.format || 'jpg';
+  if (task.operation === 'media.package') return task.options?.packaging?.format || 'hls';
+  return fallbackTarget;
+}
+
+async function runPipelineTasks(params: {
+  job: Job<ConversionJobData, ConversionJobResult>;
+  engine: ConversionEnginePort;
+  inputPayload: Buffer | VfsPayload;
+  tasks: NonNullable<ConversionJobData['tasks']>;
+  startTime: number;
+  attemptSignal: AbortSignal | undefined;
+  intermediateFilePaths: string[];
+  onProduced: (result: EngineResult) => void;
+}): Promise<EngineResult> {
+  const { job, engine, inputPayload, tasks, startTime, attemptSignal, intermediateFilePaths, onProduced } = params;
+  await job.log(`[${engine.name}] Executing ${tasks.length}-stage pipeline chaining...`);
+  let currentPayload: Buffer | VfsPayload = inputPayload;
+  let currentSourceFormat = job.data.sourceFormat;
+  let currentFilename = job.data.originalFilename;
+  let lastResult: EngineResult | undefined;
+
+  for (let i = 0; i < tasks.length; i++) {
+    attemptSignal?.throwIfAborted();
+    const task = tasks[i];
+    const taskProgress = Math.round(
+      PIPELINE_INPUT_LOADED_PROGRESS +
+        ((i + 1) / tasks.length) * (PIPELINE_STAGES_END_PROGRESS - PIPELINE_INPUT_LOADED_PROGRESS)
+    );
+    const stageTarget = resolveStageTarget(task, job.data.targetFormat);
+
+    await job.log(
+      `[${engine.name}] [Stage ${i + 1}/${tasks.length}] Task "${task.name}" (${task.operation}): ${currentSourceFormat} -> ${stageTarget}`
+    );
+
+    const mergedOptions: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean } = {
+      ...openPasswordOption(job.data.options, job.id),
+      ...openPasswordOption(task.options, job.id),
+      signal: attemptSignal,
+    };
+    if (task.operation === 'ocr') {
+      mergedOptions.ocrEnabled = true;
+    } else if (task.operation === 'media.thumbnail') {
+      mergedOptions.thumbnail = mergedOptions.thumbnail || { at: ['00:00:01.000'] };
+    } else if (task.operation === 'media.package') {
+      mergedOptions.packaging = mergedOptions.packaging || {
+        format: stageTarget === 'dash' ? 'dash' : 'hls',
+      };
+    }
+
+    const stageResult = await engine.convert(
+      currentPayload,
+      currentSourceFormat,
+      stageTarget,
+      mergedOptions,
+      currentFilename
+    );
+
+    lastResult = stageResult;
+    onProduced(stageResult);
+    if (stageResult.filePath) {
+      intermediateFilePaths.push(stageResult.filePath);
+    }
+    throwIfAttemptAborted(job.id, attemptSignal, stageResult, intermediateFilePaths);
+
+    currentPayload = stageResult.filePath && fs.existsSync(stageResult.filePath)
+      ? { inputPath: stageResult.filePath }
+      : stageResult.buffer;
+    currentSourceFormat = stageTarget;
+    currentFilename = stageResult.filename;
+    if (i === tasks.length - 1) {
+      await logConversionDiagnostics(job, engine.name, stageResult, startTime, attemptSignal);
+      throwIfAttemptAborted(job.id, attemptSignal, stageResult, intermediateFilePaths);
+    }
+    await job.updateProgress(taskProgress);
+  }
+
+  if (!lastResult) {
+    throw new Error('Pipeline task chain execution did not produce an output result.');
+  }
+
+  for (const p of intermediateFilePaths.slice(0, -1)) {
+    try {
+      fs.rmSync(p, { force: true });
+    } catch {}
+  }
+  return lastResult;
+}
+
+async function logOutputSavedAndFinishProgress(params: {
+  job: Job<ConversionJobData, ConversionJobResult>;
+  engineName: string;
+  downloadUrl: string;
+  undeliveredTtlMs: number;
+  durationMs: number;
+  attemptSignal: AbortSignal | undefined;
+}): Promise<void> {
+  const { job, engineName, downloadUrl, undeliveredTtlMs, durationMs, attemptSignal } = params;
+  if (!attemptSignal?.aborted) {
+    await job.log(
+      `[${engineName}] Output saved for ${Math.round(undeliveredTtlMs / 1000)} s until downloaded. Download URL ready. Available at: ${downloadUrl} (took ${durationMs}ms)`
+    );
+  }
+  if (!attemptSignal?.aborted) {
+    await job.updateProgress(100);
+  }
+}
+
 /**
  * Canonical unified node processor.
  * Routes graph node jobs, multi-stage task pipelines, and single conversions
@@ -266,9 +414,11 @@ export async function processNodeJob(
 
   const startTime = Date.now();
   const attemptSignal = job.signal;
+  throwIfAttemptAborted(job.id, attemptSignal);
   await job.log(
     `[${engine.name}] Picked up conversion job for file: "${job.data.originalFilename}" (${job.data.sourceFormat} -> ${job.data.targetFormat})`
   );
+  throwIfAttemptAborted(job.id, attemptSignal);
   await job.updateProgress(10);
 
   let inputPayload: Buffer | VfsPayload | undefined;
@@ -321,112 +471,49 @@ export async function processNodeJob(
       throw new Error('Invalid job payload: neither storageKey nor inputBufferBase64 provided.');
     }
 
+    throwIfAttemptAborted(job.id, attemptSignal);
     await job.log(`[${engine.name}] Loaded input context. Dispatching to conversion engine...`);
+    throwIfAttemptAborted(job.id, attemptSignal);
     await job.updateProgress(PIPELINE_INPUT_LOADED_PROGRESS);
 
     // 2. Execute conversion (Pipeline tasks chaining or single-target conversion)
-    let finalResult: EngineResult;
-
-    if (job.data.tasks && job.data.tasks.length > 0) {
-      await job.log(`[${engine.name}] Executing ${job.data.tasks.length}-stage pipeline chaining...`);
-      let currentPayload: Buffer | VfsPayload = inputPayload;
-      let currentSourceFormat = job.data.sourceFormat;
-      let currentFilename = job.data.originalFilename;
-
-      for (let i = 0; i < job.data.tasks.length; i++) {
-        attemptSignal?.throwIfAborted();
-        const task = job.data.tasks[i];
-        const taskProgress = Math.round(
-          PIPELINE_INPUT_LOADED_PROGRESS +
-            ((i + 1) / job.data.tasks.length) * (PIPELINE_STAGES_END_PROGRESS - PIPELINE_INPUT_LOADED_PROGRESS)
-        );
-        const stageTarget = task.targetFormat || (
-          task.operation === 'ocr'
-            ? 'pdf'
-            : task.operation === 'media.thumbnail'
-            ? (task.options?.thumbnail?.format || 'jpg')
-            : task.operation === 'media.package'
-            ? (task.options?.packaging?.format || 'hls')
-            : job.data.targetFormat
-        );
-
-        await job.log(
-          `[${engine.name}] [Stage ${i + 1}/${job.data.tasks.length}] Task "${task.name}" (${task.operation}): ${currentSourceFormat} -> ${stageTarget}`
-        );
-
-        const mergedOptions: ConversionOptions & { signal?: AbortSignal; ocrEnabled?: boolean } = {
-          ...openPasswordOption(job.data.options, job.id),
-          ...openPasswordOption(task.options, job.id),
-          signal: attemptSignal,
-        };
-        if (task.operation === 'ocr') {
-          mergedOptions.ocrEnabled = true;
-        } else if (task.operation === 'media.thumbnail') {
-          mergedOptions.thumbnail = mergedOptions.thumbnail || { at: ['00:00:01.000'] };
-        } else if (task.operation === 'media.package') {
-          mergedOptions.packaging = mergedOptions.packaging || {
-            format: stageTarget === 'dash' ? 'dash' : 'hls',
-          };
-        }
-
-        const stageResult = await engine.convert(
-          currentPayload,
-          currentSourceFormat,
-          stageTarget,
-          mergedOptions,
-          currentFilename
-        );
-
-        lastProducedResult = stageResult;
-        if (stageResult.filePath) {
-          intermediateFilePaths.push(stageResult.filePath);
-        }
-
-        currentPayload = stageResult.filePath && fs.existsSync(stageResult.filePath)
-          ? { inputPath: stageResult.filePath }
-          : stageResult.buffer;
-        currentSourceFormat = stageTarget;
-        currentFilename = stageResult.filename;
-        await job.updateProgress(taskProgress);
-      }
-
-      if (!lastProducedResult) {
-        throw new Error('Pipeline task chain execution did not produce an output result.');
-      }
-      finalResult = lastProducedResult;
-
-      // Clean up intermediate disk files from previous stages
-      for (const p of intermediateFilePaths.slice(0, -1)) {
-        try {
-          fs.rmSync(p, { force: true });
-        } catch {}
-      }
-      await logConversionDiagnostics(job, engine.name, finalResult, startTime);
-    } else {
-      attemptSignal?.throwIfAborted();
-      const conversionOptions: ConversionOptions & { signal?: AbortSignal } = {
-        ...openPasswordOption(job.data.options, job.id),
-        signal: attemptSignal,
-      };
-      finalResult = await engine.convert(
-        inputPayload,
-        job.data.sourceFormat,
-        job.data.targetFormat,
-        conversionOptions,
-        job.data.originalFilename
-      );
-      lastProducedResult = finalResult;
-      await logConversionDiagnostics(job, engine.name, finalResult, startTime);
-      await job.updateProgress(75);
-    }
+    const finalResult: EngineResult =
+      job.data.tasks && job.data.tasks.length > 0
+        ? await runPipelineTasks({
+            job,
+            engine,
+            inputPayload,
+            tasks: job.data.tasks,
+            startTime,
+            attemptSignal,
+            intermediateFilePaths,
+            onProduced: (result) => {
+              lastProducedResult = result;
+            },
+          })
+        : await (async () => {
+            attemptSignal?.throwIfAborted();
+            const conversionOptions: ConversionOptions & { signal?: AbortSignal } = {
+              ...openPasswordOption(job.data.options, job.id),
+              signal: attemptSignal,
+            };
+            const result = await engine.convert(
+              inputPayload,
+              job.data.sourceFormat,
+              job.data.targetFormat,
+              conversionOptions,
+              job.data.originalFilename
+            );
+            lastProducedResult = result;
+            throwIfAttemptAborted(job.id, attemptSignal, result);
+            await logConversionDiagnostics(job, engine.name, result, startTime, attemptSignal);
+            throwIfAttemptAborted(job.id, attemptSignal, result);
+            await job.updateProgress(75);
+            return result;
+          })();
 
     // 3. Save the output with the undelivered time as its lifetime: it is deleted soon after its first complete download.
-    if (attemptSignal?.aborted) {
-      if (lastProducedResult) {
-        discardConversionOutput(job.id, lastProducedResult);
-      }
-      attemptSignal.throwIfAborted();
-    }
+    throwIfAttemptAborted(job.id, attemptSignal, lastProducedResult, intermediateFilePaths);
     const resultKey = `results/${job.id}/${finalResult.filename}`;
     const { undeliveredTtlMs } = resolveRetentionPolicy();
 
@@ -442,23 +529,26 @@ export async function processNodeJob(
           )
         : await storage.saveObject(resultKey, finalResult.buffer, finalResult.mimeType, finalResult.filename, undeliveredTtlMs);
     savedFilePath = written.filePath;
-    if (attemptSignal) {
-      await discardResultOfAbortedAttempt(storage, resultKey, written, attemptSignal);
-    }
+    await discardResultOfAbortedAttempt(storage, resultKey, written, attemptSignal);
 
     await registerStoredResult(storage, resultKey);
+    await discardResultOfAbortedAttempt(storage, resultKey, written, attemptSignal);
 
     conversionSucceeded = true;
     const durationMs = Date.now() - startTime;
-    await job.updateProgress(100);
 
     // Every download goes through the application, whatever the driver: a direct link to the bucket cannot tell
     // when the file was delivered, so the retention rule could not delete it after delivery.
     const downloadUrl = `/api/storage/file/${encodeURIComponent(resultKey)}`;
 
-    await job.log(
-      `[${engine.name}] Output saved for ${Math.round(undeliveredTtlMs / 1000)} s until downloaded. Download URL ready. Available at: ${downloadUrl} (took ${durationMs}ms)`
-    );
+    await logOutputSavedAndFinishProgress({
+      job,
+      engineName: engine.name,
+      downloadUrl,
+      undeliveredTtlMs,
+      durationMs,
+      attemptSignal,
+    });
 
     return {
       jobId: job.id,
