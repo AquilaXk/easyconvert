@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import { readBaseline } from '../bench/gate';
 import { readGaps } from '../bench/parity-gaps';
+import { skipUnless } from './helpers/strict-skip';
 
 /**
  * The office rows of the benchmark run inside the worker image in the nightly workflow (docs/policy-decisions.md, entry 386), so both sides of
@@ -108,5 +110,114 @@ describe('the nightly job of the office rows', () => {
   it('uploads the report, so that --baseline-from-report has a file to read', () => {
     const upload = job.steps.find((step) => step.uses?.startsWith('actions/upload-artifact@'));
     expect(upload?.with).toMatchObject({ name: 'bench-office-image-results', path: 'bench-results/' });
+  });
+});
+
+describe('the worker image pull step', () => {
+  const bash = spawnSync('bash', ['--version'], { encoding: 'utf-8' });
+  const nightly = parse(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'nightly.yml'), 'utf-8')) as {
+    jobs: Record<string, { steps: Array<{ name?: string; run?: string }> }>;
+  };
+  const pull = nightly.jobs['bench-parity-office-image'].steps.find((step) => step.name === 'Pull the worker image of main');
+  const temps: string[] = [];
+
+  afterAll(() => {
+    for (const dir of temps) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function runPull(options: { failPulls?: number; inspectFails?: boolean; digest?: string } = {}) {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'office-pull-'));
+    temps.push(work);
+    const bin = path.join(work, 'bin');
+    fs.mkdirSync(bin);
+    const callsLog = path.join(work, 'calls.log');
+    const attemptCount = path.join(work, 'attempts');
+    fs.writeFileSync(callsLog, '');
+    fs.writeFileSync(attemptCount, '0');
+    const dockerStub = `#!/bin/bash
+echo "docker $*" >> "$STUB_CALLS"
+case "$1" in
+  pull)
+    n=$(cat "$STUB_ATTEMPTS")
+    n=$((n + 1))
+    echo "$n" > "$STUB_ATTEMPTS"
+    if [ "$n" -le "\${STUB_FAIL_PULLS:-0}" ]; then
+      echo "transient registry error" >&2
+      exit 1
+    fi
+    exit 0 ;;
+  image)
+    if [ -n "\${STUB_INSPECT_FAILS:-}" ]; then
+      echo "docker daemon error" >&2
+      exit 1
+    fi
+    case "$*" in
+      *RepoDigests*) echo "\${STUB_DIGEST:-}" ;;
+      *revision*) echo "deadbeef" ;;
+    esac
+    exit 0 ;;
+  run)
+    echo "LibreOffice 26.8.2.2"
+    exit 0 ;;
+esac
+exit 1
+`;
+    const sleepStub = `#!/bin/bash
+echo "sleep $*" >> "$STUB_CALLS"
+exit 0
+`;
+    fs.writeFileSync(path.join(bin, 'docker'), dockerStub, { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'sleep'), sleepStub, { mode: 0o755 });
+    const output = path.join(work, 'github_output');
+    const summary = path.join(work, 'github_summary');
+    fs.writeFileSync(output, '');
+    fs.writeFileSync(summary, '');
+    const result = spawnSync('bash', ['-c', pull?.run ?? 'false'], {
+      cwd: work,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        GITHUB_REPOSITORY: 'AquilaXk/easyconvert',
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: summary,
+        STUB_CALLS: callsLog,
+        STUB_ATTEMPTS: attemptCount,
+        STUB_FAIL_PULLS: String(options.failPulls ?? 0),
+        STUB_INSPECT_FAILS: options.inspectFails ? '1' : '',
+        STUB_DIGEST: options.digest ?? 'ghcr.io/aquilaxk/easyconvert-worker@sha256:' + 'a'.repeat(64),
+      },
+    });
+    return {
+      status: result.status,
+      stderr: result.stderr,
+      output: fs.readFileSync(output, 'utf-8').trim(),
+      summary: fs.readFileSync(summary, 'utf-8').trim(),
+      calls: fs.readFileSync(callsLog, 'utf-8').trim().split('\n').filter(Boolean),
+    };
+  }
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('retries transient pulls, pins the pulled digest, and records it in outputs and summary', () => {
+    const pinned = `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'b'.repeat(64)}`;
+    const res = runPull({ failPulls: 2, digest: pinned });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.output).toBe(`image=${pinned}`);
+    expect(res.summary).toContain(pinned);
+    expect(res.summary).toContain('deadbeef');
+    expect(res.summary).toContain('LibreOffice 26.8.2.2');
+    expect(res.calls.filter((c) => c.startsWith('docker pull'))).toHaveLength(3);
+    expect(res.calls.filter((c) => c.startsWith('sleep '))).toEqual(['sleep 10', 'sleep 20']);
+    expect(res.calls.some((c) => c.includes(`--entrypoint soffice ${pinned}`))).toBe(true);
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('fails closed after three failed pulls and when docker image inspect errors', () => {
+    const failedPull = runPull({ failPulls: 3 });
+    expect(failedPull.status).toBe(1);
+    expect(failedPull.stderr).toContain('could not pull');
+    expect(failedPull.calls.filter((c) => c.startsWith('docker pull'))).toHaveLength(3);
+
+    const failedInspect = runPull({ inspectFails: true });
+    expect(failedInspect.status).not.toBe(0);
+    expect(failedInspect.output).toBe('');
   });
 });

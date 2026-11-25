@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -218,5 +218,105 @@ describe('plan step', () => {
   it.skipIf(skipUnless('bash', bash.status === 0))('takes the mode of a manual run from its input', () => {
     expect(planFor('workflow_dispatch', '', 'full').count).toBe('16');
     expect(planFor('workflow_dispatch', '', 'nightly').count).toBe('8');
+  });
+});
+
+describe('previous baseline fetch step', () => {
+  const bash = spawnSync('bash', ['--version'], { encoding: 'utf-8' });
+  const find = workflow.jobs.gate.steps.find((step) => step.id === 'previous');
+  const temps: string[] = [];
+
+  afterAll(() => {
+    for (const dir of temps) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function runPrevious(options: { candidates: string[]; conclusions: Record<string, string>; apiFails?: boolean }) {
+    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'regression-prev-'));
+    temps.push(work);
+    const bin = path.join(work, 'bin');
+    fs.mkdirSync(bin);
+    const downloads = path.join(work, 'downloads.log');
+    fs.writeFileSync(downloads, '');
+    const ghStub = `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+if (args[0] === 'api') {
+  if (process.env.STUB_API_FAILS === '1') {
+    process.stderr.write('API error\\n');
+    process.exit(1);
+  }
+  const url = args[1] || '';
+  if (url.includes('/actions/artifacts')) {
+    const ids = JSON.parse(process.env.STUB_CANDIDATES || '[]');
+    if (ids.length > 0) process.stdout.write(ids.join('\\n') + '\\n');
+    process.exit(0);
+  }
+  const match = /\\/actions\\/runs\\/(\\d+)$/.exec(url);
+  if (match) {
+    const map = JSON.parse(process.env.STUB_CONCLUSIONS || '{}');
+    const c = map[match[1]] ?? '';
+    if (c) process.stdout.write(c + '\\n');
+    process.exit(0);
+  }
+}
+if (args[0] === 'run' && args[1] === 'download') {
+  fs.appendFileSync(process.env.STUB_DOWNLOADS, args[2] + '\\n');
+  process.exit(0);
+}
+process.exit(1);
+`;
+    fs.writeFileSync(path.join(bin, 'gh'), ghStub, { mode: 0o755 });
+    const output = path.join(work, 'output');
+    fs.writeFileSync(output, '');
+    const result = spawnSync('bash', ['-c', find?.run ?? 'false'], {
+      cwd: work,
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        GITHUB_REPOSITORY: 'AquilaXk/easyconvert',
+        BASELINE_BRANCH: workflow.env?.BASELINE_BRANCH ?? 'main',
+        GITHUB_OUTPUT: output,
+        STUB_CANDIDATES: JSON.stringify(options.candidates),
+        STUB_CONCLUSIONS: JSON.stringify(options.conclusions),
+        STUB_DOWNLOADS: downloads,
+        STUB_API_FAILS: options.apiFails ? '1' : '',
+      },
+    });
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      output: fs.readFileSync(output, 'utf-8').trim(),
+      downloaded: fs.readFileSync(downloads, 'utf-8').trim().split('\n').filter(Boolean),
+    };
+  }
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('skips failed full runs and downloads the newest passing baseline', () => {
+    const res = runPrevious({
+      candidates: ['45017705402', '41297898818', '38000000000'],
+      conclusions: { '45017705402': 'failure', '41297898818': 'cancelled', '38000000000': 'success' },
+    });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.output).toBe('found=true');
+    expect(res.downloaded).toEqual(['38000000000']);
+    expect(res.stdout).toContain('Compared with the full run 38000000000');
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('reports found=false when only failed full runs exist', () => {
+    const res = runPrevious({
+      candidates: ['45017705402', '41297898818'],
+      conclusions: { '45017705402': 'failure', '41297898818': 'failure' },
+    });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.output).toBe('found=false');
+    expect(res.downloaded).toEqual([]);
+    expect(res.stdout).toContain('the differential judge is skipped for this run');
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('fails closed when the GitHub API lookup fails', () => {
+    const res = runPrevious({ candidates: [], conclusions: {}, apiFails: true });
+    expect(res.status).not.toBe(0);
+    expect(res.downloaded).toEqual([]);
   });
 });

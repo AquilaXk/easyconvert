@@ -309,12 +309,17 @@ jobs:
             echo "::error::could not pull $image after 3 attempts" >&2
             exit 1
           fi
-          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)"
-          pinned="${digest:-$image}"
+          digest="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$image" | tr -d '[:space:]')"
+          if [[ "$digest" == *@sha256:* ]]; then
+            pinned="$digest"
+          else
+            pinned="$image"
+          fi
           revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$pinned")"
+          soffice_version="$(docker run --rm --entrypoint soffice "$pinned" --version)"
           echo "image=$pinned" >> "$GITHUB_OUTPUT"
           echo "### Worker image" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`$image\` (\`$pinned\`, $revision, $(docker run --rm --entrypoint soffice "$pinned" --version))" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$image\` (\`$pinned\`, $revision, $soffice_version)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the parity benchmark in the worker image
         env:
