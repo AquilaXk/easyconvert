@@ -2,7 +2,7 @@
 
 <!-- Generated from src/lib/config/schema.ts by `npm run config:docs`. Do not edit by hand. -->
 
-EasyConvert reads 191 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
+EasyConvert reads 192 environment variables. The schema in `src/lib/config/schema.ts` declares each one with its type, default, production requirement and owning area; this page and `docs/configuration.example.env` are generated from it.
 
 ## How the configuration is checked
 
@@ -307,6 +307,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `EASYCONVERT_PDF_TEXT_DEADLINE_MS` | integer, 1 to 2147483647 | `60000` | no | web, worker |
 | `EASYCONVERT_OCR_PAGE_BUDGET_MS` | integer, 1 to 2147483647 | `10000` | no | web, worker |
 | `EASYCONVERT_OCR_PAGE_CONCURRENCY` | integer, 1 to 2147483647 | `4` | no | web, worker |
+| `EASYCONVERT_OCR_ONNX_THREADS` | integer, 1 to 2147483647 | floor(CPUs / helper count), capped at 6 | no | web, worker |
 | `JOB_DEADLINE_BASE_MS_FREE` | integer, 1 to 3600000 | `60000` | no | web, worker |
 | `JOB_DEADLINE_BASE_MS_PAID` | integer, 1 to 3600000 | `120000` | no | web, worker |
 | `JOB_DEADLINE_MAX_MS_FREE` | integer, 1 to 3600000 | `300000` | no | web, worker |
@@ -334,6 +335,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `EASYCONVERT_PDF_TEXT_DEADLINE_MS`: Milliseconds the PDF text extraction may run before it is stopped.
 - `EASYCONVERT_OCR_PAGE_BUDGET_MS`: Milliseconds of work the text recognition (OCR) of one page of a scanned PDF may cost. A document may take three page budgets plus one for each page it reads, so a long scan is never cut at a fixed time, and never more than 90 percent of the job's own deadline when it has one; a single page that takes eighteen page budgets (180 s at the default) is refused too. A document or page over its limit is refused with HTTP 413.
 - `EASYCONVERT_OCR_PAGE_CONCURRENCY`: Most pages of one scanned PDF that text recognition (OCR) prepares and recognizes at once, capped at the built-in per-document ceiling of 4 and the OCR worker pool size.
+- `EASYCONVERT_OCR_ONNX_THREADS`: Upper bound on intra-op compute threads leased by each ONNX OCR helper process, capped at the built-in helper thread ceiling (6). Concurrent corpus pools set it so multiple job servers do not oversubscribe the host CPUs.
 - `JOB_DEADLINE_BASE_MS_FREE`: Wall-clock milliseconds every conversion job of the free tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_FREE.
 - `JOB_DEADLINE_BASE_MS_PAID`: Wall-clock milliseconds every conversion job of the paid tier starts with, before the allowance for its media seconds and input size. A document does not use it: it gets the maximum of the tier. Must not exceed JOB_DEADLINE_MAX_MS_PAID.
 - `JOB_DEADLINE_MAX_MS_FREE`: Most wall-clock milliseconds a conversion job of the free tier may run, the queue job timeout and the limit of the synchronous routes. A job past it is stopped, its processes are killed and it fails with JobTimeoutError (HTTP 504); work of unknown size, and a document (its pages are not known before it is converted), gets this value. At most one hour, since the sweep removes a job directory two hours after it was made.

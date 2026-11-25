@@ -18,7 +18,8 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
-import { ANSWER_GRACE_MS, answerWindowMs, childOcrPageBudgetMs, childOcrPageConcurrency, descendantPids, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { ANSWER_GRACE_MS, answerWindowMs, childOcrOnnxThreads, childOcrPageBudgetMs, childOcrPageConcurrency, descendantPids, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { ONNX_MAX_HELPER_THREADS } from '../src/lib/conversions/ocr-onnx-helper';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getAvailableTargetFormats } from '../src/lib/registry';
@@ -556,6 +557,13 @@ describe('job deadline by size', () => {
     expect(childOcrPageBudgetMs(1, 64)).toBe(OCR_PAGE_BUDGET_MS);
   });
 
+  it('bounds each job server to its fair share of host CPUs for ONNX OCR helper threads', () => {
+    expect(childOcrOnnxThreads(3, 4)).toBe(1);
+    expect(childOcrOnnxThreads(3, 8)).toBe(2);
+    expect(childOcrOnnxThreads(1, 4)).toBe(4);
+    expect(childOcrOnnxThreads(1, 16)).toBe(ONNX_MAX_HELPER_THREADS);
+  });
+
   describe('which files are read by OCR', () => {
     async function pdfOf(pages: Array<'text' | 'picture'>): Promise<Buffer> {
       const doc = await PDFDocument.create();
@@ -615,6 +623,34 @@ describe('job deadline by size', () => {
       // A reader releases a writer that no job server opened, so the pending open does not outlive a failed test.
       fs.closeSync(fs.openSync(held, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK));
       await written;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+});
+
+describe('healthy worker recycling', () => {
+  it('replaces a healthy job server after maxJobsPerWorker completions so native memory caches do not grow across a shard', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-recycle-'));
+    const input = path.join(dir, 'tiny.png');
+    fs.writeFileSync(input, PNG_1X1);
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const pool = await JobPool.start({ workers: 1, deadlineMs: JOB_DEADLINE_MS, heapMb: HEAP_MB, env, maxJobsPerWorker: 2 });
+    try {
+      const initialPids = pool.workerPids;
+      expect(initialPids).toHaveLength(1);
+      const batch1 = await pool.runAll([
+        { path: input, name: 'tiny.png', format: 'png', target: 'bmp' },
+        { path: input, name: 'tiny.png', format: 'png', target: 'bmp' },
+      ]);
+      expect(batch1.map((o) => o.verdict)).toEqual(['ok', 'ok']);
+      const recycledPids = pool.workerPids;
+      expect(recycledPids).toHaveLength(1);
+      expect(recycledPids[0]).not.toBe(initialPids[0]);
+      const batch2 = await pool.runAll([{ path: input, name: 'tiny.png', format: 'png', target: 'bmp' }]);
+      expect(batch2[0].verdict).toBe('ok');
+      expect(pool.workerPids).toEqual(recycledPids);
+    } finally {
+      pool.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, POOL_TEST_TIMEOUT_MS);

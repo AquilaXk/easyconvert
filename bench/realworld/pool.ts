@@ -7,12 +7,18 @@ import { execFileSync, fork, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import type { JobReply, JobRequest } from './child';
 import { OCR_MAX_INFLIGHT_PAGES, OCR_PAGE_CONCURRENCY_ENV } from '../../src/lib/conversions/ocr-page-batch';
+import { ONNX_MAX_HELPER_THREADS, ONNX_OCR_THREADS_ENV } from '../../src/lib/conversions/ocr-onnx-helper';
 import { OCR_PAGE_BUDGET_ENV, ocrPageBudgetMs } from '../../src/lib/conversions/ocr-work-budget';
 import { availableCpus } from '../../src/lib/workers/available-cpus';
 import { crashDetail, isTypedRefusal, type Verdict } from './verdict';
 
 const CHILD_SCRIPT = path.join(__dirname, 'child.ts');
 const CHILD_START_TIMEOUT_MS = 120_000;
+/**
+ * Healthy jobs one child serves before replacement (`DEFAULT_MAX_JOBS_PER_WORKER`), bounding retained V8, pdf.js, libvips,
+ * and allocator caches across multi-hundred-job corpus shards without noticeable spawn overhead.
+ */
+export const DEFAULT_MAX_JOBS_PER_WORKER = 40;
 
 export interface PoolOptions {
   workers: number;
@@ -23,6 +29,8 @@ export interface PoolOptions {
   /** V8 heap cap of each child, in MiB. */
   heapMb: number;
   env: NodeJS.ProcessEnv;
+  /** Replace healthy workers after this many jobs (`DEFAULT_MAX_JOBS_PER_WORKER` when unset, `0` disables). */
+  maxJobsPerWorker?: number;
 }
 
 /** Workers of a nightly shard: the 4-vCPU runner minus one (see `workers` in run.ts). */
@@ -64,6 +72,14 @@ export function scaledDeadlineMs(baseMs: number, pages: number, pageBudgetMs: nu
 
 export function childOcrPageConcurrency(workers: number, cpus: number = availableCpus()): number {
   return Math.max(1, Math.floor(cpus / Math.max(1, workers)));
+}
+
+/**
+ * Intra-op ONNX helper threads allotted to each job server so `workers` concurrent servers share `cpus` cores without
+ * oversubscribing OpenMP/ORT thread pools (e.g. 1 thread per helper across 3 workers on a 4-vCPU runner).
+ */
+export function childOcrOnnxThreads(workers: number, cpus: number = availableCpus()): number {
+  return Math.max(1, Math.min(ONNX_MAX_HELPER_THREADS, Math.floor(cpus / Math.max(1, workers))));
 }
 
 /**
@@ -138,6 +154,7 @@ function killTree(child: ChildProcess): void {
 interface Slot {
   child: ChildProcess;
   busy: boolean;
+  jobs: number;
 }
 
 /** The page budget the job servers of a pool work to: the caller's own setting, else the share of the cores each server has. */
@@ -152,6 +169,7 @@ function spawnChild(options: PoolOptions): Promise<ChildProcess> {
     env: {
       ...options.env,
       [OCR_PAGE_CONCURRENCY_ENV]: options.env[OCR_PAGE_CONCURRENCY_ENV] ?? String(childOcrPageConcurrency(options.workers)),
+      [ONNX_OCR_THREADS_ENV]: options.env[ONNX_OCR_THREADS_ENV] ?? String(childOcrOnnxThreads(options.workers)),
       [OCR_PAGE_BUDGET_ENV]: String(poolPageBudgetMs(options)),
     },
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
@@ -192,10 +210,15 @@ export class JobPool {
     return poolPageBudgetMs(this.options);
   }
 
+  /** OS process IDs of the currently active job-server children. */
+  get workerPids(): number[] {
+    return this.slots.map((slot) => slot.child.pid).filter((pid): pid is number => pid !== undefined);
+  }
+
   static async start(options: PoolOptions): Promise<JobPool> {
     const pool = new JobPool(options);
     const children = await Promise.all(Array.from({ length: options.workers }, () => spawnChild(options)));
-    for (const child of children) pool.slots.push({ child, busy: false });
+    for (const child of children) pool.slots.push({ child, busy: false, jobs: 0 });
     return pool;
   }
 
@@ -203,22 +226,26 @@ export class JobPool {
     slot.child.removeAllListeners();
     killTree(slot.child);
     slot.child = await spawnChild(this.options);
+    slot.jobs = 0;
   }
 
   private runOn(slot: Slot, job: PoolJob): Promise<JobOutcome> {
     const { deadlineMs = this.options.deadlineMs, ...request } = job;
     const id = this.nextId++;
     const started = performance.now();
+    const maxJobs = this.options.maxJobsPerWorker ?? DEFAULT_MAX_JOBS_PER_WORKER;
     return new Promise((resolve) => {
       const finish = (outcome: JobOutcome, broken: boolean): void => {
         clearTimeout(timer);
         slot.child.removeListener('message', onMessage);
         slot.child.removeListener('exit', onExit);
+        slot.jobs += 1;
+        const recycle = broken || (maxJobs > 0 && slot.jobs >= maxJobs);
         const done = (): void => {
           slot.busy = false;
           resolve(outcome);
         };
-        if (broken) void this.replace(slot).then(done, done);
+        if (recycle) void this.replace(slot).then(done, done);
         else done();
       };
       const onMessage = (reply: JobReply): void => {

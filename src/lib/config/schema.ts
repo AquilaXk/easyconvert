@@ -1337,6 +1337,17 @@ const SCHEMA_ENTRIES = [
     INT32_MAX,
     4
   ),
+  {
+    name: 'EASYCONVERT_OCR_ONNX_THREADS',
+    area: 'limits',
+    description:
+      'Upper bound on intra-op compute threads leased by each ONNX OCR helper process, capped at the built-in helper thread ceiling (6). Concurrent corpus pools set it so multiple job servers do not oversubscribe the host CPUs.',
+    kind: { type: 'integer', min: 1, max: INT32_MAX },
+    computedDefault: 'floor(CPUs / helper count), capped at 6',
+    requiredInProduction: false,
+    secret: false,
+    roles: BOTH,
+  },
   intLimit('JOB_DEADLINE_BASE_MS_FREE', `${deadlineBase('free')} Must not exceed JOB_DEADLINE_MAX_MS_FREE.`, JOB_DEADLINE_CEILING_MS, 60_000),
   intLimit('JOB_DEADLINE_BASE_MS_PAID', `${deadlineBase('paid')} Must not exceed JOB_DEADLINE_MAX_MS_PAID.`, JOB_DEADLINE_CEILING_MS, 120_000),
   intLimit('JOB_DEADLINE_MAX_MS_FREE', deadlineMax('free'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.free * 60_000),

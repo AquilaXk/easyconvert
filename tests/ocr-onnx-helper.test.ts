@@ -5,11 +5,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   checkedResult,
   onnxHelperPlan,
+  onnxHelperThreadLimit,
   onnxOcrUnavailableReason,
   OnnxOcrFailedError,
   OnnxOcrPool,
   OnnxOcrUnavailableError,
+  ONNX_MAX_HELPER_THREADS,
   ONNX_OCR_SWITCH_ENV,
+  ONNX_OCR_THREADS_ENV,
 } from '../src/lib/conversions/ocr-onnx-helper';
 import { ONNX_OCR_MODEL_DIR_ENV, type OnnxPageInput } from '../src/lib/conversions/ocr-onnx';
 import {
@@ -109,6 +112,26 @@ describe('where the ONNX engine is used', () => {
     expect(onnxHelperPlan(64)).toEqual({ helpers: 8, threads: 6 });
     expect(onnxHelperPlan(64, 7 * 1024 ** 3)).toEqual({ helpers: 2, threads: 6 });
     expect(onnxHelperPlan(64, 32 * 1024 ** 3)).toEqual({ helpers: 8, threads: 6 });
+  });
+
+  it('caps helper threads cleanly via EASYCONVERT_OCR_ONNX_THREADS while ignoring invalid overrides', () => {
+    const prev = process.env[ONNX_OCR_THREADS_ENV];
+    try {
+      expect(onnxHelperThreadLimit(undefined)).toBeUndefined();
+      expect(onnxHelperThreadLimit('')).toBeUndefined();
+      expect(onnxHelperThreadLimit('0')).toBeUndefined();
+      expect(onnxHelperThreadLimit('-2')).toBeUndefined();
+      expect(onnxHelperThreadLimit('abc')).toBeUndefined();
+      expect(onnxHelperThreadLimit('12')).toBe(ONNX_MAX_HELPER_THREADS);
+      process.env[ONNX_OCR_THREADS_ENV] = '1';
+      expect(onnxHelperPlan(4)).toEqual({ helpers: 1, threads: 1 });
+      expect(onnxHelperPlan(8)).toEqual({ helpers: 2, threads: 1 });
+      process.env[ONNX_OCR_THREADS_ENV] = '99';
+      expect(onnxHelperPlan(4)).toEqual({ helpers: 1, threads: 4 });
+    } finally {
+      if (prev === undefined) delete process.env[ONNX_OCR_THREADS_ENV];
+      else process.env[ONNX_OCR_THREADS_ENV] = prev;
+    }
   });
 
   it('takes a request that names Korean and at most English', () => {

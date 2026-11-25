@@ -48,6 +48,8 @@ import type { OcrBBox, OcrLineBlock, OcrResult, OcrWord } from './ocr-pdf-combin
 
 export const ONNX_OCR_SWITCH_ENV = 'EASYCONVERT_OCR_ONNX';
 export const ONNX_OCR_ENGLISH_ENV = 'EASYCONVERT_OCR_ONNX_ENGLISH';
+/** Upper bound on intra-op compute threads per ONNX helper process (`EASYCONVERT_OCR_ONNX_THREADS`, clamped to `[1, ONNX_MAX_HELPER_THREADS]`). */
+export const ONNX_OCR_THREADS_ENV = 'EASYCONVERT_OCR_ONNX_THREADS';
 /** The directory the worker image keeps the models in; EASYCONVERT_OCR_ONNX_DIR names another one. */
 export const ONNX_OCR_DEFAULT_MODEL_DIR = '/opt/ocr-onnx';
 
@@ -124,19 +126,39 @@ export const ONNX_MAX_HELPER_THREADS = 6;
 /** Memory budget reserved per helper when sizing from container memory (2x helper RSS cap so helpers stay <= 50% of RAM). */
 export const ONNX_HELPER_MEMORY_BUDGET_BYTES = ONNX_HELPER_RSS_LIMIT_MB * 2 * 1024 * 1024;
 
+/** Parses `EASYCONVERT_OCR_ONNX_THREADS` when it is a positive integer, clamped to `ONNX_MAX_HELPER_THREADS`. */
+export function onnxHelperThreadLimit(raw: string | undefined = process.env[ONNX_OCR_THREADS_ENV]): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) return undefined;
+  return Math.min(ONNX_MAX_HELPER_THREADS, parsed);
+}
+
 /**
  * How many helpers run at once and how many threads each reads with, for `cpus` available cores: three cores or more to a helper
  * (a helper reads a page about as fast with 3 threads as with 4, and each holds 0.7 GB), at most eight helpers, at most six threads,
- * additionally bounded by `memoryBytes` when provided so helpers never exceed half the container memory ceiling.
+ * additionally bounded by `memoryBytes` when provided so helpers never exceed half the container memory ceiling, and optionally capped by
+ * `maxThreads` (`EASYCONVERT_OCR_ONNX_THREADS`) when concurrent worker pools share the host CPUs.
  */
-export function onnxHelperPlan(cpus: number = availableCpus(), memoryBytes?: number): OnnxHelperPlan {
+export function onnxHelperPlan(
+  cpus: number = availableCpus(),
+  memoryBytes?: number,
+  maxThreads: number | undefined = onnxHelperThreadLimit()
+): OnnxHelperPlan {
   const cpuHelpers = Math.max(1, Math.min(ONNX_MAX_HELPERS, Math.floor(cpus / 3)));
   const memoryHelpers =
     memoryBytes !== undefined && Number.isFinite(memoryBytes) && memoryBytes > 0
       ? Math.max(1, Math.floor(memoryBytes / ONNX_HELPER_MEMORY_BUDGET_BYTES))
       : ONNX_MAX_HELPERS;
   const helpers = Math.max(1, Math.min(cpuHelpers, memoryHelpers));
-  return { helpers, threads: Math.max(1, Math.min(ONNX_MAX_HELPER_THREADS, Math.floor(cpus / helpers))) };
+  const defaultThreads = Math.max(1, Math.min(ONNX_MAX_HELPER_THREADS, Math.floor(cpus / helpers)));
+  const threads =
+    maxThreads !== undefined && Number.isInteger(maxThreads) && maxThreads >= 1
+      ? Math.min(defaultThreads, maxThreads)
+      : defaultThreads;
+  return { helpers, threads };
 }
 
 // --- Availability ---------------------------------------------------------------------------------------------------
