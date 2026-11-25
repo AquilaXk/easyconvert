@@ -999,7 +999,13 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
         PDFName.of('Pattern'),
         ctx.obj({ PT1: ctx.register(coloured), PT2: ctx.register(uncoloured), PA: ctx.register(patAxial), PR: ctx.register(patRadial) })
       );
-      resources.set(PDFName.of('ColorSpace'), ctx.obj({ PSpace: ctx.obj([PDFName.of('Pattern'), PDFName.of('DeviceRGB')]) }));
+      resources.set(
+        PDFName.of('ColorSpace'),
+        ctx.obj({
+          PSpace: ctx.obj([PDFName.of('Pattern'), PDFName.of('DeviceRGB')]),
+          PGray: ctx.obj([PDFName.of('Pattern'), PDFName.of('DeviceGray')]),
+        })
+      );
       resources.set(
         PDFName.of('ExtGState'),
         ctx.obj({ GSCa0: ctx.register(gsFillZero), GSCA0: ctx.register(gsStrokeZero), GSLW: ctx.register(gsThickDash) })
@@ -1008,17 +1014,23 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
         // 1. 1 1 1 rg followed by PT1 fill under [/Pattern /DeviceRGB] (preserved) and dark PT2 fill (preserved)
         'q 1 1 1 rg /PSpace cs 1 1 1 /PT1 scn 50 700 200 1.5 re f Q',
         'q 1 1 1 rg /PSpace cs 0.2 0.4 0.8 /PT2 scn 50 650 200 1.5 re f Q',
-        // 2. Light PT2 fill -> suppressed in both modes
+        // 2. DeviceGray PaintType 2 fills: black (preserved) vs white (suppressed) + RGB white PT2 fill (suppressed)
+        'q /PGray cs 0 /PT2 scn 50 625 200 1.5 re f Q',
+        'q /PGray cs 1 /PT2 scn 50 612 200 1.5 re f Q',
         'q /PSpace cs 1 1 1 /PT2 scn 50 600 200 1.5 re f Q',
-        // 3. Axial & radial Shading fills and strokes -> suppressed in both modes
+        // 3. PaintType 1 and PaintType 2 strokes (white & coloured) -> preserved identically across colour: true and colour: false
+        'q 1 1 1 RG /PSpace CS 1 1 1 /PT1 SCN 1.5 w 50 570 m 250 570 l S Q',
+        'q 1 1 1 RG /PSpace CS 1 1 1 /PT2 SCN 1.5 w 50 555 m 250 555 l S Q',
+        'q 1 1 1 RG /PSpace CS 0.2 0.4 0.8 /PT2 SCN 1.5 w 50 540 m 250 540 l S Q',
+        // 4. Axial & radial Shading fills and strokes -> suppressed in both modes
         'q /Pattern cs /PA scn 50 520 200 1.5 re f Q',
         'q /Pattern CS /PA SCN 1.5 w 50 480 m 250 480 l S Q',
         'q /Pattern cs /PR scn 50 440 200 1.5 re f Q',
         'q /Pattern CS /PR SCN 1.5 w 50 400 m 250 400 l S Q',
-        // 4. ca=0 / CA=0 via setGState -> suppressed in both modes
+        // 5. ca=0 / CA=0 via setGState -> suppressed in both modes
         'q /GSCa0 gs 0 0 0 rg 50 360 200 1.5 re f Q',
         'q /GSCA0 gs 0 0 0 RG 1.5 w 50 320 m 250 320 l S Q',
-        // 5. GState LW & D -> geometry identical, colour: false omits colour/dashed/z
+        // 6. GState LW & D -> geometry identical, colour: false omits colour/dashed/z
         'q /GSLW gs 0.2 0.4 0.8 RG 50 280 m 250 280 l S Q',
       ].join('\n');
     });
@@ -1026,12 +1038,24 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     const withColour = (await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: true })).content[0].rules;
     const withoutColour = (await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: false })).content[0].rules;
 
-    expect(withColour).toHaveLength(3);
+    expect(withColour).toHaveLength(7);
     expect(withoutColour).toEqual(withColour.map(({ x0, y0, x1, y1, thickness }) => ({ x0, y0, x1, y1, thickness })));
+    expect(withColour[0].color).toBeUndefined();
+    expect(withColour[1].color).toBe(0x3366cc);
+    expect(withColour[2].color).toBeUndefined();
+    expect(withColour[3].color).toBeUndefined();
+    expect(withColour[4].color).toBe(0xffffff);
+    expect(withColour[5].color).toBe(0x3366cc);
+    expect(withColour[6].color).toBe(0x3366cc);
+    expect(withColour[6].dashed).toBe(true);
     expect(withoutColour[0].y0).toBeCloseTo(99.25, 1);
     expect(withoutColour[1].y0).toBeCloseTo(149.25, 1);
-    expect(withoutColour[2].y0).toBeCloseTo(520, 1);
-    expect(withoutColour[2].thickness).toBeCloseTo(2.5, 2);
+    expect(withoutColour[2].y0).toBeCloseTo(174.25, 1);
+    expect(withoutColour[3].y0).toBeCloseTo(230, 1);
+    expect(withoutColour[4].y0).toBeCloseTo(245, 1);
+    expect(withoutColour[5].y0).toBeCloseTo(260, 1);
+    expect(withoutColour[6].y0).toBeCloseTo(520, 1);
+    expect(withoutColour[6].thickness).toBeCloseTo(2.5, 2);
 
     // Direct OPS verification of setFillTransparent / setStrokeTransparent parity between colour: false and colour: true.
     const transparentList = {
