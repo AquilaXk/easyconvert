@@ -29,6 +29,7 @@ import { getOracleToolPath } from './helpers/differential-oracle';
 import { runConvert } from './helpers/imagemagick';
 import { oracleTest } from './helpers/oracle-test';
 import { authorWithReferenceSuite } from './helpers/office-pair-fixtures';
+import { waitUntilStopped } from './helpers/process-state';
 
 /**
  * The real-world corpus runner (bench/realworld): range reads out of ZIP archives, manifest validation, the job plan
@@ -716,16 +717,7 @@ describe('healthy worker recycling', () => {
       expect(outcome.verdict).toBe('crash');
       expect(outcome.detail).toBe('job pool stopped');
       expect(pool.workerPids).toEqual([]);
-      let alive = true;
-      for (let i = 0; i < 40 && alive; i++) {
-        try {
-          process.kill(pid, 0);
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          alive = false;
-        }
-      }
-      expect(alive).toBe(false);
+      expect(await waitUntilStopped(pid, 2000, 50)).toBe(true);
     } finally {
       stopReleasing();
       pool.stop();
