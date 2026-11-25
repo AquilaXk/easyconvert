@@ -13,7 +13,7 @@ import type { LayoutLine, Paragraph, TableCell } from '../src/lib/conversions/pd
 import { FontTable, readPageContent } from '../src/lib/conversions/pdf-text-content';
 import { readPdfDocument } from '../src/lib/conversions/pdf-text-document';
 import { analyzePdfPagesInProcess } from '../src/lib/conversions/pdf-text-geometry';
-import { axialShadingGradient, clipBoxOfSubpaths } from '../src/lib/conversions/pdf-text-shading';
+import { axialShadingGradient, clipBoxOfSubpaths, subpathHullBox } from '../src/lib/conversions/pdf-text-shading';
 import { PDF_CONTENT_MAX_GRADIENT_STOPS, PDF_CONTENT_MAX_STATE_DEPTH } from '../src/lib/conversions/pdf-text-types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { oracleTest } from './helpers/oracle-test';
@@ -648,5 +648,55 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     const docx = await documentToDocx(docExtracted.model);
     const docXml = await (await JSZip.loadAsync(docx)).file('word/document.xml')!.async('string');
     expect(docXml).toContain('<a:alpha val="45000"/>');
+  });
+
+  it('retains clipped Bezier curves whose control-point hull crosses the clip while culling disjoint curves and malformed hulls', async () => {
+    const pdf = await pdfFromContentStream((ctx, resources) => {
+      const fn = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0.1, 0.7, 0.2]), C1: ctx.obj([0.9, 0.9, 0.1]), N: PDFNumber.of(1) });
+      const sh = ctx.obj({
+        ShadingType: 2,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([100, 0, 300, 0]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fn),
+      });
+      const pat = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(sh) });
+      resources.set(PDFName.of('Pattern'), ctx.obj({ PG: ctx.register(pat) }));
+      return [
+        'q',
+        // Viewport clip x=[100..300], y=[200..360] (bottom-up 440..600)
+        '100 440 200 160 re W n',
+        // Curve 1: endpoints at x=20 (outside clip), control points at x=220 (bulges into clip) -> MUST BE KEPT
+        '0.2 0.4 0.8 RG 2 w 20 480 m 220 480 220 560 20 560 c S',
+        // Curve 2: endpoints at x=10 and control points at x=60 (entire hull left of clip) -> MUST BE CULLED
+        '0.8 0.2 0.2 RG 2 w 10 480 m 60 480 60 560 10 560 c S',
+        // Clipped solid rect [80..140] -> clamped [100..140], and clipped axial gradient [160..340] -> clamped [160..300]
+        '0.2 0.6 0.8 rg 80 460 60 40 re f',
+        '/Pattern cs /PG scn 160 520 180 40 re f',
+        'Q',
+      ].join('\n');
+    });
+
+    const extracted = await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: true });
+    const shapes = extracted.content[0].shapes ?? [];
+
+    expect(shapes.some((s) => s.kind === 'path' && s.stroke === 0x3366cc)).toBe(true);
+    expect(shapes.some((s) => s.kind === 'path' && s.stroke === 0xcc3333)).toBe(false);
+
+    const solidClamped = shapes.find((s) => s.kind === 'rect' && s.fill === 0x3399cc);
+    expect(solidClamped?.x0).toBeCloseTo(100, 1);
+    expect(solidClamped?.x1).toBeCloseTo(140, 1);
+
+    const gradClamped = shapes.find((s) => s.kind === 'rect' && s.gradient !== undefined);
+    expect(gradClamped?.x0).toBeCloseTo(160, 1);
+    expect(gradClamped?.x1).toBeCloseTo(300, 1);
+
+    // Fail-closed hull checks on empty, unknown opcode, truncated operands, and non-finite coordinates
+    expect(subpathHullBox({ points: [], closed: false }, (p) => p)).toBeNull();
+    expect(subpathHullBox({ points: [{ x: 0, y: 0 }], closed: false, curved: true, segments: [99, 0, 0] }, (p) => p)).toBeNull();
+    expect(subpathHullBox({ points: [{ x: 0, y: 0 }], closed: false, curved: true, segments: [2, 0, 0, 10] }, (p) => p)).toBeNull();
+    expect(subpathHullBox({ points: [{ x: Number.NaN, y: 0 }], closed: false }, (p) => p)).toBeNull();
+    expect(clipBoxOfSubpaths([{ points: [{ x: 0, y: 0 }], closed: false, curved: true, segments: [2, 0, 0, 10] }], (p) => p)).toBeNull();
   });
 });

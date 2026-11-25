@@ -127,49 +127,77 @@ function uniqueCornerLoop(pts: readonly Point[]): Point[] {
   return out;
 }
 
+export interface SubpathHullInput {
+  points: readonly Point[];
+  closed: boolean;
+  curved?: boolean;
+  segments?: readonly number[];
+}
+
 function segmentCoordinateCount(code: number): number {
   if (code === 0 || code === 1) return 2;
   if (code === 2) return 6;
   if (code === 3) return 4;
-  return 0;
+  if (code === 4) return 0;
+  return -1;
 }
 
-export function clipBoxOfSubpaths(
-  subpaths: readonly { points: readonly Point[]; closed: boolean; curved?: boolean; segments?: readonly number[] }[],
-  toPage: (p: Point) => Point
-): ClipBox | null {
+function walkSubpathPoints(sp: SubpathHullInput, visit: (pt: Point, isStraightPoint: boolean) => boolean): boolean {
+  if (sp.curved && sp.segments && sp.segments.length > 0) {
+    let at = 0;
+    while (at < sp.segments.length) {
+      const count = segmentCoordinateCount(sp.segments[at++]);
+      if (count < 0 || at + count > sp.segments.length) return false;
+      for (let i = 0; i < count; i += 2) {
+        if (!visit({ x: sp.segments[at + i], y: sp.segments[at + i + 1] }, false)) return false;
+      }
+      at += count;
+    }
+    return true;
+  }
+  for (const raw of sp.points) {
+    if (!visit(raw, true)) return false;
+  }
+  return true;
+}
+
+export function subpathHullBox(sp: SubpathHullInput, toPage: (p: Point) => Point): RectBox | null {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  const ok = walkSubpathPoints(sp, (raw) => {
+    const pt = toPage(raw);
+    if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
+    if (pt.x < x0) x0 = pt.x;
+    if (pt.y < y0) y0 = pt.y;
+    if (pt.x > x1) x1 = pt.x;
+    if (pt.y > y1) y1 = pt.y;
+    return true;
+  });
+  if (!ok || !Number.isFinite(x0)) return null;
+  return { x0, y0, x1, y1 };
+}
+
+export function clipBoxOfSubpaths(subpaths: readonly SubpathHullInput[], toPage: (p: Point) => Point): ClipBox | null {
   if (subpaths.length === 0) return null;
   let x0 = Infinity;
   let y0 = Infinity;
   let x1 = -Infinity;
   let y1 = -Infinity;
   const firstTransformed: Point[] = [];
-  const includePoint = (raw: Point, recordFirst: boolean): boolean => {
-    const pt = toPage(raw);
-    if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
-    if (recordFirst) firstTransformed.push(pt);
-    if (pt.x < x0) x0 = pt.x;
-    if (pt.y < y0) y0 = pt.y;
-    if (pt.x > x1) x1 = pt.x;
-    if (pt.y > y1) y1 = pt.y;
-    return true;
-  };
   for (let s = 0; s < subpaths.length; s++) {
-    const sp = subpaths[s];
-    if (sp.curved && sp.segments && sp.segments.length > 0) {
-      let at = 0;
-      while (at < sp.segments.length) {
-        const count = segmentCoordinateCount(sp.segments[at++]);
-        for (let i = 0; i + 1 < count; i += 2) {
-          if (!includePoint({ x: sp.segments[at + i], y: sp.segments[at + i + 1] }, false)) return null;
-        }
-        at += count;
-      }
-      continue;
-    }
-    for (const raw of sp.points) {
-      if (!includePoint(raw, s === 0)) return null;
-    }
+    const ok = walkSubpathPoints(subpaths[s], (raw, isStraightPoint) => {
+      const pt = toPage(raw);
+      if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
+      if (s === 0 && isStraightPoint) firstTransformed.push(pt);
+      if (pt.x < x0) x0 = pt.x;
+      if (pt.y < y0) y0 = pt.y;
+      if (pt.x > x1) x1 = pt.x;
+      if (pt.y > y1) y1 = pt.y;
+      return true;
+    });
+    if (!ok) return null;
   }
   if (!Number.isFinite(x0)) return null;
   const singleRect =

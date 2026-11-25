@@ -12,6 +12,7 @@ import {
   isEmptyClip,
   matrixFromList,
   shadingViewportBox,
+  subpathHullBox,
   transformBBoxToClip,
   type ClipBox,
   type RectBox,
@@ -699,19 +700,8 @@ class OperatorScanner {
     this.state = this.stack.pop() ?? this.state;
   }
 
-  private subpathBox(subpath: Subpath): RectBox {
-    let x0 = Infinity;
-    let y0 = Infinity;
-    let x1 = -Infinity;
-    let y1 = -Infinity;
-    for (const pt of subpath.points) {
-      const vp = this.collector.pagePoint(pt, this.state.ctm);
-      if (vp.x < x0) x0 = vp.x;
-      if (vp.y < y0) y0 = vp.y;
-      if (vp.x > x1) x1 = vp.x;
-      if (vp.y > y1) y1 = vp.y;
-    }
-    return { x0, y0, x1, y1 };
+  private subpathBox(subpath: Subpath): RectBox | null {
+    return subpathHullBox(subpath, (pt) => this.collector.pagePoint(pt, this.state.ctm));
   }
 
   private resolveShading(shading: ShadingRef, box: RectBox) {
@@ -762,16 +752,18 @@ class OperatorScanner {
   }
 
   private paintSubpaths(subpaths: Subpath[], painted: Paint, place: number, z: number | undefined): void {
-    const visible = this.state.clip ? subpaths.filter((sp) => !boxDisjointFromClip(this.subpathBox(sp), this.state.clip)) : subpaths;
+    const clip = this.state.clip;
+    const visible = clip
+      ? subpaths.filter((sp) => {
+          const box = this.subpathBox(sp);
+          return box !== null && !boxDisjointFromClip(box, clip);
+        })
+      : subpaths;
     if (visible.length === 0) return;
     const shadingRef = this.colour && painted.fill ? this.state.fillShading : null;
     const shadingIr = shadingRef && this.pageObjs?.has?.(shadingRef.objId) ? this.pageObjs.get?.(shadingRef.objId) : undefined;
     const useShading = isAxialShadingIr(shadingIr);
-    const paintState = useShading
-      ? { ...this.state, fill: BLACK, clip: this.state.clip, shading: true }
-      : this.state.clip
-        ? { ...this.state, clip: this.state.clip }
-        : this.state;
+    const paintState = useShading ? { ...this.state, fill: BLACK, shading: true } : this.state;
     const before = this.shapes?.shapes.length ?? 0;
     const prevFillMissing = Boolean(
       this.shapes && before > 0 && this.shapes.shapes[before - 1].fill === undefined && this.shapes.shapes[before - 1].gradient === undefined
