@@ -207,20 +207,30 @@ const IMAGE_KIND_GRAYSCALE_1BPP = 1;
 const IMAGE_KIND_RGB_24BPP = 2;
 const IMAGE_KIND_RGBA_32BPP = 3;
 
+/** Normalizes pdfjs image pixel storage (TypedArray or plain number array) into a byte view, or null when unsupported. */
+function asByteView(data: unknown): Uint8Array | null {
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (Array.isArray(data)) {
+    return Uint8Array.from(data);
+  }
+  return null;
+}
+
 /** The raw samples of a decoded pdfjs image object and how many channels each pixel has. */
-function rawSamplesOf(imgObj: any, width: number, height: number): { rawData: Buffer; channels: 1 | 3 | 4 } {
-  const bytes = (): Buffer => Buffer.from(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-  if (imgObj.kind === IMAGE_KIND_GRAYSCALE_1BPP) {
+function rawSamplesOf(rawView: Uint8Array, kind: unknown, width: number, height: number): { rawData: Buffer; channels: 1 | 3 | 4 } {
+  const bytes = (): Buffer => Buffer.from(rawView.buffer, rawView.byteOffset, rawView.byteLength);
+  if (kind === IMAGE_KIND_GRAYSCALE_1BPP) {
     // 1 bit per pixel: CCITT / JBIG2 bilevel
-    const packed = new Uint8Array(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-    const unpacked = unpack1bpp(packed, width, height);
+    const unpacked = unpack1bpp(rawView, width, height);
     return { rawData: Buffer.from(unpacked.buffer, unpacked.byteOffset, unpacked.byteLength), channels: 1 };
   }
-  if (imgObj.kind === IMAGE_KIND_RGB_24BPP) return { rawData: bytes(), channels: 3 };
-  if (imgObj.kind === IMAGE_KIND_RGBA_32BPP) return { rawData: bytes(), channels: 4 };
+  if (kind === IMAGE_KIND_RGB_24BPP) return { rawData: bytes(), channels: 3 };
+  if (kind === IMAGE_KIND_RGBA_32BPP) return { rawData: bytes(), channels: 4 };
   // Infer the channels from the byte length
   const totalPixels = width * height;
-  const byteLength = imgObj.data.byteLength;
+  const byteLength = rawView.byteLength;
   if (byteLength === totalPixels) return { rawData: bytes(), channels: 1 };
   if (byteLength === totalPixels * 4) return { rawData: bytes(), channels: 4 };
   return { rawData: bytes(), channels: 3 };
@@ -238,14 +248,15 @@ const SMALL_PICTURE_MAX_BYTES = 32 * 1024;
  */
 async function imageObjectToPng(imgObj: any, pageNumber: number, targetDpi: number, inlineMaxBytes = 0): Promise<ExtractedPdfImage | undefined> {
   if (!imgObj?.data || !imgObj.width || !imgObj.height) return undefined;
+  const rawView = asByteView(imgObj.data);
+  if (!rawView) return undefined;
   const { width, height } = imgObj;
   assertInputPixels(width, height);
   if (imgObj.kind === IMAGE_KIND_GRAYSCALE_1BPP) {
-    const packed = new Uint8Array(imgObj.data.buffer, imgObj.data.byteOffset, imgObj.data.byteLength);
-    const bilevel = encodePdfPicture1BitPng(width, height, packed, targetDpi);
+    const bilevel = encodePdfPicture1BitPng(width, height, rawView, targetDpi);
     if (bilevel) return { pageNumber, buffer: bilevel, width, height };
   }
-  const { rawData, channels } = rawSamplesOf(imgObj, width, height);
+  const { rawData, channels } = rawSamplesOf(rawView, imgObj.kind, width, height);
   const small = rawData.length <= inlineMaxBytes ? encodePdfPicturePng(width, height, channels, rawData, targetDpi) : null;
   if (small) return { pageNumber, buffer: small, width, height };
   // Normalize density to target DPI (e.g. 300 DPI) for OCR fidelity

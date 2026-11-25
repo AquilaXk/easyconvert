@@ -19,8 +19,18 @@ const PHYS_DATA_BYTES = 9;
 const PHYS_UNIT_METRE = 1;
 const METRES_PER_INCH = 0.0254;
 const CHUNK_OVERHEAD_BYTES = 12;
+const PNG_MAX_DIMENSION = 0x7fff_ffff;
+const MAX_UINT32 = 0xffff_ffff;
 
 export type PngChannels = keyof typeof COLOUR_TYPE_BY_CHANNELS;
+
+function validPngParams(width: number, height: number, dpi: number): boolean {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) return false;
+  if (width > PNG_MAX_DIMENSION || height > PNG_MAX_DIMENSION) return false;
+  if (!Number.isFinite(dpi) || dpi <= 0) return false;
+  const pixelsPerMetre = Math.round(dpi / METRES_PER_INCH);
+  return pixelsPerMetre >= 0 && pixelsPerMetre <= MAX_UINT32;
+}
 
 function chunk(type: string, data: Buffer): Buffer {
   const out = Buffer.alloc(CHUNK_OVERHEAD_BYTES + data.length);
@@ -47,8 +57,9 @@ function finishPng(width: number, height: number, bitDepth: number, colourType: 
 
 /** The PNG of `samples` (8 bits, `channels` for each pixel, rows in order), or null when the samples are not as many as the size says. */
 export function encodePdfPicturePng(width: number, height: number, channels: PngChannels, samples: Uint8Array, dpi: number): Buffer | null {
+  if (!validPngParams(width, height, dpi)) return null;
   const rowBytes = width * channels;
-  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || !Number.isFinite(dpi) || dpi <= 0 || samples.length !== rowBytes * height) return null;
+  if (samples.length !== rowBytes * height) return null;
   const rows = Buffer.alloc((rowBytes + 1) * height);
   for (let y = 0; y < height; y++) {
     const at = y * (rowBytes + 1);
@@ -63,7 +74,7 @@ export function encodePdfPicturePng(width: number, height: number, channels: Png
  * or null when dimensions, density, or byte count do not match `Math.ceil(width / 8) * height`.
  */
 export function encodePdfPicture1BitPng(width: number, height: number, packed: Uint8Array, dpi: number): Buffer | null {
-  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || !Number.isFinite(dpi) || dpi <= 0) return null;
+  if (!validPngParams(width, height, dpi)) return null;
   const rowBytes = Math.ceil(width / 8);
   if (packed.length !== rowBytes * height) return null;
   const tailBits = width & 7;

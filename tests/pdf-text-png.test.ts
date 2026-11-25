@@ -89,6 +89,10 @@ describe('encodePdfPicture1BitPng', () => {
     expect(encodePdfPicture1BitPng(0, 2, new Uint8Array(0), 72)).toBeNull();
     expect(encodePdfPicture1BitPng(8, 2, new Uint8Array(2), 0)).toBeNull();
     expect(encodePdfPicture1BitPng(8.5, 2, new Uint8Array(4), 72)).toBeNull();
+    expect(encodePdfPicture1BitPng(0x8000_0000, 1, new Uint8Array(1), 72)).toBeNull();
+    expect(encodePdfPicture1BitPng(8, 1, new Uint8Array(1), 1e12)).toBeNull();
+    expect(encodePdfPicturePng(0x8000_0000, 1, 1, new Uint8Array(1), 72)).toBeNull();
+    expect(encodePdfPicturePng(1, 1, 1, new Uint8Array(1), 1e12)).toBeNull();
   });
 
   it('keeps large 1-bpp pdfjs images (kind 1) at bit depth 1 rather than promoting to 24-bit RGB', async () => {
@@ -101,5 +105,13 @@ describe('encodePdfPicture1BitPng', () => {
     expect(result!.png[16 + 9]).toBe(0);
     const meta = await sharp(result!.png).metadata();
     expect(meta).toMatchObject({ width, height, channels: 1, space: 'b-w' });
+  });
+
+  it('handles non-TypedArray storage safely without throwing on invalid pixel containers', async () => {
+    const arrayBacked = await pdfjsImageToPng({ kind: 1, width: 8, height: 2, data: [0xaa, 0x55] });
+    expect(arrayBacked).toBeDefined();
+    expect(arrayBacked!.png[16 + 8]).toBe(1);
+    const invalid = await pdfjsImageToPng({ kind: 1, width: 8, height: 2, data: { invalid: true } });
+    expect(invalid).toBeUndefined();
   });
 });

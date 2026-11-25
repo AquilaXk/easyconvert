@@ -18,7 +18,7 @@ const CHILD_START_TIMEOUT_MS = 120_000;
  * Healthy jobs one child serves before replacement (`DEFAULT_MAX_JOBS_PER_WORKER`), bounding retained V8, pdf.js, libvips,
  * and allocator caches across multi-hundred-job corpus shards without noticeable spawn overhead.
  */
-export const DEFAULT_MAX_JOBS_PER_WORKER = 40;
+export const DEFAULT_MAX_JOBS_PER_WORKER = 25;
 
 export interface PoolOptions {
   workers: number;
@@ -155,6 +155,13 @@ interface Slot {
   child: ChildProcess;
   busy: boolean;
   jobs: number;
+  broken: boolean;
+}
+
+function positiveIntEnv(raw: string | undefined): string | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? String(parsed) : undefined;
 }
 
 /** The page budget the job servers of a pool work to: the caller's own setting, else the share of the cores each server has. */
@@ -163,18 +170,27 @@ function poolPageBudgetMs(options: PoolOptions): number {
   return Number.isInteger(override) && override > 0 ? override : childOcrPageBudgetMs(options.workers);
 }
 
-function spawnChild(options: PoolOptions): Promise<ChildProcess> {
+/**
+ * Effective child environment overrides passed to each job server: valid positive integer caller overrides are preserved,
+ * empty or invalid strings fall back to per-worker CPU shares, and OCR page budget scales proportionally.
+ */
+export function poolChildEnv(options: PoolOptions): NodeJS.ProcessEnv {
+  return {
+    ...options.env,
+    [OCR_PAGE_CONCURRENCY_ENV]: positiveIntEnv(options.env[OCR_PAGE_CONCURRENCY_ENV]) ?? String(childOcrPageConcurrency(options.workers)),
+    [ONNX_OCR_THREADS_ENV]: positiveIntEnv(options.env[ONNX_OCR_THREADS_ENV]) ?? String(childOcrOnnxThreads(options.workers)),
+    [OCR_PAGE_BUDGET_ENV]: String(poolPageBudgetMs(options)),
+  };
+}
+
+function spawnChild(options: PoolOptions, onSpawn?: (child: ChildProcess) => void): Promise<ChildProcess> {
   const child = fork(CHILD_SCRIPT, [], {
     execArgv: ['--import', 'tsx', `--max-old-space-size=${options.heapMb}`],
-    env: {
-      ...options.env,
-      [OCR_PAGE_CONCURRENCY_ENV]: options.env[OCR_PAGE_CONCURRENCY_ENV] ?? String(childOcrPageConcurrency(options.workers)),
-      [ONNX_OCR_THREADS_ENV]: options.env[ONNX_OCR_THREADS_ENV] ?? String(childOcrOnnxThreads(options.workers)),
-      [OCR_PAGE_BUDGET_ENV]: String(poolPageBudgetMs(options)),
-    },
+    env: poolChildEnv(options),
     stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     detached: true,
   });
+  onSpawn?.(child);
   child.stderr?.resume();
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -201,6 +217,9 @@ function outcomeOf(reply: JobReply): JobOutcome {
 
 export class JobPool {
   private readonly slots: Slot[] = [];
+  private readonly spawning = new Set<ChildProcess>();
+  private readonly activeAbort = new Set<() => void>();
+  private stopped = false;
   private nextId = 1;
 
   private constructor(private readonly options: PoolOptions) {}
@@ -212,41 +231,102 @@ export class JobPool {
 
   /** OS process IDs of the currently active job-server children. */
   get workerPids(): number[] {
-    return this.slots.map((slot) => slot.child.pid).filter((pid): pid is number => pid !== undefined);
+    return this.slots
+      .filter((slot) => !slot.broken && slot.child.exitCode === null && slot.child.signalCode === null)
+      .map((slot) => slot.child.pid)
+      .filter((pid): pid is number => pid !== undefined);
+  }
+
+  private async spawnSlotChild(): Promise<ChildProcess> {
+    let spawned: ChildProcess | undefined;
+    try {
+      const child = await spawnChild(this.options, (c) => {
+        spawned = c;
+        this.spawning.add(c);
+        if (this.stopped) killTree(c);
+      });
+      if (this.stopped) {
+        killTree(child);
+        throw new Error('job pool stopped during child start-up');
+      }
+      return child;
+    } finally {
+      if (spawned) this.spawning.delete(spawned);
+    }
   }
 
   static async start(options: PoolOptions): Promise<JobPool> {
     const pool = new JobPool(options);
-    const children = await Promise.all(Array.from({ length: options.workers }, () => spawnChild(options)));
-    for (const child of children) pool.slots.push({ child, busy: false, jobs: 0 });
-    return pool;
+    const ready: ChildProcess[] = [];
+    try {
+      const children = await Promise.all(
+        Array.from({ length: options.workers }, async () => {
+          const child = await pool.spawnSlotChild();
+          ready.push(child);
+          return child;
+        })
+      );
+      for (const child of children) pool.slots.push({ child, busy: false, jobs: 0, broken: false });
+      return pool;
+    } catch (err) {
+      pool.stopped = true;
+      for (const child of ready) killTree(child);
+      for (const child of pool.spawning) killTree(child);
+      throw err;
+    }
   }
 
-  private async replace(slot: Slot): Promise<void> {
+  private async replace(slot: Slot): Promise<boolean> {
     slot.child.removeAllListeners();
     killTree(slot.child);
-    slot.child = await spawnChild(this.options);
+    slot.broken = true;
     slot.jobs = 0;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (this.stopped) return false;
+      try {
+        slot.child = await this.spawnSlotChild();
+        slot.broken = false;
+        return true;
+      } catch {
+        if (this.stopped) return false;
+      }
+    }
+    return false;
   }
 
-  private runOn(slot: Slot, job: PoolJob): Promise<JobOutcome> {
+  private async runOn(slot: Slot, job: PoolJob): Promise<JobOutcome> {
     const { deadlineMs = this.options.deadlineMs, ...request } = job;
-    const id = this.nextId++;
     const started = performance.now();
+    if (this.stopped) return { verdict: 'crash', ms: 0, detail: 'job pool stopped' };
+    if (slot.broken || !slot.child.connected) {
+      const recovered = await this.replace(slot);
+      if (!recovered || this.stopped || !slot.child.connected) {
+        slot.busy = false;
+        return { verdict: 'crash', ms: performance.now() - started, detail: 'job server replacement failed' };
+      }
+    }
+    const id = this.nextId++;
     const maxJobs = this.options.maxJobsPerWorker ?? DEFAULT_MAX_JOBS_PER_WORKER;
     return new Promise((resolve) => {
+      let settled = false;
       const finish = (outcome: JobOutcome, broken: boolean): void => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
+        this.activeAbort.delete(abortOnStop);
         slot.child.removeListener('message', onMessage);
         slot.child.removeListener('exit', onExit);
         slot.jobs += 1;
-        const recycle = broken || (maxJobs > 0 && slot.jobs >= maxJobs);
+        const recycle = !this.stopped && (broken || (maxJobs > 0 && slot.jobs >= maxJobs));
         const done = (): void => {
           slot.busy = false;
           resolve(outcome);
         };
         if (recycle) void this.replace(slot).then(done, done);
         else done();
+      };
+      const abortOnStop = (): void => {
+        finish({ verdict: 'crash', ms: performance.now() - started, detail: 'job pool stopped' }, false);
       };
       const onMessage = (reply: JobReply): void => {
         if (reply.id === id) finish(outcomeOf(reply), false);
@@ -258,9 +338,15 @@ export class JobPool {
       const timer = setTimeout(() => {
         finish({ verdict: 'hang', ms: performance.now() - started, detail: `no answer within ${windowMs} ms` }, true);
       }, windowMs);
+      this.activeAbort.add(abortOnStop);
       slot.child.on('message', onMessage);
       slot.child.once('exit', onExit);
-      slot.child.send({ ...request, deadlineMs, id });
+      try {
+        slot.child.send({ ...request, deadlineMs, id });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        finish({ verdict: 'crash', ms: performance.now() - started, detail: `job server send failed: ${msg}` }, true);
+      }
     });
   }
 
@@ -282,7 +368,11 @@ export class JobPool {
   }
 
   stop(): void {
+    this.stopped = true;
+    for (const abort of [...this.activeAbort]) abort();
+    for (const child of this.spawning) killTree(child);
     for (const slot of this.slots) {
+      slot.broken = true;
       slot.child.removeAllListeners();
       killTree(slot.child);
     }

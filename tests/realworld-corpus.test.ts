@@ -18,8 +18,9 @@ import { SandboxedProcessError } from '../src/lib/security/process-sandbox';
 import { evaluate, knownRefusal, mergeShards, pairStats, readKnownFailures, readKnownRefusals, renderMarkdown, REPORT_SCHEMA, type JobRecord, type ShardReport } from '../bench/realworld/report';
 import { ocrPageCount } from '../bench/realworld/ocr-path';
 import { outputProblem, PAGE_TARGETS } from '../bench/realworld/output-check';
-import { ANSWER_GRACE_MS, answerWindowMs, childOcrOnnxThreads, childOcrPageBudgetMs, childOcrPageConcurrency, descendantPids, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
-import { ONNX_MAX_HELPER_THREADS } from '../src/lib/conversions/ocr-onnx-helper';
+import { ANSWER_GRACE_MS, answerWindowMs, childOcrOnnxThreads, childOcrPageBudgetMs, childOcrPageConcurrency, descendantPids, JobPool, MAX_JOB_DEADLINE_MS, NIGHTLY_WORKERS, poolChildEnv, scaledDeadlineMs, TOLERATED_HUNG_JOBS } from '../bench/realworld/pool';
+import { ONNX_MAX_HELPER_THREADS, ONNX_OCR_THREADS_ENV } from '../src/lib/conversions/ocr-onnx-helper';
+import { OCR_PAGE_CONCURRENCY_ENV } from '../src/lib/conversions/ocr-page-batch';
 import { OCR_PAGE_BUDGET_MS } from '../src/lib/conversions/ocr-work-budget';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { getAvailableTargetFormats } from '../src/lib/registry';
@@ -650,6 +651,83 @@ describe('healthy worker recycling', () => {
       expect(batch2[0].verdict).toBe('ok');
       expect(pool.workerPids).toEqual(recycledPids);
     } finally {
+      pool.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+
+  it('ignores empty or non-positive OCR env overrides in poolChildEnv instead of forwarding invalid values', () => {
+    const fallback = poolChildEnv({
+      workers: 3,
+      deadlineMs: JOB_DEADLINE_MS,
+      heapMb: HEAP_MB,
+      env: { NODE_ENV: 'test', [ONNX_OCR_THREADS_ENV]: '', [OCR_PAGE_CONCURRENCY_ENV]: 'invalid' },
+    });
+    expect(fallback[ONNX_OCR_THREADS_ENV]).toBe(String(childOcrOnnxThreads(3)));
+    expect(fallback[OCR_PAGE_CONCURRENCY_ENV]).toBe(String(childOcrPageConcurrency(3)));
+
+    const explicit = poolChildEnv({
+      workers: 3,
+      deadlineMs: JOB_DEADLINE_MS,
+      heapMb: HEAP_MB,
+      env: { NODE_ENV: 'test', [ONNX_OCR_THREADS_ENV]: '2', [OCR_PAGE_CONCURRENCY_ENV]: '3' },
+    });
+    expect(explicit[ONNX_OCR_THREADS_ENV]).toBe('2');
+    expect(explicit[OCR_PAGE_CONCURRENCY_ENV]).toBe('3');
+  });
+
+  it('recovers when an idle child dies externally instead of crashing runAll on ERR_IPC_CHANNEL_CLOSED', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-dead-slot-'));
+    const input = path.join(dir, 'tiny.png');
+    fs.writeFileSync(input, PNG_1X1);
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const pool = await JobPool.start({ workers: 1, deadlineMs: JOB_DEADLINE_MS, heapMb: HEAP_MB, env });
+    try {
+      const [deadPid] = pool.workerPids;
+      expect(deadPid).toBeGreaterThan(0);
+      process.kill(deadPid, 'SIGKILL');
+      for (let i = 0; i < 40 && pool.workerPids.length > 0; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(pool.workerPids).toEqual([]);
+      const [recovered] = await pool.runAll([{ path: input, name: 'tiny.png', format: 'png', target: 'bmp' }]);
+      expect(recovered.verdict).toBe('ok');
+      expect(pool.workerPids).toHaveLength(1);
+      expect(pool.workerPids[0]).not.toBe(deadPid);
+    } finally {
+      pool.stop();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }, POOL_TEST_TIMEOUT_MS);
+
+  it('settles in-flight runAll calls and clears workerPids when stop() interrupts a job', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'realworld-stop-'));
+    const blocked = pipeInput(dir, 'blocked.png');
+    const env = { ...process.env, REALWORLD_PDFINFO: '', REALWORLD_IDENTIFY: '' };
+    const pool = await JobPool.start({ workers: 1, deadlineMs: JOB_DEADLINE_MS, heapMb: HEAP_MB, env });
+    const stopReleasing = releaseReaders(blocked, PNG_1X1);
+    try {
+      const [pid] = pool.workerPids;
+      expect(pid).toBeGreaterThan(0);
+      const pending = pool.runAll([{ path: blocked, name: 'blocked.png', format: 'png', target: 'bmp' }]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      pool.stop();
+      const [outcome] = await pending;
+      expect(outcome.verdict).toBe('crash');
+      expect(outcome.detail).toBe('job pool stopped');
+      expect(pool.workerPids).toEqual([]);
+      let alive = true;
+      for (let i = 0; i < 40 && alive; i++) {
+        try {
+          process.kill(pid, 0);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        } catch {
+          alive = false;
+        }
+      }
+      expect(alive).toBe(false);
+    } finally {
+      stopReleasing();
       pool.stop();
       fs.rmSync(dir, { recursive: true, force: true });
     }
