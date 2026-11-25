@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslations, type Messages } from 'next-intl';
-import { Archive, ArrowRightLeft, ChevronDown, FileText, Minimize2, Moon, Sun, X } from 'lucide-react';
+import { Archive, ArrowRightLeft, ChevronDown, FileText, Globe, Minimize2, Moon, Sun, X } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useModalDialog } from '@/hooks/useModalDialog';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
@@ -20,6 +20,7 @@ const GROUP_ICONS: Readonly<Record<ToolGroup['key'], React.ComponentType<{ class
   pdfTools: FileText,
   archives: Archive,
   compressImages: Minimize2,
+  websiteCapture: Globe,
 };
 
 const FOCUSABLE = 'a[href], button:not([disabled]), select, input, [tabindex]:not([tabindex="-1"])';

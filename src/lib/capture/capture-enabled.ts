@@ -7,12 +7,13 @@ const CAPTURE_OPERATION = 'capture.website';
 export const CAPTURE_OUTPUT_FORMATS: readonly string[] = ['pdf', 'png', 'jpg'];
 
 /**
- * Whether this server captures websites: only when `CAPTURE_WEBSITE_ENABLED` is `true`. It stays off by default
- * (docs/policy-decisions.md, entries 270 and 436) until the CI container job confirms Debian 13 Qt 6.8 under the
- * relay-only network namespace and file confinement.
+ * Whether this server captures websites: on by default (`CAPTURE_WEBSITE_ENABLED` unset or blank defaults to `true`,
+ * docs/policy-decisions.md, entries 270, 436 and 443). When set, `'true'` keeps it enabled while `'false'` or any
+ * unrecognized non-boolean value disables it as a fail-closed kill-switch.
  */
 export function websiteCaptureEnabled(): boolean {
-  return process.env.CAPTURE_WEBSITE_ENABLED?.trim().toLowerCase() === 'true';
+  const raw = process.env.CAPTURE_WEBSITE_ENABLED?.trim().toLowerCase();
+  return !raw ? true : raw === 'true';
 }
 
 /** Refuses a graph that captures a website when the server has capture off (CaptureUnavailableError, 422), before anything is reserved. */

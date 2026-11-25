@@ -3,6 +3,7 @@ import { API_DOC_SUBPAGES, apiDocsHref } from '@/components/api-docs/topics';
 import { siteMetadataBase } from '@/i18n/metadata';
 import { getPathname } from '@/i18n/navigation';
 import { CATEGORY_WORDS } from '@/lib/category-words';
+import { websiteCaptureEnabled } from '@/lib/capture/capture-enabled';
 import { COMPRESSED_IMAGE_FORMATS } from '@/lib/image-compression';
 import { MERGE_FORMATS } from '@/lib/jobs/graph-operations';
 import { OPTIMIZABLE_FORMATS } from '@/lib/jobs/optimize-formats';
@@ -32,7 +33,7 @@ function routePriority(pathname: string): number {
 }
 
 function collectCanonicalPublicPaths(): string[] {
-  const websiteCaptureEnabled = process.env.CAPTURE_WEBSITE_ENABLED === 'true';
+  const captureEnabled = websiteCaptureEnabled();
   const paths = new Set<string>(PUBLIC_STATIC_PATHS);
 
   const candidates: string[] = [
@@ -58,7 +59,7 @@ function collectCanonicalPublicPaths(): string[] {
   for (const slug of candidates) {
     const parsed = parseConverterSlug(slug);
     if (!parsed || parsed.canonicalPath !== `/${slug}`) continue;
-    if (!websiteCaptureEnabled && (parsed.copy.kind === 'saveWebsiteAsPdf' || parsed.copy.kind === 'websiteScreenshot')) {
+    if (!captureEnabled && (parsed.copy.kind === 'saveWebsiteAsPdf' || parsed.copy.kind === 'websiteScreenshot')) {
       continue;
     }
     paths.add(parsed.canonicalPath);

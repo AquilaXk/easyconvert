@@ -4,8 +4,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TOOL_ROUTES } from '../src/components/site-links';
-import { testMessages } from './helpers/intl-messages';
+import { TOOL_GROUPS, TOOL_ROUTES } from '../src/components/site-links';
+import { testMessages, type TestLocale } from './helpers/intl-messages';
 
 vi.mock('next/navigation', async (importOriginal) => ({
   ...(await importOriginal<typeof import('next/navigation')>()),
@@ -32,14 +32,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function mountHeader(): Promise<HTMLButtonElement> {
+async function mountHeader(locale: TestLocale = 'en'): Promise<HTMLButtonElement> {
   const host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
   await act(async () => {
-    root?.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: createElement(Header) }));
+    root?.render(createElement(NextIntlClientProvider, { locale, messages: testMessages(locale), timeZone: 'UTC', children: createElement(Header) }));
   });
-  const button = document.querySelector<HTMLButtonElement>('button[aria-label="Open menu"]');
+  const button = document.querySelector<HTMLButtonElement>('button[aria-label="Open menu"], button[aria-label="메뉴 열기"]');
   if (!button) throw new Error('no menu button');
   return button;
 }
@@ -77,7 +77,12 @@ describe('the mobile menu', () => {
     await act(async () => tools.click());
     expect(tools.getAttribute('aria-expanded')).toBe('true');
     expect(sheet.querySelector('#mobile-menu-tools')?.hasAttribute('hidden')).toBe(false);
-    expect(sheet.querySelectorAll('#mobile-menu-tools a')).toHaveLength(TOOL_ROUTES.length + 1);
+    const mobileLinks = [...sheet.querySelectorAll<HTMLAnchorElement>('#mobile-menu-tools a')];
+    expect(mobileLinks).toHaveLength(TOOL_ROUTES.length + 1);
+    expect(mobileLinks.map((a) => a.getAttribute('href'))).toEqual(
+      expect.arrayContaining(['/save-website-as-pdf', '/website-png-screenshot', '/website-jpg-screenshot'])
+    );
+    expect(sheet.querySelector('#mobile-menu-tools')?.textContent).toContain('Website Capture');
   });
 
   it('gives focus to the sheet itself on open, so no focus ring lands on the logo link', async () => {
@@ -125,11 +130,39 @@ describe('the Tools menu of the header', () => {
   const toolsButton = () => document.querySelector<HTMLButtonElement>('button[aria-haspopup=true]')!;
   const toolLinks = () => [...document.querySelectorAll<HTMLAnchorElement>('nav[aria-label] .grid a')];
 
-  async function openTools() {
-    await mountHeader();
+  async function openTools(locale: TestLocale = 'en') {
+    await mountHeader(locale);
     await act(async () => toolsButton().click());
     expect(toolLinks().length).toBeGreaterThan(0);
   }
+
+  it.each([
+    ['en', 'Website Capture', 'Save Website as PDF', 'Website PNG Screenshot', 'Website JPG Screenshot', ''],
+    ['ko', '웹사이트 캡처', '웹사이트 PDF 저장', '웹사이트 PNG 스크린샷', '웹사이트 JPG 스크린샷', '/ko'],
+  ] as const)(
+    'renders every tool group including website capture in the desktop Tools dropdown (%s)',
+    async (locale, groupTitle, pdfLabel, pngLabel, jpgLabel, prefix) => {
+      await openTools(locale);
+      const links = toolLinks();
+      expect(links).toHaveLength(TOOL_ROUTES.length + 1);
+      const hrefs = links.map((a) => a.getAttribute('href'));
+      expect(new Set(hrefs).size).toBe(hrefs.length);
+      expect(hrefs).toEqual(
+        expect.arrayContaining([
+          `${prefix}/save-website-as-pdf`,
+          `${prefix}/website-png-screenshot`,
+          `${prefix}/website-jpg-screenshot`,
+        ])
+      );
+      const byHref = new Map(links.map((a) => [a.getAttribute('href'), a.textContent]));
+      expect(byHref.get(`${prefix}/save-website-as-pdf`)).toBe(pdfLabel);
+      expect(byHref.get(`${prefix}/website-png-screenshot`)).toBe(pngLabel);
+      expect(byHref.get(`${prefix}/website-jpg-screenshot`)).toBe(jpgLabel);
+      const panelText = document.querySelector('nav[aria-label] .grid')?.textContent ?? '';
+      expect(panelText).toContain(groupTitle);
+      expect(TOOL_GROUPS.map((g) => g.key)).toContain('websiteCapture');
+    }
+  );
 
   it('closes when Tab leaves its last item', async () => {
     await openTools();

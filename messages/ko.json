@@ -868,7 +868,8 @@
       "converters": "변환기",
       "pdfTools": "PDF 도구",
       "archives": "압축 파일",
-      "compressImages": "이미지 압축"
+      "compressImages": "이미지 압축",
+      "websiteCapture": "웹사이트 캡처"
     },
     "menuLabel": "메뉴",
     "openMenu": "메뉴 열기",
@@ -1533,6 +1534,9 @@
     "watermarkPdf": "PDF 워터마크",
     "extractPdfPages": "PDF 페이지 추출",
     "deletePdfPages": "PDF 페이지 삭제",
+    "saveWebsiteAsPdf": "웹사이트 PDF 저장",
+    "websitePngScreenshot": "웹사이트 PNG 스크린샷",
+    "websiteJpgScreenshot": "웹사이트 JPG 스크린샷",
     "formats": "파일 형식",
     "apiDocs": "API 문서",
     "dashboard": "대시보드",

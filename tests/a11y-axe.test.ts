@@ -49,6 +49,8 @@ const PAGES: PageCase[] = [
   { name: 'home in Korean', locale: 'ko', page: () => createElement(HomePageView, { dailyLimit: ANONYMOUS_DAILY_CREDITS, apiOrigin: API_ORIGIN }) },
   { name: 'converter pair /pdf-to-docx', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-to-docx'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
   { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+  { name: 'website capture /save-website-as-pdf', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('save-website-as-pdf'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+  { name: 'website capture /save-website-as-pdf in Korean', locale: 'ko', page: () => createElement(ConverterPageView, { parsed: parsedSlug('save-website-as-pdf'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
   { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CREDITS, billing: null }) },
   { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CREDITS, billing: null }) },
   { name: 'not found', locale: 'en', page: () => createElement(NotFoundPageView) },
@@ -180,5 +182,27 @@ describe('keyboard and target-size guards that jsdom can see', () => {
       root?.render(createElement(NextIntlClientProvider, { locale: 'en', messages: testMessages('en'), timeZone: 'UTC', children: queue(done, false) }));
     });
     expect(document.activeElement?.matches('a[download]')).toBe(true);
+  });
+
+  it('passes WCAG 2.1 AA with the Header Tools dropdown open including website capture routes', async () => {
+    document.documentElement.lang = 'en';
+    document.title = 'EasyConvert';
+    await mount('en', () =>
+      createElement(
+        'div',
+        null,
+        createElement(Header),
+        createElement('main', { id: 'main-content' }, createElement('h1', null, 'Tools'))
+      )
+    );
+    const trigger = document.querySelector<HTMLButtonElement>('button[aria-haspopup="true"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => trigger!.click());
+    expect(document.querySelector('a[href="/save-website-as-pdf"]')).not.toBeNull();
+    const { violations } = await axe.run(document, {
+      runOnly: { type: 'tag', values: WCAG_TAGS },
+      rules: Object.fromEntries(NEEDS_LAYOUT.map((id) => [id, { enabled: false }])),
+    });
+    expect(violations.map(describeViolation)).toEqual([]);
   });
 });

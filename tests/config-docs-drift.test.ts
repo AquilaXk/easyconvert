@@ -90,6 +90,7 @@ describe('docs/configuration.example.env', () => {
     expect(byName.get('REDIS_PORT')).toBe('6379');
     expect(byName.get('S3_FORCE_PATH_STYLE')).toBe('true');
     expect(byName.get('STRICT_SANDBOX')).toBe('false');
+    expect(byName.get('CAPTURE_WEBSITE_ENABLED')).toBe('true');
     expect(byName.get('GRAPH_URL_IMPORT_MAX_BYTES')).toBe(String(5 * 1024 ** 3));
   });
 
@@ -99,6 +100,7 @@ describe('docs/configuration.example.env', () => {
     const config = parseConfig(env);
     expect(config.WORKER_CONCURRENCY).toBe(3);
     expect(config.STORAGE_DRIVER).toBe('local');
+    expect(config.CAPTURE_WEBSITE_ENABLED).toBe(true);
   });
 });
 

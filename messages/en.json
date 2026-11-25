@@ -868,7 +868,8 @@
       "converters": "Converters",
       "pdfTools": "PDF Tools",
       "archives": "Archives",
-      "compressImages": "Compress Images"
+      "compressImages": "Compress Images",
+      "websiteCapture": "Website Capture"
     },
     "menuLabel": "Navigation menu",
     "openMenu": "Open menu",
@@ -1533,6 +1534,9 @@
     "watermarkPdf": "Watermark PDF",
     "extractPdfPages": "Extract PDF Pages",
     "deletePdfPages": "Delete PDF Pages",
+    "saveWebsiteAsPdf": "Save Website as PDF",
+    "websitePngScreenshot": "Website PNG Screenshot",
+    "websiteJpgScreenshot": "Website JPG Screenshot",
     "formats": "Formats",
     "apiDocs": "API Docs",
     "dashboard": "Dashboard",

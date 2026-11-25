@@ -16,12 +16,13 @@ T = TypeVar("T", bound="FormatsResponseCapture")
 
 @_attrs_define
 class FormatsResponseCapture:
-    """The tasks of this deployment that are not on for every server.
+    """Optional capture capabilities of this deployment; `GET /api/formats` reports whether each task is enabled.
 
     Attributes:
-        website (FormatsResponseCaptureWebsite): The `capture.website` task (`capture/website` in a named-task job). It
-            is off unless the operator sets `CAPTURE_WEBSITE_ENABLED=true`; where `enabled` is false a job that holds it is
-            refused before anything is reserved with a 422 and the code `capture_unavailable`.
+        website (FormatsResponseCaptureWebsite): The `capture.website` task (`capture/website` in a named-task job).
+            Enabled by default (`CAPTURE_WEBSITE_ENABLED=false` turns it off; `GET /api/formats` reports
+            `capture.website.enabled`); where `enabled` is false a job that holds it is refused before anything is reserved
+            with a 422 and the code `capture_unavailable`.
     """
 
     website: FormatsResponseCaptureWebsite

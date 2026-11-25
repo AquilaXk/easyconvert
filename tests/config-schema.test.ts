@@ -640,6 +640,9 @@ describe('loadConfig', () => {
     expect(config.APP_URL).toBe('http://localhost:3000');
     expect(config.REDIS_PORT).toBe(6379);
     expect(config.STRICT_SANDBOX).toBe(false);
+    expect(config.CAPTURE_WEBSITE_ENABLED).toBe(true);
+    expect(config.CAPTURE_PYTHON_PATH).toBeUndefined();
+    expect(config.CAPTURE_DRIVER_PATH).toBeUndefined();
     expect(config.CHECK_REDIS).toBe(true);
     expect(config.S3_FORCE_PATH_STYLE).toBe(true);
     expect(config.JWT_SECRET).toBeUndefined();
@@ -837,6 +840,31 @@ describe('loadConfig', () => {
     ]);
     expect(parseConfig({ ...WEB_PRODUCTION, JWT_SECRET_PREVIOUS: ascii(32) }, { role: 'web' }).JWT_SECRET_PREVIOUS).toBe(ascii(32));
     expect(parseConfig({}).JWT_SECRET_PREVIOUS).toBeUndefined();
+  });
+
+  it('defaults CAPTURE_WEBSITE_ENABLED to true, rejects malformed values, and keeps capture tool paths optional', () => {
+    expect(parseConfig(WEB_PRODUCTION, { role: 'web' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+    expect(parseConfig(WORKER_PRODUCTION, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+    expect(parseConfig({ ...WORKER_PRODUCTION, CAPTURE_WEBSITE_ENABLED: 'false' }, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(false);
+    expect(failures({ NODE_ENV: 'development', CAPTURE_WEBSITE_ENABLED: 'on' })).toEqual([
+      { variable: 'CAPTURE_WEBSITE_ENABLED', rule: 'must be true or false' },
+    ]);
+    expect(failures({ NODE_ENV: 'development', CAPTURE_PYTHON_PATH: 'python3' })).toEqual([
+      { variable: 'CAPTURE_PYTHON_PATH', rule: 'must be an absolute path' },
+    ]);
+    expect(failures({ NODE_ENV: 'development', CAPTURE_DRIVER_PATH: './capture.py' })).toEqual([
+      { variable: 'CAPTURE_DRIVER_PATH', rule: 'must be an absolute path' },
+    ]);
+    expect(
+      failures(
+        {
+          ...WORKER_PRODUCTION,
+          CAPTURE_PYTHON_PATH: '/usr/bin/python3',
+          CAPTURE_DRIVER_PATH: '/usr/local/lib/easyconvert/capture-website.py',
+        },
+        'worker'
+      )
+    ).toEqual([]);
   });
 });
 

@@ -70,7 +70,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `TRUSTED_CDN` | one of `cloudflare` (any case) | none | no | web |
 | `TRUSTED_CDN_RANGES` | comma-separated IPv4/IPv6 addresses or CIDR ranges, at most 256 entries | none | no | web |
 | `TRUSTED_PROXY_HEADER` | one of `x-forwarded-for`, `forwarded` (any case) | none | no | web |
-| `CAPTURE_WEBSITE_ENABLED` | `true` or `false` | `false` | no | web, worker |
+| `CAPTURE_WEBSITE_ENABLED` | `true` or `false` | `true` | no | web, worker |
 
 - `STRICT_SANDBOX`: Set to `true` to refuse running native tools without the strict process sandbox: the user and network namespaces, and pid-init with the Landlock ruleset that confines the files of a program to the directory of its job. A run that does not name its job directory, or that this host cannot confine, is refused with a 503 before the program starts.
 - `SANDBOX_PID_NAMESPACE`: Set to `false` to start sandboxed programs without `pid-init` (on by default): without the PID namespace of their own, and without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs. calibre and veraPDF always run outside the PID namespace: calibre's launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount; they still get the ruleset.
@@ -82,7 +82,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `TRUSTED_CDN`: Name of the CDN whose edge ranges are trusted to forward client addresses.
 - `TRUSTED_CDN_RANGES`: CIDR ranges that replace the built-in edge ranges of TRUSTED_CDN.
 - `TRUSTED_PROXY_HEADER`: The one forwarding header the trusted proxy writes: `x-forwarded-for` (default) or `forwarded`.
-- `CAPTURE_WEBSITE_ENABLED`: Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. Off by default pending Debian 13 Qt 6.8 CI container confirmation (docs/policy-decisions.md, entries 270 and 436). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.
+- `CAPTURE_WEBSITE_ENABLED`: Set to `false` to turn off the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. On by default after Debian 13 Qt 6.8 CI container check 14 confirmation (docs/policy-decisions.md, entries 270, 436 and 443). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.
 
 ### Sign-in
 

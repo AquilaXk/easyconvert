@@ -12,7 +12,7 @@ export interface SiteLink {
 }
 
 export interface ToolGroup {
-  key: 'converters' | 'pdfTools' | 'archives' | 'compressImages';
+  key: 'converters' | 'pdfTools' | 'archives' | 'compressImages' | 'websiteCapture';
   links: readonly SiteLink[];
 }
 
@@ -58,6 +58,14 @@ export const TOOL_GROUPS = [
       { key: 'compressJpg', href: '/compress-jpg' },
     ],
   },
+  {
+    key: 'websiteCapture',
+    links: [
+      { key: 'saveWebsiteAsPdf', href: '/save-website-as-pdf' },
+      { key: 'websitePngScreenshot', href: '/website-png-screenshot' },
+      { key: 'websiteJpgScreenshot', href: '/website-jpg-screenshot' },
+    ],
+  },
 ] as const satisfies readonly ToolGroup[];
 
 export const TOOL_ROUTES = [
@@ -65,6 +73,7 @@ export const TOOL_ROUTES = [
   ...TOOL_GROUPS[1].links,
   ...TOOL_GROUPS[2].links,
   ...TOOL_GROUPS[3].links,
+  ...TOOL_GROUPS[4].links,
 ] as const satisfies readonly SiteLink[];
 
 export const PRIMARY_LINKS = [

@@ -12,9 +12,10 @@ T = TypeVar("T", bound="FormatsResponseCaptureWebsite")
 
 @_attrs_define
 class FormatsResponseCaptureWebsite:
-    """The `capture.website` task (`capture/website` in a named-task job). It is off unless the operator sets
-    `CAPTURE_WEBSITE_ENABLED=true`; where `enabled` is false a job that holds it is refused before anything is reserved
-    with a 422 and the code `capture_unavailable`.
+    """The `capture.website` task (`capture/website` in a named-task job). Enabled by default
+    (`CAPTURE_WEBSITE_ENABLED=false` turns it off; `GET /api/formats` reports `capture.website.enabled`); where
+    `enabled` is false a job that holds it is refused before anything is reserved with a 422 and the code
+    `capture_unavailable`.
 
         Attributes:
             enabled (bool): Whether this server captures websites.

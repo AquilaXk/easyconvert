@@ -65,6 +65,9 @@ describe('the links the site renders lead to pages that exist', () => {
     const footer: SiteLink[] = FOOTER_COLUMNS.flatMap((column) => [...column.links]);
     const table: SiteLink[] = [...TOOL_ROUTES, ...PRIMARY_LINKS, ...footer];
     expect(table.length).toBeGreaterThan(15);
+    expect(table.map(hrefOf)).toEqual(
+      expect.arrayContaining(['/save-website-as-pdf', '/website-png-screenshot', '/website-jpg-screenshot'])
+    );
     expect(deadLinks(table.map(hrefOf))).toEqual([]);
   });
 
@@ -95,7 +98,7 @@ describe('the links the site renders lead to pages that exist', () => {
   }, 120_000);
 
   it.each(LOCALES)('holds for pair pages, utility pages and site pages in %s', (locale) => {
-    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'pdf-ocr', 'contact', 'about', 'accessibility'];
+    const slugs = ['png-to-jpg', 'pdf-to-docx', 'mp4-to-gif', 'jpeg-to-jpg', 'zip-to-tar.gz', 'merge-pdf', 'compress-pdf', 'compress-png', 'compress-jpg', 'create-zip-archive', 'extract-zip-archive', 'split-pdf', 'rotate-pdf', 'save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot', 'pdf-ocr', 'contact', 'about', 'accessibility'];
     const dead = slugs.flatMap((slug) =>
       deadLinks(render(createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }), locale)).map((href) => `/${slug} links ${href}`)
     );

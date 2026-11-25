@@ -71,7 +71,7 @@ function standIn(): void {
     process.nextTick(() => callback(null, PUBLIC));
   }) as never);
   vi.spyOn(dns.promises, 'lookup').mockImplementation((async () => PUBLIC) as never);
-  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
+  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
   vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
   vi.stubEnv('CAPTURE_DRIVER_PATH', path.join(dir, 'capture.py'));
 }
@@ -171,17 +171,18 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
   });
 });
 
-describe('the capture task is off unless the server turns it on', () => {
+describe('the capture task is on by default and fails closed when switched off', () => {
   const graph = { nodes: { shot: { op: 'capture.website', url: 'https://site.example/', targetFormat: 'png' }, out: { op: 'export.internal', input: 'shot' } } };
   const named = { tasks: { shot: { operation: 'capture/website', url: 'https://site.example/', output_format: 'png' }, out: { operation: 'export/url', input: 'shot' } } };
 
   it.each([
-    ['unset', undefined],
     ['false', 'false'],
+    ['uppercase FALSE', 'FALSE'],
+    ['padded false', ' false '],
+    ['zero', '0'],
     ['anything but true', 'on'],
   ])('refuses a graph and a named-task job with the 422 code capture_unavailable and reserves nothing when the switch is %s', async (_what, value) => {
-    if (value === undefined) vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
-    else vi.stubEnv('CAPTURE_WEBSITE_ENABLED', value);
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', value);
     const who = await caller();
     const initGraph = vi.spyOn(graphScheduler, 'initGraph');
     for (const body of [{ graph }, named]) {
@@ -195,7 +196,7 @@ describe('the capture task is off unless the server turns it on', () => {
   });
 
   it('leaves a job without a capture task alone while the switch is off', async () => {
-    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'false');
     const who = await caller();
     const initGraph = vi.spyOn(graphScheduler, 'initGraph');
     const key = `uploads/capture-off-${Date.now()}/doc.txt`;
@@ -205,21 +206,43 @@ describe('the capture task is off unless the server turns it on', () => {
     expect(initGraph).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts the same graph when the switch is true', async () => {
+  it.each([
+    ['unset', undefined],
+    ['blank', ''],
+    ['whitespace-only', '   '],
+    ['true', 'true'],
+  ])('accepts the same graph and named-task job when the switch is %s', async (_what, value) => {
     standIn();
+    if (value === undefined) vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+    else vi.stubEnv('CAPTURE_WEBSITE_ENABLED', value);
     const who = await caller();
     const initGraph = vi.spyOn(graphScheduler, 'initGraph');
-    const res = await post(who.authorization, { graph });
-    expect(res.status, await res.clone().text()).toBeLessThan(300);
-    expect(initGraph).toHaveBeenCalledTimes(1);
+    for (const body of [{ graph }, named]) {
+      const res = await post(who.authorization, body);
+      expect(res.status, await res.clone().text()).toBeLessThan(300);
+    }
+    expect(initGraph).toHaveBeenCalledTimes(2);
   });
 
   it('says in GET /api/formats whether this server captures websites, and as what', async () => {
     vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+    const defaultOn = await (await listFormats(new NextRequest('http://localhost/api/formats'))).json();
+    expect(defaultOn.capture).toEqual({ website: { enabled: true, formats: ['pdf', 'png', 'jpg'] } });
+
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', '   ');
+    const blankOn = await (await listFormats(new NextRequest('http://localhost/api/formats'))).json();
+    expect(blankOn.capture).toEqual({ website: { enabled: true, formats: ['pdf', 'png', 'jpg'] } });
+
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'false');
     const off = await (await listFormats(new NextRequest('http://localhost/api/formats'))).json();
     expect(off.capture).toEqual({ website: { enabled: false, formats: ['pdf', 'png', 'jpg'] } });
+
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'on');
+    const unknownOff = await (await listFormats(new NextRequest('http://localhost/api/formats'))).json();
+    expect(unknownOff.capture).toEqual({ website: { enabled: false, formats: ['pdf', 'png', 'jpg'] } });
+
     vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
-    const on = await (await listFormats(new NextRequest('http://localhost/api/formats'))).json();
-    expect(on.capture).toEqual({ website: { enabled: true, formats: ['pdf', 'png', 'jpg'] } });
+    const explicitOn = await (await listFormats(new NextRequest('http://localhost/api/formats'))).json();
+    expect(explicitOn.capture).toEqual({ website: { enabled: true, formats: ['pdf', 'png', 'jpg'] } });
   });
 });

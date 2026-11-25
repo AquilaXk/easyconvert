@@ -1251,8 +1251,8 @@ const SCHEMA_ENTRIES = [
   boolSetting(
     'CAPTURE_WEBSITE_ENABLED',
     'security',
-    'Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. Off by default pending Debian 13 Qt 6.8 CI container confirmation (docs/policy-decisions.md, entries 270 and 436). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.',
-    false
+    'Set to `false` to turn off the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. On by default after Debian 13 Qt 6.8 CI container check 14 confirmation (docs/policy-decisions.md, entries 270, 436 and 443). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.',
+    true
   ),
   absoluteToolPath('CAPTURE_PYTHON_PATH', 'Absolute path of the Python 3 interpreter that runs the website capture driver (native/capture-website) with the PyQt6 WebEngine bindings that calibre brings; searched in the standard locations when unset. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('CAPTURE_DRIVER_PATH', 'Absolute path of the website capture driver script (native/capture-website/capture.py); `/usr/local/lib/easyconvert/capture-website.py` in the worker image, the file in `native/` in a checkout. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),

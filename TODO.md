@@ -31,7 +31,6 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
 - Engine choice, second step (entry 267): install a second engine version when a pair needs it, expose `default` and `latest` flags in `GET /api/formats`, show per-node engine and version in the graph view, and probe engine versions at worker startup.
-- Turn website capture on (`CAPTURE_WEBSITE_ENABLED`, entries 270 and 436) once CI `container` confirms Debian 13 Qt 6.8 check 14 on GitHub Actions, then link its slugs in `TOOL_ROUTES` with QA UI screenshot approval.
 - Presets and watched sources.
 - Additional UI locales beyond `en` and `ko`, and dedicated PDF sign and content-redaction engines.
 - Evaluation-size sample sets: 30+ video, 30+ RAW from 10 makers, 40+ audio, 60+ PDF stress files.

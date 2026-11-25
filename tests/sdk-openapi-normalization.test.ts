@@ -52,4 +52,39 @@ describe('the OpenAPI document as the SDK generators read it', () => {
     normalizeOpenApiForSdk(input);
     expect(JSON.stringify(input)).toBe(served);
   });
+
+  it('describes website capture as enabled by default with CAPTURE_WEBSITE_ENABLED=false as the opt-out', () => {
+    const { schemas } = normalized.components;
+    const formatsCapture = schemas.FormatsResponse.properties?.capture as {
+      properties?: {
+        website?: {
+          type?: string;
+          required?: string[];
+          description?: string;
+          properties?: Record<string, unknown>;
+        };
+      };
+    };
+    const jobGraphNode = schemas.JobGraph.properties?.nodes as {
+      additionalProperties?: { properties?: { op?: { description?: string } } };
+    };
+    const namedTaskOp = schemas.NamedTask.properties?.operation as { description?: string };
+    expect(formatsCapture?.properties?.website).toMatchObject({
+      type: 'object',
+      required: ['enabled', 'formats'],
+      properties: {
+        enabled: { type: 'boolean' },
+        formats: { type: 'array', items: { type: 'string' } },
+      },
+    });
+    expect(formatsCapture?.properties?.website?.description).toBe(
+      'The `capture.website` task (`capture/website` in a named-task job). Enabled by default (`CAPTURE_WEBSITE_ENABLED=false` turns it off; `GET /api/formats` reports `capture.website.enabled`); where `enabled` is false a job that holds it is refused before anything is reserved with a 422 and the code `capture_unavailable`.'
+    );
+    expect(jobGraphNode?.additionalProperties?.properties?.op?.description).toMatch(
+      /`capture\.website` \(enabled by default; `CAPTURE_WEBSITE_ENABLED=false` turns it off/
+    );
+    expect(namedTaskOp?.description).toMatch(
+      /`capture\/website` \(enabled by default unless `CAPTURE_WEBSITE_ENABLED=false`/
+    );
+  });
 });

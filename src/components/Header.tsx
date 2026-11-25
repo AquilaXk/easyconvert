@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
-import { Sun, Moon, ChevronDown, Menu, RefreshCw, ArrowRightLeft, FileText, Archive, Minimize2 } from 'lucide-react';
+import { Sun, Moon, ChevronDown, Menu, RefreshCw, ArrowRightLeft, FileText, Archive, Minimize2, Globe } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import { useThemeToggle } from '@/hooks/useThemeToggle';
 import BrandLogo from './BrandLogo';
@@ -18,6 +18,7 @@ const GROUP_ICONS: Readonly<Record<ToolGroup['key'], React.ComponentType<{ class
   pdfTools: FileText,
   archives: Archive,
   compressImages: Minimize2,
+  websiteCapture: Globe,
 };
 
 function ToolMenuSection({
@@ -141,9 +142,9 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
               </button>
 
               {isToolsOpen && (
-                <div className="absolute top-full left-4 sm:left-6 lg:left-8 mt-1 w-[min(920px,calc(100%-4rem))] rounded-xs bg-surface text-ink border border-rule shadow-elev-2 p-5 z-50 whitespace-normal">
+                <div className="absolute top-full left-4 sm:left-6 lg:left-8 mt-1 w-[min(920px,calc(100%-4rem))] max-h-[calc(100dvh-var(--header-height)-1rem)] overflow-y-auto rounded-xs bg-surface text-ink border border-rule shadow-elev-2 p-5 z-50 whitespace-normal">
                   <div className="grid grid-cols-12 gap-7">
-                    <div className="col-span-4 min-w-0">
+                    <div className="col-span-4 flex flex-col gap-6 min-w-0">
                       <Link
                         href="/"
                         onClick={() => setIsToolsOpen(false)}
@@ -155,6 +156,11 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
                           <span className="mt-1 block text-xs leading-relaxed text-ink-3">{t('fileConverterDescription')}</span>
                         </div>
                       </Link>
+                      <ToolMenuSection
+                        groupKey={TOOL_GROUPS[4].key}
+                        links={TOOL_GROUPS[4].links}
+                        onSelect={() => setIsToolsOpen(false)}
+                      />
                     </div>
                     <div className="col-span-3 flex flex-col gap-6 min-w-0">
                       <ToolMenuSection

@@ -286,12 +286,12 @@ export const components = {
         capture: {
           type: 'object',
           required: ['website'],
-          description: 'The tasks of this deployment that are not on for every server.',
+          description: 'Optional capture capabilities of this deployment; `GET /api/formats` reports whether each task is enabled.',
           properties: {
             website: {
               type: 'object',
               required: ['enabled', 'formats'],
-              description: 'The `capture.website` task (`capture/website` in a named-task job). It is off unless the operator sets `CAPTURE_WEBSITE_ENABLED=true`; where `enabled` is false a job that holds it is refused before anything is reserved with a 422 and the code `capture_unavailable`.',
+              description: 'The `capture.website` task (`capture/website` in a named-task job). Enabled by default (`CAPTURE_WEBSITE_ENABLED=false` turns it off; `GET /api/formats` reports `capture.website.enabled`); where `enabled` is false a job that holds it is refused before anything is reserved with a 422 and the code `capture_unavailable`.',
               properties: {
                 enabled: { type: 'boolean', description: 'Whether this server captures websites.' },
                 formats: { type: 'array', items: { type: 'string' }, description: 'The formats a page is captured as.' },

@@ -28,14 +28,15 @@ class NamedTask:
             operation (NamedTaskOperation): `import/url` and `import/upload` bring a file in; `convert`, `ocr`, `optimize`,
                 `thumbnail`, `media.package`, `watermark`, `merge`, `metadata` (reads the metadata of its input into
                 `metadata.json`), `metadata/write` (writes `options.metadata.set` into a JPEG, a PNG or a PDF),
-                `capture/website` (only where the server has it on, see `GET /api/formats`; otherwise a 422 with the code
-                `capture_unavailable`; draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and
-                `options.capture`; it takes no input and counts as a conversion), `archive/create`, `archive/extract` and the
-                `pdf.*` page operations work on it; `export/url` ends a branch: with `url` it sends the files there, without it
-                keeps them for download and lists their download URLs in the task result. `import/{s3,gcs,azure-
-                blob,sftp,webdav}` bring files in from the customer's own bucket/container/server, and `export/{s3,gcs,azure-
-                blob,sftp,webdav}` write files there and list where each went in the task result; they take a saved credential
-                (`credential_ref`) or inline `credentials`. A job needs at least one task that converts.
+                `capture/website` (enabled by default unless `CAPTURE_WEBSITE_ENABLED=false`; `GET /api/formats` reports
+                `capture.website.enabled`, and where it is off a job is refused with a 422 and the code `capture_unavailable`;
+                draws the page at `url` as a PDF, a PNG or a JPEG, with `output_format` and `options.capture`; it takes no input
+                and counts as a conversion), `archive/create`, `archive/extract` and the `pdf.*` page operations work on it;
+                `export/url` ends a branch: with `url` it sends the files there, without it keeps them for download and lists
+                their download URLs in the task result. `import/{s3,gcs,azure-blob,sftp,webdav}` bring files in from the
+                customer's own bucket/container/server, and `export/{s3,gcs,azure-blob,sftp,webdav}` write files there and list
+                where each went in the task result; they take a saved credential (`credential_ref`) or inline `credentials`. A
+                job needs at least one task that converts.
             input_ (list[str] | str | Unset): The name of the task whose output this task reads, or a list of names. Every
                 task but an import needs one. A `merge` needs at least 2 distinct names.
             output_format (str | Unset): Format extension the task produces. Required by `convert`, `merge` and

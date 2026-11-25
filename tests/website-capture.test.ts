@@ -107,7 +107,7 @@ function publicNames(): void {
 
 function useStandIn(): void {
   publicNames();
-  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
+  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
   vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
   vi.stubEnv('CAPTURE_DRIVER_PATH', driver);
 }
@@ -337,18 +337,32 @@ sys.stdout.write(json.dumps({'ok': True, 'output': request['output'], 'finalUrl'
     await expect(captureWebsite({ url: 'https://site.example/', format: 'png' })).rejects.toBeInstanceOf(EngineUnavailableError);
   });
 
-  it('is refused by a worker that has capture off, before the address is looked at and before anything starts', async () => {
-    publicNames();
-    vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
-    vi.stubEnv('CAPTURE_DRIVER_PATH', driver);
-    for (const value of [undefined, '', 'false', '0', 'yes']) {
+  it('is enabled by default when CAPTURE_WEBSITE_ENABLED is unset, blank, or true', async () => {
+    useStandIn();
+    for (const value of [undefined, '', '   ', 'true', ' TRUE ']) {
       if (value === undefined) vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
       else vi.stubEnv('CAPTURE_WEBSITE_ENABLED', value);
+      const result = await captureWebsite({ url: 'https://site.example/', format: 'png' });
+      expect(result.mimeType).toBe('image/png');
+      expect(result.buffer.toString('latin1')).toMatch(/^\x89PNG/);
+      expect(result.filename).toBe('site.example.png');
+    }
+  });
+
+  it('is refused by a worker that has capture off, before the address is looked at and before anything starts', async () => {
+    publicNames();
+    const execSpy = vi.spyOn(processSandbox, 'executeSandboxedBinary');
+    vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
+    vi.stubEnv('CAPTURE_DRIVER_PATH', driver);
+    for (const value of ['false', 'FALSE', ' false ', '0', 'yes', 'on']) {
+      vi.stubEnv('CAPTURE_WEBSITE_ENABLED', value);
       const run = captureWebsite({ url: 'https://site.example/echo', format: 'pdf' });
       await expect(run).rejects.toBeInstanceOf(CaptureUnavailableError);
       await expect(run).rejects.toThrow('Website capture is not enabled on this server.');
       expect(refusalCodeOf(await run.catch((caught: unknown) => caught))).toBe('capture_unavailable');
     }
+    expect(dns.promises.lookup).not.toHaveBeenCalled();
+    expect(execSpy).not.toHaveBeenCalled();
   });
 
   it('refuses a format a page is not captured as', async () => {

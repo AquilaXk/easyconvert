@@ -29,7 +29,8 @@ class FormatsResponse:
         categories (list[FormatsResponseCategoriesItem]):
         formats (list[FormatsResponseFormatsItem]):
         engines (list[Engine]): Every engine of this deployment with its installed version.
-        capture (FormatsResponseCapture): The tasks of this deployment that are not on for every server.
+        capture (FormatsResponseCapture): Optional capture capabilities of this deployment; `GET /api/formats` reports
+            whether each task is enabled.
         pairs (list[PairEngines] | Unset): Sent only when `source`, `target` or `engine` is set: the engines of each
             pair they select.
     """

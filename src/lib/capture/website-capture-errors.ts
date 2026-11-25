@@ -16,7 +16,7 @@ export class CaptureTargetBlockedError extends ConversionFailedError {
 }
 
 /**
- * Website capture is switched off on this server (`CAPTURE_WEBSITE_ENABLED`, off by default): the request is understood and refused before
+ * Website capture is switched off on this server (`CAPTURE_WEBSITE_ENABLED=false`, on by default): the request is understood and refused before
  * anything is reserved, and a worker that has it off refuses the node the same way: 422.
  */
 export class CaptureUnavailableError extends ConversionFailedError {
