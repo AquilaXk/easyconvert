@@ -342,8 +342,12 @@ class GateRelay:
             except BlockingIOError:
                 chunk = None
             except OSError:
-                if not is_client and pair.unix_wr_closed and pair.to_client:
+                if not is_client:
+                    # Peer closed with unread request bytes (e.g. ECONNRESET on Linux): flush any buffered
+                    # response, propagate SHUT_WR, and drain trailing client bytes cleanly instead of resetting.
                     pair.unix_eof = True
+                    pair.unix_wr_closed = True
+                    pair.to_unix.clear()
                     chunk = None
                 else:
                     self._close_pair(pair)

@@ -138,7 +138,7 @@ print('ok')
 
   it.skipIf(skipUnless('a Python 3 interpreter', PYTHON !== undefined))('bridges loopback TCP connections to an AF_UNIX gate socket with half-close, backpressure, concurrency, and teardown', () => {
     const relayScript = `
-import importlib.util, os, socket, sys, tempfile, threading
+import importlib.util, os, socket, struct, sys, tempfile, threading, time
 
 spec = importlib.util.spec_from_file_location('capture_driver', sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
@@ -150,23 +150,39 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
     srv.bind(sock_path)
     srv.listen(32)
     stop_srv = threading.Event()
+    early_403_resp = b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'
 
     def serve_conn(conn):
         try:
             chunks = []
+            read_total = 0
             while True:
-                data = conn.recv(65536)
+                data = conn.recv(256 if read_total < 1024 else 65536)
                 if not data:
                     break
                 chunks.append(data)
-                if b'\\r\\n\\r\\n' in b''.join(chunks[:1]) and b'EARLY403' in chunks[0]:
-                    conn.sendall(b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n')
+                read_total += len(data)
+                head = b''.join(chunks[:4])
+                if b'\\r\\n\\r\\n' in head and b'EARLY403_LINGER' in head:
+                    conn.sendall(early_403_resp)
+                    try:
+                        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                    except OSError:
+                        pass
+                    return
+                if b'\\r\\n\\r\\n' in head and b'EARLY403' in head:
+                    conn.sendall(early_403_resp)
                     return
             payload = b''.join(chunks)
             conn.sendall(b'ECHO:' + payload)
             conn.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def accept_loop():
         srv.settimeout(0.2)
@@ -248,6 +264,74 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
         early.close()
         assert bytes(early_resp).startswith(b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked'), f'early403={early_resp!r} errs={early_errs!r}'
 
+        # Small early-403 POST with unread body + SO_LINGER on AF_UNIX server (triggers ECONNRESET on Linux while pair.unix_wr_closed is False)
+        small_early = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        small_body = b'S' * 8192
+        small_early.sendall(b'POST http://169.254.169.254/EARLY403_LINGER HTTP/1.1\\r\\nHost: 169.254.169.254\\r\\nContent-Length: ' + str(len(small_body)).encode() + b'\\r\\n\\r\\n' + small_body)
+        small_resp = bytearray()
+        small_errs = []
+        while True:
+            try:
+                d = small_early.recv(4096)
+                if not d:
+                    break
+                small_resp.extend(d)
+            except OSError as e:
+                small_errs.append(repr(e))
+                break
+        small_early.close()
+        assert bytes(small_resp) == early_403_resp and not small_errs, f'small_early={small_resp!r} errs={small_errs!r}'
+
+        # Live AF_UNIX early-403 + SO_LINGER with unread POST body: relay must propagate SHUT_WR and drain trailing POST bytes instead of resetting client
+        stream_early = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        init_body = b'I' * 16384
+        tail_body = b'T' * 65536
+        stream_early.sendall(
+            b'POST http://169.254.169.254/EARLY403_LINGER HTTP/1.1\\r\\nHost: 169.254.169.254\\r\\nContent-Length: '
+            + str(len(init_body) + len(tail_body)).encode()
+            + b'\\r\\n\\r\\n'
+            + init_body
+        )
+        stream_resp = bytearray()
+        stream_errs = []
+        while True:
+            try:
+                d = stream_early.recv(4096)
+                if not d:
+                    break
+                stream_resp.extend(d)
+            except OSError as e:
+                stream_errs.append(repr(e))
+                break
+        assert bytes(stream_resp) == early_403_resp and not stream_errs, f'stream_early={stream_resp!r} errs={stream_errs!r}'
+        stream_early.sendall(tail_body)
+        stream_early.shutdown(socket.SHUT_WR)
+        stream_early.close()
+
+        # Client SO_LINGER(1, 0) abortive close triggers client.recv OSError and tears down cleanly without breaking subsequent relays
+        abortive = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        abortive.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        abortive.sendall(b'POST http://allowed.example/partial HTTP/1.1\\r\\nHost: allowed.example\\r\\nContent-Length: 1024\\r\\n\\r\\nabc')
+        abortive.close()
+
+        followup = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        followup.sendall(b'after-client-linger-reset')
+        followup.shutdown(socket.SHUT_WR)
+        fbuf = bytearray()
+        while True:
+            d = followup.recv(4096)
+            if not d:
+                break
+            fbuf.extend(d)
+        followup.close()
+        assert bytes(fbuf) == b'ECHO:after-client-linger-reset'
+
+        for _ in range(50):
+            if not relay._conns:
+                break
+            time.sleep(0.01)
+        assert len(relay._conns) == 0, f'leaked relay conns: {len(relay._conns)}'
+
         # Fail-closed when AF_UNIX target disappears
         stop_srv.set()
         srv.close()
@@ -275,5 +359,182 @@ print('relay-ok')
 `;
     const checked = execFileSync(PYTHON as string, ['-I', '-c', relayScript, DRIVER], { encoding: 'utf8' });
     expect(checked.trim()).toBe('relay-ok');
+  });
+
+  it.skipIf(skipUnless('a Python 3 interpreter', PYTHON !== undefined))('preserves buffered 403, propagates SHUT_WR, and drains trailing client bytes on upstream ECONNRESET while closing on client OSError in GateRelay._handle_pair', () => {
+    const handlePairScript = `
+import errno, importlib.util, os, selectors, socket, sys, tempfile, time
+
+spec = importlib.util.spec_from_file_location('capture_driver', sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+class ResetOnRecvSocket:
+    def __init__(self, inner, err=None):
+        self._inner = inner
+        self._err = err if err is not None else ConnectionResetError(errno.ECONNRESET, 'Connection reset by peer')
+    def recv(self, _size):
+        raise self._err
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+def tcp_pair():
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.bind(('127.0.0.1', 0))
+    srv.listen(1)
+    peer = socket.create_connection(('127.0.0.1', srv.getsockname()[1]), timeout=3)
+    accepted, _ = srv.accept()
+    srv.close()
+    accepted.setblocking(False)
+    peer.settimeout(3)
+    return peer, accepted
+
+def wait_until(step, tries=50):
+    for _ in range(tries):
+        if step():
+            return
+        time.sleep(0.01)
+    raise AssertionError('timed out waiting for _handle_pair state')
+
+with tempfile.TemporaryDirectory(prefix='ecg-hp-') as td:
+    sock_path = os.path.join(td, 'g.sock')
+    relay = mod.GateRelay(sock_path)
+    try:
+        resp_403 = b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'
+
+        # (a) Case A: unix_wr_closed is False and to_client holds an early 403 when pair.unix.recv() raises ECONNRESET
+        peer_a, client_a = tcp_pair()
+        u_a1, u_a2 = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        u_a1.setblocking(False)
+        u_a2.close()
+        pair_a = mod._RelayPair(client_a, ResetOnRecvSocket(u_a1), True)
+        pair_a.unix_wr_closed = False
+        pair_a.to_client.extend(resp_403)
+        pair_a.to_unix.extend(b'unsent-post-body')
+        relay._conns.add(pair_a)
+        relay._sync_events(pair_a)
+
+        relay._handle_pair(pair_a, False, selectors.EVENT_READ | selectors.EVENT_WRITE)
+        assert pair_a.closed is False, 'Case A: dropped buffered 403 by closing pair'
+        assert pair_a.unix_eof is True
+        assert pair_a.unix_wr_closed is True
+        assert len(pair_a.to_unix) == 0
+        assert bytes(pair_a.to_client) == resp_403
+        assert u_a1.fileno() not in relay._registered
+        assert (relay._registered.get(client_a.fileno(), 0) & selectors.EVENT_WRITE) != 0
+
+        for _ in range(10):
+            if not pair_a.to_client:
+                break
+            relay._handle_pair(pair_a, True, selectors.EVENT_WRITE)
+        assert len(pair_a.to_client) == 0
+        assert pair_a.client_wr_closed is True
+        assert pair_a.closed is False
+
+        peer_a.sendall(b'trailing-body-after-403')
+        peer_a.shutdown(socket.SHUT_WR)
+        got_a = bytearray()
+        while True:
+            chunk = peer_a.recv(4096)
+            if not chunk:
+                break
+            got_a.extend(chunk)
+        peer_a.close()
+        assert bytes(got_a) == resp_403
+
+        wait_until(lambda: (relay._handle_pair(pair_a, True, selectors.EVENT_READ), pair_a.closed)[1])
+        assert pair_a.client_eof is True
+        assert pair_a.discarded_client_bytes == len(b'trailing-body-after-403')
+        assert pair_a not in relay._conns
+
+        # (b) Case B: to_client is empty when ECONNRESET occurs (both unix_wr_closed=True and False) while client holds unread POST bytes
+        for initial_wr_closed in (True, False):
+            peer_b, client_b = tcp_pair()
+            u_b1, u_b2 = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            u_b1.setblocking(False)
+            u_b2.close()
+            pair_b = mod._RelayPair(client_b, ResetOnRecvSocket(u_b1), True)
+            pair_b.unix_wr_closed = initial_wr_closed
+            pair_b.to_client.extend(resp_403)
+            relay._conns.add(pair_b)
+            relay._sync_events(pair_b)
+
+            unread_1 = b'P' * 16384
+            peer_b.sendall(unread_1)
+            for _ in range(10):
+                if not pair_b.to_client:
+                    break
+                relay._handle_pair(pair_b, True, selectors.EVENT_WRITE)
+            assert len(pair_b.to_client) == 0
+            assert pair_b.client_wr_closed is False
+
+            relay._handle_pair(pair_b, False, selectors.EVENT_READ)
+            assert pair_b.closed is False, f'Case B: closed prematurely (wr_closed={initial_wr_closed})'
+            assert pair_b.unix_eof is True
+            assert pair_b.unix_wr_closed is True
+            assert pair_b.client_wr_closed is True
+            assert u_b1.fileno() not in relay._registered
+            assert relay._registered.get(client_b.fileno()) == selectors.EVENT_READ
+
+            got_b = bytearray()
+            while True:
+                chunk = peer_b.recv(4096)
+                if not chunk:
+                    break
+                got_b.extend(chunk)
+            assert bytes(got_b) == resp_403
+
+            unread_2 = b'Q' * 16384
+            peer_b.sendall(unread_2)
+            wait_until(lambda: (relay._handle_pair(pair_b, True, selectors.EVENT_READ), pair_b.discarded_client_bytes >= len(unread_1) + len(unread_2))[1])
+            peer_b.shutdown(socket.SHUT_WR)
+            peer_b.close()
+            wait_until(lambda: (relay._handle_pair(pair_b, True, selectors.EVENT_READ), pair_b.closed)[1])
+            assert pair_b.client_eof is True
+            assert pair_b.discarded_client_bytes == len(unread_1) + len(unread_2)
+            assert pair_b not in relay._conns
+
+        # (b2) Discarding trailing client bytes stops at RELAY_DISCARD_LIMIT_BYTES
+        peer_lim, client_lim = tcp_pair()
+        u_l1, u_l2 = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        u_l1.setblocking(False)
+        u_l2.close()
+        pair_lim = mod._RelayPair(client_lim, ResetOnRecvSocket(u_l1), True)
+        pair_lim.discarded_client_bytes = mod.RELAY_DISCARD_LIMIT_BYTES - 1024
+        relay._conns.add(pair_lim)
+        relay._sync_events(pair_lim)
+        relay._handle_pair(pair_lim, False, selectors.EVENT_READ)
+        assert pair_lim.closed is False and pair_lim.client_wr_closed is True
+        peer_lim.sendall(b'Z' * 2048)
+        wait_until(lambda: (relay._handle_pair(pair_lim, True, selectors.EVENT_READ), pair_lim.closed)[1])
+        assert pair_lim.client_eof is True
+        assert pair_lim.discarded_client_bytes >= mod.RELAY_DISCARD_LIMIT_BYTES
+        peer_lim.close()
+
+        # (c) Client recv() OSError (is_client=True) closes the pair cleanly without preserving upstream state
+        peer_c, client_c = tcp_pair()
+        u_c1, u_c2 = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        u_c1.setblocking(False)
+        pair_c = mod._RelayPair(ResetOnRecvSocket(client_c), u_c1, True)
+        pair_c.to_client.extend(resp_403)
+        relay._conns.add(pair_c)
+        relay._sync_events(pair_c)
+        c_fd = client_c.fileno()
+        u_fd = u_c1.fileno()
+        relay._handle_pair(pair_c, True, selectors.EVENT_READ)
+        assert pair_c.closed is True
+        assert pair_c not in relay._conns
+        assert c_fd not in relay._registered
+        assert u_fd not in relay._registered
+        assert client_c.fileno() == -1
+        assert u_c1.fileno() == -1
+        peer_c.close()
+        u_c2.close()
+    finally:
+        relay.close()
+print('handle-pair-ok')
+`;
+    const checked = execFileSync(PYTHON as string, ['-I', '-c', handlePairScript, DRIVER], { encoding: 'utf8' });
+    expect(checked.trim()).toBe('handle-pair-ok');
   });
 });
