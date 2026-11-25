@@ -80,6 +80,7 @@ describe('the nightly job of the office rows', () => {
     expect(pull?.run).toContain('-worker:main');
     expect(pull?.run).toContain('RepoDigests');
     expect(pull?.run).toContain('for attempt in 1 2 3');
+    expect(pull?.run).not.toContain('pinned="$image"');
     expect(job.steps.indexOf(login as never)).toBeLessThan(job.steps.indexOf(pull as never));
     expect(job.steps.some((step) => step.uses?.startsWith('docker/build-push-action'))).toBe(false);
   });
@@ -125,7 +126,7 @@ describe('the worker image pull step', () => {
     for (const dir of temps) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  function runPull(options: { failPulls?: number; inspectFails?: boolean; digest?: string } = {}) {
+  function runPull(options: { failPulls?: number; inspectFails?: boolean; digest?: string; repository?: string; nocasematch?: boolean } = {}) {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'office-pull-'));
     temps.push(work);
     const bin = path.join(work, 'bin');
@@ -152,7 +153,7 @@ case "$1" in
       exit 1
     fi
     case "$*" in
-      *RepoDigests*) echo "\${STUB_DIGEST:-}" ;;
+      *RepoDigests*) if [ -n "\${STUB_DIGEST:-}" ]; then printf '%s\\n' "\$STUB_DIGEST"; fi ;;
       *revision*) echo "deadbeef" ;;
     esac
     exit 0 ;;
@@ -172,13 +173,14 @@ exit 0
     const summary = path.join(work, 'github_summary');
     fs.writeFileSync(output, '');
     fs.writeFileSync(summary, '');
-    const result = spawnSync('bash', ['-c', pull?.run ?? 'false'], {
+    const script = `${options.nocasematch ? 'shopt -s nocasematch\n' : ''}${pull?.run ?? 'false'}`;
+    const result = spawnSync('bash', ['-c', script], {
       cwd: work,
       encoding: 'utf-8',
       env: {
         ...process.env,
         PATH: `${bin}:${process.env.PATH ?? ''}`,
-        GITHUB_REPOSITORY: 'AquilaXk/easyconvert',
+        GITHUB_REPOSITORY: options.repository ?? 'AquilaXk/easyconvert',
         GITHUB_OUTPUT: output,
         GITHUB_STEP_SUMMARY: summary,
         STUB_CALLS: callsLog,
@@ -207,10 +209,46 @@ exit 0
     expect(res.summary).toContain('LibreOffice 26.8.2.2');
     expect(res.calls.filter((c) => c.startsWith('docker pull'))).toHaveLength(3);
     expect(res.calls.filter((c) => c.startsWith('sleep '))).toEqual(['sleep 10', 'sleep 20']);
+    expect(res.calls.some((c) => c.includes('org.opencontainers.image.revision') && c.endsWith(pinned))).toBe(true);
     expect(res.calls.some((c) => c.includes(`--entrypoint soffice ${pinned}`))).toBe(true);
   });
 
-  it.skipIf(skipUnless('bash', bash.status === 0))('fails closed after three failed pulls and when docker image inspect errors', () => {
+  it.skipIf(skipUnless('bash', bash.status === 0))('selects the matching repository digest from multi-entry RepoDigests and lowercases the repository prefix', () => {
+    const pinned = `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'c'.repeat(64)}`;
+    const res = runPull({
+      repository: 'AquilaXk/EasyConvert',
+      digest: [`ghcr.io/other/repo@sha256:${'d'.repeat(64)}`, 'ghcr.io/aquilaxk/easyconvert-worker@sha256:bad', pinned].join('\n'),
+    });
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.output).toBe(`image=${pinned}`);
+    expect(res.calls.some((c) => c.includes('org.opencontainers.image.revision') && c.endsWith(pinned))).toBe(true);
+    expect(res.calls.some((c) => c.includes(`--entrypoint soffice ${pinned}`))).toBe(true);
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('matches dots in the repository name literally rather than as regex wildcards', () => {
+    const fakeMatch = `ghcr.io/myXorg/myXrepo-worker@sha256:${'e'.repeat(64)}`;
+    const rejected = runPull({ repository: 'my.org/my.repo', digest: fakeMatch });
+    expect(rejected.status).toBe(1);
+    expect(rejected.stderr).toContain('::error::');
+    expect(rejected.output).toBe('');
+
+    const exact = `ghcr.io/my.org/my.repo-worker@sha256:${'e'.repeat(64)}`;
+    const accepted = runPull({ repository: 'my.org/my.repo', digest: exact });
+    expect(accepted.status, accepted.stderr).toBe(0);
+    expect(accepted.output).toBe(`image=${exact}`);
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('fails closed on uppercase sha256 even when nocasematch was previously enabled', () => {
+    const upper = `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'A'.repeat(64)}`;
+    const res = runPull({ digest: upper, nocasematch: true });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('::error::');
+    expect(res.output).toBe('');
+    expect(res.summary).toBe('');
+    expect(res.calls.some((c) => c.startsWith('docker run'))).toBe(false);
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0))('fails closed after three failed pulls, when docker image inspect errors, and when RepoDigests is empty', () => {
     const failedPull = runPull({ failPulls: 3 });
     expect(failedPull.status).toBe(1);
     expect(failedPull.stderr).toContain('could not pull');
@@ -219,5 +257,34 @@ exit 0
     const failedInspect = runPull({ inspectFails: true });
     expect(failedInspect.status).not.toBe(0);
     expect(failedInspect.output).toBe('');
+
+    const emptyDigests = runPull({ digest: '' });
+    expect(emptyDigests.status).toBe(1);
+    expect(emptyDigests.stderr).toContain('::error::');
+    expect(emptyDigests.output).toBe('');
+    expect(emptyDigests.summary).toBe('');
+    expect(emptyDigests.calls.some((c) => c.startsWith('docker run'))).toBe(false);
+  });
+
+  it.skipIf(skipUnless('bash', bash.status === 0)).each([
+    ['non-digest string', 'invalid'],
+    ['mutable tag instead of digest', 'ghcr.io/aquilaxk/easyconvert-worker:main'],
+    ['wrong repository prefix', `ghcr.io/other/repo@sha256:${'a'.repeat(64)}`],
+    ['web repository instead of worker', `ghcr.io/aquilaxk/easyconvert-web@sha256:${'a'.repeat(64)}`],
+    ['wrong registry host', `docker.io/aquilaxk/easyconvert-worker@sha256:${'a'.repeat(64)}`],
+    ['non-sha256 algorithm', `ghcr.io/aquilaxk/easyconvert-worker@sha512:${'a'.repeat(64)}`],
+    ['short sha256 hex', `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'a'.repeat(63)}`],
+    ['overlong sha256 hex', `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'a'.repeat(65)}`],
+    ['non-hex character in sha256', `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'g'.repeat(64)}`],
+    ['uppercase hex in sha256', `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'A'.repeat(64)}`],
+    ['trailing whitespace or token', `ghcr.io/aquilaxk/easyconvert-worker@sha256:${'a'.repeat(64)} extra`],
+    ['leading whitespace', ` ghcr.io/aquilaxk/easyconvert-worker@sha256:${'a'.repeat(64)}`],
+  ])('fails closed without falling back to mutable :main for %s', (_label, badDigest) => {
+    const res = runPull({ digest: badDigest });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('::error::');
+    expect(res.output).toBe('');
+    expect(res.summary).toBe('');
+    expect(res.calls.some((c) => c.startsWith('docker run'))).toBe(false);
   });
 });

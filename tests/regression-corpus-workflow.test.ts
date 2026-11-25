@@ -223,6 +223,7 @@ describe('plan step', () => {
 
 describe('previous baseline fetch step', () => {
   const bash = spawnSync('bash', ['--version'], { encoding: 'utf-8' });
+  const jq = spawnSync('jq', ['--version'], { encoding: 'utf-8' });
   const find = workflow.jobs.gate.steps.find((step) => step.id === 'previous');
   const temps: string[] = [];
 
@@ -230,7 +231,13 @@ describe('previous baseline fetch step', () => {
     for (const dir of temps) fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  function runPrevious(options: { candidates: string[]; conclusions: Record<string, string>; apiFails?: boolean }) {
+  function runPrevious(options: {
+    candidates?: string[];
+    conclusions?: Record<string, string>;
+    artifactsPayload?: { artifacts: Array<{ expired: boolean; created_at: string; workflow_run: { id: number; head_branch: string } | null }> };
+    runPayloads?: Record<string, { conclusion: string | null }>;
+    apiFails?: boolean;
+  }) {
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'regression-prev-'));
     temps.push(work);
     const bin = path.join(work, 'bin');
@@ -238,6 +245,7 @@ describe('previous baseline fetch step', () => {
     const downloads = path.join(work, 'downloads.log');
     fs.writeFileSync(downloads, '');
     const ghStub = `#!/usr/bin/env node
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (args[0] === 'api') {
@@ -246,6 +254,27 @@ if (args[0] === 'api') {
     process.exit(1);
   }
   const url = args[1] || '';
+  const jqFlag = args.indexOf('--jq');
+  const jqExpr = jqFlag >= 0 ? args[jqFlag + 1] : '';
+  if (process.env.STUB_ARTIFACTS_JSON) {
+    if (!jqExpr) {
+      process.stderr.write('missing --jq filter\\n');
+      process.exit(1);
+    }
+    if (url.includes('/actions/artifacts')) {
+      const out = execFileSync('jq', ['-r', jqExpr], { input: process.env.STUB_ARTIFACTS_JSON, encoding: 'utf8' });
+      process.stdout.write(out);
+      process.exit(0);
+    }
+    const match = /\\/actions\\/runs\\/(\\d+)$/.exec(url);
+    if (match) {
+      const runs = JSON.parse(process.env.STUB_RUNS_JSON || '{}');
+      const runObj = runs[match[1]] ?? {};
+      const out = execFileSync('jq', ['-r', jqExpr], { input: JSON.stringify(runObj), encoding: 'utf8' });
+      process.stdout.write(out);
+      process.exit(0);
+    }
+  }
   if (url.includes('/actions/artifacts')) {
     const ids = JSON.parse(process.env.STUB_CANDIDATES || '[]');
     if (ids.length > 0) process.stdout.write(ids.join('\\n') + '\\n');
@@ -277,8 +306,10 @@ process.exit(1);
         GITHUB_REPOSITORY: 'AquilaXk/easyconvert',
         BASELINE_BRANCH: workflow.env?.BASELINE_BRANCH ?? 'main',
         GITHUB_OUTPUT: output,
-        STUB_CANDIDATES: JSON.stringify(options.candidates),
-        STUB_CONCLUSIONS: JSON.stringify(options.conclusions),
+        STUB_CANDIDATES: JSON.stringify(options.candidates ?? []),
+        STUB_CONCLUSIONS: JSON.stringify(options.conclusions ?? {}),
+        STUB_ARTIFACTS_JSON: options.artifactsPayload ? JSON.stringify(options.artifactsPayload) : '',
+        STUB_RUNS_JSON: options.runPayloads ? JSON.stringify(options.runPayloads) : '',
         STUB_DOWNLOADS: downloads,
         STUB_API_FAILS: options.apiFails ? '1' : '',
       },
@@ -319,4 +350,59 @@ process.exit(1);
     expect(res.status).not.toBe(0);
     expect(res.downloaded).toEqual([]);
   });
+
+  it.skipIf(skipUnless('bash', bash.status === 0) || skipUnless('jq', jq.status === 0))(
+    'evaluates the workflow jq filters against real GitHub API artifact and run payloads',
+    () => {
+      const res = runPrevious({
+        artifactsPayload: {
+          artifacts: [
+            // Older passing main run listed before the newer passing one to verify sort_by(.created_at) | reverse.
+            { expired: false, created_at: '2026-11-08T03:17:00Z', workflow_run: { id: 38000000000, head_branch: 'main' } },
+            // Newer non-expired main run whose run is still null-conclusion or failed.
+            { expired: false, created_at: '2026-11-22T03:17:00Z', workflow_run: { id: 45017705402, head_branch: 'main' } },
+            { expired: false, created_at: '2026-11-21T03:17:00Z', workflow_run: { id: 44000000000, head_branch: 'main' } },
+            // Newer passing run on another branch must be excluded.
+            { expired: false, created_at: '2026-11-25T03:17:00Z', workflow_run: { id: 49000000000, head_branch: 'feat/other' } },
+            // Newer expired artifact on main must be excluded.
+            { expired: true, created_at: '2026-11-24T03:17:00Z', workflow_run: { id: 48000000000, head_branch: 'main' } },
+            // Deleted workflow_run metadata must be excluded without erroring.
+            { expired: false, created_at: '2026-11-23T03:17:00Z', workflow_run: null },
+            // Newest passing non-expired main run.
+            { expired: false, created_at: '2026-11-15T03:17:00Z', workflow_run: { id: 41000000000, head_branch: 'main' } },
+          ],
+        },
+        runPayloads: {
+          '49000000000': { conclusion: 'success' },
+          '48000000000': { conclusion: 'success' },
+          '45017705402': { conclusion: 'failure' },
+          '44000000000': { conclusion: null },
+          '41000000000': { conclusion: 'success' },
+          '38000000000': { conclusion: 'success' },
+        },
+      });
+      expect(res.status, res.stderr).toBe(0);
+      expect(res.output).toBe('found=true');
+      expect(res.downloaded).toEqual(['41000000000']);
+      expect(res.stdout).toContain('Compared with the full run 41000000000');
+
+      for (const emptyArtifacts of [
+        [
+          { expired: true, created_at: '2026-11-24T03:17:00Z', workflow_run: { id: 48000000000, head_branch: 'main' } },
+          { expired: false, created_at: '2026-11-25T03:17:00Z', workflow_run: { id: 49000000000, head_branch: 'feat/other' } },
+        ],
+        [{ expired: false, created_at: '2026-11-23T03:17:00Z', workflow_run: null }],
+        [],
+      ]) {
+        const none = runPrevious({
+          artifactsPayload: { artifacts: emptyArtifacts },
+          runPayloads: {},
+        });
+        expect(none.status, none.stderr).toBe(0);
+        expect(none.output).toBe('found=false');
+        expect(none.downloaded).toEqual([]);
+        expect(none.stdout).toContain('the differential judge is skipped for this run');
+      }
+    }
+  );
 });

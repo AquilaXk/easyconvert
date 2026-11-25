@@ -309,11 +309,20 @@ jobs:
             echo "::error::could not pull $image after 3 attempts" >&2
             exit 1
           fi
-          digest="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}' "$image" | tr -d '[:space:]')"
-          if [[ "$digest" == *@sha256:* ]]; then
-            pinned="$digest"
-          else
-            pinned="$image"
+          digests="$(docker image inspect --format '{{range .RepoDigests}}{{.}}{{"\n"}}{{end}}' "$image")"
+          expected_prefix="${image%:main}@sha256:"
+          pinned=""
+          shopt -u nocasematch
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            if [ "${entry:0:${#expected_prefix}}" = "$expected_prefix" ] && [[ "${entry:${#expected_prefix}}" =~ ^[0123456789abcdef]{64}$ ]]; then
+              pinned="$entry"
+              break
+            fi
+          done <<< "$digests"
+          if [ -z "$pinned" ]; then
+            echo "::error::could not resolve pinned sha256 digest for $image" >&2
+            exit 1
           fi
           revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$pinned")"
           soffice_version="$(docker run --rm --entrypoint soffice "$pinned" --version)"
