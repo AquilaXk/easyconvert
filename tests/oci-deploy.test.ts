@@ -351,7 +351,7 @@ describe('Dockerfile.web', () => {
     expect(finalStage).toMatch(/^LABEL org\.opencontainers\.image\.base\.name="\$\{WORKER_IMAGE\}"$/m);
   });
 
-  it('builds with the public origin that robots.txt and sitemap.xml name, and leaves the pages to the boot check', () => {
+  it('builds with the public origin that robots.txt names, and leaves pages and dynamic sitemap.xml to runtime', () => {
     const builder = web.slice(web.search(/^FROM \$\{NODE_IMAGE\} AS webbuilder$/m), web.search(/^FROM \$\{WORKER_IMAGE\} AS web$/m));
     const build = builder.search(/^RUN \.\/node_modules\/\.bin\/next build$/m);
     expect(build).toBeGreaterThan(0);
@@ -799,6 +799,15 @@ describe('env allowlist', () => {
     for (const name of RETENTION_SETTINGS) expect(allowlist, name).toContain(name);
   });
 
+  it('passes CAPTURE_WEBSITE_ENABLED through to every application service with no default, and lets it through', () => {
+    for (const service of APP_SERVICES) {
+      const environment = compose.services[service].environment ?? {};
+      expect('CAPTURE_WEBSITE_ENABLED' in environment, service).toBe(true);
+      expect(environment.CAPTURE_WEBSITE_ENABLED, service).toBeNull();
+    }
+    expect(allowlist).toContain('CAPTURE_WEBSITE_ENABLED');
+  });
+
   it('lists nothing that the compose file or the host backup runner does not read, and keeps backup keys out of containers', () => {
     const hostBackupVars = [
       'REDIS_BACKUP_ENCRYPTION_KEY',
@@ -866,6 +875,14 @@ describe('deploy.sh filter-env', () => {
     const logged = result.stderr.trim().split('\n');
     const numbers = logged.map((line) => /^\[deploy\] dropped a line of the env secret: line (\d+) is not KEY=VALUE$/.exec(line)?.[1]);
     expect(numbers).toEqual(NOT_KEY_VALUE.map((_, index) => String(index + 2)));
+  });
+
+  it('keeps CAPTURE_WEBSITE_ENABLED=false through filter-env so the production kill-switch survives to docker-compose.prod.yml', () => {
+    const input = ['APP_URL=https://x.test', 'CAPTURE_WEBSITE_ENABLED=false', 'UNLISTED_KEY=ignored'].join('\n');
+    const result = run(['filter-env'], { input });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('APP_URL=https://x.test\nCAPTURE_WEBSITE_ENABLED=false\n');
+    expect(result.stderr.trim()).toBe('[deploy] dropped a line of the env secret: line 3 is not a key of the allowlist');
   });
 });
 
@@ -1287,6 +1304,23 @@ exit 0`
     expect(result.status, result.stderr).toBe(0);
     expect(calls().some((call) => call.includes('--profile monitoring') && / up -d --wait/.test(call))).toBe(true);
     expect(result.stderr).not.toContain('secret-token-123');
+  });
+
+  it('carries CAPTURE_WEBSITE_ENABLED=false from filter-env through deploy into current/.env while leaving unset omitted', () => {
+    const unsetFiltered = run(['filter-env'], { input: `${ENV_BODY}\n` });
+    expect(unsetFiltered.status, unsetFiltered.stderr).toBe(0);
+    writeFileSync(envFile, unsetFiltered.stdout);
+    expect(run(['deploy', ref('7')], { env: hostEnv() }).status).toBe(0);
+    const unsetReleaseEnv = readFileSync(path.join(home, 'releases', currentRelease(), '.env'), 'utf-8');
+    expect(unsetReleaseEnv).not.toContain('CAPTURE_WEBSITE_ENABLED=');
+
+    const filtered = run(['filter-env'], { input: `${ENV_BODY}\nCAPTURE_WEBSITE_ENABLED=false\n` });
+    expect(filtered.status, filtered.stderr).toBe(0);
+    writeFileSync(envFile, filtered.stdout);
+    const result = run(['deploy', ref('8')], { env: hostEnv() });
+    expect(result.status, result.stderr).toBe(0);
+    const releaseEnv = readFileSync(path.join(home, 'releases', currentRelease(), '.env'), 'utf-8');
+    expect(releaseEnv.split('\n')).toContain('CAPTURE_WEBSITE_ENABLED=false');
   });
 
   it('lets a setting in the env file win over the value derived from the budget, and uses an external Redis without starting this one', () => {

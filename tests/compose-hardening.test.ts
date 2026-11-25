@@ -322,6 +322,34 @@ describe.skipIf(skipUnless('docker compose', compose.available))('docker compose
     }
   });
 
+  it('passes CAPTURE_WEBSITE_ENABLED through real docker compose config when unset, blank, or false across local and production stacks', () => {
+    const localUnset = config(['--profile', 'split', '--profile', 'gpu']);
+    const localDisabled = config(['--profile', 'split', '--profile', 'gpu'], { CAPTURE_WEBSITE_ENABLED: 'false' });
+    for (const name of WORKER_SERVICES) {
+      const unsetEnv = environmentOf(localUnset.services[name]);
+      expect('CAPTURE_WEBSITE_ENABLED' in unsetEnv, `local unset ${name}`).toBe(true);
+      expect(unsetEnv.CAPTURE_WEBSITE_ENABLED, `local unset ${name}`).toBeNull();
+      expect(environmentOf(localDisabled.services[name]).CAPTURE_WEBSITE_ENABLED, `local false ${name}`).toBe('false');
+    }
+
+    const prodUnset = config(['-f', 'docker-compose.prod.yml', '--profile', 'split', '--profile', 'gpu'], PROD_ENV);
+    const prodBlank = config(['-f', 'docker-compose.prod.yml', '--profile', 'split', '--profile', 'gpu'], {
+      ...PROD_ENV,
+      CAPTURE_WEBSITE_ENABLED: '',
+    });
+    const prodDisabled = config(['-f', 'docker-compose.prod.yml', '--profile', 'split', '--profile', 'gpu'], {
+      ...PROD_ENV,
+      CAPTURE_WEBSITE_ENABLED: 'false',
+    });
+    for (const name of ['web', ...WORKER_SERVICES]) {
+      const unsetEnv = environmentOf(prodUnset.services[name]);
+      expect('CAPTURE_WEBSITE_ENABLED' in unsetEnv, `prod unset ${name}`).toBe(true);
+      expect(unsetEnv.CAPTURE_WEBSITE_ENABLED, `prod unset ${name}`).toBeNull();
+      expect(environmentOf(prodBlank.services[name]).CAPTURE_WEBSITE_ENABLED, `prod blank ${name}`).toBe('');
+      expect(environmentOf(prodDisabled.services[name]).CAPTURE_WEBSITE_ENABLED, `prod false ${name}`).toBe('false');
+    }
+  });
+
   it.each(['STORAGE_SIGNING_SECRET', 'JOB_SECRET_KEK', 'APP_URL', 'JWT_SECRET', 'EASYCONVERT_SCRATCH_DIR'])(
     'refuses the production file without %s',
     (missing) => {

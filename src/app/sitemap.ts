@@ -7,11 +7,10 @@ import { websiteCaptureEnabled } from '@/lib/capture/capture-enabled';
 import { COMPRESSED_IMAGE_FORMATS } from '@/lib/image-compression';
 import { MERGE_FORMATS } from '@/lib/jobs/graph-operations';
 import { OPTIMIZABLE_FORMATS } from '@/lib/jobs/optimize-formats';
+import { PUBLIC_DEFAULT_ORIGIN } from '@/lib/public-origin';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import { INFO_PAGE_MAP, PAGE_TOOL_SLUGS } from '@/lib/slug-info-pages';
 import { parseConverterSlug } from '@/lib/slug-parser';
-
-const DEFAULT_PUBLIC_ORIGIN = 'https://convert.aquilaxk.site';
 
 // Render per request so runtime CAPTURE_WEBSITE_ENABLED=false (kill-switch) immediately drops capture URLs instead of serving build-time static XML.
 export const dynamic = 'force-dynamic';
@@ -72,7 +71,7 @@ function collectCanonicalPublicPaths(): string[] {
 }
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const origin = siteMetadataBase()?.origin ?? DEFAULT_PUBLIC_ORIGIN;
+  const origin = siteMetadataBase()?.origin ?? PUBLIC_DEFAULT_ORIGIN;
   const canonicalPaths = collectCanonicalPublicPaths();
   const entries: MetadataRoute.Sitemap = [];
 

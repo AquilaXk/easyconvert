@@ -56,6 +56,8 @@ x-worker: &worker
     JOB_SECRET_KEK_PREVIOUS:
     # Only needed to sign upload and download URLs. Unset, signing is refused, never faked.
     STORAGE_SIGNING_SECRET:
+    # Website capture is on by default; set false in the shell or .env to disable it on workers.
+    CAPTURE_WEBSITE_ENABLED:
     REDIS_HOST: redis
     REDIS_PORT: "6379"
     STORAGE_DRIVER: local

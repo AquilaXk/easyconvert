@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse } from 'yaml';
+import { parseConfig } from '../src/lib/config';
 import { CONFIG_SCHEMA } from '../src/lib/config/schema';
 import { StorageConfigError } from '../src/lib/storage/errors';
 import {
@@ -41,36 +42,73 @@ interface ComposeFile {
   services?: Record<string, { environment?: string[] | Record<string, string | number | null> }>;
 }
 
-const INTERPOLATION_PATTERN = /\$(\$|\{([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([^}]*))?\})/g;
-
 interface Interpolated {
   value: string;
   /** Variables that a `:?` / `?` form required and the environment did not provide. */
   missing: string[];
 }
 
+const VAR_EXPRESSION = /^([A-Za-z_][A-Za-z0-9_]*)(?:(:?[-?])([\s\S]*))?$/;
+
+function findMatchingBrace(text: string, openBrace: number): number {
+  let depth = 1;
+  for (let i = openBrace + 1; i < text.length; i++) {
+    if (text[i] === '$' && text[i + 1] === '$') {
+      i++;
+    } else if (text[i] === '$' && text[i + 1] === '{') {
+      depth++;
+      i++;
+    } else if (text[i] === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+function resolveExpression(expression: string, env: Environment, missing: string[]): string {
+  const match = VAR_EXPRESSION.exec(expression);
+  if (!match) return `\${${expression}}`;
+  const [, name, operator, argument = ''] = match;
+  const actual = env[name];
+  const isSet = actual !== undefined;
+  if (operator === ':-' || operator === '-') {
+    const useActual = operator === ':-' ? isSet && actual !== '' : isSet;
+    if (useActual) return actual;
+    const nested = interpolate(argument, env);
+    missing.push(...nested.missing);
+    return nested.value;
+  }
+  if (operator === ':?' || operator === '?') {
+    const valid = operator === ':?' ? isSet && actual !== '' : isSet;
+    if (!valid) missing.push(name);
+  }
+  return actual ?? '';
+}
+
 function interpolate(template: string, env: Environment): Interpolated {
   const missing: string[] = [];
-  const value = template.replace(INTERPOLATION_PATTERN, (_match, escaped: string, name?: string, operator?: string, argument = '') => {
-    if (escaped === '$') return '$';
-    const actual = env[name as string];
-    const isSet = actual !== undefined;
-    const isUsable = isSet && actual !== '';
-    switch (operator) {
-      case ':-':
-        return isUsable ? actual : argument;
-      case '-':
-        return isSet ? actual : argument;
-      case ':?':
-        if (!isUsable) missing.push(name as string);
-        return actual ?? '';
-      case '?':
-        if (!isSet) missing.push(name as string);
-        return actual ?? '';
-      default:
-        return actual ?? '';
+  let value = '';
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] !== '$') {
+      value += template[i];
+      continue;
     }
-  });
+    if (template[i + 1] === '$') {
+      value += '$';
+      i++;
+      continue;
+    }
+    if (template[i + 1] === '{') {
+      const close = findMatchingBrace(template, i + 1);
+      if (close >= 0) {
+        value += resolveExpression(template.slice(i + 2, close), env, missing);
+        i = close;
+        continue;
+      }
+    }
+    value += '$';
+  }
   return { value, missing };
 }
 
@@ -129,6 +167,9 @@ describe('interpolation helper (Compose specification examples)', () => {
     ['${A?why}', { A: '' }, '', []],
     ['${A?why}', {}, '', ['A']],
     ['$$HOME', {}, '$HOME', []],
+    ['${A:-${B}}', { B: 'fallback' }, 'fallback', []],
+    ['${A:-redis://:${B}@redis:6379}', { B: 'pw' }, 'redis://:pw@redis:6379', []],
+    ['${A:-$${x}', {}, '${x', []],
   ])('%s with %j gives %j and missing %j', (template, env, value, missing) => {
     expect(interpolate(template, env)).toEqual({ value, missing });
   });
@@ -169,6 +210,20 @@ describe(`${LOCAL_FILE} (local development)`, () => {
     const secret = randomSecret();
     const { env } = resolveServiceEnvironment([LOCAL_FILE], 'worker', { STORAGE_SIGNING_SECRET: secret });
     expect(env.STORAGE_SIGNING_SECRET).toBe(secret);
+  });
+
+  it.each(WORKER_SERVICES)('%s defaults CAPTURE_WEBSITE_ENABLED to true when unset and forwards false when set', (service) => {
+    const unset = resolveServiceEnvironment([LOCAL_FILE], service, {});
+    expect('CAPTURE_WEBSITE_ENABLED' in unset.env).toBe(false);
+    expect(parseConfig(unset.env, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+
+    const blank = resolveServiceEnvironment([LOCAL_FILE], service, { CAPTURE_WEBSITE_ENABLED: '' });
+    expect(blank.env.CAPTURE_WEBSITE_ENABLED).toBe('');
+    expect(parseConfig(blank.env, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+
+    const disabled = resolveServiceEnvironment([LOCAL_FILE], service, { CAPTURE_WEBSITE_ENABLED: 'false' });
+    expect(disabled.env.CAPTURE_WEBSITE_ENABLED).toBe('false');
+    expect(parseConfig(disabled.env, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(false);
   });
 });
 
@@ -294,5 +349,25 @@ describe(`${PRODUCTION_FILE} (production stack)`, () => {
     const [publicSecret] = [...KNOWN_PUBLIC_SIGNING_SECRETS];
     const { env } = resolveServiceEnvironment(files, 'worker', baseShell(publicSecret));
     expect(() => assertSigningSecretConfigured(env)).toThrow(StorageConfigError);
+  });
+
+  it.each(APPLICATION_SERVICES)('%s keeps CAPTURE_WEBSITE_ENABLED true when unset or blank and forwards false when set', (service) => {
+    const role = service === 'web' ? 'web' : 'worker';
+    const base = baseShell(randomSecret());
+
+    const unset = resolveServiceEnvironment(files, service, base);
+    expect(unset.missing).toEqual([]);
+    expect('CAPTURE_WEBSITE_ENABLED' in unset.env).toBe(false);
+    expect(parseConfig(unset.env, { role }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+
+    const blank = resolveServiceEnvironment(files, service, { ...base, CAPTURE_WEBSITE_ENABLED: '' });
+    expect(blank.missing).toEqual([]);
+    expect(blank.env.CAPTURE_WEBSITE_ENABLED).toBe('');
+    expect(parseConfig(blank.env, { role }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+
+    const disabled = resolveServiceEnvironment(files, service, { ...base, CAPTURE_WEBSITE_ENABLED: 'false' });
+    expect(disabled.missing).toEqual([]);
+    expect(disabled.env.CAPTURE_WEBSITE_ENABLED).toBe('false');
+    expect(parseConfig(disabled.env, { role }).CAPTURE_WEBSITE_ENABLED).toBe(false);
   });
 });

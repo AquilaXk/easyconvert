@@ -107,6 +107,9 @@ x-app-environment: &app-environment
   # here, the application's schema holds them (dry run on). The worker runs it; the web processes ignore both.
   UNVERIFIED_ACCOUNT_PURGE_ENABLED:
   UNVERIFIED_ACCOUNT_PURGE_DRY_RUN:
+  # Website capture (`capture.website`) is on by default (policy entries 270, 436 and 443). No default here, the schema holds it;
+  # both web and worker read it, so setting false immediately disables capture acceptance, execution and sitemap entries.
+  CAPTURE_WEBSITE_ENABLED:
   # The anonymous daily allowance the servers enforce and their pages state: the repository variable, written to the env file by
   # deploy/oci/deploy.sh. Empty means the default of src/lib/plan-limits.ts.
   ANONYMOUS_DAILY_LIMIT: ${ANONYMOUS_DAILY_LIMIT:-}
