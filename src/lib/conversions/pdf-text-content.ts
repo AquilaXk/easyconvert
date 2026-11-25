@@ -414,6 +414,8 @@ interface GraphicsState {
   stroke: Rgb | null;
   /** Active pattern-space shading fill when `setFillColorN` chose `Shading`, or null. */
   fillShading: ShadingRef | null;
+  /** Whether `setFillColorN` chose a pattern that never produces a rule (`Shading`, or a light uncoloured `TilingPattern`). */
+  fillPatternSuppressed: boolean;
   /** Whether `setStrokeColorN` chose `Shading` rather than a tiling pattern. */
   strokeShading: boolean;
   /** Opacity of fills (`ca` of the graphics state). */
@@ -519,7 +521,7 @@ class RuleCollector {
 
   /** A filled rectangle thin enough to be a line is a rule; larger fills are backgrounds and are ignored. */
   fill(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
-    if (state.fillShading !== null || (state.fill !== null && isLightColour(state.fill))) return;
+    if (state.fillPatternSuppressed || state.fillShading !== null || (state.fill !== null && isLightColour(state.fill))) return;
     subpaths.forEach((subpath, index) => {
       if (subpath.curved) return;
       const ink: RuleInk = { color: state.fill, z, ...(inShape[index] ? { inShape: true as const } : {}) };
@@ -577,6 +579,12 @@ function shadingOperand(args: unknown[] | undefined): ShadingRef | null {
   return { objId: args[1], matrix: matrixFromList(args[2]) };
 }
 
+function isSuppressedPatternFill(args: unknown[] | undefined): boolean {
+  if (args?.[0] === 'Shading') return true;
+  const tilingColor = args?.[0] === 'TilingPattern' ? parseColour(args[1]) : null;
+  return tilingColor !== null && isLightColour(tilingColor);
+}
+
 function applyGState(entries: unknown, state: GraphicsState): GraphicsState {
   if (!Array.isArray(entries)) return state;
   let next = state;
@@ -599,15 +607,17 @@ function applyGState(entries: unknown, state: GraphicsState): GraphicsState {
 /** The operators that set a colour or dash/opacity graphics state. */
 function withColour(fn: number, args: unknown[] | undefined, ops: Record<string, number>, state: GraphicsState, colour: boolean): GraphicsState | null {
   if (fn === ops.setFillRGBColor || fn === ops.setFillGray) {
-    return { ...state, fill: parseColour(args?.[0]) ?? state.fill, fillShading: null, fillTransparent: false };
+    return { ...state, fill: parseColour(args?.[0]) ?? state.fill, fillShading: null, fillPatternSuppressed: false, fillTransparent: false };
   }
   if (!colour) return null;
   if (fn === ops.setStrokeRGBColor || fn === ops.setStrokeGray) {
     return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke, strokeShading: false, strokeTransparent: false };
   }
-  if (fn === ops.setFillColorN) return { ...state, fill: null, fillShading: shadingOperand(args), fillTransparent: false };
+  if (fn === ops.setFillColorN) {
+    return { ...state, fill: null, fillShading: shadingOperand(args), fillPatternSuppressed: isSuppressedPatternFill(args), fillTransparent: false };
+  }
   if (fn === ops.setStrokeColorN) return { ...state, stroke: null, strokeShading: args?.[0] === 'Shading', strokeTransparent: false };
-  if (fn === ops.setFillTransparent) return { ...state, fill: null, fillShading: null, fillTransparent: true };
+  if (fn === ops.setFillTransparent) return { ...state, fill: null, fillShading: null, fillPatternSuppressed: false, fillTransparent: true };
   if (fn === ops.setStrokeTransparent) return { ...state, stroke: null, strokeShading: false, strokeTransparent: true };
   if (fn === ops.setDash) return { ...state, dashed: isNumberList(args?.[0]) && args[0].length > 0 };
   if (fn === ops.setTextRenderingMode && typeof args?.[0] === 'number') return { ...state, textMode: args[0] };
@@ -663,6 +673,7 @@ class OperatorScanner {
     fill: BLACK,
     stroke: BLACK,
     fillShading: null,
+    fillPatternSuppressed: false,
     strokeShading: false,
     fillAlpha: 1,
     strokeAlpha: 1,

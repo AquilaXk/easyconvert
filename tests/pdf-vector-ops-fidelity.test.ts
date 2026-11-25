@@ -868,5 +868,47 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     const radialOnly = await analyzePdfPagesInProcess(radialOnlyPdf, { geometry: 'none', content: true, images: false, colour: true });
     expect(radialOnly.content[0].rules).toHaveLength(0);
     expect(radialOnly.content[0].shapes ?? []).toHaveLength(0);
+
+    // Uncoloured TilingPattern (PaintType 2): light base colour (#ffffff) is suppressed; dark base colour (#000000) preserves its rule.
+    const uncolouredPdf = await pdfFromContentStream((ctx, resources) => {
+      const uncoloured = ctx.stream(Buffer.from('0 0 2 2 re f', 'ascii'), {
+        Type: PDFName.of('Pattern'),
+        PatternType: PDFNumber.of(1),
+        PaintType: PDFNumber.of(2),
+        TilingType: PDFNumber.of(1),
+        BBox: ctx.obj([0, 0, 4, 4]),
+        XStep: PDFNumber.of(4),
+        YStep: PDFNumber.of(4),
+        Resources: ctx.obj({}),
+      });
+      resources.set(PDFName.of('Pattern'), ctx.obj({ PT2: ctx.register(uncoloured) }));
+      resources.set(PDFName.of('ColorSpace'), ctx.obj({ PSpace: ctx.obj([PDFName.of('Pattern'), PDFName.of('DeviceRGB')]) }));
+      return [
+        'q /PSpace cs 1 1 1 /PT2 scn 50 600 200 1.5 re f Q',
+        'q /PSpace cs 0 0 0 /PT2 scn 50 500 200 1.5 re f Q',
+      ].join('\n');
+    });
+    const uncoloured = await analyzePdfPagesInProcess(uncolouredPdf, { geometry: 'none', content: true, images: false, colour: true });
+    expect(uncoloured.content[0].rules).toHaveLength(1);
+    expect(uncoloured.content[0].rules[0].y0).toBeCloseTo(299.25, 1);
+
+    // Malformed synthetic setFillColorN(['Shading']) lacking an objId must still suppress placeholder rules.
+    const malformedShadingPage = await readPageContent(
+      OPS,
+      {
+        getViewport: () => ({ width: 300, height: 200, convertToViewportPoint: (x: number, y: number) => [x, 200 - y] as [number, number] }),
+        commonObjs: { has: () => false, get: () => undefined },
+        objs: { has: () => false, get: () => undefined },
+        getOperatorList: async () => ({
+          fnArray: [OPS.setFillColorN, OPS.constructPath],
+          argsArray: [['Shading'], [OPS.fill, [new Float32Array([0, 10, 50, 1, 210, 50, 1, 210, 51.5, 1, 10, 51.5, 4])], null]],
+        }),
+      },
+      { items: [], styles: {} },
+      1,
+      new FontTable(),
+      { readOperators: true, imageExtractor: null, unmappedMark: '', colour: true }
+    );
+    expect(malformedShadingPage.rules).toHaveLength(0);
   });
 });
