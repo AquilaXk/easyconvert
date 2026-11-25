@@ -613,6 +613,9 @@ async function main(): Promise<void> {
       const entries = fs.readdirSync(soakTmpRoot);
       const nonPoolResidue = entries.filter((entry) => !POOL_TEMP_DIR_PATTERN.test(entry));
       tracker.engineSoak.leftoverTempEntries = nonPoolResidue.length;
+      if (nonPoolResidue.length > 0) {
+        console.error(`Leftover temp entries (${nonPoolResidue.length}): ${nonPoolResidue.join(', ')}`);
+      }
       fs.rmSync(soakTmpRoot, { recursive: true, force: true });
       if (fs.existsSync(soakTmpRoot)) {
         tracker.engineSoak.leftoverTempEntries += 1;

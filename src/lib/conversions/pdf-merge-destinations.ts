@@ -107,9 +107,11 @@ export class DestinationMerge {
 
   finish(context: PDFContext, catalog: PDFDict): void {
     if (this.destinations.size === 0) return;
+    const sorted = Array.from(this.destinations, ([key, dest]) => [Buffer.from(key, 'latin1'), dest] as const)
+      .sort(([a], [b]) => Buffer.compare(a, b));
     const pairs: PDFObject[] = [];
-    for (const key of [...this.destinations.keys()].sort()) {
-      pairs.push(stringFromBytes(Buffer.from(key, 'latin1')), this.destinations.get(key) as PDFObject);
+    for (const [bytes, dest] of sorted) {
+      pairs.push(stringFromBytes(bytes), dest);
     }
     const dests = context.obj({ Names: pairs });
     catalog.set(name('Names'), context.obj({ Dests: context.register(dests) }));

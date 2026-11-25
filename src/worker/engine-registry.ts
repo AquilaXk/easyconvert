@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import pkg from '../../package.json';
 import { FORMAT_REGISTRY } from '../lib/registry';
 import { executeSandboxedBinary, SandboxedProcessError } from '../lib/security/process-sandbox';
@@ -223,14 +225,24 @@ function binaryOf(probe: VersionProbe): string | null {
 }
 
 async function runVersionProbe(binary: string, probe: VersionProbe): Promise<string | undefined> {
+  const probeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'easyconvert-probe-'));
   let output: string;
   try {
-    const result = await executeSandboxedBinary(binary, [...probe.args], { timeoutMs: PROBE_TIMEOUT_MS, maxBuffer: PROBE_MAX_BYTES, networkIsolated: true, workDir: null });
+    const result = await executeSandboxedBinary(binary, [...probe.args], {
+      timeoutMs: PROBE_TIMEOUT_MS,
+      maxBuffer: PROBE_MAX_BYTES,
+      networkIsolated: true,
+      cwd: probeDir,
+      workDir: null,
+      env: { HOME: probeDir, TMPDIR: probeDir, XDG_CACHE_HOME: probeDir, XDG_CONFIG_HOME: probeDir },
+    });
     output = `${result.stdout.toString('utf-8')}\n${result.stderr.toString('utf-8')}`;
   } catch (err) {
     // Some programs print their version and exit with a failure status (a usage text); only a program that did not run says nothing.
     if (!(err instanceof SandboxedProcessError) || err.spawnErrorCode !== undefined) return undefined;
     output = `${err.stdout}\n${err.stderr}`;
+  } finally {
+    await fs.promises.rm(probeDir, { recursive: true, force: true });
   }
   return probe.pattern.exec(output)?.[1];
 }

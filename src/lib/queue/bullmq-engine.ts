@@ -816,18 +816,14 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
 
     // Listen for new jobs arriving in any of the subscribed queues
     for (const q of this.queues) {
-      const listener = () => {
-        this.checkAndProcess();
-      };
+      const listener = () => { void this.checkAndProcess(); };
       q.on('waiting', listener);
       this.waitingListeners.set(q, listener);
     }
 
     // Start background interval polling if any queue is distributed across processes
     if (this.queues.some((q) => q.isDistributed)) {
-      this.pollingTimer = setInterval(() => {
-        this.checkAndProcess();
-      }, 500);
+      this.pollingTimer = setInterval(() => { void this.checkAndProcess(); }, 500);
       if (typeof this.pollingTimer.unref === 'function') {
         this.pollingTimer.unref();
       }
@@ -844,7 +840,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
 
     // Start initial polling loop
-    this.checkAndProcess();
+    void this.checkAndProcess();
   }
 
   private isProcessing: boolean = false;
@@ -902,7 +898,7 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
               await this.unsettledProcessors.get(running);
               this.activeCount--;
               if (isHeavy) this.heavyActiveCount--;
-              this.checkAndProcess();
+              void this.checkAndProcess();
             });
         }
       } while (this.hasPendingCheck && this.isRunning && this.activeCount < this.concurrency);
@@ -911,7 +907,11 @@ export class Worker<T = any, R = any> extends EventEmitter implements IQueueWork
     }
 
     if (this.activeCount === 0) {
-      this.emit('drained');
+      try {
+        this.emit('drained');
+      } catch (err) {
+        console.error(`[Worker:${this.name}] Unhandled drained listener error:`, err);
+      }
     }
   }
 

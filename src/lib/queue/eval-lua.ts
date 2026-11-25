@@ -25,7 +25,7 @@ type ClusterCapableClient = EvalCapableClient & {
 export function luaScriptSha1(script: string): string {
   const cached = sha1ByScript.get(script);
   if (cached) return cached;
-  const digest = crypto.createHash('sha1').update(script, 'utf8').digest('hex');
+  const digest = crypto.createHash('sha1').update(script, 'utf8').digest('hex'); // NOSONAR S4790: Redis EVALSHA script cache key (src/eval.c sha1hex), not a security control
   sha1ByScript.set(script, digest);
   return digest;
 }

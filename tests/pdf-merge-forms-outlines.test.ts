@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { decodePDFRawStream, PDFDict, PDFDocument, PDFName, PDFNumber, type PDFRawStream, type PDFRef, PDFString, StandardFonts } from 'pdf-lib';
+import { decodePDFRawStream, PDFDict, PDFDocument, PDFHexString, PDFName, PDFNumber, type PDFObject, type PDFRawStream, type PDFRef, PDFString, StandardFonts } from 'pdf-lib';
 import { mergePdfBuffers } from '../src/lib/jobs';
+import { stringFromBytes } from '../src/lib/conversions/pdf-merge-objects';
 import { qpdfCheckPasses } from './helpers/encrypted-pdf-fixtures';
 import {
   addLink,
@@ -308,6 +309,96 @@ describe('links and named destinations of the inputs', () => {
     source.catalog.set(PDFName.of('Dests'), source.context.obj({ old: source.context.obj([source.getPage(1).ref, 'Fit']) }));
     const doc = await mergedDocument([await bytesOf(await textPdf('B', 1)), await bytesOf(source)]);
     expect(readNamedDestinations(doc)).toEqual({ old: 2 });
+  });
+
+  it('orders named destinations in /Names /Dests by raw unsigned byte order (ISO 32000-1 §7.9.6)', async () => {
+    const rawDestDoc = async (
+      label: string,
+      rawKeys: Uint8Array[],
+      opts?: { hexKey?: string; legacyDests?: string[] }
+    ): Promise<Buffer> => {
+      const doc = await textPdf(label, 1);
+      const pageRef = doc.getPage(0).ref;
+      const pairs: PDFObject[] = rawKeys.flatMap<PDFObject>((bytes) => [stringFromBytes(bytes), doc.context.obj([pageRef, 'Fit'])]);
+      if (opts?.hexKey) {
+        pairs.push(PDFHexString.of(opts.hexKey), doc.context.obj([pageRef, 'Fit']));
+      }
+      doc.catalog.set(PDFName.of('Names'), doc.context.obj({ Dests: doc.context.obj({ Names: pairs }) }));
+      if (opts?.legacyDests && opts.legacyDests.length > 0) {
+        const destDict = doc.context.obj({});
+        for (const key of opts.legacyDests) {
+          destDict.set(PDFName.of(key), doc.context.obj([pageRef, 'Fit']));
+        }
+        doc.catalog.set(PDFName.of('Dests'), destDict);
+      }
+      return bytesOf(doc);
+    };
+
+    const byteKeys = [
+      Buffer.from([0xff, 0x00]),
+      Buffer.from([0x80]),
+      Buffer.from('a\x00', 'latin1'),
+      Buffer.from('Z', 'latin1'),
+      Buffer.from([0xff]),
+      Buffer.from([0x80, 0xff]),
+      Buffer.from('a', 'latin1'),
+      Buffer.from([0x5a, 0xff]),
+      Buffer.from([0x80, 0x5a]),
+    ];
+
+    const first = await rawDestDoc('First', byteKeys.slice(0, 5), { hexKey: 'FEFF0041' });
+    const second = await rawDestDoc('Second', byteKeys.slice(5), { legacyDests: ['Y', 'Z'] });
+    const mergedBytes = await mergePdfBuffers([first, second]);
+    const merged = await PDFDocument.load(mergedBytes, { updateMetadata: false });
+
+    const namesDict = lookupDict(merged, merged.catalog.get(PDFName.of('Names')));
+    const destsDict = lookupDict(merged, namesDict?.get(PDFName.of('Dests')));
+    const pairs = lookupArray(merged, destsDict?.get(PDFName.of('Names')));
+    expect(pairs).toBeDefined();
+
+    const actualKeys: Buffer[] = [];
+    for (let i = 0; pairs && i + 1 < pairs.size(); i += 2) {
+      const keyObj = merged.context.lookup(pairs.get(i));
+      expect(keyObj).toBeInstanceOf(PDFString);
+      actualKeys.push(Buffer.from((keyObj as PDFString).asBytes()));
+    }
+
+    const expectedOrder = [
+      Buffer.from('Y', 'latin1'),
+      Buffer.from('Z', 'latin1'),
+      Buffer.from([0x5a, 0xff]),
+      Buffer.from('a', 'latin1'),
+      Buffer.from('a\x00', 'latin1'),
+      Buffer.from([0x80]),
+      Buffer.from([0x80, 0x5a]),
+      Buffer.from([0x80, 0xff]),
+      Buffer.from([0xfe, 0xff, 0x00, 0x41]),
+      Buffer.from([0xff]),
+      Buffer.from([0xff, 0x00]),
+    ];
+    expect(actualKeys.map((b) => [...b])).toEqual(expectedOrder.map((b) => [...b]));
+  });
+
+  it.skipIf(qpdfMissing)('accepts ASCII uppercase before lowercase named destinations ordered by unsigned byte value in qpdf --check', async () => {
+    const docA = await textPdf('A', 1);
+    docA.catalog.set(
+      PDFName.of('Names'),
+      docA.context.obj({
+        Dests: docA.context.obj({
+          Names: [stringFromBytes(Buffer.from('a', 'latin1')), docA.context.obj([docA.getPage(0).ref, 'Fit'])],
+        }),
+      })
+    );
+    const docB = await textPdf('B', 1);
+    docB.catalog.set(
+      PDFName.of('Names'),
+      docB.context.obj({
+        Dests: docB.context.obj({
+          Names: [stringFromBytes(Buffer.from('Z', 'latin1')), docB.context.obj([docB.getPage(0).ref, 'Fit'])],
+        }),
+      })
+    );
+    expect(qpdfCheckPasses(await mergePdfBuffers([await bytesOf(docA), await bytesOf(docB)]))).toBe(true);
   });
 
   it.skipIf(qpdfMissing)('writes a file that qpdf --check accepts', async () => {

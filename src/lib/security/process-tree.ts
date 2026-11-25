@@ -107,9 +107,10 @@ function sumResidentMb(pids: readonly number[], residentMb: (pid: number) => num
 
 /** The resident size of a process and all its descendants through one `ps` call, for a host without /proc; null when `ps` fails. */
 function psTreeMb(pid: number, maxPids: number): number | null {
+  const psBin = fs.existsSync('/bin/ps') ? '/bin/ps' : '/usr/bin/ps';
   let out: string;
   try {
-    out = execFileSync('ps', ['-axo', 'pid=,ppid=,rss='], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PS_TIMEOUT_MS, env: { PATH: '/bin:/usr/bin', NODE_ENV: process.env.NODE_ENV ?? 'production' } as NodeJS.ProcessEnv });
+    out = execFileSync(psBin, ['-axo', 'pid=,ppid=,rss='], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], timeout: PS_TIMEOUT_MS, env: { PATH: '/bin:/usr/bin', NODE_ENV: process.env.NODE_ENV ?? 'production' } as NodeJS.ProcessEnv });
   } catch {
     return null;
   }

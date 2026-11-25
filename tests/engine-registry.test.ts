@@ -170,6 +170,34 @@ describe('the version of an engine', () => {
     expect(await withBinaryAt('RSVG_CONVERT_PATH', binary, () => installedEngineVersion('librsvg'))).toBeUndefined();
   });
 
+  it('isolates version probe HOME and XDG caches into an ephemeral probe directory and leaves TMPDIR empty', async () => {
+    const tmpRoot = fs.mkdtempSync(path.join(dir, 'empty-tmpdir-'));
+    const binary = script(
+      'probe-libreoffice-xdg',
+      [
+        'case "$HOME" in */easyconvert-probe-*) ;; *) exit 1 ;; esac',
+        'if [ "$TMPDIR" != "$HOME" ] || [ "$XDG_CACHE_HOME" != "$HOME" ] || [ "$XDG_CONFIG_HOME" != "$HOME" ]; then exit 1; fi',
+        'mkdir -p "$HOME/.config" "$HOME/.cache/dconf" 2>/dev/null || true',
+        'echo "LibreOffice 26.8.2.2"',
+      ].join('\n')
+    );
+    const prevTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = tmpRoot;
+    try {
+      const version = await withBinaryAt('SOFFICE_PATH', binary, () => installedEngineVersion('libreoffice'));
+      expect(version).toBe('26.8.2.2');
+      expect(fs.readdirSync(tmpRoot)).toEqual([]);
+
+      resetEngineVersionProbes();
+      const failingBinary = script('probe-libreoffice-fail', 'mkdir -p "$HOME/.cache" 2>/dev/null || true; exit 1');
+      expect(await withBinaryAt('SOFFICE_PATH', failingBinary, () => installedEngineVersion('libreoffice'))).toBeUndefined();
+      expect(fs.readdirSync(tmpRoot)).toEqual([]);
+    } finally {
+      if (prevTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpDir;
+    }
+  });
+
   it('reads LibRaw from the debian package, as its program prints none', () => {
     const status = path.join(dir, 'dpkg-status');
     fs.writeFileSync(status, 'Package: libraw23t64\nVersion: 0.21.1-9\n\nPackage: libraw-bin\nStatus: install ok installed\nVersion: 1:0.21.4-2+b1\nArchitecture: arm64\n\nPackage: zlib\nVersion: 1:1.3\n');

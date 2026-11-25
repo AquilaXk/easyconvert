@@ -985,4 +985,76 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
     expect(await ensureQueueLuaLoaded(fallbackCluster, fallbackScript)).toBe(fallbackSha);
     expect(fallbackMasterCalls).toEqual(['m1:LOAD', 'm2:LOAD']);
   });
+
+  it('catches and logs a throwing drained listener on Worker without triggering an unhandled rejection', async () => {
+    const q = new Queue<{ seq: number }, number>('drained-listener-error');
+    openQueues.push(q);
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const processed: number[] = [];
+      let drainedCount = 0;
+      const worker = new Worker<{ seq: number }, number>(
+        q,
+        async (job) => {
+          processed.push(job.data.seq);
+          return job.data.seq * 10;
+        },
+        { concurrency: 1 }
+      );
+      openWorkers.push(worker);
+
+      // Let the constructor's initial empty-queue check settle before attaching the throwing listener.
+      await new Promise<void>((resolve) => worker.once('drained', () => resolve()));
+
+      worker.on('drained', () => {
+        drainedCount++;
+        throw new Error(`drained listener failure #${drainedCount}`);
+      });
+
+      const runOneAndWaitDrainedError = async (seq: number) => {
+        const completed = new Promise<void>((resolve) => {
+          const onCompleted = (job: Job<{ seq: number }, number>) => {
+            if (job.data.seq === seq) {
+              worker.off('completed', onCompleted);
+              resolve();
+            }
+          };
+          worker.on('completed', onCompleted);
+        });
+        await q.add(`job-${seq}`, { seq });
+        await completed;
+        await vi.waitFor(() => {
+          const logged = errorSpy.mock.calls.filter(
+            ([msg]) => typeof msg === 'string' && msg.includes('[Worker:drained-listener-error] Unhandled drained listener error:')
+          );
+          expect(logged).toHaveLength(seq);
+        });
+      };
+
+      await runOneAndWaitDrainedError(1);
+      // Worker remains functional and handles a subsequent drain safely as well.
+      await runOneAndWaitDrainedError(2);
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(processed).toEqual([1, 2]);
+      expect(drainedCount).toBe(2);
+      expect(unhandledRejections).toEqual([]);
+      const loggedDrainedErrors = errorSpy.mock.calls.filter(
+        ([msg]) => typeof msg === 'string' && msg.includes('[Worker:drained-listener-error] Unhandled drained listener error:')
+      );
+      expect(loggedDrainedErrors).toHaveLength(2);
+      expect(loggedDrainedErrors[0]?.[1]).toBeInstanceOf(Error);
+      expect((loggedDrainedErrors[0]?.[1] as Error).message).toBe('drained listener failure #1');
+      expect((loggedDrainedErrors[1]?.[1] as Error).message).toBe('drained listener failure #2');
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
 });
