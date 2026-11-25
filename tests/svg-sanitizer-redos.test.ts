@@ -155,6 +155,27 @@ describe('SVG sanitizer scanner semantics', () => {
     const out = sanitizeSvgString('<!DOCTYPE svg [<!ENTITY x "y"><svg><rect/></svg>');
     expect(out).toBe('');
   });
+
+  it('strips dangerous elements after long benign tag and unclosed-attribute spans', () => {
+    const out = sanitizeSvgString(
+      `<svg>${'<g/>'.repeat(100)}<foo attr=${'a'.repeat(100)}><bar/${'x'.repeat(100)}<script>alert(1)</script><circle id="ok"/></svg>`,
+    );
+    expect(out).toBe(`<svg>${'<g/>'.repeat(100)}<foo attr=${'a'.repeat(100)}><bar/${'x'.repeat(100)}<circle id="ok"/></svg>`);
+  });
+
+  it('preserves safe inline styles while stripping events and dangerous links after long spans', () => {
+    const out = sanitizeSvgString(
+      `<svg>${'<rect x="1"/>'.repeat(100)}<g style="color:red" onclick="alert(1)"/><use href="javascript:alert(1)"/></svg>`,
+    );
+    expect(out).toBe(`<svg>${'<rect x="1"/>'.repeat(100)}<g style="color:red"/><use href="#"/></svg>`);
+  });
+
+  it('rejects malformed comment shorthands after long spans while keeping HTML/XML parity inside unclosed tags', () => {
+    expect(() => sanitizeSvgString(`<svg>${'<g/>'.repeat(100)}<!--><script>x</script></svg>`)).toThrow(SvgSanitizationError);
+    expect(sanitizeSvgString(`<svg><rect x=a ${'y'.repeat(100)} <!--><script>bad</script><circle/></svg>`)).toBe(
+      `<svg><rect x=a ${'y'.repeat(100)} <!--><circle/></svg>`,
+    );
+  });
 });
 
 describe('SVG sanitizer input size cap', () => {

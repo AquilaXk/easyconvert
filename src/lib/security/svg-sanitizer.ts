@@ -66,6 +66,9 @@ const SVG_HTML_INTEGRATION_POINTS = new Set(['desc', 'title']);
 const PAIRED_DANGEROUS_ELEMENTS = ['script', 'foreignObject', 'iframe', 'object', 'embed', 'form'] as const;
 /** Elements removed as a single opening tag. */
 const VOID_DANGEROUS_ELEMENTS = ['meta', 'link', '!ENTITY'] as const;
+const RE_HAS_SPECIAL = /["']|--|<!\[CDATA\[|\?/;
+const RE_OTHER_DANGEROUS = /foreignobject|iframe|object|embed|form|meta|link|!entity/;
+const RE_EVENT_PREFILTER = /--|on|set|animate/;
 
 /** ASCII tab and newlines, which URL parsers drop from anywhere inside a URL. */
 const CSS_URL_FUNCTION_START = /(url|src|(?:-webkit-)?image-set)\s*\(/gi;
@@ -73,52 +76,24 @@ const IMAGE_SET_SUFFIX = 'image-set';
 const SAFE_FRAGMENT_ID = /^#[A-Za-z0-9_.:-]+$/;
 const SAFE_IMAGE_SET_DESCRIPTOR = /^(?:\d+(?:\.\d+)?(?:x|dppx|dpi|dpcm))$/i;
 const IMAGE_SET_URL_AT = /url\s*\(/iy;
-const CHAR_DOUBLE_QUOTE = 0x22;
-const CHAR_SINGLE_QUOTE = 0x27;
-const CHAR_OPEN_PAREN = 0x28;
-const CHAR_CLOSE_PAREN = 0x29;
 const CSS_EXPRESSION_PROBE = /expression\s*\(/i;
 const SCRIPT_URI_PROBE = 'javascript:';
 
-const CHAR_TAB = 0x09;
-const CHAR_LF = 0x0a;
-const CHAR_FF = 0x0c;
-const CHAR_CR = 0x0d;
-const CHAR_SPACE = 0x20;
-const CHAR_AMPERSAND = 0x26;
-const CHAR_STAR = 0x2a;
-const CHAR_HASH = 0x23;
-const CHAR_SEMICOLON = 0x3b;
-const CHAR_LOWER_X = 0x78;
-const CHAR_UPPER_X = 0x58;
-const CHAR_SLASH = 0x2f;
-const CHAR_BACKSLASH = 0x5c;
-const CHAR_DIGIT_0 = 0x30;
-const CHAR_DIGIT_9 = 0x39;
-const CHAR_UPPER_F = 0x46;
-const CHAR_LOWER_A = 0x61;
-const CHAR_LOWER_F = 0x66;
-const HEX_RADIX = 16;
-const DECIMAL_RADIX = 10;
-const XML_VALUE_SATURATION = 0x110000;
-const XML_NAME_MAX_LENGTH = 4;
-const CDATA_OPEN = '<![CDATA[';
-const CDATA_CLOSE = ']]>';
-const PI_OPEN = '<?';
-const PI_CLOSE = '?>';
-const XML_DECLARATION_OPEN = '<?xml';
-const BYTE_ORDER_MARK = 0xfeff;
+const CHAR_TAB = 0x09, CHAR_LF = 0x0a, CHAR_FF = 0x0c, CHAR_CR = 0x0d, CHAR_SPACE = 0x20;
+const CHAR_BANG = 0x21, CHAR_DOUBLE_QUOTE = 0x22, CHAR_HASH = 0x23, CHAR_AMPERSAND = 0x26, CHAR_SINGLE_QUOTE = 0x27;
+const CHAR_OPEN_PAREN = 0x28, CHAR_CLOSE_PAREN = 0x29, CHAR_STAR = 0x2a, CHAR_HYPHEN = 0x2d, CHAR_DOT = 0x2e;
+const CHAR_SLASH = 0x2f, CHAR_DIGIT_0 = 0x30, CHAR_DIGIT_9 = 0x39, CHAR_COLON = 0x3a, CHAR_SEMICOLON = 0x3b;
+const CHAR_LT = 0x3c, CHAR_EQUALS = 0x3d, CHAR_GT = 0x3e, CHAR_QUESTION = 0x3f;
+const CHAR_UPPER_F = 0x46, CHAR_UPPER_X = 0x58, CHAR_LBRACKET = 0x5b, CHAR_BACKSLASH = 0x5c, CHAR_RBRACKET = 0x5d;
+const CHAR_UNDERSCORE = 0x5f, CHAR_LOWER_A = 0x61, CHAR_LOWER_F = 0x66, CHAR_LOWER_G = 0x67, CHAR_LOWER_L = 0x6c;
+const CHAR_LOWER_Q = 0x71, CHAR_LOWER_X = 0x78, CHAR_LOWER_Z = 0x7a;
+const HEX_RADIX = 16, DECIMAL_RADIX = 10, XML_VALUE_SATURATION = 0x110000, XML_NAME_MAX_LENGTH = 4;
+const CDATA_OPEN = '<![CDATA[', CDATA_CLOSE = ']]>', PI_OPEN = '<?', PI_CLOSE = '?>';
+const XML_DECLARATION_OPEN = '<?xml', BYTE_ORDER_MARK = 0xfeff;
 const XML_PREDEFINED_ENTITIES = new Map<string, number>([['amp', 0x26], ['lt', 0x3c], ['gt', 0x3e], ['quot', 0x22], ['apos', 0x27]]);
-const HEX_LETTER_OFFSET = 10;
-const CSS_ESCAPE_MAX_HEX_DIGITS = 6;
-const MAX_CODE_POINT = 0x10ffff;
-const BMP_MAX = 0xffff;
-const SURROGATE_MIN = 0xd800;
-const SURROGATE_MAX = 0xdfff;
-const HIGH_SURROGATE_BASE = 0xd800;
-const LOW_SURROGATE_BASE = 0xdc00;
-const SURROGATE_SHIFT = 10;
-const SURROGATE_LOW_MASK = 0x3ff;
+const HEX_LETTER_OFFSET = 10, CSS_ESCAPE_MAX_HEX_DIGITS = 6, MAX_CODE_POINT = 0x10ffff, BMP_MAX = 0xffff;
+const SURROGATE_MIN = 0xd800, SURROGATE_MAX = 0xdfff, HIGH_SURROGATE_BASE = 0xd800, LOW_SURROGATE_BASE = 0xdc00;
+const SURROGATE_SHIFT = 10, SURROGATE_LOW_MASK = 0x3ff;
 
 /**
  * Lowercases while keeping every index aligned with the original string. Native lowercasing is used when it
@@ -130,45 +105,40 @@ function lowerKeepingLength(str: string): string {
   return str.replace(/[A-Z]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) + ASCII_CASE_OFFSET));
 }
 
-function isAsciiAlphaAt(str: string, index: number): boolean {
-  if (index >= str.length) return false;
-  const code = str.charCodeAt(index);
-  return (code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z) || (code >= CHAR_LOWER_A && code <= 0x7a);
+function isAsciiAlphaCode(code: number): boolean {
+  return (code >= ASCII_UPPER_A && code <= ASCII_UPPER_Z) || (code >= CHAR_LOWER_A && code <= CHAR_LOWER_Z);
 }
+const isAsciiAlphaAt = (str: string, index: number): boolean => index < str.length && isAsciiAlphaCode(str.charCodeAt(index));
 
-function isWordCharAt(str: string, index: number): boolean {
-  if (index >= str.length) return false;
-  const code = str.charCodeAt(index);
-  if (code >= 0x80) return !isWhitespaceAt(str, index);
-  return (code >= 0x30 && code <= 0x39) || isAsciiAlphaAt(str, index) || code === 0x5f;
+function isWhitespaceCode(code: number): boolean {
+  if (code <= CHAR_SPACE) return code === CHAR_SPACE || (code >= CHAR_TAB && code <= CHAR_CR);
+  if (code < 0xa0) return false;
+  return code === 0xa0 || code === 0x1680 || (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 || code === 0x2029 || code === 0x202f || code === 0x205f || code === 0x3000 || code === 0xfeff;
 }
+const isWhitespaceAt = (str: string, index: number): boolean => isWhitespaceCode(str.charCodeAt(index));
+
+function isWordCharCode(code: number): boolean {
+  if (code >= 0x80) return !isWhitespaceCode(code);
+  return (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || isAsciiAlphaCode(code) || code === CHAR_UNDERSCORE;
+}
+const isWordCharAt = (str: string, index: number): boolean => index < str.length && isWordCharCode(str.charCodeAt(index));
 
 /** Takes a URI after entity decoding, whitespace/control removal and lowercasing; true for script-capable URIs. */
-function isScriptUri(normalized: string): boolean {
-  return SCRIPT_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-}
-
+const isScriptUri = (normalized: string): boolean => SCRIPT_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 /** Takes a URI after entity decoding, whitespace/control removal and lowercasing. */
-function isDangerousUri(normalized: string): boolean {
-  return DANGEROUS_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
-}
-
+const isDangerousUri = (normalized: string): boolean => DANGEROUS_URI_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 /** The same for what a link (href, src) may point to: also refuses every `data:` URI that is not a raster picture. */
-function isDangerousLinkUri(normalized: string): boolean {
-  return isDangerousUri(normalized) || (normalized.startsWith(DATA_URI_PREFIX) && !RASTER_DATA_URI.test(normalized));
-}
+const isDangerousLinkUri = (normalized: string): boolean =>
+  isDangerousUri(normalized) || (normalized.startsWith(DATA_URI_PREFIX) && !RASTER_DATA_URI.test(normalized));
+const normalizeUriText = (raw: string): string => decodeHtmlEntities(raw).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
 
-function normalizeUriText(raw: string): string {
-  return decodeHtmlEntities(raw).replace(/[\s\x00-\x1f]/g, '').toLowerCase();
-}
-
-function isWhitespaceAt(str: string, index: number): boolean {
-  return /\s/.test(str.charAt(index));
-}
-
-function skipAttrToken(src: string, from: number, stopChars: string, stopOnLt: boolean): number {
+function skipTokenUntil(src: string, from: number, stopSlash: boolean, stopEq: boolean, stopOnLt: boolean): number {
   let i = from;
-  while (i < src.length && !isWhitespaceAt(src, i) && !stopChars.includes(src[i]) && !(stopOnLt && src[i] === '<')) i++;
+  for (const len = src.length; i < len; i++) {
+    const code = src.charCodeAt(i);
+    if (isWhitespaceCode(code) || code === CHAR_GT || (stopSlash && code === CHAR_SLASH) || (stopEq && code === CHAR_EQUALS) || (stopOnLt && code === CHAR_LT)) break;
+  }
   return i;
 }
 
@@ -177,83 +147,94 @@ function findTailLtOrEnd(src: string, from: number): number {
   return lt === -1 ? src.length : lt;
 }
 
-/** Scans tag attributes following `readTag`/HTML5 §13.2.5.33-38: quotes open only after `=` + whitespace. */
-function scanTagAttributesEnd(src: string, from: number, stopOnLt: boolean): { pos: number; closed: boolean } {
-  for (let i = from; i < src.length; ) {
-    while (i < src.length && (isWhitespaceAt(src, i) || src[i] === '/')) i++;
-    if (i >= src.length) return { pos: -1, closed: false };
-    if (src[i] === '>') return { pos: i + 1, closed: true };
-    if (stopOnLt && src[i] === '<') return { pos: i, closed: false };
-    i = skipAttrToken(src, i + 1, '/>=', stopOnLt);
+/** Scans tag attributes: returns >0 (end pos) when closed by `>`, -1 when unclosed with stopOnLt=false, or ~nextPos (<0) when unclosed with stopOnLt=true. */
+function scanTagAttributesEnd(src: string, from: number, stopOnLt: boolean): number {
+  const len = src.length;
+  for (let i = from; i < len; ) {
+    while (i < len && (isWhitespaceCode(src.charCodeAt(i)) || src.charCodeAt(i) === CHAR_SLASH)) i++;
+    if (i >= len) return stopOnLt ? ~len : -1;
+    const code = src.charCodeAt(i);
+    if (code === CHAR_GT) return i + 1;
+    if (stopOnLt && code === CHAR_LT) return ~i;
+    i = skipTokenUntil(src, i + 1, true, true, stopOnLt);
     const afterName = skipWhitespace(src, i);
-    if (src[afterName] !== '=') { i = afterName; continue; }
+    if (afterName >= len || src.charCodeAt(afterName) !== CHAR_EQUALS) { i = afterName; continue; }
     const valueStart = skipWhitespace(src, afterName + 1);
-    const quote = src[valueStart];
-    if (quote === '"' || quote === "'") {
-      const close = src.indexOf(quote, valueStart + 1);
-      if (close === -1) return { pos: stopOnLt ? findTailLtOrEnd(src, valueStart + 1) : -1, closed: false };
+    if (valueStart >= len) return stopOnLt ? ~len : -1;
+    const quote = src.charCodeAt(valueStart);
+    if (quote === CHAR_DOUBLE_QUOTE || quote === CHAR_SINGLE_QUOTE) {
+      const close = src.indexOf(quote === CHAR_DOUBLE_QUOTE ? '"' : "'", valueStart + 1);
+      if (close === -1) return stopOnLt ? ~findTailLtOrEnd(src, valueStart + 1) : -1;
       i = close + 1;
     } else {
-      i = skipAttrToken(src, valueStart, '>', stopOnLt);
+      i = skipTokenUntil(src, valueStart, false, false, stopOnLt);
     }
   }
-  return { pos: -1, closed: false };
+  return stopOnLt ? ~len : -1;
 }
 
 /** Past `>` closing the tag whose body starts at `from`, honouring `=`-quoted values, or -1 if unterminated. */
-const findTagEnd = (src: string, from: number): number => scanTagAttributesEnd(src, from, false).pos;
+const findTagEnd = (src: string, from: number): number => scanTagAttributesEnd(src, from, false);
 
-function advanceOtherTag(src: string, lt: number): { next: number; unclosed: boolean } {
-  const nameEnd = skipAttrToken(src, lt + 1, '/>', true);
-  if (nameEnd < src.length && src[nameEnd] === '<') return { next: nameEnd, unclosed: true };
-  const end = scanTagAttributesEnd(src, nameEnd, true);
-  return end.pos === -1 ? { next: src.length, unclosed: true } : { next: end.pos, unclosed: !end.closed };
+function advanceOtherTag(src: string, lt: number): number {
+  const nameEnd = skipTokenUntil(src, lt + 1, true, false, true);
+  if (nameEnd < src.length && src.charCodeAt(nameEnd) === CHAR_LT) return ~nameEnd;
+  return scanTagAttributesEnd(src, nameEnd, true);
 }
 
-function isPrefixCharAt(str: string, index: number): boolean {
-  const ch = str.charAt(index);
-  return isWordCharAt(str, index) || ch === '-' || ch === '.';
+function isPrefixCharCode(code: number): boolean {
+  return isWordCharCode(code) || code === CHAR_HYPHEN || code === CHAR_DOT;
 }
 
 /** Given an element local name index, returns the opening `<` index accepting an optional `prefix:`, or -1. */
 function tagOpenBefore(src: string, nameIndex: number, closing: boolean): number {
   let nameStart = nameIndex;
-  if (src[nameIndex - 1] === ':') {
+  if (src.charCodeAt(nameIndex - 1) === CHAR_COLON) {
     let prefixStart = nameIndex - 1;
-    while (prefixStart > 0 && isPrefixCharAt(src, prefixStart - 1)) prefixStart--;
+    while (prefixStart > 0 && isPrefixCharCode(src.charCodeAt(prefixStart - 1))) prefixStart--;
     if (prefixStart === nameIndex - 1) return -1;
     nameStart = prefixStart;
   }
-  if (closing) return src[nameStart - 1] === '/' && src[nameStart - 2] === '<' ? nameStart - 2 : -1;
-  return src[nameStart - 1] === '<' ? nameStart - 1 : -1;
+  if (closing) return src.charCodeAt(nameStart - 1) === CHAR_SLASH && src.charCodeAt(nameStart - 2) === CHAR_LT ? nameStart - 2 : -1;
+  return src.charCodeAt(nameStart - 1) === CHAR_LT ? nameStart - 1 : -1;
 }
 
 function isTagEndDelimiterAt(src: string, index: number): boolean {
-  return index >= src.length || isWhitespaceAt(src, index) || src[index] === '/' || src[index] === '>';
+  if (index >= src.length) return true;
+  const code = src.charCodeAt(index);
+  return code === CHAR_SLASH || code === CHAR_GT || isWhitespaceCode(code);
 }
 
-function advanceScannerAtOtherLt(src: string, lt: number, currentlyUnclosed: boolean): { next: number; unclosed: boolean } {
+function advanceScannerAtOtherLt(src: string, lt: number, currentlyUnclosed: boolean): number {
   if (isTagNameStart(src, lt + 1)) return advanceOtherTag(src, lt);
-  if (src[lt + 1] === '/') {
+  const nextCode = src.charCodeAt(lt + 1);
+  if (nextCode === CHAR_SLASH) {
     if (isAsciiAlphaAt(src, lt + 2)) return advanceOtherTag(src, lt + 1);
-    if (src[lt + 2] === '>') return { next: lt + 3, unclosed: false };
-    return { next: lt + 2, unclosed: true };
+    if (src.charCodeAt(lt + 2) === CHAR_GT) return lt + 3;
+    return ~(lt + 2);
   }
-  if (src[lt + 1] === '!') return { next: lt + 2, unclosed: true };
-  return { next: lt + 1, unclosed: currentlyUnclosed };
+  if (nextCode === CHAR_BANG) return ~(lt + 2);
+  return currentlyUnclosed ? ~(lt + 1) : lt + 1;
+}
+
+function skipTagEndOnly(src: string, lt: number): number {
+  let i = lt + 1;
+  while (i < src.length) {
+    const c = src.charCodeAt(i);
+    if (isWhitespaceCode(c) || c === CHAR_SLASH || c === CHAR_GT) break;
+    i++;
+  }
+  const end = findTagEnd(src, i);
+  return end === -1 ? src.length : end;
 }
 
 function skipClosingOrBogusMarkup(src: string, lt: number): number {
-  if (src[lt + 1] === '!') {
-    const gt = src.indexOf('>', lt + 2);
-    return gt === -1 ? src.length : gt + 1;
-  }
-  if (src[lt + 1] === '/') {
-    if (isAsciiAlphaAt(src, lt + 2)) return readTag(src, lt + 1).end;
-    const gt = src.indexOf('>', lt + 2);
-    return gt === -1 ? src.length : gt + 1;
-  }
-  return -1;
+  const next = src.charCodeAt(lt + 1);
+  if (next === CHAR_BANG) { const gt = src.indexOf('>', lt + 2); return gt === -1 ? src.length : gt + 1; }
+  if (next !== CHAR_SLASH) return -1;
+  if (isAsciiAlphaAt(src, lt + 2)) return skipTagEndOnly(src, lt + 1);
+  const gt = src.indexOf('>', lt + 2);
+  return gt === -1 ? src.length : gt + 1;
 }
 
 /** Finds `</name ...>` (optionally namespace-prefixed) at or after `from`, returning [start, end) or null. */
@@ -272,85 +253,149 @@ function findCloseTag(lower: string, lowerName: string, from: number): [number, 
   }
 }
 
-/** Matches `<name`, `<prefix:name`, or closing `</...name` at `<` index `lt`; returns index right after name, or -1. */
-function matchQualifiedTagAt(src: string, lower: string, lt: number, lowerName: string, closing: boolean): number {
-  let pos = lt + 1;
-  if (closing) {
-    if (src[pos] !== '/') return -1;
-    pos++;
-  }
-  const endsHere = (afterIdx: number) => (closing ? isTagEndDelimiterAt(src, afterIdx) : !isWordCharAt(src, afterIdx));
-  if (lower.startsWith(lowerName, pos) && endsHere(pos + lowerName.length)) return pos + lowerName.length;
-  let colon = pos;
-  while (colon < src.length && isPrefixCharAt(src, colon)) colon++;
-  const afterPrefixed = colon + 1 + lowerName.length;
-  return colon > pos && src[colon] === ':' && lower.startsWith(lowerName, colon + 1) && endsHere(afterPrefixed) ? afterPrefixed : -1;
+function isMatchedTagEnd(src: string, afterIdx: number, closing: boolean): boolean {
+  return closing ? isTagEndDelimiterAt(src, afterIdx) : !isWordCharAt(src, afterIdx);
 }
 
-function collectElementSpans(src: string, lower: string, lowerName: string, paired: boolean): [number, number, boolean][] {
-  const spans: [number, number, boolean][] = [];
-  let search = 0;
-  let unclosedTag = false;
-  let cachedGt = -1;
+/** Matches `<name`, `<prefix:name`, or closing `</...name` at `<` index `lt`; returns index right after name, or -1. */
+function matchQualifiedTagAt(
+  src: string,
+  lower: string,
+  lt: number,
+  lowerName: string,
+  closing: boolean,
+  mayHavePrefix: boolean
+): number {
+  let pos = lt + 1;
+  if (closing) {
+    if (src.charCodeAt(pos) !== CHAR_SLASH) return -1;
+    pos++;
+  }
+  const directEnd = pos + lowerName.length;
+  if (lower.startsWith(lowerName, pos) && isMatchedTagEnd(src, directEnd, closing)) return directEnd;
+  if (!mayHavePrefix) return -1;
+  let colon = pos;
+  while (colon < src.length && isPrefixCharCode(src.charCodeAt(colon))) colon++;
+  const afterPrefixed = colon + 1 + lowerName.length;
+  return colon > pos && src.charCodeAt(colon) === CHAR_COLON && lower.startsWith(lowerName, colon + 1) && isMatchedTagEnd(src, afterPrefixed, closing)
+    ? afterPrefixed
+    : -1;
+}
 
-  while (search < src.length) {
+const SPECIAL_NEEDLES = ['"', "'", COMMENT_OPEN, CDATA_OPEN, PI_OPEN] as const;
+
+function nextSpecialPos(src: string, from: number, cached: Int32Array): number {
+  const len = src.length;
+  let best = len;
+  for (let i = 0; i < 5; i++) {
+    let pos = cached[i];
+    if (pos < from) { pos = src.indexOf(SPECIAL_NEEDLES[i], from); cached[i] = pos === -1 ? len : pos; pos = cached[i]; }
+    if (pos < best) best = pos;
+  }
+  return best;
+}
+
+function indexOfOrLen(haystack: string, needle: string, from: number): number {
+  const idx = haystack.indexOf(needle, from);
+  return idx === -1 ? haystack.length : idx;
+}
+
+function fastJumpBefore(src: string, lt: number, stop: number): number {
+  if (stop - lt <= 64) return -1;
+  const prevLt = src.lastIndexOf('<', stop - 1);
+  const prevGt = src.lastIndexOf('>', stop - 1);
+  if (prevGt >= lt && prevGt > prevLt) return stop;
+  if (prevLt > lt) {
+    const code = src.charCodeAt(prevLt + 1);
+    if (isTagNameStart(src, prevLt + 1) || code === CHAR_SLASH || code === CHAR_BANG) return ~prevLt;
+  }
+  return -1;
+}
+
+/** Pushes matched open/close span and returns >0 next search pos, <0 (~nextPos) when unclosed, or 0 to break on EOF open tag. */
+function scanMatchedElement(
+  src: string,
+  lt: number,
+  afterName: number,
+  starts: number[],
+  ends: number[],
+  isClose: boolean[],
+): number {
+  if (src.charCodeAt(lt + 1) === CHAR_SLASH) {
+    const closeStep = scanTagAttributesEnd(src, afterName, true);
+    if (closeStep <= 0) return closeStep;
+    starts.push(lt);
+    ends.push(closeStep);
+    isClose.push(true);
+    return closeStep;
+  }
+  const tagEnd = findTagEnd(src, afterName);
+  starts.push(lt);
+  ends.push(tagEnd === -1 ? src.length : tagEnd);
+  isClose.push(false);
+  return tagEnd === -1 ? 0 : tagEnd;
+}
+
+function collectElementSpans(src: string, lower: string, lowerName: string, paired: boolean): [number[], number[], boolean[]] {
+  const mayHavePrefix = lower.includes(`:${lowerName}`), firstCode = lowerName.charCodeAt(0);
+  const starts: number[] = [], ends: number[] = [], isClose: boolean[] = [];
+  const len = src.length;
+  const cachedSpecial = RE_HAS_SPECIAL.test(src) ? new Int32Array(5).fill(-1) : null;
+  let nextCand = -1, search = 0, unclosedTag = false, cachedGt = -1;
+
+  while (search < len) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
+    if (nextCand < lt) nextCand = indexOfOrLen(lower, lowerName, lt);
+    const nextSpec = cachedSpecial === null ? len : nextSpecialPos(src, lt, cachedSpecial);
+    if (nextCand >= len && nextSpec >= len) break;
+    const jump = fastJumpBefore(src, lt, Math.min(nextCand, nextSpec));
+    if (jump >= 0) { unclosedTag = false; search = jump; continue; }
+    if (jump <= -2) { search = ~jump; continue; }
     if (unclosedTag) {
-      if (cachedGt < search) { const gt = src.indexOf('>', search); cachedGt = gt === -1 ? src.length : gt; }
+      if (cachedGt < search) cachedGt = indexOfOrLen(src, '>', search);
       if (cachedGt < lt) unclosedTag = false;
     }
-    const skipTo = unclosedTag ? -1 : skipNonTagMarkup(src, lt);
-    if (skipTo !== -1) { search = skipTo; continue; }
-    const openAfter = matchQualifiedTagAt(src, lower, lt, lowerName, false);
-    if (openAfter !== -1) {
-      unclosedTag = false;
-      const tagEnd = findTagEnd(src, openAfter);
-      spans.push([lt, tagEnd === -1 ? src.length : tagEnd, false]);
-      if (tagEnd === -1) break;
-      search = tagEnd; continue;
+    const nextCode = src.charCodeAt(lt + 1);
+    if (!unclosedTag && (nextCode === CHAR_BANG || nextCode === CHAR_QUESTION)) {
+      const skipTo = skipNonTagMarkup(src, lt);
+      if (skipTo !== -1) { search = skipTo; continue; }
     }
-    const closeAfter = paired ? matchQualifiedTagAt(src, lower, lt, lowerName, true) : -1;
-    if (closeAfter !== -1) {
-      const closeStep = scanTagAttributesEnd(src, closeAfter, true);
-      if (closeStep.closed) {
-        unclosedTag = false; spans.push([lt, closeStep.pos, true]); search = closeStep.pos; continue;
-      }
-      unclosedTag = true; search = closeStep.pos === -1 ? src.length : closeStep.pos; continue;
+    const isCloseTag = nextCode === CHAR_SLASH;
+    const mayMatch = (!isCloseTag || paired) && (mayHavePrefix || lower.charCodeAt(lt + (isCloseTag ? 2 : 1)) === firstCode);
+    const afterName = mayMatch ? matchQualifiedTagAt(src, lower, lt, lowerName, isCloseTag, mayHavePrefix) : -1;
+    if (afterName !== -1) {
+      const spanStep = scanMatchedElement(src, lt, afterName, starts, ends, isClose);
+      if (spanStep === 0) break;
+      unclosedTag = spanStep < 0; search = spanStep < 0 ? ~spanStep : spanStep; continue;
     }
     const step = advanceScannerAtOtherLt(src, lt, unclosedTag);
-    search = step.next; unclosedTag = step.unclosed;
+    unclosedTag = step < 0; search = step < 0 ? ~step : step;
   }
-  return spans;
+  return [starts, ends, isClose];
 }
 
 /** Removes `<name>` or `<prefix:name>` elements in linear time, skipping comments, CDATA, PIs, and quoted attributes. */
-function stripElement(src: string, name: string, paired: boolean): string {
-  const lowerName = lowerKeepingLength(name);
-  const lower = lowerKeepingLength(src);
+function stripElement(src: string, lower: string, lowerName: string, paired: boolean): string {
   if (!lower.includes(lowerName)) return src;
-  const spans = collectElementSpans(src, lower, lowerName, paired);
-  if (spans.length === 0) return src;
+  const [starts, ends, isClose] = collectElementSpans(src, lower, lowerName, paired);
+  if (starts.length === 0) return src;
 
-  const spanEnds = new Int32Array(spans.length).fill(-1);
+  const spanEnds = new Int32Array(starts.length).fill(-1);
   const openStack: number[] = [];
-  for (let t = 0; t < spans.length; t++) {
-    const [, end, isClose] = spans[t];
-    if (!paired || !isClose) {
-      spanEnds[t] = end;
-      if (paired && end < src.length) openStack.push(t);
-    } else if (openStack.length > 0) {
-      spanEnds[openStack.pop()!] = end;
-    } else {
-      spanEnds[t] = end;
-    }
+  for (let t = 0; t < starts.length; t++) {
+    if (!paired || !isClose[t]) {
+      spanEnds[t] = ends[t];
+      if (paired && ends[t] < src.length) openStack.push(t);
+    } else if (openStack.length > 0) spanEnds[openStack.pop()!] = ends[t];
+    else spanEnds[t] = ends[t];
   }
 
   const parts: string[] = [];
   let copied = 0;
-  for (let t = 0; t < spans.length; t++) {
-    if (spanEnds[t] === -1 || spans[t][0] < copied) continue;
-    parts.push(src.slice(copied, spans[t][0]));
+  for (let t = 0; t < starts.length; t++) {
+    if (spanEnds[t] === -1 || starts[t] < copied) continue;
+    parts.push(src.slice(copied, starts[t]));
     copied = spanEnds[t];
   }
   parts.push(src.slice(copied));
@@ -358,19 +403,20 @@ function stripElement(src: string, name: string, paired: boolean): string {
 }
 
 /** Advances past a quoted literal, comment, or subset PI inside DOCTYPE; returns -1 if unterminated, null otherwise. */
-function skipDoctypeToken(src: string, pos: number, allowPi: boolean): number | null {
-  const ch = src[pos];
-  if (ch === '"' || ch === "'") {
-    const close = src.indexOf(ch, pos + 1);
+function skipDoctypeToken(src: string, pos: number, allowPi: boolean, code: number): number | null {
+  if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
+    const close = src.indexOf(code === CHAR_DOUBLE_QUOTE ? '"' : "'", pos + 1);
     return close === -1 ? -1 : close + 1;
   }
-  if (src.startsWith(COMMENT_OPEN, pos)) {
-    const close = src.indexOf(COMMENT_CLOSE, pos + COMMENT_OPEN_LENGTH);
-    return close === -1 ? -1 : close + COMMENT_CLOSE.length;
-  }
-  if (allowPi && src.startsWith(PI_OPEN, pos)) {
-    const close = src.indexOf(PI_CLOSE, pos + PI_OPEN.length);
-    return close === -1 ? -1 : close + PI_CLOSE.length;
+  if (code === CHAR_LT) {
+    if (src.startsWith(COMMENT_OPEN, pos)) {
+      const close = src.indexOf(COMMENT_CLOSE, pos + COMMENT_OPEN_LENGTH);
+      return close === -1 ? -1 : close + COMMENT_CLOSE.length;
+    }
+    if (allowPi && src.startsWith(PI_OPEN, pos)) {
+      const close = src.indexOf(PI_CLOSE, pos + PI_OPEN.length);
+      return close === -1 ? -1 : close + PI_CLOSE.length;
+    }
   }
   return null;
 }
@@ -378,18 +424,21 @@ function skipDoctypeToken(src: string, pos: number, allowPi: boolean): number | 
 function findDoctypeEnd(src: string, afterName: number): number {
   let pos = afterName;
   let depth = 0;
-  while (pos < src.length) {
-    const jumped = skipDoctypeToken(src, pos, depth > 0);
-    if (jumped !== null) {
-      if (jumped === -1) return -1;
-      pos = jumped; continue;
+  const len = src.length;
+  while (pos < len) {
+    const code = src.charCodeAt(pos);
+    if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE || code === CHAR_LT) {
+      const jumped = skipDoctypeToken(src, pos, depth > 0, code);
+      if (jumped !== null) {
+        if (jumped === -1) return -1;
+        pos = jumped; continue;
+      }
     }
-    const ch = src[pos];
-    if (ch === '[') depth++;
-    else if (depth > 0 && ch === ']' && --depth === 0) {
+    if (code === CHAR_LBRACKET) depth++;
+    else if (depth > 0 && code === CHAR_RBRACKET && --depth === 0) {
       const k = skipWhitespace(src, pos + 1);
-      return src[k] === '>' ? k + 1 : -1;
-    } else if (depth === 0 && ch === '>') {
+      return src.charCodeAt(k) === CHAR_GT ? k + 1 : -1;
+    } else if (depth === 0 && code === CHAR_GT) {
       return pos + 1;
     }
     pos++;
@@ -398,14 +447,10 @@ function findDoctypeEnd(src: string, afterName: number): number {
 }
 
 /** Removes DOCTYPE declarations including quoted literals, comments, and internal subsets in linear time (fail closed on EOF). */
-function stripDoctype(src: string): string {
-  const lower = lowerKeepingLength(src);
-  if (!lower.includes(DOCTYPE_OPEN)) return src;
+function stripDoctype(src: string, lower: string = lowerKeepingLength(src)): string {
+  if (!lower.includes('doctype')) return src;
   const parts: string[] = [];
-  let copied = 0;
-  let search = 0;
-  let unclosedTag = false;
-  let cachedGt = -1;
+  let copied = 0, search = 0, unclosedTag = false, cachedGt = -1;
   while (search < src.length) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
@@ -415,16 +460,20 @@ function stripDoctype(src: string): string {
     }
     const afterName = lt + DOCTYPE_OPEN.length;
     if (lower.startsWith(DOCTYPE_OPEN, lt) && !isWordCharAt(src, afterName)) {
-      unclosedTag = false;
-      parts.push(src.slice(copied, lt));
+      unclosedTag = false; parts.push(src.slice(copied, lt));
       const end = findDoctypeEnd(src, afterName);
       if (end === -1) return parts.join('');
       copied = end; search = end; continue;
     }
-    const skipTo = unclosedTag ? -1 : skipNonTagMarkup(src, lt, false);
-    if (skipTo !== -1) { search = skipTo; continue; }
+    if (!unclosedTag) {
+      const nextCode = src.charCodeAt(lt + 1);
+      if (nextCode === CHAR_BANG || nextCode === CHAR_QUESTION) {
+        const skipTo = skipNonTagMarkup(src, lt, false);
+        if (skipTo !== -1) { search = skipTo; continue; }
+      }
+    }
     const step = advanceScannerAtOtherLt(src, lt, unclosedTag);
-    search = step.next; unclosedTag = step.unclosed;
+    unclosedTag = step < 0; search = step < 0 ? ~step : step;
   }
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
@@ -433,9 +482,9 @@ function stripDoctype(src: string): string {
 
 /** Removes processing instructions in linear time except a safe start XML declaration (BOM allowed); unterminated ones strip to EOF. */
 function stripProcessingInstructions(src: string): string {
+  if (!src.includes('?')) return src;
   const parts: string[] = [];
-  let copied = 0;
-  let search = 0;
+  let copied = 0, search = 0;
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
@@ -443,8 +492,11 @@ function stripProcessingInstructions(src: string): string {
       const skipTo = skipNonTagMarkup(src, lt);
       if (skipTo !== -1) { search = skipTo; continue; }
       const bogusEnd = skipClosingOrBogusMarkup(src, lt);
-      if (bogusEnd !== -1) search = bogusEnd;
-      else search = isTagNameStart(src, lt + 1) ? readTag(src, lt).end : lt + 1;
+      if (bogusEnd !== -1) {
+        search = bogusEnd;
+      } else {
+        search = isTagNameStart(src, lt + 1) ? skipTagEndOnly(src, lt) : lt + 1;
+      }
       continue;
     }
     const close = src.indexOf(PI_CLOSE, lt + PI_OPEN.length);
@@ -484,49 +536,21 @@ function stripComments(src: string): string {
   return parts.join('');
 }
 
-interface CssEdit {
-  /** Start of the replaced range in the decoded text. */
-  start: number;
-  /** End (exclusive) of the replaced range in the decoded text. */
-  end: number;
-  replacement: string;
-}
+interface CssEdit { start: number; end: number; replacement: string; }
 
 /** CSS text with comments removed and escapes decoded, plus the original span of every decoded code unit. */
-interface DecodedCss {
-  text: string;
-  starts: Uint32Array;
-  ends: Uint32Array;
-  /** 1 for a unit produced by a CSS escape: it never acts as a quote or parenthesis in the CSS. */
-  escaped: Uint8Array;
-}
+interface DecodedCss { text: string; starts: Uint32Array; ends: Uint32Array; escaped: Uint8Array; }
 
 function isHexDigitCode(code: number): boolean {
-  return (
-    (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) ||
-    (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F) ||
-    (code >= ASCII_UPPER_A && code <= CHAR_UPPER_F)
-  );
+  return (code >= CHAR_DIGIT_0 && code <= CHAR_DIGIT_9) || (code >= CHAR_LOWER_A && code <= CHAR_LOWER_F) || (code >= ASCII_UPPER_A && code <= CHAR_UPPER_F);
 }
-
 function hexDigitValue(code: number): number {
   if (code <= CHAR_DIGIT_9) return code - CHAR_DIGIT_0;
-  if (code >= CHAR_LOWER_A) return code - CHAR_LOWER_A + HEX_LETTER_OFFSET;
-  return code - ASCII_UPPER_A + HEX_LETTER_OFFSET;
+  return code >= CHAR_LOWER_A ? code - CHAR_LOWER_A + HEX_LETTER_OFFSET : code - ASCII_UPPER_A + HEX_LETTER_OFFSET;
 }
-
-function isCssNewlineCode(code: number): boolean {
-  return code === CHAR_LF || code === CHAR_CR || code === CHAR_FF;
-}
-
-function isCssWhitespaceCode(code: number): boolean {
-  return isCssNewlineCode(code) || code === CHAR_SPACE || code === CHAR_TAB;
-}
-
-/** Length of the newline starting at `index` (CRLF counts as one), assuming one is there. */
-function cssNewlineLength(css: string, index: number): number {
-  return css.charCodeAt(index) === CHAR_CR && css.charCodeAt(index + 1) === CHAR_LF ? 2 : 1;
-}
+const isCssNewlineCode = (code: number): boolean => code === CHAR_LF || code === CHAR_CR || code === CHAR_FF;
+const isCssWhitespaceCode = (code: number): boolean => isCssNewlineCode(code) || code === CHAR_SPACE || code === CHAR_TAB;
+const cssNewlineLength = (css: string, index: number): number => (css.charCodeAt(index) === CHAR_CR && css.charCodeAt(index + 1) === CHAR_LF ? 2 : 1);
 
 /** Fixed-capacity buffer of decoded UTF-16 units that remembers the source span of every unit. */
 class DecodeBuffer {
@@ -544,23 +568,16 @@ class DecodeBuffer {
   }
 
   push(unit: number, start: number, end: number, escaped = false): void {
-    this.units[this.count] = unit;
-    this.starts[this.count] = start;
-    this.ends[this.count] = end;
-    this.escaped[this.count] = escaped ? 1 : 0;
-    this.count++;
+    this.units[this.count] = unit; this.starts[this.count] = start; this.ends[this.count] = end;
+    this.escaped[this.count++] = escaped ? 1 : 0;
   }
 
   /** Appends a code point (two units when astral). Invalid code points fail closed. */
   pushCodePoint(codePoint: number, start: number, end: number, what: string, escaped = false): void {
-    const isSurrogate = codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX;
-    if (codePoint === 0 || isSurrogate || codePoint > MAX_CODE_POINT) {
+    if (codePoint === 0 || (codePoint >= SURROGATE_MIN && codePoint <= SURROGATE_MAX) || codePoint > MAX_CODE_POINT) {
       throw new SvgSanitizationError(`SVG contains ${what} that decodes to an invalid code point.`);
     }
-    if (codePoint <= BMP_MAX) {
-      this.push(codePoint, start, end, escaped);
-      return;
-    }
+    if (codePoint <= BMP_MAX) { this.push(codePoint, start, end, escaped); return; }
     const offset = codePoint - BMP_MAX - 1;
     this.push(HIGH_SURROGATE_BASE + (offset >> SURROGATE_SHIFT), start, end, escaped);
     this.push(LOW_SURROGATE_BASE + (offset & SURROGATE_LOW_MASK), start, end, escaped);
@@ -568,32 +585,17 @@ class DecodeBuffer {
 
   finish(): DecodedCss {
     const text = Buffer.from(this.units.buffer, 0, this.count * Uint16Array.BYTES_PER_ELEMENT).toString('utf16le');
-    return {
-      text,
-      starts: this.starts.subarray(0, this.count),
-      ends: this.ends.subarray(0, this.count),
-      escaped: this.escaped.subarray(0, this.count),
-    };
+    return { text, starts: this.starts.subarray(0, this.count), ends: this.ends.subarray(0, this.count), escaped: this.escaped.subarray(0, this.count) };
   }
 
   /** True when the decoded units just emitted spell an ASCII `url` identifier token (CSS Syntax Level 3 §4.3.3). */
   endsWithUrlIdent(): boolean {
     if (this.count < 3) return false;
-    const u = this.units[this.count - 3] | ASCII_CASE_OFFSET;
-    const r = this.units[this.count - 2] | ASCII_CASE_OFFSET;
-    const l = this.units[this.count - 1] | ASCII_CASE_OFFSET;
-    if (u !== 0x75 || r !== 0x72 || l !== 0x6c) return false;
+    if ((this.units[this.count - 3] | ASCII_CASE_OFFSET) !== 0x75 || (this.units[this.count - 2] | ASCII_CASE_OFFSET) !== 0x72 || (this.units[this.count - 1] | ASCII_CASE_OFFSET) !== 0x6c) return false;
     if (this.count === 3) return true;
     if (this.escaped[this.count - 4] === 1) return false;
     const prev = this.units[this.count - 4];
-    const isIdent =
-      (prev >= CHAR_DIGIT_0 && prev <= CHAR_DIGIT_9) ||
-      (prev >= ASCII_UPPER_A && prev <= ASCII_UPPER_Z) ||
-      (prev >= CHAR_LOWER_A && prev <= 0x7a) ||
-      prev === 0x5f ||
-      prev === 0x2d ||
-      prev >= 0x80;
-    return !isIdent;
+    return !((prev >= CHAR_DIGIT_0 && prev <= CHAR_DIGIT_9) || (prev >= ASCII_UPPER_A && prev <= ASCII_UPPER_Z) || (prev >= CHAR_LOWER_A && prev <= 0x7a) || prev === 0x5f || prev === 0x2d || prev >= 0x80);
   }
 }
 
@@ -679,7 +681,9 @@ function decodeCss(css: string): DecodedCss | null {
 function readXmlReference(text: string, amp: number): { codePoint: number; end: number } | null {
   const length = text.length;
   let i = amp + 1;
-  if (text.charCodeAt(i) === CHAR_HASH) {
+  if (i >= length) return null;
+  const first = text.charCodeAt(i);
+  if (first === CHAR_HASH) {
     i++;
     const hex = text.charCodeAt(i) === CHAR_LOWER_X || text.charCodeAt(i) === CHAR_UPPER_X;
     if (hex) i++;
@@ -695,6 +699,7 @@ function readXmlReference(text: string, amp: number): { codePoint: number; end: 
     if (i === digitsStart || text.charCodeAt(i) !== CHAR_SEMICOLON) return null;
     return { codePoint: value, end: i + 1 };
   }
+  if (first !== CHAR_LOWER_A && first !== CHAR_LOWER_G && first !== CHAR_LOWER_L && first !== CHAR_LOWER_Q) return null;
   // Bounded look-ahead: an unbounded indexOf here would rescan the rest of the text for every '&'.
   const nameLimit = Math.min(i + XML_NAME_MAX_LENGTH, length - 1);
   let semicolon = i;
@@ -849,24 +854,16 @@ const CHAR_CLOSE_BRACE = 0x7d;
 
 /** Finds the end of an `@import` rule starting at `from`, skipping `;` inside quotes or parentheses. */
 function findImportRuleEnd(text: string, from: number, escaped: Uint8Array | null): number {
-  let quote = 0;
-  let parenDepth = 0;
+  let quote = 0, parenDepth = 0;
   for (let i = from; i < text.length; i++) {
     if (escaped !== null && escaped[i] === 1) continue;
     const code = text.charCodeAt(i);
-    if (quote !== 0) {
-      if (code === quote || isCssNewlineCode(code)) quote = 0;
-    } else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) {
-      quote = code;
-    } else if (code === CHAR_OPEN_PAREN) {
-      parenDepth++;
-    } else if (code === CHAR_CLOSE_PAREN) {
-      if (parenDepth > 0) parenDepth--;
-    } else if (parenDepth === 0 && code === CHAR_SEMICOLON) {
-      return i + 1;
-    } else if (parenDepth === 0 && code === CHAR_CLOSE_BRACE) {
-      return i;
-    }
+    if (quote !== 0) { if (code === quote || isCssNewlineCode(code)) quote = 0; }
+    else if (code === CHAR_DOUBLE_QUOTE || code === CHAR_SINGLE_QUOTE) quote = code;
+    else if (code === CHAR_OPEN_PAREN) parenDepth++;
+    else if (code === CHAR_CLOSE_PAREN) { if (parenDepth > 0) parenDepth--; }
+    else if (parenDepth === 0 && code === CHAR_SEMICOLON) return i + 1;
+    else if (parenDepth === 0 && code === CHAR_CLOSE_BRACE) return i;
   }
   return text.length;
 }
@@ -877,21 +874,18 @@ function collectImportEdits(text: string, escaped: Uint8Array | null): CssEdit[]
   for (const match of text.matchAll(CSS_IMPORT_KEYWORD)) {
     if (match.index < scanned) continue;
     const end = findImportRuleEnd(text, match.index + match[0].length, escaped);
-    edits.push({ start: match.index, end, replacement: '' });
-    scanned = end;
+    edits.push({ start: match.index, end, replacement: '' }); scanned = end;
   }
   return edits;
 }
 
 /** Finds the `@import` rules and external references in already decoded CSS. */
 function collectCssEdits(text: string, escaped: Uint8Array | null): CssEdit[] {
-  const imports = collectImportEdits(text, escaped);
   const edits: CssEdit[] = [];
   let lastEnd = 0;
-  for (const edit of [...imports, ...collectExternalReferenceEdits(text, escaped)].sort((a, b) => a.start - b.start)) {
+  for (const edit of [...collectImportEdits(text, escaped), ...collectExternalReferenceEdits(text, escaped)].sort((a, b) => a.start - b.start)) {
     if (edit.start < lastEnd) continue;
-    edits.push(edit);
-    lastEnd = edit.end;
+    edits.push(edit); lastEnd = edit.end;
   }
   return edits;
 }
@@ -943,121 +937,92 @@ function findStyleCloseTag(src: string, lower: string, from: number): StyleClose
   return { close: null, openCdata };
 }
 
-/**
- * Rewrites every <style> element so its body is sanitized; an unterminated element is closed at end of input.
- */
-function sanitizeStyleElements(src: string): string {
-  const lower = lowerKeepingLength(src);
+/** Rewrites every <style> element so its body is sanitized; an unterminated element is closed at end of input. */
+function sanitizeStyleElements(src: string, lower: string = lowerKeepingLength(src)): string {
+  if (!lower.includes('yle')) return src;
   const parts: string[] = [];
-  let copied = 0;
-  let search = 0;
+  let copied = 0, search = 0;
 
   for (;;) {
     const nameIndex = lower.indexOf(STYLE_ELEMENT, search);
     if (nameIndex === -1) break;
-    const start = tagOpenBefore(lower, nameIndex, false);
-    const afterName = nameIndex + STYLE_ELEMENT.length;
-    if (start < copied || isWordCharAt(src, afterName)) {
-      search = nameIndex + 1;
-      continue;
-    }
+    const start = tagOpenBefore(lower, nameIndex, false), afterName = nameIndex + STYLE_ELEMENT.length;
+    if (start < copied || isWordCharAt(src, afterName)) { search = nameIndex + 1; continue; }
     parts.push(src.slice(copied, start));
     const tagEnd = findTagEnd(src, afterName);
-    if (tagEnd === -1) {
-      copied = src.length;
-      break;
-    }
+    if (tagEnd === -1) { copied = src.length; break; }
     // The qualified name (including any namespace prefix) is kept so the element stays in its namespace.
     const qualifiedName = src.slice(start + 1, afterName);
     const { close, openCdata } = findStyleCloseTag(src, lower, tagEnd);
     const bodyEnd = close === null ? src.length : close[0];
     // An unterminated CDATA section is closed so that the output is a fixed point of this rewrite.
     const cdataTerminator = openCdata ? CDATA_CLOSE : '';
-    parts.push(
-      `<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd), true)}${cdataTerminator}</${qualifiedName}>`
-    );
+    parts.push(`<${qualifiedName}>${sanitizeCss(src.slice(tagEnd, bodyEnd), true)}${cdataTerminator}</${qualifiedName}>`);
     copied = close === null ? src.length : close[1];
     search = copied;
   }
-
   if (copied === 0 && parts.length === 0) return src;
   parts.push(src.slice(copied));
   return parts.join('');
 }
 
-interface TagAttribute {
-  name: string;
-  /** Index of the first character of the attribute name. */
-  start: number;
-  /** Index just past the attribute value (or name when it has none); the input length when a quote is unterminated. */
-  end: number;
-  /** Raw value without surrounding quotes. */
-  value: string;
-}
-
-interface TagToken {
-  name: string;
-  attributes: TagAttribute[];
-  /** Index just past the closing '>', or the input length when the tag is unterminated. */
-  end: number;
-  terminated: boolean;
-}
+interface TagAttribute { name: string; start: number; end: number; value: string; }
+interface TagToken { name: string; attributes: TagAttribute[]; end: number; terminated: boolean; }
 
 function isTagNameStart(src: string, index: number): boolean {
   if (index >= src.length) return false;
   const code = src.charCodeAt(index);
-  if (code >= 0x80) return !isWhitespaceAt(src, index);
-  return code === 0x5f || code === 0x3a || isAsciiAlphaAt(src, index);
+  return code >= 0x80 ? !isWhitespaceCode(code) : code === CHAR_UNDERSCORE || code === CHAR_COLON || isAsciiAlphaCode(code);
 }
 
 function skipWhitespace(src: string, from: number): number {
   let i = from;
-  while (i < src.length && isWhitespaceAt(src, i)) i++;
+  while (i < src.length && isWhitespaceCode(src.charCodeAt(i))) i++;
   return i;
+}
+
+/** Returns tag end (>0) when the tag at `lt` has no attributes, or -1 if attributes may follow. */
+function trySkipEmptyTagEnd(src: string, lt: number): number {
+  const len = src.length;
+  let i = lt + 1;
+  while (i < len) { const c = src.charCodeAt(i); if (isWhitespaceCode(c) || c === CHAR_SLASH || c === CHAR_GT) break; i++; }
+  while (i < len && (isWhitespaceCode(src.charCodeAt(i)) || src.charCodeAt(i) === CHAR_SLASH)) i++;
+  if (i >= len) return len;
+  return src.charCodeAt(i) === CHAR_GT ? i + 1 : -1;
 }
 
 /**
  * Tokenizes the tag opening at `lt` the way an HTML/XML parser does: whitespace, '/' and the end of a quoted
  * value all separate attributes, so `<svg/onload=x>` and `<svg a="b"onload=x>` expose an `onload` attribute.
- * Runs in time linear in the tag length.
  */
 function readTag(src: string, lt: number): TagToken {
   const length = src.length;
   let i = lt + 1;
-  while (i < length && !isWhitespaceAt(src, i) && src[i] !== '/' && src[i] !== '>') i++;
-  const name = src.slice(lt + 1, i);
-  const attributes: TagAttribute[] = [];
+  while (i < length) { const c = src.charCodeAt(i); if (isWhitespaceCode(c) || c === CHAR_SLASH || c === CHAR_GT) break; i++; }
+  const name = src.slice(lt + 1, i), attributes: TagAttribute[] = [];
 
   for (;;) {
-    while (i < length && (isWhitespaceAt(src, i) || src[i] === '/')) i++;
+    while (i < length && (isWhitespaceCode(src.charCodeAt(i)) || src.charCodeAt(i) === CHAR_SLASH)) i++;
     if (i >= length) return { name, attributes, end: length, terminated: false };
-    if (src[i] === '>') return { name, attributes, end: i + 1, terminated: true };
+    if (src.charCodeAt(i) === CHAR_GT) return { name, attributes, end: i + 1, terminated: true };
 
     const start = i;
     i++;
-    while (i < length && !isWhitespaceAt(src, i) && src[i] !== '/' && src[i] !== '>' && src[i] !== '=') i++;
-    const attrName = src.slice(start, i);
-    const afterName = skipWhitespace(src, i);
-    if (src[afterName] !== '=') {
-      attributes.push({ name: attrName, start, end: i, value: '' });
-      continue;
-    }
+    while (i < length) { const c = src.charCodeAt(i); if (isWhitespaceCode(c) || c === CHAR_SLASH || c === CHAR_GT || c === CHAR_EQUALS) break; i++; }
+    const attrName = src.slice(start, i), afterName = skipWhitespace(src, i);
+    if (afterName >= length || src.charCodeAt(afterName) !== CHAR_EQUALS) { attributes.push({ name: attrName, start, end: i, value: '' }); continue; }
 
     const valueStart = skipWhitespace(src, afterName + 1);
-    const quote = src.charAt(valueStart);
-    if (quote === '"' || quote === "'") {
-      const close = src.indexOf(quote, valueStart + 1);
-      if (close === -1) {
-        attributes.push({ name: attrName, start, end: length, value: src.slice(valueStart + 1) });
-        return { name, attributes, end: length, terminated: false };
-      }
-      attributes.push({ name: attrName, start, end: close + 1, value: src.slice(valueStart + 1, close) });
-      i = close + 1;
+    if (valueStart >= length) { attributes.push({ name: attrName, start, end: length, value: '' }); return { name, attributes, end: length, terminated: false }; }
+    const quote = src.charCodeAt(valueStart);
+    if (quote === CHAR_DOUBLE_QUOTE || quote === CHAR_SINGLE_QUOTE) {
+      const close = src.indexOf(quote === CHAR_DOUBLE_QUOTE ? '"' : "'", valueStart + 1);
+      if (close === -1) { attributes.push({ name: attrName, start, end: length, value: src.slice(valueStart + 1) }); return { name, attributes, end: length, terminated: false }; }
+      attributes.push({ name: attrName, start, end: close + 1, value: src.slice(valueStart + 1, close) }); i = close + 1;
     } else {
       let valueEnd = valueStart;
-      while (valueEnd < length && !isWhitespaceAt(src, valueEnd) && src[valueEnd] !== '>') valueEnd++;
-      attributes.push({ name: attrName, start, end: valueEnd, value: src.slice(valueStart, valueEnd) });
-      i = valueEnd;
+      while (valueEnd < length && !isWhitespaceCode(src.charCodeAt(valueEnd)) && src.charCodeAt(valueEnd) !== CHAR_GT) valueEnd++;
+      attributes.push({ name: attrName, start, end: valueEnd, value: src.slice(valueStart, valueEnd) }); i = valueEnd;
     }
   }
 }
@@ -1069,19 +1034,23 @@ function readTag(src: string, lt: number): TagToken {
  * parsers, so they are rejected (fail closed).
  */
 function skipNonTagMarkup(src: string, lt: number, rejectShorthand = true): number {
-  if (src.startsWith(COMMENT_OPEN, lt)) {
-    const bodyStart = lt + COMMENT_OPEN_LENGTH;
-    if (rejectShorthand && (src.startsWith('>', bodyStart) || src.startsWith('->', bodyStart))) {
-      throw new SvgSanitizationError('SVG contains a malformed comment that parsers disagree on.');
+  const next = src.charCodeAt(lt + 1);
+  if (next === CHAR_BANG) {
+    if (src.startsWith(COMMENT_OPEN, lt)) {
+      const bodyStart = lt + COMMENT_OPEN_LENGTH;
+      if (rejectShorthand && (src.startsWith('>', bodyStart) || src.startsWith('->', bodyStart))) {
+        throw new SvgSanitizationError('SVG contains a malformed comment that parsers disagree on.');
+      }
+      const close = src.indexOf(COMMENT_CLOSE, bodyStart);
+      return close === -1 ? src.length : close + COMMENT_CLOSE.length;
     }
-    const close = src.indexOf(COMMENT_CLOSE, bodyStart);
-    return close === -1 ? src.length : close + COMMENT_CLOSE.length;
+    if (src.startsWith(CDATA_OPEN, lt)) {
+      const close = src.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length);
+      return close === -1 ? src.length : close + CDATA_CLOSE.length;
+    }
+    return -1;
   }
-  if (src.startsWith(CDATA_OPEN, lt)) {
-    const close = src.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length);
-    return close === -1 ? src.length : close + CDATA_CLOSE.length;
-  }
-  if (src.startsWith(PI_OPEN, lt)) {
+  if (next === CHAR_QUESTION && src.startsWith(PI_OPEN, lt)) {
     const close = src.indexOf(PI_CLOSE, lt + PI_OPEN.length);
     return close === -1 ? src.length : close + PI_CLOSE.length;
   }
@@ -1142,7 +1111,7 @@ function hasAnimationValue(tag: TagToken, isHostile: (value: string) => boolean)
 
 /** True for animation elements targeting event handlers or dangerous URIs (e.g. `<set attributeName="onclick" to="alert(1)"/>`). */
 function isHostileAnimation(tag: TagToken): boolean {
-  if (!ANIMATION_ELEMENTS.has(localNameOf(tag.name))) return false;
+  if (tag.attributes.length === 0 || !ANIMATION_ELEMENTS.has(localNameOf(tag.name))) return false;
   const target = tag.attributes.find((attribute) => attribute.name.toLowerCase() === 'attributename');
   if (target === undefined) return hasAnimationValue(tag, hasScriptUriItem);
   const targetName = localNameOf(normalizeUriText(target.value));
@@ -1154,10 +1123,10 @@ function isHostileAnimation(tag: TagToken): boolean {
 }
 
 /** Removes every on* and form attribute and hostile animation element in linear time while leaving non-tag text untouched. */
-function stripEventHandlerAttributes(src: string): string {
+function stripEventHandlerAttributes(src: string, lower: string): string {
+  if (!RE_EVENT_PREFILTER.test(lower)) return src;
   const parts: string[] = [];
-  let copied = 0;
-  let search = 0;
+  let copied = 0, search = 0;
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
@@ -1166,12 +1135,14 @@ function stripEventHandlerAttributes(src: string): string {
     const bogusEnd = skipClosingOrBogusMarkup(src, lt);
     if (bogusEnd !== -1) { search = bogusEnd; continue; }
     if (!isTagNameStart(src, lt + 1)) { search = lt + 1; continue; }
+    const emptyEnd = trySkipEmptyTagEnd(src, lt);
+    if (emptyEnd !== -1) { search = emptyEnd; continue; }
     const tag = readTag(src, lt);
     if (isHostileAnimation(tag)) { parts.push(src.slice(copied, lt)); copied = tag.end; search = tag.end; continue; }
     for (const attribute of tag.attributes) {
       if (!isForbiddenAttributeName(attribute.name)) continue;
       let removeStart = attribute.start;
-      while (removeStart > copied && isWhitespaceAt(src, removeStart - 1)) removeStart--;
+      while (removeStart > copied && isWhitespaceCode(src.charCodeAt(removeStart - 1))) removeStart--;
       parts.push(src.slice(copied, removeStart));
       copied = attribute.end;
     }
@@ -1240,13 +1211,13 @@ function sanitizeEmbeddedSvgHref(attribute: TagAttribute, depth: number, budget:
 }
 
 /** Replacement for an attribute whose value is a dangerous URI, or null when it is left alone. */
-function neutralizedAttribute(attribute: TagAttribute, tagName: string, depth: number, originalText: string, budget: EmbeddedSvgBudget): string | null {
+function neutralizedAttribute(attribute: TagAttribute, tagName: string, depth: number, src: string, budget: EmbeddedSvgBudget): string | null {
   const local = attributeLocalName(attribute.name);
   if (LINK_ATTRIBUTES.has(local)) {
     const normalizedUri = normalizeUriText(attribute.value);
     if (local === HREF_ATTRIBUTE && localNameOf(tagName) === IMAGE_ELEMENT && normalizedUri.startsWith(DATA_SVG_MIME_PREFIX)) {
       const rewritten = sanitizeEmbeddedSvgHref(attribute, depth, budget);
-      return rewritten === null || rewritten === originalText ? null : rewritten;
+      return rewritten === null || rewritten === src.slice(attribute.start, attribute.end) ? null : rewritten;
     }
     return isDangerousLinkUri(normalizedUri) ? 'href="#"' : null;
   }
@@ -1257,16 +1228,23 @@ function neutralizedAttribute(attribute: TagAttribute, tagName: string, depth: n
   }
   if (local === STYLE_ATTRIBUTE) {
     // Output is always double-quoted, so a `"` that came from a single-quoted or unquoted value must be escaped.
-    return `style="${sanitizeCss(attribute.value, false).replace(/"/g, '&quot;')}"`;
+    const sanitized = sanitizeCss(attribute.value, false);
+    if (
+      sanitized === attribute.value &&
+      src.startsWith('style="', attribute.start) &&
+      attribute.end === attribute.start + 8 + attribute.value.length &&
+      src.charCodeAt(attribute.end - 1) === CHAR_DOUBLE_QUOTE
+    ) return null;
+    return `style="${sanitized.replace(/"/g, '&quot;')}"`;
   }
   return null;
 }
 
 /** Rewrites href/src, animation value, presentation and style attributes on real tags while leaving non-tag text untouched. */
-function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget): string {
+function rewriteAttributes(src: string, lower: string, depth: number, budget: EmbeddedSvgBudget): string {
+  if (!src.includes('--') && !src.includes('=') && !lower.includes('yle')) return src;
   const parts: string[] = [];
-  let copied = 0;
-  let search = 0;
+  let copied = 0, search = 0;
   for (;;) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
@@ -1275,9 +1253,11 @@ function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget
     const bogusEnd = skipClosingOrBogusMarkup(src, lt);
     if (bogusEnd !== -1) { search = bogusEnd; continue; }
     if (!isTagNameStart(src, lt + 1)) { search = lt + 1; continue; }
+    const emptyEnd = trySkipEmptyTagEnd(src, lt);
+    if (emptyEnd !== -1) { search = emptyEnd; continue; }
     const tag = readTag(src, lt);
     for (const attribute of tag.attributes) {
-      const replacement = neutralizedAttribute(attribute, tag.name, depth, src.slice(attribute.start, attribute.end), budget);
+      const replacement = neutralizedAttribute(attribute, tag.name, depth, src, budget);
       if (replacement === null) continue;
       parts.push(src.slice(copied, attribute.start), replacement);
       copied = attribute.end;
@@ -1292,83 +1272,79 @@ function rewriteAttributes(src: string, depth: number, budget: EmbeddedSvgBudget
 interface CdataHtmlState { svgDepth: number; integrationDepth: number; htmlInIntegration: boolean }
 
 function advanceCdataTagState(src: string, lt: number, state: CdataHtmlState): number {
-  const tag = readTag(src, lt);
-  const lower = tag.name.toLowerCase();
+  const tag = readTag(src, lt), lower = tag.name.toLowerCase();
   const lastEnd = tag.attributes.length > 0 ? tag.attributes[tag.attributes.length - 1].end : lt + 1 + tag.name.length;
-  const selfClosing = tag.terminated && src[tag.end - 2] === '/' && lastEnd <= tag.end - 2;
-  if (state.svgDepth === 0) {
-    if (lower === 'svg' && !selfClosing) state.svgDepth = 1;
-    return tag.end;
-  }
-  if (state.integrationDepth > 0) {
-    state.htmlInIntegration = true;
-    return tag.end;
-  }
+  const selfClosing = tag.terminated && src.charCodeAt(tag.end - 2) === CHAR_SLASH && lastEnd <= tag.end - 2;
+  if (state.svgDepth === 0) { if (lower === 'svg' && !selfClosing) state.svgDepth = 1; return tag.end; }
+  if (state.integrationDepth > 0) { state.htmlInIntegration = true; return tag.end; }
   const isFontBreakout = lower === 'font' && tag.attributes.some((a) => HTML_FONT_BREAKOUT_ATTRS.has(a.name.toLowerCase()));
-  if (HTML_BREAKOUT_ELEMENTS.has(lower) || isFontBreakout) {
-    state.svgDepth = 0; state.integrationDepth = 0; state.htmlInIntegration = false;
-  } else if (SVG_HTML_INTEGRATION_POINTS.has(lower) && !selfClosing) {
-    state.integrationDepth++;
-  } else if (lower === 'svg' && !selfClosing) {
-    state.svgDepth++;
-  }
+  if (HTML_BREAKOUT_ELEMENTS.has(lower) || isFontBreakout) { state.svgDepth = 0; state.integrationDepth = 0; state.htmlInIntegration = false; }
+  else if (SVG_HTML_INTEGRATION_POINTS.has(lower) && !selfClosing) state.integrationDepth++;
+  else if (lower === 'svg' && !selfClosing) state.svgDepth++;
   return tag.end;
 }
 
 function advanceCdataCloseState(src: string, lt: number, state: CdataHtmlState): number {
-  if (!isAsciiAlphaAt(src, lt + 2)) {
-    const gt = src.indexOf('>', lt + 2);
-    return gt === -1 ? src.length : gt + 1;
-  }
-  const tag = readTag(src, lt + 1);
-  const lower = tag.name.toLowerCase();
-  if (state.svgDepth > 0 && (lower === 'p' || lower === 'br')) {
-    state.svgDepth = 0; state.integrationDepth = 0; state.htmlInIntegration = false;
-  } else if (lower === 'svg' && state.svgDepth > 0) {
-    if (!state.htmlInIntegration && --state.svgDepth === 0) state.integrationDepth = 0;
-  } else if (state.integrationDepth > 0 && SVG_HTML_INTEGRATION_POINTS.has(lower)) {
-    state.integrationDepth--;
-  }
+  if (!isAsciiAlphaAt(src, lt + 2)) { const gt = src.indexOf('>', lt + 2); return gt === -1 ? src.length : gt + 1; }
+  const tag = readTag(src, lt + 1), lower = tag.name.toLowerCase();
+  if (state.svgDepth > 0 && (lower === 'p' || lower === 'br')) { state.svgDepth = 0; state.integrationDepth = 0; state.htmlInIntegration = false; }
+  else if (lower === 'svg' && state.svgDepth > 0) { if (!state.htmlInIntegration && --state.svgDepth === 0) state.integrationDepth = 0; }
+  else if (state.integrationDepth > 0 && SVG_HTML_INTEGRATION_POINTS.has(lower)) state.integrationDepth--;
   return tag.end;
 }
 
 /** Rejects CDATA outside safe SVG foreign content (HTML5 §13.2.6.2, §13.2.6.5) so XML/HTML differentials fail closed. */
 function assertSafeCdataContext(src: string): void {
-  if (!src.includes(CDATA_OPEN)) return;
+  if (!src.includes('[')) return;
   const state: CdataHtmlState = { svgDepth: 0, integrationDepth: 0, htmlInIntegration: false };
-  let search = 0;
-  while (search < src.length) {
+  for (let search = 0; search < src.length; ) {
     const lt = src.indexOf('<', search);
     if (lt === -1) break;
     if (src.startsWith(CDATA_OPEN, lt)) {
-      if (state.svgDepth <= 0 || state.htmlInIntegration) {
-        throw new SvgSanitizationError('SVG contains a CDATA section outside safe SVG foreign content.');
-      }
+      if (state.svgDepth <= 0 || state.htmlInIntegration) throw new SvgSanitizationError('SVG contains a CDATA section outside safe SVG foreign content.');
       const close = src.indexOf(CDATA_CLOSE, lt + CDATA_OPEN.length);
       search = close === -1 ? src.length : close + CDATA_CLOSE.length;
       continue;
     }
     const skipTo = skipNonTagMarkup(src, lt);
     if (skipTo !== -1) { search = skipTo; continue; }
-    if (src[lt + 1] === '!') {
-      const gt = src.indexOf('>', lt + 2);
-      search = gt === -1 ? src.length : gt + 1;
-    } else if (src[lt + 1] === '/') search = advanceCdataCloseState(src, lt, state);
+    if (src.charCodeAt(lt + 1) === CHAR_BANG) { const gt = src.indexOf('>', lt + 2); search = gt === -1 ? src.length : gt + 1; }
+    else if (src.charCodeAt(lt + 1) === CHAR_SLASH) search = advanceCdataCloseState(src, lt, state);
     else if (isAsciiAlphaAt(src, lt + 1)) search = advanceCdataTagState(src, lt, state);
     else search = lt + 1;
   }
 }
 
-/**
- * One pass of dangerous markup removal; callers repeat until stable to defeat split-opener tricks.
- */
-function stripDangerousMarkupPass(input: string): string {
-  let result = stripProcessingInstructions(stripDoctype(input));
-  for (const name of PAIRED_DANGEROUS_ELEMENTS) result = stripElement(result, name, true);
-  for (const name of VOID_DANGEROUS_ELEMENTS) result = stripElement(result, name, false);
-  result = stripEventHandlerAttributes(result);
+const OTHER_DANGEROUS_LOWER_NAMES = [
+  ...PAIRED_DANGEROUS_ELEMENTS.slice(1).map((n) => n.toLowerCase()),
+  ...VOID_DANGEROUS_ELEMENTS.map((n) => n.toLowerCase()),
+];
+
+/** One pass of dangerous markup removal; callers repeat until stable to defeat split-opener tricks. */
+function stripDangerousMarkupPass(input: string): { result: string; lower: string } {
+  let result = input;
+  let lower = lowerKeepingLength(result);
+  let lowerDirty = false;
+  const syncLower = () => {
+    if (lowerDirty) { lower = lowerKeepingLength(result); lowerDirty = false; }
+    return lower;
+  };
+  const afterDoctype = stripDoctype(result, lower);
+  if (afterDoctype !== result) { result = afterDoctype; lowerDirty = true; }
+  const afterPi = stripProcessingInstructions(result);
+  if (afterPi !== result) { result = afterPi; lowerDirty = true; }
+  const afterScript = stripElement(result, syncLower(), 'script', true);
+  if (afterScript !== result) { result = afterScript; lowerDirty = true; }
+  if (RE_OTHER_DANGEROUS.test(syncLower())) {
+    for (let i = 0; i < OTHER_DANGEROUS_LOWER_NAMES.length; i++) {
+      const next = stripElement(result, syncLower(), OTHER_DANGEROUS_LOWER_NAMES[i], i < PAIRED_DANGEROUS_ELEMENTS.length - 1);
+      if (next !== result) { result = next; lowerDirty = true; }
+    }
+  }
+  const afterEvents = stripEventHandlerAttributes(result, syncLower());
+  if (afterEvents !== result) { result = afterEvents; lowerDirty = true; }
   assertSafeCdataContext(result);
-  return result;
+  return { result, lower: syncLower() };
 }
 
 const HTML_ENTITY_PATTERN = /&(?:#x([0-9a-fA-F]+);|#([0-9]+);|(quot|apos|lt|gt|amp);)/gi;
@@ -1423,11 +1399,12 @@ export function isSvg(input: string | Buffer): boolean {
 /** One full sanitation pass: dangerous markup removal followed by URI and style rewrites. */
 function sanitizePass(input: string, depth: number, budget: EmbeddedSvgBudget): string {
   // 1-3. Strip DOCTYPE/ENTITY declarations, executable and embedding elements, and on* event handlers.
-  let result = stripDangerousMarkupPass(input);
+  const stripped = stripDangerousMarkupPass(input);
   // 4-6. Rewrite href-like, animation value and style attributes of real tags against dangerous URIs, SSRF and
   // data exfiltration, then clean <style> element bodies.
-  result = rewriteAttributes(result, depth, budget);
-  return sanitizeStyleElements(result);
+  const afterAttrs = rewriteAttributes(stripped.result, stripped.lower, depth, budget);
+  const lower = afterAttrs === stripped.result ? stripped.lower : lowerKeepingLength(afterAttrs);
+  return sanitizeStyleElements(afterAttrs, lower);
 }
 
 function sanitizeSvgStringAtDepth(svg: string, depth: number, budget: EmbeddedSvgBudget): string {
