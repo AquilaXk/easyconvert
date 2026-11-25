@@ -256,10 +256,13 @@ function mergeInto(previous: PdfContentShape, shape: Omit<PdfContentShape, 'z'>)
     if (previous.stroke === undefined && shape.stroke !== undefined && shape.fill === undefined) {
       previous.stroke = shape.stroke;
       previous.strokeWidth = shape.strokeWidth;
+      if (shape.strokeAlpha !== undefined) previous.strokeAlpha = shape.strokeAlpha;
+      if (shape.dashed) previous.dashed = true;
       return true;
     }
-    if (previous.fill === undefined && shape.fill !== undefined && shape.stroke === undefined) {
-      previous.fill = shape.fill;
+    if (previous.fill === undefined && previous.gradient === undefined && (shape.fill !== undefined || shape.gradient !== undefined) && shape.stroke === undefined) {
+      if (shape.fill !== undefined) previous.fill = shape.fill;
+      if (shape.gradient !== undefined) previous.gradient = shape.gradient;
       if (shape.alpha !== undefined) previous.alpha = shape.alpha;
       return true;
     }

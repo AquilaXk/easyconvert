@@ -209,9 +209,12 @@ class SlideXml {
     const offX = this.x(rule.x0);
     const offY = this.y(rule.y0);
     const extent = horizontal ? `<a:off x="${offX}" y="${offY}"/><a:ext cx="${width}" cy="0"/>` : `<a:off x="${offX}" y="${offY}"/><a:ext cx="0" cy="${height}"/>`;
+    const alpha = rule.strokeAlpha === undefined ? '' : `<a:alpha val="${Math.round(rule.strokeAlpha * 100_000)}"/>`;
+    const color = alpha ? `<a:srgbClr val="${hexOf(rule.color ?? 0)}">${alpha}</a:srgbClr>` : `<a:srgbClr val="${hexOf(rule.color ?? 0)}"/>`;
+    const dash = rule.dashed ? '<a:prstDash val="dash"/>' : '';
     this.shapes.push(
       `<p:cxnSp><p:nvCxnSpPr><p:cNvPr id="${id}" name="Line ${id}"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr><a:xfrm>${extent}</a:xfrm><a:prstGeom prst="line"><a:avLst/></a:prstGeom>` +
-        `<a:ln w="${thickness}"><a:solidFill><a:srgbClr val="${hexOf(rule.color ?? 0)}"/></a:solidFill></a:ln></p:spPr></p:cxnSp>`
+        `<a:ln w="${thickness}"><a:solidFill>${color}</a:solidFill>${dash}</a:ln></p:spPr></p:cxnSp>`
     );
   }
 
@@ -332,14 +335,35 @@ interface TableBorder {
   color: string;
 }
 
+const MIN_LATTICE_CELL_FILL = 0.26;
+
+function isRectangularGrid(table: DetectedTable): boolean {
+  const columns = table.columnWidths.length;
+  return columns > 0 && table.rows.every((row) => row.reduce((sum, cell) => sum + cell.colSpan, 0) === columns);
+}
+
+function latticeFillShare(table: DetectedTable): number {
+  const slots = table.rows.length * table.columnWidths.length;
+  if (slots === 0) return 0;
+  let filled = 0;
+  for (const row of table.rows) {
+    for (const cell of row) {
+      if (!cell.continuation && cell.paragraphs.length > 0) filled++;
+    }
+  }
+  return filled / slots;
+}
+
 /**
- * Whether the table is one grid in one colour. A page that boxes its text in several colours (a diagram of labelled boxes) has
- * rules the layout analysis reads as a table, but the slide's table has one border colour, so its text stays in text boxes and its
- * rules stay lines.
+ * Whether the table is a true slide grid: structurally rectangular (never dropping overflow cells), not a sparse schematic box
+ * with almost empty cells, and ruled in one colour so diagram labels inside coloured boxes stay free text boxes and diagram lines.
  */
 function isUniformlyRuled(table: DetectedTable, rules: readonly PdfContentRule[]): boolean {
+  if (!isRectangularGrid(table)) return false;
+  if (table.kind !== 'lattice') return true;
+  if (latticeFillShare(table) < MIN_LATTICE_CELL_FILL) return false;
   const ink = dominantRuleInk(rules, table.box);
-  return table.kind !== 'lattice' || ink === null || ink.share >= UNIFORM_RULE_SHARE;
+  return ink === null || ink.share >= UNIFORM_RULE_SHARE;
 }
 
 /** The border of a table: the colour and median width of the rules that lie inside its box, so a table ruled in grey stays grey. */
@@ -359,6 +383,7 @@ function barOf(rule: PdfContentRule): PdfContentShape {
     y0: horizontal ? rule.y0 - half : rule.y0,
     y1: horizontal ? rule.y1 + half : rule.y1,
     fill: rule.color ?? 0,
+    ...(rule.strokeAlpha === undefined ? {} : { alpha: rule.strokeAlpha }),
     z: rule.z ?? -1,
   };
 }

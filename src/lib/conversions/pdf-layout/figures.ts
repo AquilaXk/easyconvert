@@ -40,7 +40,19 @@ function ruleShape(rule: PdfContentRule): PdfContentShape {
   const z = rule.z ?? -1;
   const color = rule.color ?? 0;
   if (rule.thickness <= LINE_MAX_THICKNESS) {
-    return { kind: 'path', x0: rule.x0, y0: rule.y0, x1: rule.x1, y1: rule.y1, stroke: color, strokeWidth: rule.thickness, path: [0, rule.x0, rule.y0, 1, rule.x1, rule.y1], z };
+    return {
+      kind: 'path',
+      x0: rule.x0,
+      y0: rule.y0,
+      x1: rule.x1,
+      y1: rule.y1,
+      stroke: color,
+      strokeWidth: rule.thickness,
+      ...(rule.strokeAlpha === undefined ? {} : { strokeAlpha: rule.strokeAlpha }),
+      ...(rule.dashed ? { dashed: true } : {}),
+      path: [0, rule.x0, rule.y0, 1, rule.x1, rule.y1],
+      z,
+    };
   }
   const half = rule.thickness / 2;
   const horizontal = rule.x1 - rule.x0 >= rule.y1 - rule.y0;
@@ -76,8 +88,23 @@ function pageShapeOf(shape: PdfContentShape, hull: Box, top: number | null): Pag
     width: hull.x1 - hull.x0,
     height: hull.y1 - hull.y0,
     ...(shape.fill === undefined ? {} : { fill: hexOf(shape.fill) }),
+  ...(shape.gradient === undefined
+    ? {}
+    : {
+        gradient: {
+          kind: 'linear',
+          angleDeg: shape.gradient.angleDeg,
+          stops: shape.gradient.stops.map((stop) => ({
+            pos: stop.pos,
+            color: hexOf(stop.color),
+            ...(stop.alpha === undefined ? {} : { alpha: stop.alpha }),
+          })),
+        },
+      }),
     ...(shape.stroke === undefined ? {} : { stroke: hexOf(shape.stroke), strokeWidthPt: shape.strokeWidth ?? 0 }),
     ...(shape.alpha === undefined ? {} : { alpha: shape.alpha }),
+  ...(shape.strokeAlpha === undefined ? {} : { strokeAlpha: shape.strokeAlpha }),
+  ...(shape.dashed ? { dashed: true } : {}),
     ...(shape.path ? { path: relativePath(shape.path, hull) } : {}),
   };
 }

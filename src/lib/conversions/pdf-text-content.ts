@@ -3,10 +3,27 @@ import { isLightColour, markFillBehindLightText, ShapeCollector, type Paint, typ
 import { hasUnmappedGlyphs, recoverUnmappedGlyphs, type RecoverableFont } from './pdf-glyph-recovery';
 import { ImageExtractor, type ImageSource } from './pdf-text-images';
 import {
+  axialShadingGradient,
+  boxDisjointFromClip,
+  boxFromList,
+  clampBoxToClip,
+  clipBoxOfSubpaths,
+  clipRule,
+  intersectClip,
+  isEmptyClip,
+  matrixFromList,
+  shadingViewportBox,
+  transformBBoxToClip,
+  type ClipBox,
+  type RectBox,
+  type ShadingRef,
+} from './pdf-text-shading';
+import {
   PDF_CONTENT_MAX_FONTS,
   PDF_CONTENT_MAX_IMAGES_PER_PAGE,
   PDF_CONTENT_MAX_OPERATORS_PER_PAGE,
   PDF_CONTENT_MAX_RULES_PER_PAGE,
+  PDF_CONTENT_MAX_SHAPES_PER_PAGE,
   PDF_CONTENT_MAX_STATE_DEPTH,
   PDF_TEXT_MAX_ITEM_CHARS,
   PDF_TEXT_MAX_CHARS_PER_PAGE,
@@ -311,10 +328,6 @@ function multiply(m: Matrix, n: Matrix): Matrix {
   ];
 }
 
-function isMatrix(args: unknown): args is Matrix {
-  return Array.isArray(args) && args.length === TRANSFORM_VALUES && args.every((value) => typeof value === 'number' && Number.isFinite(value));
-}
-
 interface Point {
   x: number;
   y: number;
@@ -391,21 +404,43 @@ function paintKinds(ops: Record<string, number>): PaintKinds {
   };
 }
 
+interface PageObjectsLike {
+  has?(id: string): boolean;
+  get?(id: string): unknown;
+}
+
 interface GraphicsState {
   ctm: Matrix;
+  /** Initial transform of the page or innermost Form XObject (for Pattern Space). */
+  baseTransform: Matrix;
   lineWidth: number;
-  /** Fill and stroke colour; null when a pattern or shading is in force. */
+  /** Fill and stroke colour; null when a pattern, shading or transparent colour is in force. */
   fill: Rgb | null;
   stroke: Rgb | null;
+  /** Active pattern-space shading fill when `setFillColorN` chose `Shading`, or null. */
+  fillShading: ShadingRef | null;
   /** Opacity of fills (`ca` of the graphics state). */
   fillAlpha: number;
+  /** Opacity of strokes (`CA` of the graphics state). */
+  strokeAlpha: number;
+  /** Whether strokes use a non-empty dash pattern (`setDash` / `D`). */
+  dashed: boolean;
+  /** Explicit transparent fill or stroke colour (`setFillTransparent` / `setStrokeTransparent`). */
+  fillTransparent: boolean;
+  strokeTransparent: boolean;
   /** Text render mode (`Tr`). */
   textMode: number;
+  /** Active clip bounding box in viewport points, or null when unclipped. */
+  clip: ClipBox | null;
+  /** Nesting depth inside soft-mask definition groups (`beginGroup` with `smask`). */
+  smaskDepth: number;
 }
 
 /** What a rule is painted with: its colour (left out for black) and, in a job that reads colour, its place in the paint order. */
 interface RuleInk {
   color: Rgb | null;
+  strokeAlpha?: number;
+  dashed?: boolean;
   z?: number;
   inShape?: true;
 }
@@ -426,6 +461,12 @@ class RuleCollector {
     return { x: vx, y: vy };
   }
 
+  clip: ClipBox | null = null;
+
+  pagePoint(point: Point, ctm: Matrix): Point {
+    return this.toPage(point, ctm);
+  }
+
   private add(from: Point, to: Point, thickness: number, ink: RuleInk): void {
     if (this.rules.length >= PDF_CONTENT_MAX_RULES_PER_PAGE) {
       this.truncated = true;
@@ -435,13 +476,21 @@ class RuleCollector {
     const vertical = Math.abs(from.x - to.x) <= AXIS_TOLERANCE;
     if (horizontal === vertical) return;
     if (Math.hypot(to.x - from.x, to.y - from.y) < RULE_MIN_LENGTH) return;
+    const x0 = Math.min(from.x, to.x);
+    const y0 = Math.min(from.y, to.y);
+    const x1 = Math.max(from.x, to.x);
+    const y1 = Math.max(from.y, to.y);
+    const clipped = this.clip !== null ? clipRule(x0, y0, x1, y1, this.clip, RULE_MIN_LENGTH) : null;
+    if (this.clip !== null && clipped === null) return;
     this.rules.push({
-      x0: Math.min(from.x, to.x),
-      y0: Math.min(from.y, to.y),
-      x1: Math.max(from.x, to.x),
-      y1: Math.max(from.y, to.y),
+      x0: clipped ? clipped[0] : x0,
+      y0: clipped ? clipped[1] : y0,
+      x1: clipped ? clipped[2] : x1,
+      y1: clipped ? clipped[3] : y1,
       thickness,
       ...(this.colour && ink.color !== null && ink.color !== BLACK ? { color: ink.color } : {}),
+      ...(this.colour && ink.strokeAlpha !== undefined && ink.strokeAlpha < 1 ? { strokeAlpha: ink.strokeAlpha } : {}),
+      ...(this.colour && ink.dashed ? { dashed: true } : {}),
       ...(ink.z === undefined ? {} : { z: ink.z }),
       ...(ink.inShape ? { inShape: true as const } : {}),
     });
@@ -455,8 +504,15 @@ class RuleCollector {
   /** `inShape[i]` tells that subpath `i` is drawn by a shape of its own. */
   stroke(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
     const thickness = Math.max(state.lineWidth * RuleCollector.scaleOf(state.ctm), HAIRLINE_FLOOR);
+    const strokeAlpha = state.strokeAlpha < 1 ? state.strokeAlpha : undefined;
     subpaths.forEach((subpath, index) => {
-      const ink: RuleInk = { color: state.stroke, z, ...(inShape[index] ? { inShape: true as const } : {}) };
+      const ink: RuleInk = {
+        color: state.stroke,
+        ...(strokeAlpha === undefined ? {} : { strokeAlpha }),
+        ...(state.dashed ? { dashed: true } : {}),
+        z,
+        ...(inShape[index] ? { inShape: true as const } : {}),
+      };
       const points = subpath.points.map((point) => this.toPage(point, state.ctm));
       for (let i = 1; i < points.length; i++) this.add(points[i - 1], points[i], thickness, ink);
       if (subpath.closed && points.length > 2) this.add(points[points.length - 1], points[0], thickness, ink);
@@ -513,29 +569,78 @@ function imageBox(viewport: Viewport, ctm: Matrix): { x: number; y: number; widt
   return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
 }
 
-/** The operators that set a colour, with the graphics state they change. */
+function shadingOperand(args: unknown[] | undefined): ShadingRef | null {
+  if (args?.[0] !== 'Shading' || typeof args[1] !== 'string') return null;
+  return { objId: args[1], matrix: matrixFromList(args[2]) };
+}
+
+function applyGState(entries: unknown, state: GraphicsState): GraphicsState {
+  if (!Array.isArray(entries)) return state;
+  let next = state;
+  for (const entry of entries) {
+    if (!Array.isArray(entry)) continue;
+    const [key, value] = entry;
+    if (key === 'ca' && typeof value === 'number' && Number.isFinite(value)) {
+      next = { ...next, fillAlpha: Math.min(1, Math.max(0, value)) };
+    } else if (key === 'CA' && typeof value === 'number' && Number.isFinite(value)) {
+      next = { ...next, strokeAlpha: Math.min(1, Math.max(0, value)) };
+    } else if (key === 'LW' && typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      next = { ...next, lineWidth: value };
+    } else if (key === 'D' && Array.isArray(value)) {
+      next = { ...next, dashed: isNumberList(value[0]) && value[0].length > 0 };
+    }
+  }
+  return next;
+}
+
+/** The operators that set a colour or dash/opacity graphics state. */
 function withColour(fn: number, args: unknown[] | undefined, ops: Record<string, number>, state: GraphicsState, colour: boolean): GraphicsState | null {
-  if (fn === ops.setFillRGBColor || fn === ops.setFillGray) return { ...state, fill: parseColour(args?.[0]) ?? state.fill };
+  if (fn === ops.setFillRGBColor || fn === ops.setFillGray) {
+    return { ...state, fill: parseColour(args?.[0]) ?? state.fill, fillShading: null, fillTransparent: false };
+  }
   if (!colour) return null;
-  if (fn === ops.setStrokeRGBColor || fn === ops.setStrokeGray) return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke };
-  // A pattern or shading has no single colour.
-  if (fn === ops.setFillColorN) return { ...state, fill: null };
-  if (fn === ops.setStrokeColorN) return { ...state, stroke: null };
+  if (fn === ops.setStrokeRGBColor || fn === ops.setStrokeGray) {
+    return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke, strokeTransparent: false };
+  }
+  if (fn === ops.setFillColorN) return { ...state, fill: null, fillShading: shadingOperand(args), fillTransparent: false };
+  if (fn === ops.setStrokeColorN) return { ...state, stroke: null, strokeTransparent: false };
+  if (fn === ops.setFillTransparent) return { ...state, fill: null, fillShading: null, fillTransparent: true };
+  if (fn === ops.setStrokeTransparent) return { ...state, stroke: null, strokeTransparent: true };
+  if (fn === ops.setDash) return { ...state, dashed: isNumberList(args?.[0]) && args[0].length > 0 };
   if (fn === ops.setTextRenderingMode && typeof args?.[0] === 'number') return { ...state, textMode: args[0] };
-  if (fn === ops.setGState) return { ...state, fillAlpha: alphaOf(args?.[0], state.fillAlpha) };
+  if (fn === ops.setGState) return applyGState(args?.[0], state);
   return null;
 }
 
-/** The fill opacity a `setGState` operand sets (`ca`), or the one in force. */
-function alphaOf(entries: unknown, current: number): number {
-  if (!Array.isArray(entries)) return current;
-  for (const entry of entries) {
-    if (Array.isArray(entry) && entry[0] === 'ca' && typeof entry[1] === 'number' && Number.isFinite(entry[1])) return Math.min(1, Math.max(0, entry[1]));
-  }
-  return current;
+interface GroupOperand {
+  matrix?: unknown;
+  bbox?: unknown;
+  smask?: unknown;
+  isolated?: boolean;
+  knockout?: boolean;
 }
 
-/** Walks the operator list of a page with the graphics state it keeps (matrix, line width, colours), collecting rules, images and, with colour, shapes and glyph colours. */
+function beginGroupState(raw: unknown, state: GraphicsState, collector: RuleCollector): GraphicsState {
+  if (raw === null || typeof raw !== 'object') return state;
+  const group = raw as GroupOperand;
+  let next = state;
+  const groupMatrix = matrixFromList(group.matrix);
+  const clipBBox = boxFromList(group.bbox);
+  if (clipBBox !== null) {
+    const clipCtm = groupMatrix !== null ? multiply(groupMatrix, state.ctm) : state.ctm;
+    const clipped = transformBBoxToClip(clipBBox, (pt) => collector.pagePoint(pt, clipCtm));
+    if (clipped !== null) next = { ...next, clip: intersectClip(next.clip, clipped) };
+  }
+  if (group.smask || group.isolated || group.knockout) {
+    next = { ...next, fillAlpha: 1, strokeAlpha: 1 };
+  }
+  if (group.smask) {
+    next = { ...next, smaskDepth: next.smaskDepth + 1 };
+  }
+  return next;
+}
+
+/** Walks the operator list of a page with the graphics state it keeps (matrix, line width, colours, clip, groups), collecting rules, images and, with colour, shapes and glyph colours. */
 class OperatorScanner {
   private readonly kinds: PaintKinds;
   private readonly collector: RuleCollector;
@@ -545,12 +650,30 @@ class OperatorScanner {
   private readonly images: PdfContentImage[] = [];
   private readonly sources: ImageSource[] = [];
   private readonly stack: GraphicsState[] = [];
-  private state: GraphicsState = { ctm: MATRIX_IDENTITY, lineWidth: 1, fill: BLACK, stroke: BLACK, fillAlpha: 1, textMode: 0 };
+  private overflowDepth = 0;
+  private pendingClip = false;
+  private state: GraphicsState = {
+    ctm: MATRIX_IDENTITY,
+    baseTransform: MATRIX_IDENTITY,
+    lineWidth: 1,
+    fill: BLACK,
+    stroke: BLACK,
+    fillShading: null,
+    fillAlpha: 1,
+    strokeAlpha: 1,
+    dashed: false,
+    fillTransparent: false,
+    strokeTransparent: false,
+    textMode: 0,
+    clip: null,
+    smaskDepth: 0,
+  };
 
   constructor(
     private readonly ops: Record<string, number>,
     private readonly viewport: Viewport,
-    private readonly colour: boolean
+    private readonly colour: boolean,
+    private readonly pageObjs: PageObjectsLike | null
   ) {
     this.kinds = paintKinds(ops);
     this.collector = new RuleCollector(viewport, colour);
@@ -559,40 +682,179 @@ class OperatorScanner {
     this.showsText = new Set([ops.showText, ops.showSpacedText, ops.nextLineShowText, ops.nextLineSetSpacingShowText]);
   }
 
-  /** A painted path: its shapes and the rules its subpaths make. `place` is the operator's place in the paint order. */
-  private path(args: unknown[] | undefined, place: number): void {
-    const paint = args?.[0];
-    if (typeof paint !== 'number') return;
-    const painted: Paint = { fill: this.kinds.fill.has(paint), stroke: this.kinds.stroke.has(paint) };
-    // The place in the paint order is kept for the writers that draw in that order, which only a job that reads colour has.
-    const z = this.colour ? place : undefined;
-    for (const data of pathArrays(args?.[1])) {
-      const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, this.colour);
-      const drawn = this.shapes?.paint(subpaths, painted, this.state, place);
-      if (painted.stroke) this.collector.stroke(subpaths, this.state, z, drawn?.stroke);
-      if (painted.fill) this.collector.fill(subpaths, this.state, z, drawn?.fill);
+  private pushState(): void {
+    if (this.stack.length < PDF_CONTENT_MAX_STATE_DEPTH) this.stack.push(this.state);
+    else this.overflowDepth++;
+  }
+
+  private popState(): void {
+    this.pendingClip = false;
+    if (this.overflowDepth > 0) {
+      this.overflowDepth--;
+      return;
+    }
+    this.state = this.stack.pop() ?? this.state;
+  }
+
+  private subpathBox(subpath: Subpath): RectBox {
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    for (const pt of subpath.points) {
+      const vp = this.collector.pagePoint(pt, this.state.ctm);
+      if (vp.x < x0) x0 = vp.x;
+      if (vp.y < y0) y0 = vp.y;
+      if (vp.x > x1) x1 = vp.x;
+      if (vp.y > y1) y1 = vp.y;
+    }
+    return { x0, y0, x1, y1 };
+  }
+
+  private resolveShading(shading: ShadingRef, box: RectBox) {
+    if (!this.pageObjs?.has?.(shading.objId)) return null;
+    const ir = this.pageObjs.get?.(shading.objId);
+    const patternCtm = shading.matrix ? multiply(shading.matrix, this.state.baseTransform) : this.state.baseTransform;
+    return axialShadingGradient(ir, box, (pt) => this.collector.pagePoint(pt, patternCtm), this.state.fillAlpha);
+  }
+
+  private finishShapes(before: number, prevFillMissing: boolean, hasShading: ShadingRef | null): void {
+    if (!this.shapes) return;
+    const list = this.shapes.shapes;
+    if (hasShading && list.length === before && prevFillMissing && before > 0) {
+      const prev = list[before - 1];
+      if (prev.fill !== undefined) {
+        const resolved = this.resolveShading(hasShading, prev);
+        if (resolved?.kind === 'gradient') {
+          delete prev.fill;
+          prev.gradient = resolved.gradient;
+        }
+      }
+    }
+    for (let i = list.length - 1; i >= before; i--) {
+      const shape = list[i];
+      if (this.state.clip !== null && shape.kind === 'rect' && shape.stroke === undefined) {
+        const clamped = clampBoxToClip(shape, this.state.clip);
+        if (clamped === null) {
+          list.splice(i, 1);
+          continue;
+        }
+        shape.x0 = clamped.x0;
+        shape.y0 = clamped.y0;
+        shape.x1 = clamped.x1;
+        shape.y1 = clamped.y1;
+      }
+      if (hasShading && shape.fill !== undefined) {
+        const resolved = this.resolveShading(hasShading, shape);
+        if (resolved?.kind === 'gradient') {
+          delete shape.fill;
+          shape.gradient = resolved.gradient;
+        } else if (resolved?.kind === 'solid') {
+          shape.fill = resolved.color;
+          if (resolved.alpha < 1) shape.alpha = resolved.alpha;
+        }
+      }
     }
   }
 
+  private paintSubpaths(subpaths: Subpath[], painted: Paint, place: number, z: number | undefined): void {
+    const visible = this.state.clip ? subpaths.filter((sp) => !boxDisjointFromClip(this.subpathBox(sp), this.state.clip)) : subpaths;
+    if (visible.length === 0) return;
+    const useShading = Boolean(this.colour && painted.fill && this.state.fillShading !== null && this.pageObjs?.has?.(this.state.fillShading.objId));
+    const paintState = useShading ? { ...this.state, fill: BLACK } : this.state;
+    const before = this.shapes?.shapes.length ?? 0;
+    const prevFillMissing = Boolean(this.shapes && before > 0 && this.shapes.shapes[before - 1].fill === undefined);
+    const drawn = this.shapes?.paint(visible, painted, paintState, place);
+    if (this.colour) this.finishShapes(before, prevFillMissing, useShading ? this.state.fillShading : null);
+    this.collector.clip = this.state.clip;
+    if (painted.stroke) this.collector.stroke(visible, this.state, z, drawn?.stroke);
+    if (painted.fill && !useShading) this.collector.fill(visible, this.state, z, drawn?.fill);
+  }
+
+  /** A painted path: its shapes and the rules its subpaths make. `place` is the operator's place in the paint order. */
+  private path(args: unknown[] | undefined, place: number): void {
+    const paint = args?.[0];
+    const clipTarget = this.pendingClip;
+    this.pendingClip = false;
+    if (typeof paint !== 'number') return;
+    const arrays = pathArrays(args?.[1]);
+    const canPaint = this.state.smaskDepth === 0 && !isEmptyClip(this.state.clip);
+    const fillAllowed = canPaint && this.kinds.fill.has(paint) && (!this.colour || (!this.state.fillTransparent && this.state.fillAlpha > 0));
+    const strokeAllowed = canPaint && this.kinds.stroke.has(paint) && (!this.colour || (!this.state.strokeTransparent && this.state.strokeAlpha > 0));
+    const z = this.colour ? place : undefined;
+    const clippedSubpaths: Subpath[] | null = clipTarget ? [] : null;
+    for (const data of arrays) {
+      const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, this.colour);
+      if (fillAllowed || strokeAllowed) this.paintSubpaths(subpaths, { fill: fillAllowed, stroke: strokeAllowed }, place, z);
+      if (clippedSubpaths !== null) for (const sp of subpaths) clippedSubpaths.push(sp);
+    }
+    if (clippedSubpaths !== null) {
+      const nextClip = clipBoxOfSubpaths(clippedSubpaths, (pt) => this.collector.pagePoint(pt, this.state.ctm));
+      if (nextClip !== null) this.state = { ...this.state, clip: intersectClip(this.state.clip, nextClip) };
+    }
+  }
+
+  private shading(args: unknown[] | undefined, place: number): void {
+    if (!this.colour || !this.shapes || this.state.smaskDepth > 0 || isEmptyClip(this.state.clip)) return;
+    if (this.state.fillAlpha <= 0 || this.shapes.shapes.length >= PDF_CONTENT_MAX_SHAPES_PER_PAGE) return;
+    const objId = args?.[0];
+    if (typeof objId !== 'string' || !this.pageObjs?.has?.(objId)) return;
+    const ir = this.pageObjs.get?.(objId);
+    const toPage = (pt: { x: number; y: number }): { x: number; y: number } => this.collector.pagePoint(pt, this.state.ctm);
+    const box = shadingViewportBox(ir, this.state.clip, this.viewport.width, this.viewport.height, toPage);
+    if (box === null) return;
+    const resolved = axialShadingGradient(ir, box, toPage, this.state.fillAlpha);
+    if (resolved === null) return;
+    this.shapes.shapes.push(
+      resolved.kind === 'gradient'
+        ? { kind: 'rect', ...box, gradient: resolved.gradient, z: place }
+        : { kind: 'rect', ...box, fill: resolved.color, ...(resolved.alpha < 1 ? { alpha: resolved.alpha } : {}), z: place }
+    );
+  }
+
   private image(fn: number, args: unknown[] | undefined, place: number): void {
+    if (this.state.smaskDepth > 0 || isEmptyClip(this.state.clip)) return;
     if (this.images.length >= PDF_CONTENT_MAX_IMAGES_PER_PAGE) return;
     const named = fn === this.ops.paintImageXObject;
     const target = named ? (args as unknown[]) : [undefined, (args?.[0] as { width?: number })?.width, (args?.[0] as { height?: number })?.height];
     const pixelWidth = target[1];
     const pixelHeight = target[2];
     if (typeof pixelWidth !== 'number' || typeof pixelHeight !== 'number') return;
-    this.images.push({ ...imageBox(this.viewport, this.state.ctm), pixelWidth, pixelHeight, ...(this.colour ? { z: place } : {}) });
+    const placed = imageBox(this.viewport, this.state.ctm);
+    if (boxDisjointFromClip({ x0: placed.x, y0: placed.y, x1: placed.x + placed.width, y1: placed.y + placed.height }, this.state.clip)) return;
+    this.images.push({ ...placed, pixelWidth, pixelHeight, ...(this.colour ? { z: place } : {}) });
     this.sources.push(named ? { objId: String(args?.[0]) } : { inline: args?.[0] });
   }
 
   private apply(fn: number, args: unknown[] | undefined): void {
     const { ops, state } = this;
     if (fn === ops.save) {
-      if (this.stack.length < PDF_CONTENT_MAX_STATE_DEPTH) this.stack.push(state);
+      this.pushState();
     } else if (fn === ops.restore) {
-      this.state = this.stack.pop() ?? state;
+      this.popState();
     } else if (fn === ops.transform) {
-      if (isMatrix(args)) this.state = { ...state, ctm: multiply(args, state.ctm) };
+      const m = matrixFromList(args);
+      if (m !== null) this.state = { ...state, ctm: multiply(m, state.ctm) };
+    } else if (fn === ops.paintFormXObjectBegin) {
+      this.pushState();
+      const formMatrix = matrixFromList(args?.[0]);
+      const nextCtm = formMatrix !== null ? multiply(formMatrix, state.ctm) : state.ctm;
+      let nextClip = state.clip;
+      const formBBox = boxFromList(args?.[1]);
+      if (formBBox !== null) {
+        const clipped = transformBBoxToClip(formBBox, (pt) => this.collector.pagePoint(pt, nextCtm));
+        if (clipped !== null) nextClip = intersectClip(nextClip, clipped);
+      }
+      this.state = { ...state, ctm: nextCtm, baseTransform: nextCtm, clip: nextClip };
+      this.pendingClip = false;
+    } else if (fn === ops.paintFormXObjectEnd || fn === ops.endGroup) {
+      this.popState();
+    } else if (fn === ops.beginGroup) {
+      this.pushState();
+      this.state = beginGroupState(args?.[0], state, this.collector);
+      this.pendingClip = false;
+    } else if (fn === ops.clip || fn === ops.eoClip) {
+      this.pendingClip = true;
     } else if (fn === ops.setLineWidth) {
       const width = args?.[0];
       if (typeof width === 'number' && Number.isFinite(width)) this.state = { ...state, lineWidth: width };
@@ -609,6 +871,7 @@ class OperatorScanner {
       const fn = list.fnArray[i];
       const args = list.argsArray[i];
       if (fn === ops.constructPath) this.path(args, i);
+      else if (fn === ops.shadingFill) this.shading(args, i);
       else if (fn === ops.paintImageXObject || fn === ops.paintInlineImageXObject) this.image(fn, args, i);
       else this.apply(fn, args);
     }
@@ -623,8 +886,8 @@ class OperatorScanner {
   }
 }
 
-function scanOperators(list: OperatorListLike, ops: Record<string, number>, viewport: Viewport, colour: boolean): OperatorScan {
-  return new OperatorScanner(ops, viewport, colour).scan(list);
+function scanOperators(list: OperatorListLike, ops: Record<string, number>, viewport: Viewport, colour: boolean, pageObjs: PageObjectsLike | null = null): OperatorScan {
+  return new OperatorScanner(ops, viewport, colour, pageObjs).scan(list);
 }
 
 /** How one page's content is read: whether its operator list is walked, where its images go, what an unmapped glyph becomes. */
@@ -655,7 +918,7 @@ export async function readPageContent(
   if (readOperators) {
     const list = await page.getOperatorList();
     if (list.fnArray.length > PDF_CONTENT_MAX_OPERATORS_PER_PAGE) operatorsSkipped = true;
-    else scan = scanOperators(list, ops, viewport, colour);
+    else scan = scanOperators(list, ops, viewport, colour, (page as { objs?: PageObjectsLike }).objs ?? null);
   }
   if (imageExtractor) await imageExtractor.attach(pageNumber - 1, page, scan.images, scan.sources);
   // Fonts are described after the operator list is read: pdfjs resolves their names while it runs.

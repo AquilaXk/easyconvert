@@ -1,7 +1,10 @@
 import { hexOf } from '../pdf-content-colours';
 import { CLOSE, COORDINATES_OF, CURVE_TO, LINE_TO, MOVE_TO, QUADRATIC_TO } from '../pdf-content-shapes';
-import type { PdfContentShape } from '../pdf-text-types';
+import type { PdfContentShape, PdfLinearGradient } from '../pdf-text-types';
 import type { PageShape } from './model';
+
+const ANGLE_UNITS_PER_DEGREE = 60_000;
+const FULL_CIRCLE_DEGREES = 360;
 
 /**
  * DrawingML for the painted shapes of a PDF page: a rectangle is a `rect` preset, any other outline a custom geometry of the same
@@ -24,6 +27,20 @@ export interface SlideScale {
 function solidFill(color: number, alpha?: number): string {
   const colour = alpha === undefined ? `<a:srgbClr val="${hexOf(color)}"/>` : `<a:srgbClr val="${hexOf(color)}"><a:alpha val="${Math.round(alpha * ALPHA_UNITS)}"/></a:srgbClr>`;
   return `<a:solidFill>${colour}</a:solidFill>`;
+}
+
+function gradFill(gradient: PdfLinearGradient): string {
+  const stops = gradient.stops
+    .map((stop) => {
+      const pos = Math.min(ALPHA_UNITS, Math.max(0, Math.round(stop.pos * ALPHA_UNITS)));
+      const alpha = stop.alpha === undefined || stop.alpha >= 1 ? '' : `<a:alpha val="${Math.round(stop.alpha * ALPHA_UNITS)}"/>`;
+      const colour = alpha ? `<a:srgbClr val="${hexOf(stop.color)}">${alpha}</a:srgbClr>` : `<a:srgbClr val="${hexOf(stop.color)}"/>`;
+      return `<a:gs pos="${pos}">${colour}</a:gs>`;
+    })
+    .join('');
+  const normDeg = ((gradient.angleDeg % FULL_CIRCLE_DEGREES) + FULL_CIRCLE_DEGREES) % FULL_CIRCLE_DEGREES;
+  const ang = Math.round(normDeg * ANGLE_UNITS_PER_DEGREE) % (FULL_CIRCLE_DEGREES * ANGLE_UNITS_PER_DEGREE);
+  return `<a:gradFill flip="none" rotWithShape="1"><a:gsLst>${stops}</a:gsLst><a:lin ang="${ang}" scaled="0"/></a:gradFill>`;
 }
 
 /** The segments of a path as DrawingML path commands, in EMU relative to the shape's corner. */
@@ -77,6 +94,11 @@ function extentOf(path: readonly number[]): { x0: number; y0: number; x1: number
 /** The rectangle of all the coordinates of a path, control points included. */
 export { extentOf };
 
+function shapeFillXml(shape: PdfContentShape): string {
+  if (shape.gradient) return gradFill(shape.gradient);
+  return shape.fill === undefined ? '<a:noFill/>' : solidFill(shape.fill, shape.alpha);
+}
+
 /** The children of a shape's `spPr`: its place, geometry, fill and outline. */
 export function shapeProperties(shape: PdfContentShape, scale: SlideScale, tag = 'p:spPr'): string {
   const dash = shape.dashed ? '<a:prstDash val="dash"/>' : '';
@@ -84,7 +106,7 @@ export function shapeProperties(shape: PdfContentShape, scale: SlideScale, tag =
     shape.stroke === undefined
       ? '<a:ln><a:noFill/></a:ln>'
       : `<a:ln w="${Math.max(scale.length(shape.strokeWidth ?? 0), 1)}">${solidFill(shape.stroke, shape.strokeAlpha)}${dash}</a:ln>`;
-  const fill = shape.fill === undefined ? '<a:noFill/>' : solidFill(shape.fill, shape.alpha);
+  const fill = shapeFillXml(shape);
   if (shape.kind === 'rect' || !shape.path) {
     return (
       `<${tag}><a:xfrm><a:off x="${scale.x(shape.x0)}" y="${scale.y(shape.y0)}"/><a:ext cx="${scale.length(shape.x1 - shape.x0)}" cy="${scale.length(shape.y1 - shape.y0)}"/></a:xfrm>` +
@@ -95,7 +117,7 @@ export function shapeProperties(shape: PdfContentShape, scale: SlideScale, tag =
   const width = Math.max(scale.length(box.x1 - box.x0), 1);
   const height = Math.max(scale.length(box.y1 - box.y0), 1);
   const to = (x: number, y: number): string => `<a:pt x="${scale.length(x - box.x0)}" y="${scale.length(y - box.y0)}"/>`;
-  const unfilled = shape.fill === undefined ? ' fill="none"' : '';
+  const unfilled = shape.fill === undefined && shape.gradient === undefined ? ' fill="none"' : '';
   return (
     `<${tag}><a:xfrm><a:off x="${scale.x(box.x0)}" y="${scale.y(box.y0)}"/><a:ext cx="${width}" cy="${height}"/></a:xfrm>` +
     `<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/><a:pathLst><a:path w="${width}" h="${height}"${unfilled}>${pathCommands(shape.path, to)}</a:path></a:pathLst></a:custGeom>` +
@@ -123,6 +145,19 @@ export function wordShapeAnchor(shape: PageShape, drawingId: number): string {
     x1: shape.width,
     y1: shape.height,
     ...(shape.fill === undefined ? {} : { fill: Number.parseInt(shape.fill, HEX_RADIX) }),
+    ...(shape.gradient === undefined
+      ? {}
+      : {
+          gradient: {
+            kind: 'linear' as const,
+            angleDeg: shape.gradient.angleDeg,
+            stops: shape.gradient.stops.map((stop) => ({
+              pos: stop.pos,
+              color: Number.parseInt(stop.color, HEX_RADIX),
+              ...(stop.alpha === undefined ? {} : { alpha: stop.alpha }),
+            })),
+          },
+        }),
     ...(shape.stroke === undefined ? {} : { stroke: Number.parseInt(shape.stroke, HEX_RADIX), strokeWidth: shape.strokeWidthPt ?? 0 }),
     ...(shape.alpha === undefined ? {} : { alpha: shape.alpha }),
     ...(shape.strokeAlpha === undefined ? {} : { strokeAlpha: shape.strokeAlpha }),

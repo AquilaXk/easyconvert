@@ -78,6 +78,18 @@ export interface Inline {
  * in points, `x` from the left edge of the page and `y` from the top of the paragraph it hangs on (negative above it), so the shape
  * keeps its place against that paragraph's text however the document flows; with `pageRelative`, `y` is from the top of the page.
  */
+export interface PageGradientStop {
+  pos: number;
+  color: string;
+  alpha?: number;
+}
+
+export interface PageLinearGradient {
+  kind: 'linear';
+  angleDeg: number;
+  stops: PageGradientStop[];
+}
+
 export interface PageShape {
   kind: 'rect' | 'path';
   x: number;
@@ -86,6 +98,8 @@ export interface PageShape {
   height: number;
   /** Fill and stroke colour as six hex digits. */
   fill?: string;
+  /** Linear gradient fill as hex stops. */
+  gradient?: PageLinearGradient;
   stroke?: string;
   strokeWidthPt?: number;
   /** Fill opacity below one. */

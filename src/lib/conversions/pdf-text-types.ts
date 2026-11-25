@@ -40,6 +40,8 @@ export const PDF_CONTENT_MAX_OPERATORS_PER_PAGE = 2_000_000;
 export const PDF_CONTENT_MAX_RULES_PER_PAGE = 20_000;
 /** Painted shapes one page may report (filled rectangles and filled or stroked paths); more are dropped. */
 export const PDF_CONTENT_MAX_SHAPES_PER_PAGE = 5_000;
+/** Colour stops a single shading gradient shape keeps. */
+export const PDF_CONTENT_MAX_GRADIENT_STOPS = 32;
 /** Numbers in the path data of the shapes of one page; the shapes that come after are dropped. */
 export const PDF_CONTENT_MAX_SHAPE_COORDINATES_PER_PAGE = 400_000;
 /** Image placements one page may report. */
@@ -215,10 +217,32 @@ export interface PdfContentRule {
   thickness: number;
   /** In a job that reads colour: the colour as 0xRRGGBB, left out for black. */
   color?: number;
+  /** Stroke opacity below one (`CA` of the graphics state). */
+  strokeAlpha?: number;
+  /** Whether the stroke has a non-empty dash pattern (`setDash` / `D`). */
+  dashed?: boolean;
   /** In a job that reads colour: the place in the paint order of the page, shared with its images and shapes. */
   z?: number;
   /** The rule is a piece of the outline of a `PdfContentShape`, which draws it. */
   inShape?: true;
+}
+
+/** One colour stop of a PDF axial shading gradient. */
+export interface PdfGradientStop {
+  /** Normalized stop position in [0, 1]. */
+  pos: number;
+  /** Stop colour as 0xRRGGBB. */
+  color: number;
+  /** Opacity below one. */
+  alpha?: number;
+}
+
+/** Linear gradient extracted from a PDF axial shading in viewport coordinates. */
+export interface PdfLinearGradient {
+  kind: 'linear';
+  /** Clockwise angle in degrees from the positive x axis (DrawingML convention). */
+  angleDeg: number;
+  stops: PdfGradientStop[];
 }
 
 /** A placed image: its box in the page viewport and what is needed to find its pixels. */
@@ -249,6 +273,8 @@ export interface PdfContentShape {
   y1: number;
   /** Fill colour as 0xRRGGBB; absent when the path is not filled. */
   fill?: number;
+  /** Linear gradient fill (takes precedence over solid `fill` when set). */
+  gradient?: PdfLinearGradient;
   /** Stroke colour as 0xRRGGBB and line width in points; absent when the path is not stroked (a stroked rectangle is four rules). */
   stroke?: number;
   strokeWidth?: number;
