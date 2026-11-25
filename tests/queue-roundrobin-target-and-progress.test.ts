@@ -1054,6 +1054,7 @@ describe('Queue scheduling fairness, direct targetQueue polling, and progress de
       expect((loggedDrainedErrors[0]?.[1] as Error).message).toBe('drained listener failure #1');
       expect((loggedDrainedErrors[1]?.[1] as Error).message).toBe('drained listener failure #2');
     } finally {
+      errorSpy.mockRestore();
       process.off('unhandledRejection', onUnhandled);
     }
   });

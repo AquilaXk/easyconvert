@@ -192,6 +192,10 @@ describe('the version of an engine', () => {
       const failingBinary = script('probe-libreoffice-fail', 'mkdir -p "$HOME/.cache" 2>/dev/null || true; exit 1');
       expect(await withBinaryAt('SOFFICE_PATH', failingBinary, () => installedEngineVersion('libreoffice'))).toBeUndefined();
       expect(fs.readdirSync(tmpRoot)).toEqual([]);
+
+      resetEngineVersionProbes();
+      process.env.TMPDIR = path.join(dir, 'missing-tmpdir');
+      await expect(withBinaryAt('SOFFICE_PATH', binary, () => installedEngineVersion('libreoffice'))).resolves.toBeUndefined();
     } finally {
       if (prevTmpDir === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = prevTmpDir;

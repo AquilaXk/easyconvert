@@ -414,6 +414,8 @@ interface GraphicsState {
   stroke: Rgb | null;
   /** Active pattern-space shading fill when `setFillColorN` chose `Shading`, or null. */
   fillShading: ShadingRef | null;
+  /** Whether `setStrokeColorN` chose `Shading` rather than a tiling pattern. */
+  strokeShading: boolean;
   /** Opacity of fills (`ca` of the graphics state). */
   fillAlpha: number;
   /** Opacity of strokes (`CA` of the graphics state). */
@@ -498,7 +500,7 @@ class RuleCollector {
 
   /** `inShape[i]` tells that subpath `i` is drawn by a shape of its own. */
   stroke(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
-    if (this.colour && state.stroke === null) return;
+    if (this.colour && state.strokeShading) return;
     const thickness = Math.max(state.lineWidth * RuleCollector.scaleOf(state.ctm), HAIRLINE_FLOOR);
     const strokeAlpha = state.strokeAlpha < 1 ? state.strokeAlpha : undefined;
     subpaths.forEach((subpath, index) => {
@@ -517,7 +519,7 @@ class RuleCollector {
 
   /** A filled rectangle thin enough to be a line is a rule; larger fills are backgrounds and are ignored. */
   fill(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
-    if (state.fill === null || isLightColour(state.fill)) return;
+    if (state.fillShading !== null || (state.fill !== null && isLightColour(state.fill))) return;
     subpaths.forEach((subpath, index) => {
       if (subpath.curved) return;
       const ink: RuleInk = { color: state.fill, z, ...(inShape[index] ? { inShape: true as const } : {}) };
@@ -601,12 +603,12 @@ function withColour(fn: number, args: unknown[] | undefined, ops: Record<string,
   }
   if (!colour) return null;
   if (fn === ops.setStrokeRGBColor || fn === ops.setStrokeGray) {
-    return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke, strokeTransparent: false };
+    return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke, strokeShading: false, strokeTransparent: false };
   }
   if (fn === ops.setFillColorN) return { ...state, fill: null, fillShading: shadingOperand(args), fillTransparent: false };
-  if (fn === ops.setStrokeColorN) return { ...state, stroke: null, strokeTransparent: false };
+  if (fn === ops.setStrokeColorN) return { ...state, stroke: null, strokeShading: args?.[0] === 'Shading', strokeTransparent: false };
   if (fn === ops.setFillTransparent) return { ...state, fill: null, fillShading: null, fillTransparent: true };
-  if (fn === ops.setStrokeTransparent) return { ...state, stroke: null, strokeTransparent: true };
+  if (fn === ops.setStrokeTransparent) return { ...state, stroke: null, strokeShading: false, strokeTransparent: true };
   if (fn === ops.setDash) return { ...state, dashed: isNumberList(args?.[0]) && args[0].length > 0 };
   if (fn === ops.setTextRenderingMode && typeof args?.[0] === 'number') return { ...state, textMode: args[0] };
   if (fn === ops.setGState) return applyGState(args?.[0], state);
@@ -661,6 +663,7 @@ class OperatorScanner {
     fill: BLACK,
     stroke: BLACK,
     fillShading: null,
+    strokeShading: false,
     fillAlpha: 1,
     strokeAlpha: 1,
     dashed: false,

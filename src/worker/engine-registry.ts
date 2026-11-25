@@ -225,9 +225,10 @@ function binaryOf(probe: VersionProbe): string | null {
 }
 
 async function runVersionProbe(binary: string, probe: VersionProbe): Promise<string | undefined> {
-  const probeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'easyconvert-probe-'));
+  let probeDir: string | undefined;
   let output: string;
   try {
+    probeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'easyconvert-probe-'));
     const result = await executeSandboxedBinary(binary, [...probe.args], {
       timeoutMs: PROBE_TIMEOUT_MS,
       maxBuffer: PROBE_MAX_BYTES,
@@ -242,7 +243,9 @@ async function runVersionProbe(binary: string, probe: VersionProbe): Promise<str
     if (!(err instanceof SandboxedProcessError) || err.spawnErrorCode !== undefined) return undefined;
     output = `${err.stdout}\n${err.stderr}`;
   } finally {
-    await fs.promises.rm(probeDir, { recursive: true, force: true });
+    if (probeDir !== undefined) {
+      await fs.promises.rm(probeDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
   return probe.pattern.exec(output)?.[1];
 }

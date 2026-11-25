@@ -799,4 +799,74 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     expect(Number.isFinite(extentOf([99, 0, 0]).x0)).toBe(false);
     expect(Number.isFinite(extentOf([0, Number.NaN, 0]).x0)).toBe(false);
   });
+
+  it('preserves thin rules under TilingPattern (PatternType 1) fills and strokes while suppressing Shading (PatternType 2) bars', async () => {
+    const pdf = await pdfFromContentStream((ctx, resources) => {
+      const tilingPattern = ctx.stream(Buffer.from('0 0 0 rg 0 0 2 2 re f', 'ascii'), {
+        Type: PDFName.of('Pattern'),
+        PatternType: PDFNumber.of(1),
+        PaintType: PDFNumber.of(1),
+        TilingType: PDFNumber.of(1),
+        BBox: ctx.obj([0, 0, 4, 4]),
+        XStep: PDFNumber.of(4),
+        YStep: PDFNumber.of(4),
+        Resources: ctx.obj({}),
+      });
+      const fnRadial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0, 1, 0]), C1: ctx.obj([1, 1, 0]), N: PDFNumber.of(1) });
+      const shRadial = ctx.obj({
+        ShadingType: 3,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([200, 300, 5, 200, 300, 90]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnRadial),
+      });
+      const patRadial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shRadial) });
+
+      resources.set(PDFName.of('Pattern'), ctx.obj({ PT1: ctx.register(tilingPattern), PR: ctx.register(patRadial) }));
+      return [
+        // 1. Filled thin bar under PatternType 1 (TilingPattern) -> MUST preserve rule (y0=800-600.75=199.25)
+        'q /Pattern cs /PT1 scn 50 600 200 1.5 re f Q',
+        // 2. Filled thin bar under PatternType 2 radial Shading -> MUST emit zero rules
+        'q /Pattern cs /PR scn 50 500 200 2 re f Q',
+        // 3. Stroked thin line under PatternType 1 (TilingPattern) -> MUST preserve rule (y0=800-400=400)
+        'q /Pattern CS /PT1 SCN 1.2 w 50 400 m 250 400 l S Q',
+        // 4. Stroked thin line under PatternType 2 radial Shading -> MUST emit zero rules
+        'q /Pattern CS /PR SCN 1.2 w 50 300 m 250 300 l S Q',
+        // 5. Shading state cleared by subsequent solid colour -> solid rule at y=200 (fill) and y=150 (stroke) kept
+        'q /Pattern cs /PR scn 50 250 200 1.5 re f 0 0 0 rg 50 200 200 1.5 re f Q',
+        'q /Pattern CS /PR SCN 1 w 50 180 m 250 180 l S 0 0 0 RG 50 150 m 250 150 l S Q',
+      ].join('\n');
+    });
+
+    const extracted = await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: true });
+    const page = extracted.content[0];
+
+    expect(page.rules).toHaveLength(4);
+    expect(page.rules.some((r) => Math.abs(r.y0 - 199.25) < 1 && r.x1 - r.x0 > 190)).toBe(true);
+    expect(page.rules.some((r) => Math.abs(r.y0 - 400) < 1 && r.x1 - r.x0 > 190)).toBe(true);
+    expect(page.rules.some((r) => Math.abs(r.y0 - 599.25) < 1 && r.x1 - r.x0 > 190)).toBe(true);
+    expect(page.rules.some((r) => Math.abs(r.y0 - 650) < 1 && r.x1 - r.x0 > 190)).toBe(true);
+    // Neither radial filled (y=299) nor radial stroked (y=500, y=620) bars produced rules.
+    expect(page.rules.some((r) => Math.abs(r.y0 - 299) < 2 || Math.abs(r.y0 - 500) < 2 || Math.abs(r.y0 - 620) < 2)).toBe(false);
+
+    // Isolated PatternType 2 radial fill emits zero rules and zero placeholder shapes.
+    const radialOnlyPdf = await pdfFromContentStream((ctx, resources) => {
+      const fnRadial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0, 1, 0]), C1: ctx.obj([1, 1, 0]), N: PDFNumber.of(1) });
+      const shRadial = ctx.obj({
+        ShadingType: 3,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([150, 400, 5, 150, 400, 90]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnRadial),
+      });
+      const patRadial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shRadial) });
+      resources.set(PDFName.of('Pattern'), ctx.obj({ PR: ctx.register(patRadial) }));
+      return 'q /Pattern cs /PR scn 50 400 200 2 re f Q';
+    });
+    const radialOnly = await analyzePdfPagesInProcess(radialOnlyPdf, { geometry: 'none', content: true, images: false, colour: true });
+    expect(radialOnly.content[0].rules).toHaveLength(0);
+    expect(radialOnly.content[0].shapes ?? []).toHaveLength(0);
+  });
 });
