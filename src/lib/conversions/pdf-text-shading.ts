@@ -127,8 +127,15 @@ function uniqueCornerLoop(pts: readonly Point[]): Point[] {
   return out;
 }
 
+function segmentCoordinateCount(code: number): number {
+  if (code === 0 || code === 1) return 2;
+  if (code === 2) return 6;
+  if (code === 3) return 4;
+  return 0;
+}
+
 export function clipBoxOfSubpaths(
-  subpaths: readonly { points: readonly Point[]; closed: boolean; curved?: boolean }[],
+  subpaths: readonly { points: readonly Point[]; closed: boolean; curved?: boolean; segments?: readonly number[] }[],
   toPage: (p: Point) => Point
 ): ClipBox | null {
   if (subpaths.length === 0) return null;
@@ -137,16 +144,31 @@ export function clipBoxOfSubpaths(
   let x1 = -Infinity;
   let y1 = -Infinity;
   const firstTransformed: Point[] = [];
+  const includePoint = (raw: Point, recordFirst: boolean): boolean => {
+    const pt = toPage(raw);
+    if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
+    if (recordFirst) firstTransformed.push(pt);
+    if (pt.x < x0) x0 = pt.x;
+    if (pt.y < y0) y0 = pt.y;
+    if (pt.x > x1) x1 = pt.x;
+    if (pt.y > y1) y1 = pt.y;
+    return true;
+  };
   for (let s = 0; s < subpaths.length; s++) {
     const sp = subpaths[s];
+    if (sp.curved && sp.segments && sp.segments.length > 0) {
+      let at = 0;
+      while (at < sp.segments.length) {
+        const count = segmentCoordinateCount(sp.segments[at++]);
+        for (let i = 0; i + 1 < count; i += 2) {
+          if (!includePoint({ x: sp.segments[at + i], y: sp.segments[at + i + 1] }, false)) return null;
+        }
+        at += count;
+      }
+      continue;
+    }
     for (const raw of sp.points) {
-      const pt = toPage(raw);
-      if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return null;
-      if (s === 0) firstTransformed.push(pt);
-      if (pt.x < x0) x0 = pt.x;
-      if (pt.y < y0) y0 = pt.y;
-      if (pt.x > x1) x1 = pt.x;
-      if (pt.y > y1) y1 = pt.y;
+      if (!includePoint(raw, s === 0)) return null;
     }
   }
   if (!Number.isFinite(x0)) return null;
@@ -295,19 +317,25 @@ function sampleStopsAt(stops: readonly RawStop[], t: number): PdfGradientStop {
 function remapStopsToBox(stops: readonly RawStop[], sMin: number, sMax: number): PdfGradientStop[] {
   const span = sMax - sMin;
   const mapped: PdfGradientStop[] = [];
-  if (sMin > 1e-4 && sMin < 1 - 1e-4) mapped.push({ ...sampleStopsAt(stops, sMin), pos: 0 });
+  const cropStart = sMin > 1e-4;
+  const cropEnd = sMax < 1 - 1e-4;
+  if (cropStart) mapped.push({ ...sampleStopsAt(stops, sMin), pos: 0 });
   for (const s of stops) {
+    if (cropStart && s.t <= sMin + 1e-5) continue;
+    if (cropEnd && s.t >= sMax - 1e-5) continue;
     const pos = Math.min(1, Math.max(0, (s.t - sMin) / span));
     const entry: PdfGradientStop = { pos: Number(pos.toFixed(5)), color: s.color, ...(s.alpha < 1 - 1e-4 ? { alpha: Number(s.alpha.toFixed(4)) } : {}) };
     const prev = mapped[mapped.length - 1];
     if (prev && Math.abs(prev.pos - entry.pos) <= 1e-5 && prev.color === entry.color && prev.alpha === entry.alpha) continue;
     mapped.push(entry);
   }
-  if (sMax > 1e-4 && sMax < 1 - 1e-4) {
+  if (cropEnd) {
     const endSample = { ...sampleStopsAt(stops, sMax), pos: 1 };
     const prev = mapped[mapped.length - 1];
-    if (!prev || Math.abs(prev.pos - 1) > 1e-5 || prev.color !== endSample.color) mapped.push(endSample);
+    if (!prev || Math.abs(prev.pos - 1) > 1e-5 || prev.color !== endSample.color || prev.alpha !== endSample.alpha) mapped.push(endSample);
   }
+  if (mapped.length > 0 && mapped[0].pos > 1e-4) mapped.unshift({ ...mapped[0], pos: 0 });
+  if (mapped.length > 0 && mapped[mapped.length - 1].pos < 1 - 1e-4) mapped.push({ ...mapped[mapped.length - 1], pos: 1 });
   if (mapped.length <= PDF_CONTENT_MAX_GRADIENT_STOPS) return mapped;
   const reduced: PdfGradientStop[] = [];
   const maxIdx = PDF_CONTENT_MAX_GRADIENT_STOPS - 1;
@@ -315,6 +343,40 @@ function remapStopsToBox(stops: readonly RawStop[], sMin: number, sMax: number):
     reduced.push(mapped[Math.round((i / maxIdx) * (mapped.length - 1))]);
   }
   return reduced;
+}
+
+function solidFromSample(sample: PdfGradientStop): ResolvedShading | null {
+  const alpha = sample.alpha ?? 1;
+  return alpha <= 0 ? null : { kind: 'solid', color: sample.color, alpha };
+}
+
+function gradientNormal(
+  dx: number,
+  dy: number,
+  vp0: Point,
+  vp1: Point,
+  toViewport: (p: Point) => Point
+): { wx: number; wy: number } | null {
+  const d2 = dx * dx + dy * dy;
+  if (!Number.isFinite(d2) || d2 < 1e-6) return null;
+  const o = toViewport({ x: 0, y: 0 });
+  const ex = toViewport({ x: 1, y: 0 });
+  const ey = toViewport({ x: 0, y: 1 });
+  const a = ex.x - o.x;
+  const b = ex.y - o.y;
+  const c = ey.x - o.x;
+  const d = ey.y - o.y;
+  const det = a * d - b * c;
+  if (Number.isFinite(det) && Math.abs(det) >= 1e-9) {
+    const wx = (d * dx - b * dy) / (det * d2);
+    const wy = (-c * dx + a * dy) / (det * d2);
+    if (Number.isFinite(wx) && Number.isFinite(wy) && Math.hypot(wx, wy) >= 1e-9) return { wx, wy };
+  }
+  const vx = vp1.x - vp0.x;
+  const vy = vp1.y - vp0.y;
+  const len2 = vx * vx + vy * vy;
+  if (!Number.isFinite(len2) || len2 < 1e-6) return null;
+  return { wx: vx / len2, wy: vy / len2 };
 }
 
 export function axialShadingGradient(
@@ -330,24 +392,23 @@ export function axialShadingGradient(
   if (!isArrayLikeNumbers(ir[4], 2) || !isArrayLikeNumbers(ir[5], 2)) return null;
   const vp0 = toViewport({ x: ir[4][0], y: ir[4][1] });
   const vp1 = toViewport({ x: ir[5][0], y: ir[5][1] });
-  const vx = vp1.x - vp0.x;
-  const vy = vp1.y - vp0.y;
-  const len2 = vx * vx + vy * vy;
-  if (!Number.isFinite(len2) || len2 < 1e-6) {
+  if (!Number.isFinite(vp0.x) || !Number.isFinite(vp0.y) || !Number.isFinite(vp1.x) || !Number.isFinite(vp1.y)) return null;
+  const normal = gradientNormal(ir[5][0] - ir[4][0], ir[5][1] - ir[4][1], vp0, vp1, toViewport);
+  if (normal === null) {
     const last = stops[stops.length - 1];
-    return { kind: 'solid', color: last.color, alpha: last.alpha };
+    return last.alpha <= 0 ? null : { kind: 'solid', color: last.color, alpha: last.alpha };
   }
-  const sMin = (((vx >= 0 ? box.x0 : box.x1) - vp0.x) * vx + ((vy >= 0 ? box.y0 : box.y1) - vp0.y) * vy) / len2;
-  const sMax = (((vx >= 0 ? box.x1 : box.x0) - vp0.x) * vx + ((vy >= 0 ? box.y1 : box.y0) - vp0.y) * vy) / len2;
-  if (!Number.isFinite(sMin) || !Number.isFinite(sMax) || sMax - sMin < 1e-6) {
-    const sample = sampleStopsAt(stops, Number.isFinite(sMin) ? Math.min(1, Math.max(0, sMin)) : 0);
-    return { kind: 'solid', color: sample.color, alpha: sample.alpha ?? 1 };
-  }
+  const { wx, wy } = normal;
+  const sMin = ((wx >= 0 ? box.x0 : box.x1) - vp0.x) * wx + ((wy >= 0 ? box.y0 : box.y1) - vp0.y) * wy;
+  const sMax = ((wx >= 0 ? box.x1 : box.x0) - vp0.x) * wx + ((wy >= 0 ? box.y1 : box.y0) - vp0.y) * wy;
+  if (!Number.isFinite(sMin) || !Number.isFinite(sMax)) return null;
+  if (sMax <= 0) return solidFromSample(sampleStopsAt(stops, 0));
+  if (sMin >= 1) return solidFromSample(sampleStopsAt(stops, 1));
+  if (sMax - sMin < 1e-6) return solidFromSample(sampleStopsAt(stops, Math.min(1, Math.max(0, sMin))));
   const boxStops = remapStopsToBox(stops, sMin, sMax);
+  if (boxStops.length === 0) return null;
   const first = boxStops[0];
-  if (boxStops.every((s) => s.color === first.color && s.alpha === first.alpha)) {
-    return { kind: 'solid', color: first.color, alpha: first.alpha ?? 1 };
-  }
-  const angleDeg = Number((((Math.atan2(vy, vx) * 180) / Math.PI + 360) % 360).toFixed(3));
+  if (boxStops.every((s) => s.color === first.color && s.alpha === first.alpha)) return solidFromSample(first);
+  const angleDeg = Number((((Math.atan2(wy, wx) * 180) / Math.PI + 360) % 360).toFixed(3));
   return { kind: 'gradient', gradient: { kind: 'linear', angleDeg, stops: boxStops } };
 }

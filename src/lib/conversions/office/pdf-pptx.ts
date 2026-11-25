@@ -209,7 +209,7 @@ class SlideXml {
     const offX = this.x(rule.x0);
     const offY = this.y(rule.y0);
     const extent = horizontal ? `<a:off x="${offX}" y="${offY}"/><a:ext cx="${width}" cy="0"/>` : `<a:off x="${offX}" y="${offY}"/><a:ext cx="0" cy="${height}"/>`;
-    const alpha = rule.strokeAlpha === undefined ? '' : `<a:alpha val="${Math.round(rule.strokeAlpha * 100_000)}"/>`;
+    const alpha = rule.strokeAlpha === undefined || rule.strokeAlpha >= 1 ? '' : `<a:alpha val="${Math.round(rule.strokeAlpha * 100_000)}"/>`;
     const color = alpha ? `<a:srgbClr val="${hexOf(rule.color ?? 0)}">${alpha}</a:srgbClr>` : `<a:srgbClr val="${hexOf(rule.color ?? 0)}"/>`;
     const dash = rule.dashed ? '<a:prstDash val="dash"/>' : '';
     this.shapes.push(

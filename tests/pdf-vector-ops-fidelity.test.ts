@@ -275,6 +275,44 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     );
     expect(pageContent.images).toHaveLength(1);
     expect(pageContent.images[0].pixelWidth).toBe(120);
+
+    // Real pdf-lib ExtGState /SMask Form XObject containing both a mask bitmap and a mask fill shape.
+    const realSmaskPdf = await pdfFromContentStream((ctx, resources) => {
+      const imVisible = ctx.stream(Buffer.from([255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0]), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Image'),
+        Width: PDFNumber.of(2),
+        Height: PDFNumber.of(2),
+        BitsPerComponent: PDFNumber.of(8),
+        ColorSpace: PDFName.of('DeviceRGB'),
+      });
+      const imMask = ctx.stream(Buffer.from([128, 255, 64, 192]), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Image'),
+        Width: PDFNumber.of(2),
+        Height: PDFNumber.of(2),
+        BitsPerComponent: PDFNumber.of(8),
+        ColorSpace: PDFName.of('DeviceGray'),
+      });
+      const maskForm = ctx.stream(Buffer.from('0.5 g 10 10 80 80 re f q 100 0 0 100 50 50 cm /IM_M Do Q', 'ascii'), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Form'),
+        BBox: ctx.obj([0, 0, 200, 200]),
+        Group: ctx.obj({ Type: PDFName.of('Group'), S: PDFName.of('Transparency'), CS: PDFName.of('DeviceGray') }),
+        Resources: ctx.obj({ XObject: ctx.obj({ IM_M: ctx.register(imMask) }) }),
+      });
+      const gs = ctx.obj({
+        Type: PDFName.of('ExtGState'),
+        SMask: ctx.obj({ Type: PDFName.of('Mask'), S: PDFName.of('Luminosity'), G: ctx.register(maskForm) }),
+      });
+      resources.set(PDFName.of('ExtGState'), ctx.obj({ GS_M: ctx.register(gs) }));
+      resources.set(PDFName.of('XObject'), ctx.obj({ IM_V: ctx.register(imVisible) }));
+      return 'q /GS_M gs 120 0 0 90 50 100 cm /IM_V Do Q';
+    });
+    const smaskExtracted = await analyzePdfPagesInProcess(realSmaskPdf, { geometry: 'none', content: true, images: true, colour: true });
+    expect(smaskExtracted.content[0].images).toHaveLength(1);
+    expect(smaskExtracted.content[0].images[0].width).toBeCloseTo(120, 1);
+    expect(smaskExtracted.content[0].shapes ?? []).toHaveLength(0);
   });
 
   it('keeps ragged stream cells and sparse 3x3 schematic box labels out of <a:tbl> in slides', async () => {
@@ -473,5 +511,142 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     expect(props).not.toContain('fill="none"');
     expect(props).toContain('<a:gradFill flip="none" rotWithShape="1">');
     expect(props).toContain('<a:lin ang="5400000" scaled="0"/>');
+  });
+
+  it('interpolates cropped and non-uniformly scaled axial gradients cleanly and collapses out-of-range shadings to solid fills', () => {
+    const cropped = axialShadingGradient(
+      ['RadialAxial', 'axial', null, [[0, '#ff0000'], [1, '#0000ff']], [0, 0], [200, 0], null, null],
+      { x0: 50, y0: 0, x1: 150, y1: 50 },
+      (p) => p,
+      1
+    );
+    expect(cropped).toEqual({
+      kind: 'gradient',
+      gradient: {
+        kind: 'linear',
+        angleDeg: 0,
+        stops: [
+          { pos: 0, color: 0xbf0040 },
+          { pos: 1, color: 0x4000bf },
+        ],
+      },
+    });
+
+    expect(
+      axialShadingGradient(
+        ['RadialAxial', 'axial', null, [[0, '#ff0000'], [1, '#0000ff']], [0, 0], [100, 0], null, null],
+        { x0: 150, y0: 0, x1: 250, y1: 50 },
+        (p) => p,
+        1
+      )
+    ).toEqual({ kind: 'solid', color: 0x0000ff, alpha: 1 });
+
+    expect(
+      axialShadingGradient(
+        ['RadialAxial', 'axial', null, [[0, '#ff0000'], [1, '#0000ff']], [100, 0], [200, 0], null, null],
+        { x0: -100, y0: 0, x1: 50, y1: 50 },
+        (p) => p,
+        1
+      )
+    ).toEqual({ kind: 'solid', color: 0xff0000, alpha: 1 });
+
+    const stretched = axialShadingGradient(
+      ['RadialAxial', 'axial', null, [[0, '#ff0000'], [1, '#0000ff']], [0, 0], [100, 100], null, null],
+      { x0: 0, y0: 0, x1: 200, y1: 100 },
+      (p) => ({ x: p.x * 2, y: p.y }),
+      1
+    );
+    expect(stretched?.kind).toBe('gradient');
+    if (stretched?.kind === 'gradient') {
+      expect(stretched.gradient.angleDeg).toBeCloseTo(63.435, 2);
+      expect(stretched.gradient.stops).toEqual([
+        { pos: 0, color: 0xff0000 },
+        { pos: 1, color: 0x0000ff },
+      ]);
+    }
+  });
+
+  it('preserves curved Bezier clip hulls, clamps merged rects to clip, skips radial black placeholders, and forwards thick rule strokeAlpha to DOCX', async () => {
+    const pdf = await pdfFromContentStream((ctx, resources) => {
+      const fnRadial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([1, 0, 0]), C1: ctx.obj([0, 0, 1]), N: PDFNumber.of(1) });
+      const shRadial = ctx.obj({
+        ShadingType: 3,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([100, 100, 10, 100, 100, 80]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnRadial),
+      });
+      const patRadial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shRadial) });
+
+      const fnConst = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0.2, 0.4, 0.6]), C1: ctx.obj([0.2, 0.4, 0.6]), N: PDFNumber.of(1) });
+      const shConst = ctx.obj({
+        ShadingType: 2,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([0, 0, 100, 0]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnConst),
+      });
+      const patConst = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shConst) });
+
+      const fnGrad = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([1, 0, 0]), C1: ctx.obj([0, 0, 1]), N: PDFNumber.of(1) });
+      const shGrad = ctx.obj({
+        ShadingType: 2,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([100, 0, 200, 0]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnGrad),
+      });
+      const patGrad = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shGrad) });
+
+      const gsHalfStroke = ctx.obj({ Type: PDFName.of('ExtGState'), CA: 0.45 });
+      resources.set(PDFName.of('ExtGState'), ctx.obj({ GSH: ctx.register(gsHalfStroke) }));
+      resources.set(
+        PDFName.of('Pattern'),
+        ctx.obj({ PR: ctx.register(patRadial), PC: ctx.register(patConst), PG: ctx.register(patGrad) })
+      );
+
+      return [
+        // 1. Curved 2-arc Bezier clip whose endpoints share y=500 while control points bulge y=[420..580].
+        'q 100 500 m 100 580 200 580 200 500 c 200 420 100 420 100 500 c h W n 0.8 0.2 0.2 rg 110 450 80 100 re f Q',
+        // 2. Adjacent rects inside clip [100..200] must clamp before merge (must not escape to x=250).
+        'q 100 100 100 100 re W n 0.2 0.8 0.4 rg 100 150 50 20 re f 150 150 100 20 re f Q',
+        // 3. Radial shading via Pattern cs/scn must NOT leave a solid black rect behind.
+        'q /Pattern cs /PR scn 260 440 80 80 re f Q',
+        // 4. Stroked path + constant axial shading fill merge resolves to solid 0x336699 (not 0x000000).
+        'q 0 0 1 RG 1.5 w 300 100 m 400 100 l 350 200 l h S /Pattern cs /PC scn 300 100 m 400 100 l 350 200 l h f Q',
+        // 5. Adjacent black solid rect + axial gradient rect must NOT merge into one black rect.
+        'q 0 0 0 rg 50 620 50 40 re f /Pattern cs /PG scn 100 620 100 40 re f Q',
+        // 6. Thick semi-transparent bar rule (>3pt) carries strokeAlpha -> DOCX bar rect alpha.
+        'q /GSH gs 0.5 0.1 0.1 RG 6 w 50 700 m 220 700 l S Q',
+      ].join('\n');
+    });
+
+    const extracted = await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: true });
+    const shapes = extracted.content[0].shapes ?? [];
+
+    const ovalClipRect = shapes.find((s) => s.kind === 'rect' && s.fill === 0xcc3333);
+    expect(ovalClipRect?.x0).toBeCloseTo(110, 1);
+    expect(ovalClipRect?.x1).toBeCloseTo(190, 1);
+
+    const clippedMerged = shapes.find((s) => s.kind === 'rect' && s.fill === 0x33cc66);
+    expect(clippedMerged?.x0).toBeCloseTo(100, 1);
+    expect(clippedMerged?.x1).toBeCloseTo(200, 1);
+
+    // Only the explicit [50..100] black rect should exist, never a radial placeholder at x0=260.
+    const blackRects = shapes.filter((s) => s.kind === 'rect' && s.fill === 0);
+    expect(blackRects).toHaveLength(1);
+    expect(blackRects[0].x0).toBeCloseTo(50, 1);
+    expect(shapes.some((s) => s.kind === 'rect' && s.gradient !== undefined && Math.abs(s.x0 - 100) < 1)).toBe(true);
+
+    const mergedConstTriangle = shapes.find((s) => s.kind === 'path' && s.stroke === 0x0000ff);
+    expect(mergedConstTriangle?.fill).toBe(0x336699);
+
+    const { extracted: docExtracted } = await readPdfDocument(pdf, { images: false, colour: true, pages: true });
+    const docx = await documentToDocx(docExtracted.model);
+    const docXml = await (await JSZip.loadAsync(docx)).file('word/document.xml')!.async('string');
+    expect(docXml).toContain('<a:alpha val="45000"/>');
   });
 });

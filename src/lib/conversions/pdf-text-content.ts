@@ -6,7 +6,6 @@ import {
   axialShadingGradient,
   boxDisjointFromClip,
   boxFromList,
-  clampBoxToClip,
   clipBoxOfSubpaths,
   clipRule,
   intersectClip,
@@ -569,6 +568,10 @@ function imageBox(viewport: Viewport, ctm: Matrix): { x: number; y: number; widt
   return { x: Math.min(...xs), y: Math.min(...ys), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
 }
 
+function isAxialShadingIr(ir: unknown): boolean {
+  return Array.isArray(ir) && ir[0] === 'RadialAxial' && ir[1] === 'axial';
+}
+
 function shadingOperand(args: unknown[] | undefined): ShadingRef | null {
   if (args?.[0] !== 'Shading' || typeof args[1] !== 'string') return null;
   return { objId: args[1], matrix: matrixFromList(args[2]) };
@@ -718,41 +721,42 @@ class OperatorScanner {
     return axialShadingGradient(ir, box, (pt) => this.collector.pagePoint(pt, patternCtm), this.state.fillAlpha);
   }
 
-  private finishShapes(before: number, prevFillMissing: boolean, hasShading: ShadingRef | null): void {
+  private applyResolvedShading(shape: PdfContentShape, shading: ShadingRef): boolean {
+    const resolved = this.resolveShading(shading, shape);
+    if (resolved?.kind === 'gradient') {
+      delete shape.fill;
+      delete shape.alpha;
+      shape.gradient = resolved.gradient;
+      return true;
+    }
+    if (resolved?.kind === 'solid') {
+      shape.fill = resolved.color;
+      if (resolved.alpha < 1) shape.alpha = resolved.alpha;
+      else delete shape.alpha;
+      return true;
+    }
+    if (shape.stroke !== undefined) {
+      delete shape.fill;
+      delete shape.alpha;
+      return true;
+    }
+    return false;
+  }
+
+  private finishShadedShapes(before: number, prevFillMissing: boolean, shading: ShadingRef): void {
     if (!this.shapes) return;
     const list = this.shapes.shapes;
-    if (hasShading && list.length === before && prevFillMissing && before > 0) {
+    if (prevFillMissing && before > 0) {
       const prev = list[before - 1];
-      if (prev.fill !== undefined) {
-        const resolved = this.resolveShading(hasShading, prev);
-        if (resolved?.kind === 'gradient') {
-          delete prev.fill;
-          prev.gradient = resolved.gradient;
-        }
+      if (prev.fill !== undefined && !this.applyResolvedShading(prev, shading)) {
+        list.splice(before - 1, 1);
+        before--;
       }
     }
     for (let i = list.length - 1; i >= before; i--) {
       const shape = list[i];
-      if (this.state.clip !== null && shape.kind === 'rect' && shape.stroke === undefined) {
-        const clamped = clampBoxToClip(shape, this.state.clip);
-        if (clamped === null) {
-          list.splice(i, 1);
-          continue;
-        }
-        shape.x0 = clamped.x0;
-        shape.y0 = clamped.y0;
-        shape.x1 = clamped.x1;
-        shape.y1 = clamped.y1;
-      }
-      if (hasShading && shape.fill !== undefined) {
-        const resolved = this.resolveShading(hasShading, shape);
-        if (resolved?.kind === 'gradient') {
-          delete shape.fill;
-          shape.gradient = resolved.gradient;
-        } else if (resolved?.kind === 'solid') {
-          shape.fill = resolved.color;
-          if (resolved.alpha < 1) shape.alpha = resolved.alpha;
-        }
+      if (shape.fill !== undefined && !this.applyResolvedShading(shape, shading)) {
+        list.splice(i, 1);
       }
     }
   }
@@ -760,12 +764,20 @@ class OperatorScanner {
   private paintSubpaths(subpaths: Subpath[], painted: Paint, place: number, z: number | undefined): void {
     const visible = this.state.clip ? subpaths.filter((sp) => !boxDisjointFromClip(this.subpathBox(sp), this.state.clip)) : subpaths;
     if (visible.length === 0) return;
-    const useShading = Boolean(this.colour && painted.fill && this.state.fillShading !== null && this.pageObjs?.has?.(this.state.fillShading.objId));
-    const paintState = useShading ? { ...this.state, fill: BLACK } : this.state;
+    const shadingRef = this.colour && painted.fill ? this.state.fillShading : null;
+    const shadingIr = shadingRef && this.pageObjs?.has?.(shadingRef.objId) ? this.pageObjs.get?.(shadingRef.objId) : undefined;
+    const useShading = isAxialShadingIr(shadingIr);
+    const paintState = useShading
+      ? { ...this.state, fill: BLACK, clip: this.state.clip, shading: true }
+      : this.state.clip
+        ? { ...this.state, clip: this.state.clip }
+        : this.state;
     const before = this.shapes?.shapes.length ?? 0;
-    const prevFillMissing = Boolean(this.shapes && before > 0 && this.shapes.shapes[before - 1].fill === undefined);
+    const prevFillMissing = Boolean(
+      this.shapes && before > 0 && this.shapes.shapes[before - 1].fill === undefined && this.shapes.shapes[before - 1].gradient === undefined
+    );
     const drawn = this.shapes?.paint(visible, painted, paintState, place);
-    if (this.colour) this.finishShapes(before, prevFillMissing, useShading ? this.state.fillShading : null);
+    if (useShading && shadingRef) this.finishShadedShapes(before, prevFillMissing, shadingRef);
     this.collector.clip = this.state.clip;
     if (painted.stroke) this.collector.stroke(visible, this.state, z, drawn?.stroke);
     if (painted.fill && !useShading) this.collector.fill(visible, this.state, z, drawn?.fill);
@@ -784,7 +796,7 @@ class OperatorScanner {
     const z = this.colour ? place : undefined;
     const clippedSubpaths: Subpath[] | null = clipTarget ? [] : null;
     for (const data of arrays) {
-      const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, this.colour);
+      const subpaths = subpathsOf(data, PDF_CONTENT_MAX_RULES_PER_PAGE, this.colour || clipTarget);
       if (fillAllowed || strokeAllowed) this.paintSubpaths(subpaths, { fill: fillAllowed, stroke: strokeAllowed }, place, z);
       if (clippedSubpaths !== null) for (const sp of subpaths) clippedSubpaths.push(sp);
     }

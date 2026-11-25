@@ -63,6 +63,7 @@ function ruleShape(rule: PdfContentRule): PdfContentShape {
     y0: horizontal ? rule.y0 - half : rule.y0,
     y1: horizontal ? rule.y1 + half : rule.y1,
     fill: color,
+    ...(rule.strokeAlpha === undefined ? {} : { alpha: rule.strokeAlpha }),
     z,
   };
 }
@@ -88,23 +89,23 @@ function pageShapeOf(shape: PdfContentShape, hull: Box, top: number | null): Pag
     width: hull.x1 - hull.x0,
     height: hull.y1 - hull.y0,
     ...(shape.fill === undefined ? {} : { fill: hexOf(shape.fill) }),
-  ...(shape.gradient === undefined
-    ? {}
-    : {
-        gradient: {
-          kind: 'linear',
-          angleDeg: shape.gradient.angleDeg,
-          stops: shape.gradient.stops.map((stop) => ({
-            pos: stop.pos,
-            color: hexOf(stop.color),
-            ...(stop.alpha === undefined ? {} : { alpha: stop.alpha }),
-          })),
-        },
-      }),
+    ...(shape.gradient === undefined
+      ? {}
+      : {
+          gradient: {
+            kind: 'linear',
+            angleDeg: shape.gradient.angleDeg,
+            stops: shape.gradient.stops.map((stop) => ({
+              pos: stop.pos,
+              color: hexOf(stop.color),
+              ...(stop.alpha === undefined ? {} : { alpha: stop.alpha }),
+            })),
+          },
+        }),
     ...(shape.stroke === undefined ? {} : { stroke: hexOf(shape.stroke), strokeWidthPt: shape.strokeWidth ?? 0 }),
     ...(shape.alpha === undefined ? {} : { alpha: shape.alpha }),
-  ...(shape.strokeAlpha === undefined ? {} : { strokeAlpha: shape.strokeAlpha }),
-  ...(shape.dashed ? { dashed: true } : {}),
+    ...(shape.strokeAlpha === undefined ? {} : { strokeAlpha: shape.strokeAlpha }),
+    ...(shape.dashed ? { dashed: true } : {}),
     ...(shape.path ? { path: relativePath(shape.path, hull) } : {}),
   };
 }

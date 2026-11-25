@@ -1,4 +1,5 @@
 import { LTContainer, LTLine, LTRect, mult_matrix, PDFGraphicState, PDFLayoutAnalyzer, type LTCurve, type PathSegment, type TransformedPathSegment } from './pdfminer-paint-path';
+import { clampBoxToClip, type ClipBox } from './pdf-text-shading';
 import { PDF_CONTENT_MAX_SHAPES_PER_PAGE, PDF_CONTENT_MAX_SHAPE_COORDINATES_PER_PAGE, type PdfContentItem, type PdfContentShape } from './pdf-text-types';
 
 /**
@@ -79,6 +80,10 @@ export interface ShapeState {
   fillAlpha: number;
   strokeAlpha?: number;
   dashed?: boolean;
+  /** Active viewport clip for clamping filled rectangles before adjacent-rect merging. */
+  clip?: ClipBox | null;
+  /** True when `fill` is a temporary placeholder for a shading pattern resolved after painting. */
+  shading?: boolean;
 }
 
 interface Viewport {
@@ -210,7 +215,7 @@ export class ShapeCollector {
     if (box.x0 === box.x1 && box.y0 === box.y1) return [false, false];
     if (item instanceof LTRect) {
       // A rectangle's stroke is four rules.
-      if (fill !== undefined) this.addRectangle(box, fill, state.fillAlpha, z);
+      if (fill !== undefined) this.addRectangle(box, fill, state, z);
       return [fill !== undefined, false];
     }
     const loop = subpath.closed || paint.fill || closesOnItself(item.pts);
@@ -235,10 +240,17 @@ export class ShapeCollector {
     return [false, stroke !== undefined];
   }
 
-  private addRectangle(box: { x0: number; y0: number; x1: number; y1: number }, fill: number, alpha: number, z: number): void {
+  private addRectangle(box: { x0: number; y0: number; x1: number; y1: number }, fill: number, state: ShapeState, z: number): void {
     if (box.x1 - box.x0 < SPECK && box.y1 - box.y0 < SPECK) return;
     if (this.isPaper(fill, box)) return;
-    this.add({ kind: 'rect', ...box, fill, ...(alpha < 1 ? { alpha } : {}) }, z);
+    const clipped = state.clip ? clampBoxToClip(box, state.clip) : box;
+    if (clipped === null) return;
+    const rect: Omit<PdfContentShape, 'z'> = { kind: 'rect', ...clipped, fill, ...(state.fillAlpha < 1 ? { alpha: state.fillAlpha } : {}) };
+    if (state.shading) {
+      this.shapes.push({ ...rect, z });
+      return;
+    }
+    this.add(rect, z);
   }
 }
 
