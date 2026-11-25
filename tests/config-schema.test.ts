@@ -845,6 +845,9 @@ describe('loadConfig', () => {
   it('defaults CAPTURE_WEBSITE_ENABLED to true, rejects malformed values, and keeps capture tool paths optional', () => {
     expect(parseConfig(WEB_PRODUCTION, { role: 'web' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
     expect(parseConfig(WORKER_PRODUCTION, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+    expect(parseConfig({ ...WEB_PRODUCTION, CAPTURE_WEBSITE_ENABLED: '   ' }, { role: 'web' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+    expect(parseConfig({ ...WORKER_PRODUCTION, CAPTURE_WEBSITE_ENABLED: 'true' }, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
+    expect(parseConfig({ ...WORKER_PRODUCTION, CAPTURE_WEBSITE_ENABLED: ' TRUE ' }, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(true);
     expect(parseConfig({ ...WORKER_PRODUCTION, CAPTURE_WEBSITE_ENABLED: 'false' }, { role: 'worker' }).CAPTURE_WEBSITE_ENABLED).toBe(false);
     expect(failures({ NODE_ENV: 'development', CAPTURE_WEBSITE_ENABLED: 'on' })).toEqual([
       { variable: 'CAPTURE_WEBSITE_ENABLED', rule: 'must be true or false' },

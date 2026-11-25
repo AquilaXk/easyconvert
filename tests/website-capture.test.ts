@@ -326,9 +326,14 @@ sys.stdout.write(json.dumps({'ok': True, 'output': request['output'], 'finalUrl'
 
   it('is unavailable on a worker without the driver or the interpreter', async () => {
     publicNames();
-    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
+    // Unset CAPTURE_WEBSITE_ENABLED defaults to enabled and still fails closed with 503 when tools are missing.
     vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
     vi.stubEnv('CAPTURE_DRIVER_PATH', path.join(dir, 'missing.py'));
+    const unsetRun = captureWebsite({ url: 'https://site.example/', format: 'png' });
+    await expect(unsetRun).rejects.toBeInstanceOf(EngineUnavailableError);
+    await expect(unsetRun).rejects.toThrow(/driver or its Python interpreter/);
+
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'true');
     const run = captureWebsite({ url: 'https://site.example/', format: 'png' });
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toThrow(/driver or its Python interpreter/);

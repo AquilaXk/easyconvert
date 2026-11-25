@@ -44,8 +44,8 @@ async function mountHeader(locale: TestLocale = 'en'): Promise<HTMLButtonElement
   return button;
 }
 
-async function openMenu(): Promise<{ button: HTMLButtonElement; sheet: HTMLDialogElement }> {
-  const button = await mountHeader();
+async function openMenu(locale: TestLocale = 'en'): Promise<{ button: HTMLButtonElement; sheet: HTMLDialogElement }> {
+  const button = await mountHeader(locale);
   button.focus();
   await act(async () => button.click());
   const sheet = document.querySelector('dialog');
@@ -71,18 +71,40 @@ describe('the mobile menu', () => {
     expect(focusable(sheet).filter((el) => el.getAttribute('href')?.endsWith('-converter'))).toEqual([]);
   });
 
-  it('expands the Tools group on press', async () => {
-    const { sheet } = await openMenu();
-    const tools = [...sheet.querySelectorAll('button[aria-expanded]')].find((b) => b.textContent === 'Tools') as HTMLButtonElement;
+  it.each([
+    {
+      locale: 'en' as const,
+      toolsLabel: 'Tools',
+      groupTitle: 'Website Capture',
+      prefix: '',
+      linkLabels: ['Save Website as PDF', 'Website PNG Screenshot', 'Website JPG Screenshot'],
+    },
+    {
+      locale: 'ko' as const,
+      toolsLabel: '도구',
+      groupTitle: '웹사이트 캡처',
+      prefix: '/ko',
+      linkLabels: ['웹사이트 PDF 저장', '웹사이트 PNG 스크린샷', '웹사이트 JPG 스크린샷'],
+    },
+  ])('expands the Tools group on press in $locale locale', async ({ locale, toolsLabel, groupTitle, prefix, linkLabels }) => {
+    const { sheet } = await openMenu(locale);
+    const tools = [...sheet.querySelectorAll('button[aria-expanded]')].find((b) => b.textContent === toolsLabel) as HTMLButtonElement;
+    expect(tools).toBeDefined();
     await act(async () => tools.click());
     expect(tools.getAttribute('aria-expanded')).toBe('true');
-    expect(sheet.querySelector('#mobile-menu-tools')?.hasAttribute('hidden')).toBe(false);
+    const panel = sheet.querySelector('#mobile-menu-tools');
+    expect(panel?.hasAttribute('hidden')).toBe(false);
     const mobileLinks = [...sheet.querySelectorAll<HTMLAnchorElement>('#mobile-menu-tools a')];
     expect(mobileLinks).toHaveLength(TOOL_ROUTES.length + 1);
     expect(mobileLinks.map((a) => a.getAttribute('href'))).toEqual(
-      expect.arrayContaining(['/save-website-as-pdf', '/website-png-screenshot', '/website-jpg-screenshot'])
+      expect.arrayContaining([
+        `${prefix}/save-website-as-pdf`,
+        `${prefix}/website-png-screenshot`,
+        `${prefix}/website-jpg-screenshot`,
+      ])
     );
-    expect(sheet.querySelector('#mobile-menu-tools')?.textContent).toContain('Website Capture');
+    expect(mobileLinks.map((a) => a.textContent)).toEqual(expect.arrayContaining(linkLabels));
+    expect(panel?.textContent).toContain(groupTitle);
   });
 
   it('gives focus to the sheet itself on open, so no focus ring lands on the logo link', async () => {
