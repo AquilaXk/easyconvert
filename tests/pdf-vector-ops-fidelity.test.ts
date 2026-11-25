@@ -869,8 +869,18 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
     expect(radialOnly.content[0].rules).toHaveLength(0);
     expect(radialOnly.content[0].shapes ?? []).toHaveLength(0);
 
-    // Uncoloured TilingPattern (PaintType 2): light base colour (#ffffff) is suppressed; dark base colour (#000000) preserves its rule.
-    const uncolouredPdf = await pdfFromContentStream((ctx, resources) => {
+    // PaintType 1 under [/Pattern /DeviceRGB] ignores args[1] (1 1 1), while PaintType 2 uses base colour on both fill (scn) and stroke (SCN) without turning large pattern rects into solid shapes.
+    const paintTypePdf = await pdfFromContentStream((ctx, resources) => {
+      const coloured = ctx.stream(Buffer.from('0 0 0 rg 0 0 2 2 re f', 'ascii'), {
+        Type: PDFName.of('Pattern'),
+        PatternType: PDFNumber.of(1),
+        PaintType: PDFNumber.of(1),
+        TilingType: PDFNumber.of(1),
+        BBox: ctx.obj([0, 0, 4, 4]),
+        XStep: PDFNumber.of(4),
+        YStep: PDFNumber.of(4),
+        Resources: ctx.obj({}),
+      });
       const uncoloured = ctx.stream(Buffer.from('0 0 2 2 re f', 'ascii'), {
         Type: PDFName.of('Pattern'),
         PatternType: PDFNumber.of(1),
@@ -881,16 +891,43 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
         YStep: PDFNumber.of(4),
         Resources: ctx.obj({}),
       });
-      resources.set(PDFName.of('Pattern'), ctx.obj({ PT2: ctx.register(uncoloured) }));
+      resources.set(PDFName.of('Pattern'), ctx.obj({ PT1: ctx.register(coloured), PT2: ctx.register(uncoloured) }));
       resources.set(PDFName.of('ColorSpace'), ctx.obj({ PSpace: ctx.obj([PDFName.of('Pattern'), PDFName.of('DeviceRGB')]) }));
       return [
+        // PaintType 1 with [/Pattern /DeviceRGB] and 1 1 1 /PT1 scn -> ignores #ffffff args[1], preserves rule at y0=99.25
+        'q /PSpace cs 1 1 1 /PT1 scn 50 700 200 1.5 re f Q',
+        // PaintType 2 light fill (#ffffff) -> suppressed (0 rules)
         'q /PSpace cs 1 1 1 /PT2 scn 50 600 200 1.5 re f Q',
-        'q /PSpace cs 0 0 0 /PT2 scn 50 500 200 1.5 re f Q',
+        // PaintType 2 coloured fill (#3366cc) -> 1 rule with color=0x3366cc at y0=299.25
+        'q /PSpace cs 0.2 0.4 0.8 /PT2 scn 50 500 200 1.5 re f Q',
+        // PaintType 2 large hatched fill rect -> 0 rules and 0 solid shapes
+        'q /PSpace cs 0.2 0.4 0.8 /PT2 scn 50 380 200 80 re f Q',
+        // PaintType 1 stroke with [/Pattern /DeviceRGB] and 1 1 1 /PT1 SCN -> ignores #ffffff args[1], preserves rule with undefined colour
+        'q /PSpace CS 1 1 1 /PT1 SCN 1.5 w 50 340 m 250 340 l S Q',
+        // PaintType 2 white stroke (#ffffff) -> color=0xffffff matching 1 1 1 RG, plus #3366cc stroke -> color=0x3366cc
+        'q /PSpace CS 1 1 1 /PT2 SCN 1.5 w 50 300 m 250 300 l S Q',
+        'q 1 1 1 RG 1.5 w 50 260 m 250 260 l S Q',
+        'q /PSpace CS 0.2 0.4 0.8 /PT2 SCN 1.5 w 50 220 m 250 220 l S Q',
+        // PaintType 2 diagonal curved stroke -> 0 rules and 0 solid shapes
+        'q /PSpace CS 0.2 0.4 0.8 /PT2 SCN 1.5 w 50 100 m 120 150 200 130 250 140 c S Q',
       ].join('\n');
     });
-    const uncoloured = await analyzePdfPagesInProcess(uncolouredPdf, { geometry: 'none', content: true, images: false, colour: true });
-    expect(uncoloured.content[0].rules).toHaveLength(1);
-    expect(uncoloured.content[0].rules[0].y0).toBeCloseTo(299.25, 1);
+    const paintTypePage = (await analyzePdfPagesInProcess(paintTypePdf, { geometry: 'none', content: true, images: false, colour: true })).content[0];
+    expect(paintTypePage.shapes ?? []).toHaveLength(0);
+    expect(paintTypePage.rules).toHaveLength(6);
+    const pt1Rule = paintTypePage.rules.find((r) => Math.abs(r.y0 - 99.25) < 1);
+    expect(pt1Rule?.color).toBeUndefined();
+    expect(paintTypePage.rules.some((r) => Math.abs(r.y0 - 199.25) < 1)).toBe(false);
+    const pt2BlueFill = paintTypePage.rules.find((r) => Math.abs(r.y0 - 299.25) < 1);
+    expect(pt2BlueFill?.color).toBe(0x3366cc);
+    const pt1Stroke = paintTypePage.rules.find((r) => Math.abs(r.y0 - 460) < 1);
+    expect(pt1Stroke?.color).toBeUndefined();
+    const pt2WhiteStroke = paintTypePage.rules.find((r) => Math.abs(r.y0 - 500) < 1);
+    const rgbWhiteStroke = paintTypePage.rules.find((r) => Math.abs(r.y0 - 540) < 1);
+    expect(pt2WhiteStroke?.color).toBe(0xffffff);
+    expect(rgbWhiteStroke?.color).toBe(0xffffff);
+    const pt2BlueStroke = paintTypePage.rules.find((r) => Math.abs(r.y0 - 580) < 1);
+    expect(pt2BlueStroke?.color).toBe(0x3366cc);
 
     // Malformed synthetic setFillColorN(['Shading']) lacking an objId must still suppress placeholder rules.
     const malformedShadingPage = await readPageContent(
@@ -910,5 +947,124 @@ describe('PDF vector operator fidelity in PPTX and DOCX', () => {
       { readOperators: true, imageExtractor: null, unmappedMark: '', colour: true }
     );
     expect(malformedShadingPage.rules).toHaveLength(0);
+  });
+
+  it('matches rule geometry between colour: false and colour: true across patterns, shadings, zero-alpha GState, and explicit transparency', async () => {
+    const pdf = await pdfFromContentStream((ctx, resources) => {
+      const coloured = ctx.stream(Buffer.from('0 0 0 rg 0 0 2 2 re f', 'ascii'), {
+        Type: PDFName.of('Pattern'),
+        PatternType: PDFNumber.of(1),
+        PaintType: PDFNumber.of(1),
+        TilingType: PDFNumber.of(1),
+        BBox: ctx.obj([0, 0, 4, 4]),
+        XStep: PDFNumber.of(4),
+        YStep: PDFNumber.of(4),
+        Resources: ctx.obj({}),
+      });
+      const uncoloured = ctx.stream(Buffer.from('0 0 2 2 re f', 'ascii'), {
+        Type: PDFName.of('Pattern'),
+        PatternType: PDFNumber.of(1),
+        PaintType: PDFNumber.of(2),
+        TilingType: PDFNumber.of(1),
+        BBox: ctx.obj([0, 0, 4, 4]),
+        XStep: PDFNumber.of(4),
+        YStep: PDFNumber.of(4),
+        Resources: ctx.obj({}),
+      });
+      const fnAxial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0, 0, 0]), C1: ctx.obj([1, 1, 1]), N: PDFNumber.of(1) });
+      const shAxial = ctx.obj({
+        ShadingType: 2,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([50, 500, 250, 500]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnAxial),
+      });
+      const patAxial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shAxial) });
+      const fnRadial = ctx.obj({ FunctionType: 2, Domain: ctx.obj([0, 1]), C0: ctx.obj([0, 1, 0]), C1: ctx.obj([0, 0, 1]), N: PDFNumber.of(1) });
+      const shRadial = ctx.obj({
+        ShadingType: 3,
+        ColorSpace: PDFName.of('DeviceRGB'),
+        Coords: ctx.obj([150, 400, 5, 150, 400, 90]),
+        Domain: ctx.obj([0, 1]),
+        Extend: ctx.obj([true, true]),
+        Function: ctx.register(fnRadial),
+      });
+      const patRadial = ctx.obj({ Type: PDFName.of('Pattern'), PatternType: PDFNumber.of(2), Shading: ctx.register(shRadial) });
+      const gsFillZero = ctx.obj({ Type: PDFName.of('ExtGState'), ca: 0 });
+      const gsStrokeZero = ctx.obj({ Type: PDFName.of('ExtGState'), CA: 0 });
+      const gsThickDash = ctx.obj({ Type: PDFName.of('ExtGState'), LW: 2.5, D: ctx.obj([ctx.obj([4, 2]), 0]) });
+
+      resources.set(
+        PDFName.of('Pattern'),
+        ctx.obj({ PT1: ctx.register(coloured), PT2: ctx.register(uncoloured), PA: ctx.register(patAxial), PR: ctx.register(patRadial) })
+      );
+      resources.set(PDFName.of('ColorSpace'), ctx.obj({ PSpace: ctx.obj([PDFName.of('Pattern'), PDFName.of('DeviceRGB')]) }));
+      resources.set(
+        PDFName.of('ExtGState'),
+        ctx.obj({ GSCa0: ctx.register(gsFillZero), GSCA0: ctx.register(gsStrokeZero), GSLW: ctx.register(gsThickDash) })
+      );
+      return [
+        // 1. 1 1 1 rg followed by PT1 fill under [/Pattern /DeviceRGB] (preserved) and dark PT2 fill (preserved)
+        'q 1 1 1 rg /PSpace cs 1 1 1 /PT1 scn 50 700 200 1.5 re f Q',
+        'q 1 1 1 rg /PSpace cs 0.2 0.4 0.8 /PT2 scn 50 650 200 1.5 re f Q',
+        // 2. Light PT2 fill -> suppressed in both modes
+        'q /PSpace cs 1 1 1 /PT2 scn 50 600 200 1.5 re f Q',
+        // 3. Axial & radial Shading fills and strokes -> suppressed in both modes
+        'q /Pattern cs /PA scn 50 520 200 1.5 re f Q',
+        'q /Pattern CS /PA SCN 1.5 w 50 480 m 250 480 l S Q',
+        'q /Pattern cs /PR scn 50 440 200 1.5 re f Q',
+        'q /Pattern CS /PR SCN 1.5 w 50 400 m 250 400 l S Q',
+        // 4. ca=0 / CA=0 via setGState -> suppressed in both modes
+        'q /GSCa0 gs 0 0 0 rg 50 360 200 1.5 re f Q',
+        'q /GSCA0 gs 0 0 0 RG 1.5 w 50 320 m 250 320 l S Q',
+        // 5. GState LW & D -> geometry identical, colour: false omits colour/dashed/z
+        'q /GSLW gs 0.2 0.4 0.8 RG 50 280 m 250 280 l S Q',
+      ].join('\n');
+    });
+
+    const withColour = (await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: true })).content[0].rules;
+    const withoutColour = (await analyzePdfPagesInProcess(pdf, { geometry: 'none', content: true, images: false, colour: false })).content[0].rules;
+
+    expect(withColour).toHaveLength(3);
+    expect(withoutColour).toEqual(withColour.map(({ x0, y0, x1, y1, thickness }) => ({ x0, y0, x1, y1, thickness })));
+    expect(withoutColour[0].y0).toBeCloseTo(99.25, 1);
+    expect(withoutColour[1].y0).toBeCloseTo(149.25, 1);
+    expect(withoutColour[2].y0).toBeCloseTo(520, 1);
+    expect(withoutColour[2].thickness).toBeCloseTo(2.5, 2);
+
+    // Direct OPS verification of setFillTransparent / setStrokeTransparent parity between colour: false and colour: true.
+    const transparentList = {
+      fnArray: [
+        OPS.setFillRGBColor,
+        OPS.setFillTransparent,
+        OPS.constructPath,
+        OPS.setStrokeRGBColor,
+        OPS.setStrokeTransparent,
+        OPS.constructPath,
+        OPS.setFillRGBColor,
+        OPS.constructPath,
+      ],
+      argsArray: [
+        ['#000000'],
+        [],
+        [OPS.fill, [new Float32Array([0, 20, 100, 1, 220, 100, 1, 220, 101.5, 1, 20, 101.5, 4])], null],
+        ['#000000'],
+        [],
+        [OPS.stroke, [new Float32Array([0, 20, 140, 1, 220, 140])], null],
+        ['#3366cc'],
+        [OPS.fill, [new Float32Array([0, 20, 170, 1, 220, 170, 1, 220, 171.5, 1, 20, 171.5, 4])], null],
+      ],
+    };
+    const mkPage = () => ({
+      getViewport: () => ({ width: 300, height: 200, convertToViewportPoint: (x: number, y: number) => [x, 200 - y] as [number, number] }),
+      commonObjs: { has: () => false, get: () => undefined },
+      objs: { has: () => false, get: () => undefined },
+      getOperatorList: async () => transparentList,
+    });
+    const tColour = (await readPageContent(OPS, mkPage(), { items: [], styles: {} }, 1, new FontTable(), { readOperators: true, imageExtractor: null, unmappedMark: '', colour: true })).rules;
+    const tNoColour = (await readPageContent(OPS, mkPage(), { items: [], styles: {} }, 1, new FontTable(), { readOperators: true, imageExtractor: null, unmappedMark: '', colour: false })).rules;
+    expect(tColour).toHaveLength(1);
+    expect(tNoColour).toEqual(tColour.map(({ x0, y0, x1, y1, thickness }) => ({ x0, y0, x1, y1, thickness })));
   });
 });

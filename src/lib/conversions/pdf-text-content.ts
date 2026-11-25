@@ -70,6 +70,8 @@ const TRANSFORM_VALUES = 6;
 const MATRIX_IDENTITY: Matrix = [1, 0, 0, 1, 0, 0];
 /** Stroked lines of this width or less count as hairlines, drawn at one device pixel by viewers. */
 const HAIRLINE_FLOOR = 0.25;
+/** pdfjs `getTilingPatternIR` `args[7]` (`PaintType`): `1` = coloured pattern (ignores `args[1]`), `2` = uncoloured pattern painted with `args[1]`. */
+const TILING_PAINT_UNCOLORED = 2;
 /** Private-use code points the Symbol and Wingdings families give bullets, mapped to what they draw. */
 const SYMBOL_BULLETS: ReadonlyMap<number, string> = new Map([
   [0xf0b7, '•'],
@@ -409,12 +411,15 @@ interface GraphicsState {
   /** Initial transform of the page or innermost Form XObject (for Pattern Space). */
   baseTransform: Matrix;
   lineWidth: number;
-  /** Fill and stroke colour; null when a pattern, shading or transparent colour is in force. */
+  /** Fill and stroke colour for shapes and text; null when a pattern, shading or transparent colour is in force. */
   fill: Rgb | null;
   stroke: Rgb | null;
+  /** Fill and stroke colour used for rule emission and light-fill suppression (retains uncoloured `PaintType: 2` tiling colour while `fill`/`stroke` stay null). */
+  ruleFill: Rgb | null;
+  ruleStroke: Rgb | null;
   /** Active pattern-space shading fill when `setFillColorN` chose `Shading`, or null. */
   fillShading: ShadingRef | null;
-  /** Whether `setFillColorN` chose a pattern that never produces a rule (`Shading`, or a light uncoloured `TilingPattern`). */
+  /** Whether `setFillColorN` chose `Shading` (which never produces a rule). */
   fillPatternSuppressed: boolean;
   /** Whether `setStrokeColorN` chose `Shading` rather than a tiling pattern. */
   strokeShading: boolean;
@@ -502,12 +507,12 @@ class RuleCollector {
 
   /** `inShape[i]` tells that subpath `i` is drawn by a shape of its own. */
   stroke(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
-    if (this.colour && state.strokeShading) return;
+    if (state.strokeShading) return;
     const thickness = Math.max(state.lineWidth * RuleCollector.scaleOf(state.ctm), HAIRLINE_FLOOR);
     const strokeAlpha = state.strokeAlpha < 1 ? state.strokeAlpha : undefined;
     subpaths.forEach((subpath, index) => {
       const ink: RuleInk = {
-        color: state.stroke,
+        color: state.ruleStroke,
         ...(strokeAlpha === undefined ? {} : { strokeAlpha }),
         ...(state.dashed ? { dashed: true } : {}),
         z,
@@ -521,10 +526,10 @@ class RuleCollector {
 
   /** A filled rectangle thin enough to be a line is a rule; larger fills are backgrounds and are ignored. */
   fill(subpaths: Subpath[], state: GraphicsState, z: number | undefined, inShape: readonly boolean[] = []): void {
-    if (state.fillPatternSuppressed || state.fillShading !== null || (state.fill !== null && isLightColour(state.fill))) return;
+    if (state.fillPatternSuppressed || state.fillShading !== null || (state.ruleFill !== null && isLightColour(state.ruleFill))) return;
     subpaths.forEach((subpath, index) => {
       if (subpath.curved) return;
-      const ink: RuleInk = { color: state.fill, z, ...(inShape[index] ? { inShape: true as const } : {}) };
+      const ink: RuleInk = { color: state.ruleFill, z, ...(inShape[index] ? { inShape: true as const } : {}) };
       this.addFilled(subpath, state, ink);
     });
   }
@@ -579,10 +584,9 @@ function shadingOperand(args: unknown[] | undefined): ShadingRef | null {
   return { objId: args[1], matrix: matrixFromList(args[2]) };
 }
 
-function isSuppressedPatternFill(args: unknown[] | undefined): boolean {
-  if (args?.[0] === 'Shading') return true;
-  const tilingColor = args?.[0] === 'TilingPattern' ? parseColour(args[1]) : null;
-  return tilingColor !== null && isLightColour(tilingColor);
+function uncoloredTilingRgb(args: unknown[] | undefined): Rgb | null {
+  if (args?.[0] !== 'TilingPattern' || args[7] !== TILING_PAINT_UNCOLORED) return null;
+  return parseColour(args[1]);
 }
 
 function applyGState(entries: unknown, state: GraphicsState): GraphicsState {
@@ -604,24 +608,51 @@ function applyGState(entries: unknown, state: GraphicsState): GraphicsState {
   return next;
 }
 
-/** The operators that set a colour or dash/opacity graphics state. */
-function withColour(fn: number, args: unknown[] | undefined, ops: Record<string, number>, state: GraphicsState, colour: boolean): GraphicsState | null {
+function withPatternOrRgbColour(fn: number, args: unknown[] | undefined, ops: Record<string, number>, state: GraphicsState): GraphicsState | null {
   if (fn === ops.setFillRGBColor || fn === ops.setFillGray) {
-    return { ...state, fill: parseColour(args?.[0]) ?? state.fill, fillShading: null, fillPatternSuppressed: false, fillTransparent: false };
+    const rgb = parseColour(args?.[0]) ?? state.fill;
+    return { ...state, fill: rgb, ruleFill: rgb, fillShading: null, fillPatternSuppressed: false, fillTransparent: false };
   }
-  if (!colour) return null;
   if (fn === ops.setStrokeRGBColor || fn === ops.setStrokeGray) {
-    return { ...state, stroke: parseColour(args?.[0]) ?? state.stroke, strokeShading: false, strokeTransparent: false };
+    const rgb = parseColour(args?.[0]) ?? state.stroke;
+    return { ...state, stroke: rgb, ruleStroke: rgb, strokeShading: false, strokeTransparent: false };
   }
   if (fn === ops.setFillColorN) {
-    return { ...state, fill: null, fillShading: shadingOperand(args), fillPatternSuppressed: isSuppressedPatternFill(args), fillTransparent: false };
+    return {
+      ...state,
+      fill: null,
+      ruleFill: uncoloredTilingRgb(args),
+      fillShading: shadingOperand(args),
+      fillPatternSuppressed: args?.[0] === 'Shading',
+      fillTransparent: false,
+    };
   }
-  if (fn === ops.setStrokeColorN) return { ...state, stroke: null, strokeShading: args?.[0] === 'Shading', strokeTransparent: false };
-  if (fn === ops.setFillTransparent) return { ...state, fill: null, fillShading: null, fillPatternSuppressed: false, fillTransparent: true };
-  if (fn === ops.setStrokeTransparent) return { ...state, stroke: null, strokeShading: false, strokeTransparent: true };
-  if (fn === ops.setDash) return { ...state, dashed: isNumberList(args?.[0]) && args[0].length > 0 };
-  if (fn === ops.setTextRenderingMode && typeof args?.[0] === 'number') return { ...state, textMode: args[0] };
+  if (fn === ops.setStrokeColorN) {
+    return {
+      ...state,
+      stroke: null,
+      ruleStroke: uncoloredTilingRgb(args),
+      strokeShading: args?.[0] === 'Shading',
+      strokeTransparent: false,
+    };
+  }
+  return null;
+}
+
+/** The operators that set a colour or dash/opacity graphics state. */
+function withColour(fn: number, args: unknown[] | undefined, ops: Record<string, number>, state: GraphicsState, colour: boolean): GraphicsState | null {
+  const painted = withPatternOrRgbColour(fn, args, ops, state);
+  if (painted !== null) return painted;
+  if (fn === ops.setFillTransparent) {
+    return { ...state, fill: null, ruleFill: null, fillShading: null, fillPatternSuppressed: false, fillTransparent: true };
+  }
+  if (fn === ops.setStrokeTransparent) {
+    return { ...state, stroke: null, ruleStroke: null, strokeShading: false, strokeTransparent: true };
+  }
   if (fn === ops.setGState) return applyGState(args?.[0], state);
+  if (fn === ops.setDash) return { ...state, dashed: isNumberList(args?.[0]) && args[0].length > 0 };
+  if (!colour) return null;
+  if (fn === ops.setTextRenderingMode && typeof args?.[0] === 'number') return { ...state, textMode: args[0] };
   return null;
 }
 
@@ -672,6 +703,8 @@ class OperatorScanner {
     lineWidth: 1,
     fill: BLACK,
     stroke: BLACK,
+    ruleFill: BLACK,
+    ruleStroke: BLACK,
     fillShading: null,
     fillPatternSuppressed: false,
     strokeShading: false,
@@ -816,8 +849,8 @@ class OperatorScanner {
     if (typeof paint !== 'number') return;
     const arrays = pathArrays(args?.[1]);
     const canPaint = this.state.smaskDepth === 0 && !isEmptyClip(this.state.clip);
-    const fillAllowed = canPaint && this.kinds.fill.has(paint) && (!this.colour || (!this.state.fillTransparent && this.state.fillAlpha > 0));
-    const strokeAllowed = canPaint && this.kinds.stroke.has(paint) && (!this.colour || (!this.state.strokeTransparent && this.state.strokeAlpha > 0));
+    const fillAllowed = canPaint && this.kinds.fill.has(paint) && !this.state.fillTransparent && this.state.fillAlpha > 0;
+    const strokeAllowed = canPaint && this.kinds.stroke.has(paint) && !this.state.strokeTransparent && this.state.strokeAlpha > 0;
     const z = this.colour ? place : undefined;
     const clippedSubpaths: Subpath[] | null = clipTarget ? [] : null;
     for (const data of arrays) {

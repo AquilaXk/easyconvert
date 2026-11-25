@@ -170,6 +170,26 @@ describe('the version of an engine', () => {
     expect(await withBinaryAt('RSVG_CONVERT_PATH', binary, () => installedEngineVersion('librsvg'))).toBeUndefined();
   });
 
+  it('suppresses a second immediate probe binary execution after failure within FAILED_PROBE_RETRY_MS', async () => {
+    const counter = path.join(dir, 'probe-fail-calls');
+    const binary = script('probe-fail-counted', `printf '1\\n' >> '${counter}'\nexit 1`);
+    const prevConfinement = process.env.SANDBOX_CONFINE_FILES;
+    // Counter file lives in suite dir outside workDir: null, which Landlock confinement blocks by design (policy 248).
+    process.env.SANDBOX_CONFINE_FILES = 'false';
+    try {
+      await withBinaryAt('RSVG_CONVERT_PATH', binary, async () => {
+        expect(await installedEngineVersion('librsvg')).toBeUndefined();
+        expect(await installedEngineVersion('librsvg')).toBeUndefined();
+      });
+      const calls = fs.readFileSync(counter, 'utf-8').split('\n').filter(Boolean).length;
+      expect(calls).toBe(1);
+    } finally {
+      fs.rmSync(counter, { force: true });
+      if (prevConfinement === undefined) delete process.env.SANDBOX_CONFINE_FILES;
+      else process.env.SANDBOX_CONFINE_FILES = prevConfinement;
+    }
+  });
+
   it('isolates version probe HOME and XDG caches into an ephemeral probe directory and leaves TMPDIR empty', async () => {
     const tmpRoot = fs.mkdtempSync(path.join(dir, 'empty-tmpdir-'));
     const binary = script(
