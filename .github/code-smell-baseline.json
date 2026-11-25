@@ -996,12 +996,6 @@
   },
   {
     "file": "src/lib/conversions/pdf-rasterizer.ts",
-    "rule": "@typescript-eslint/no-explicit-any",
-    "function": "rawSamplesOf",
-    "count": 1
-  },
-  {
-    "file": "src/lib/conversions/pdf-rasterizer.ts",
     "rule": "no-nested-ternary",
     "function": "decodePdfImages",
     "count": 1

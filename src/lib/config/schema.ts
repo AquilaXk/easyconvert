@@ -368,6 +368,7 @@ export function parseKind(kind: ValueKind, raw: string, context: ParseContext): 
 // ---------------------------------------------------------------------------------------------------------
 
 const WEB: readonly ProcessRole[] = ['web'];
+const WORKER: readonly ProcessRole[] = ['worker'];
 const BOTH: readonly ProcessRole[] = ['web', 'worker'];
 
 /** A native tool's executable path: optional, never secret, searched in the standard locations when unset. */
@@ -421,6 +422,44 @@ function autoOffSetting<const N extends string>(name: N, area: ConfigArea, descr
   } as const satisfies VariableSpec;
 }
 
+function boolSetting<const N extends string>(
+  name: N,
+  area: ConfigArea,
+  description: string,
+  defaultValue: boolean,
+  roles: readonly ProcessRole[] = BOTH
+) {
+  return {
+    name,
+    area,
+    description,
+    kind: { type: 'boolean' },
+    default: defaultValue,
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+function intSetting<const N extends string>(
+  name: N,
+  area: ConfigArea,
+  description: string,
+  bounds: { readonly min: number; readonly max: number; readonly default: number },
+  roles: readonly ProcessRole[] = BOTH
+) {
+  return {
+    name,
+    area,
+    description,
+    kind: { type: 'integer', min: bounds.min, max: bounds.max },
+    default: bounds.default,
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
 function intLimit<const N extends string>(
   name: N,
   description: string,
@@ -428,14 +467,54 @@ function intLimit<const N extends string>(
   defaultValue: number,
   roles: readonly ProcessRole[] = BOTH
 ) {
+  return intSetting(name, 'limits', description, { min: 1, max, default: defaultValue }, roles);
+}
+
+function computedIntLimit<const N extends string>(
+  name: N,
+  description: string,
+  max: number,
+  computedDefault: string,
+  roles: readonly ProcessRole[] = BOTH
+) {
   return {
     name,
     area: 'limits',
     description,
     kind: { type: 'integer', min: 1, max },
-    default: defaultValue,
+    computedDefault,
     requiredInProduction: false,
     secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+function stringVar<const N extends string>(
+  name: N,
+  area: ConfigArea,
+  description: string,
+  maxLength?: number,
+  roles: readonly ProcessRole[] = BOTH
+) {
+  return {
+    name,
+    area,
+    description,
+    kind: maxLength === undefined ? { type: 'string' } : { type: 'string', maxLength },
+    requiredInProduction: false,
+    secret: false,
+    roles,
+  } as const satisfies VariableSpec;
+}
+
+function credentialVar<const N extends string>(name: N, area: ConfigArea, description: string, roles: readonly ProcessRole[] = BOTH) {
+  return {
+    name,
+    area,
+    description,
+    kind: { type: 'credential' },
+    requiredInProduction: false,
+    secret: true,
     roles,
   } as const satisfies VariableSpec;
 }
@@ -453,6 +532,27 @@ const KEY_SECRET = { type: 'secret', minBytes: MIN_PRODUCTION_SECRET_BYTES, trim
 const SEALING_SECRET = { type: 'secret', minBytes: MIN_PRODUCTION_SECRET_BYTES, trim: false, rejectSurroundingWhitespace: true } as const;
 /** src/lib/storage/storage-config.ts readVar and resolveSigningSecret: the value is trimmed, then measured. */
 const SIGNING_SECRET = { type: 'secret', minBytes: MIN_PRODUCTION_SECRET_BYTES, trim: true, rejectSurroundingWhitespace: false } as const;
+
+type SecretKind = typeof KEY_SECRET | typeof SEALING_SECRET | typeof SIGNING_SECRET;
+
+function keySecret<const N extends string>(
+  name: N,
+  area: ConfigArea,
+  description: string,
+  kind: SecretKind,
+  requiredInProduction: boolean,
+  roles: readonly ProcessRole[] = BOTH
+) {
+  return {
+    name,
+    area,
+    description,
+    kind,
+    requiredInProduction,
+    secret: true,
+    roles,
+  } as const satisfies VariableSpec;
+}
 
 /** The description of a job deadline's base for `tier`, which the settings of every tier share. */
 const deadlineBase = (tier: string): string =>
@@ -519,15 +619,7 @@ const SCHEMA_ENTRIES = [
     roles: BOTH,
     platformManaged: true,
   },
-  {
-    name: 'CONTAINER_SANDBOX',
-    area: 'runtime',
-    description: 'Any non-empty value declares that the process already runs inside a container sandbox.',
-    kind: { type: 'string' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  stringVar('CONTAINER_SANDBOX', 'runtime', 'Any non-empty value declares that the process already runs inside a container sandbox.'),
   {
     name: 'MALLOC_ARENA_MAX',
     area: 'runtime',
@@ -538,37 +630,30 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'STRICT_SANDBOX',
-    area: 'security',
-    description: 'Set to `true` to refuse running native tools without the strict process sandbox: the user and network namespaces, and pid-init with the Landlock ruleset that confines the files of a program to the directory of its job. A run that does not name its job directory, or that this host cannot confine, is refused with a 503 before the program starts.',
-    kind: { type: 'boolean' },
-    default: false,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'SANDBOX_PID_NAMESPACE',
-    area: 'security',
-    description: 'Set to `false` to start sandboxed programs without `pid-init` (on by default): without the PID namespace of their own, and without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs. calibre and veraPDF always run outside the PID namespace: calibre\'s launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount; they still get the ruleset.',
-    kind: { type: 'boolean' },
-    default: true,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'SANDBOX_HIDE_PROC',
-    area: 'security',
-    description: 'Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs (on by default; `pid-init --keep-proc`). The PID namespace stays. A single call can opt out with `sandboxOptions.hideProc: false`.',
-    kind: { type: 'boolean' },
-    default: true,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  { name: 'SANDBOX_CONFINE_FILES', area: 'security', description: 'Set to `false` to start sandboxed programs without the Landlock ruleset that confines their files to the directory of their job (on by default; `pid-init --confine`). Without it a program can read and write every file its user can, such as the stored files of other people. With `STRICT_SANDBOX=true` the process does not start while this is `false` (as with `SANDBOX_PID_NAMESPACE=false`). The PID namespace and the /proc hiding stay.', kind: { type: 'boolean' }, default: true, requiredInProduction: false, secret: false, roles: BOTH },
+  boolSetting(
+    'STRICT_SANDBOX',
+    'security',
+    'Set to `true` to refuse running native tools without the strict process sandbox: the user and network namespaces, and pid-init with the Landlock ruleset that confines the files of a program to the directory of its job. A run that does not name its job directory, or that this host cannot confine, is refused with a 503 before the program starts.',
+    false
+  ),
+  boolSetting(
+    'SANDBOX_PID_NAMESPACE',
+    'security',
+    'Set to `false` to start sandboxed programs without `pid-init` (on by default): without the PID namespace of their own, and without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs. calibre and veraPDF always run outside the PID namespace: calibre\'s launcher reads /proc/<its own id>/exe, which names another process in a namespace whose /proc the sandbox cannot remount; they still get the ruleset.',
+    true
+  ),
+  boolSetting(
+    'SANDBOX_HIDE_PROC',
+    'security',
+    'Set to `false` to start sandboxed programs without the Landlock ruleset that refuses them the /proc entries (command line, status) of the other runs (on by default; `pid-init --keep-proc`). The PID namespace stays. A single call can opt out with `sandboxOptions.hideProc: false`.',
+    true
+  ),
+  boolSetting(
+    'SANDBOX_CONFINE_FILES',
+    'security',
+    'Set to `false` to start sandboxed programs without the Landlock ruleset that confines their files to the directory of their job (on by default; `pid-init --confine`). Without it a program can read and write every file its user can, such as the stored files of other people. With `STRICT_SANDBOX=true` the process does not start while this is `false` (as with `SANDBOX_PID_NAMESPACE=false`). The PID namespace and the /proc hiding stay.',
+    true
+  ),
   autoOffSetting(
     'SANDBOX_LAUNCHER',
     'security',
@@ -658,16 +743,13 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: WEB,
   },
-  {
-    name: 'NEXT_PUBLIC_RELEASE_SHA',
-    area: 'runtime',
-    description:
-      'Commit the build was made from, which a crash report of a page names (docs/policy-decisions.md, entry 384). Next.js writes it into the scripts of the page when it builds, so it is set at build time (the `RELEASE_SHA` build argument of `Dockerfile.web`); a value set on the running server changes nothing. Without it a report names no release.',
-    kind: { type: 'string', maxLength: 64 },
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
+  stringVar(
+    'NEXT_PUBLIC_RELEASE_SHA',
+    'runtime',
+    'Commit the build was made from, which a crash report of a page names (docs/policy-decisions.md, entry 384). Next.js writes it into the scripts of the page when it builds, so it is set at build time (the `RELEASE_SHA` build argument of `Dockerfile.web`); a value set on the running server changes nothing. Without it a report names no release.',
+    64,
+    WEB
+  ),
   {
     name: 'TRUSTED_PROXIES',
     area: 'security',
@@ -708,64 +790,38 @@ const SCHEMA_ENTRIES = [
   },
 
   // ---- auth -------------------------------------------------------------------------------------------
-  {
-    name: 'JWT_SECRET',
-    area: 'auth',
-    description:
-      'Signs session tokens. At least 32 bytes of UTF-8 text in production; also a legacy decryption fallback key of the credential vault and of API key secret encryption.',
-    kind: KEY_SECRET,
-    requiredInProduction: true,
-    secret: true,
-    roles: WEB,
-  },
-  {
-    name: 'JWT_SECRET_PREVIOUS',
-    area: 'auth',
-    description:
-      'The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET. Used exactly as set, like JWT_SECRET, without trimming.',
-    kind: KEY_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: WEB,
-  },
-  {
-    name: 'GOOGLE_CLIENT_ID',
-    area: 'auth',
-    description: 'OAuth client id for Google sign-in. Without it, development uses a local mock sign-in and production refuses to sign in.',
-    kind: { type: 'string' },
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
-  {
-    name: 'GOOGLE_CLIENT_SECRET',
-    area: 'auth',
-    description: 'OAuth client secret for Google sign-in; required together with GOOGLE_CLIENT_ID.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: WEB,
-  },
-  {
-    name: 'SMTP_HOST',
-    area: 'auth',
-    description:
-      'SMTP server that sends the password reset and email verification mails (the link of a sign-up and of a resend; STARTTLS is required, a mail is never sent in the clear). Without SMTP_HOST, SMTP_USER and SMTP_PASSWORD, and a public origin (APP_ORIGIN, NEXT_PUBLIC_APP_URL or APP_URL), both features are off: the sign-in page shows no forgot-password link and their routes answer 404, and a sign-up makes its account without a mail, so the account stays unverified. The daily sending limit of the mail account applies: the server counts its mails, warns at 350 a day, stops verification mails at 400 and keeps the rest up to 480 for resets.',
-    kind: { type: 'string', maxLength: 253 },
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
-  {
-    name: 'SMTP_PORT',
-    area: 'auth',
-    description: 'Port of SMTP_HOST. 587 (STARTTLS) is the default; 465 connects over TLS from the first byte.',
-    kind: { type: 'integer', min: 1, max: TCP_PORT_MAX },
-    default: 587,
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
+  keySecret(
+    'JWT_SECRET',
+    'auth',
+    'Signs session tokens. At least 32 bytes of UTF-8 text in production; also a legacy decryption fallback key of the credential vault and of API key secret encryption.',
+    KEY_SECRET,
+    true,
+    WEB
+  ),
+  keySecret(
+    'JWT_SECRET_PREVIOUS',
+    'auth',
+    'The previous JWT_SECRET during a key rotation, so session tokens signed under it still verify while new tokens are signed with JWT_SECRET. Used exactly as set, like JWT_SECRET, without trimming.',
+    KEY_SECRET,
+    false,
+    WEB
+  ),
+  stringVar(
+    'GOOGLE_CLIENT_ID',
+    'auth',
+    'OAuth client id for Google sign-in. Without it, development uses a local mock sign-in and production refuses to sign in.',
+    undefined,
+    WEB
+  ),
+  credentialVar('GOOGLE_CLIENT_SECRET', 'auth', 'OAuth client secret for Google sign-in; required together with GOOGLE_CLIENT_ID.', WEB),
+  stringVar(
+    'SMTP_HOST',
+    'auth',
+    'SMTP server that sends the password reset and email verification mails (the link of a sign-up and of a resend; STARTTLS is required, a mail is never sent in the clear). Without SMTP_HOST, SMTP_USER and SMTP_PASSWORD, and a public origin (APP_ORIGIN, NEXT_PUBLIC_APP_URL or APP_URL), both features are off: the sign-in page shows no forgot-password link and their routes answer 404, and a sign-up makes its account without a mail, so the account stays unverified. The daily sending limit of the mail account applies: the server counts its mails, warns at 350 a day, stops verification mails at 400 and keeps the rest up to 480 for resets.',
+    253,
+    WEB
+  ),
+  intSetting('SMTP_PORT', 'auth', 'Port of SMTP_HOST. 587 (STARTTLS) is the default; 465 connects over TLS from the first byte.', { min: 1, max: TCP_PORT_MAX, default: 587 }, WEB),
   {
     name: 'SMTP_USER',
     area: 'auth',
@@ -800,75 +856,57 @@ const SCHEMA_ENTRIES = [
   ...UNVERIFIED_ACCOUNT_PURGE_ENTRIES,
 
   // ---- secrets ----------------------------------------------------------------------------------------
-  {
-    name: 'KEY_HASH_PEPPER',
-    area: 'secrets',
-    description:
-      'Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also a legacy decryption fallback key of API key secret encryption.',
-    kind: KEY_SECRET,
-    requiredInProduction: true,
-    secret: true,
-    roles: WEB,
-  },
-  {
-    name: 'KEY_HASH_PEPPER_PREVIOUS',
-    area: 'secrets',
-    description:
-      'The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.',
-    kind: KEY_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: WEB,
-  },
-  {
-    name: 'KEY_ENCRYPTION_KEY',
-    area: 'secrets',
-    description:
-      'Key that encrypts API key webhook secrets at rest. In production it must be set (at least 32 characters) to encrypt a new secret; without it existing secrets still decrypt under KEY_HASH_PEPPER, KEY_HASH_PEPPER_PREVIOUS or JWT_SECRET. Outside production those keys also encrypt.',
-    kind: KEY_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'WEBHOOK_SECRET_KEK',
-    area: 'secrets',
-    description:
-      'Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The web process seals the rotated secrets with it and the worker opens them to sign every delivery, so both need the same value.',
-    kind: KEY_SECRET,
-    requiredInProduction: true,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'STORAGE_VAULT_KEY',
-    area: 'secrets',
-    description:
-      'Master key of the vault that holds customer storage credentials. In production it must be set (at least 32 characters) to store credentials; without it stored credentials still decrypt under KEY_ENCRYPTION_KEY or JWT_SECRET. Outside production those keys also encrypt.',
-    kind: KEY_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_SECRET_KEK',
-    area: 'secrets',
-    description:
-      'Key-encryption key that seals signed URLs and headers inside queued jobs. At least 32 bytes of UTF-8 text, no surrounding whitespace, in production. Shared by the API and every worker.',
-    kind: SEALING_SECRET,
-    requiredInProduction: true,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'JOB_SECRET_KEK_PREVIOUS',
-    area: 'secrets',
-    description: 'The previous JOB_SECRET_KEK during a rotation, so jobs sealed under it can still be opened.',
-    kind: SEALING_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
+  keySecret(
+    'KEY_HASH_PEPPER',
+    'secrets',
+    'Pepper of the HMAC that hashes API key secrets. At least 32 bytes of UTF-8 text in production. Also a legacy decryption fallback key of API key secret encryption.',
+    KEY_SECRET,
+    true,
+    WEB
+  ),
+  keySecret(
+    'KEY_HASH_PEPPER_PREVIOUS',
+    'secrets',
+    'The previous KEY_HASH_PEPPER during a rotation, so API keys hashed under it still verify and are re-hashed under KEY_HASH_PEPPER on next use.',
+    KEY_SECRET,
+    false,
+    WEB
+  ),
+  keySecret(
+    'KEY_ENCRYPTION_KEY',
+    'secrets',
+    'Key that encrypts API key webhook secrets at rest. In production it must be set (at least 32 characters) to encrypt a new secret; without it existing secrets still decrypt under KEY_HASH_PEPPER, KEY_HASH_PEPPER_PREVIOUS or JWT_SECRET. Outside production those keys also encrypt.',
+    KEY_SECRET,
+    false
+  ),
+  keySecret(
+    'WEBHOOK_SECRET_KEK',
+    'secrets',
+    'Key-encryption key of the webhook signing secrets. At least 32 bytes of UTF-8 text in production. The web process seals the rotated secrets with it and the worker opens them to sign every delivery, so both need the same value.',
+    KEY_SECRET,
+    true
+  ),
+  keySecret(
+    'STORAGE_VAULT_KEY',
+    'secrets',
+    'Master key of the vault that holds customer storage credentials. In production it must be set (at least 32 characters) to store credentials; without it stored credentials still decrypt under KEY_ENCRYPTION_KEY or JWT_SECRET. Outside production those keys also encrypt.',
+    KEY_SECRET,
+    false
+  ),
+  keySecret(
+    'JOB_SECRET_KEK',
+    'secrets',
+    'Key-encryption key that seals signed URLs and headers inside queued jobs. At least 32 bytes of UTF-8 text, no surrounding whitespace, in production. Shared by the API and every worker.',
+    SEALING_SECRET,
+    true
+  ),
+  keySecret(
+    'JOB_SECRET_KEK_PREVIOUS',
+    'secrets',
+    'The previous JOB_SECRET_KEK during a rotation, so jobs sealed under it can still be opened.',
+    SEALING_SECRET,
+    false
+  ),
 
   // ---- storage ----------------------------------------------------------------------------------------
   {
@@ -882,34 +920,21 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'STORAGE_SIGNING_SECRET',
-    area: 'storage',
-    description:
-      'Signs upload and download URLs. At least 32 bytes of UTF-8 text in production (surrounding whitespace is trimmed). One of STORAGE_SIGNING_SECRET, S3_SIGNING_SECRET or OCI_SIGNING_SECRET is required in production; the first one set wins.',
-    kind: SIGNING_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'S3_SIGNING_SECRET',
-    area: 'storage',
-    description: 'Alternative name of STORAGE_SIGNING_SECRET; used when STORAGE_SIGNING_SECRET is not set.',
-    kind: SIGNING_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'OCI_SIGNING_SECRET',
-    area: 'storage',
-    description: 'Alternative name of STORAGE_SIGNING_SECRET; used when neither STORAGE_SIGNING_SECRET nor S3_SIGNING_SECRET is set.',
-    kind: SIGNING_SECRET,
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
+  keySecret(
+    'STORAGE_SIGNING_SECRET',
+    'storage',
+    'Signs upload and download URLs. At least 32 bytes of UTF-8 text in production (surrounding whitespace is trimmed). One of STORAGE_SIGNING_SECRET, S3_SIGNING_SECRET or OCI_SIGNING_SECRET is required in production; the first one set wins.',
+    SIGNING_SECRET,
+    false
+  ),
+  keySecret('S3_SIGNING_SECRET', 'storage', 'Alternative name of STORAGE_SIGNING_SECRET; used when STORAGE_SIGNING_SECRET is not set.', SIGNING_SECRET, false),
+  keySecret(
+    'OCI_SIGNING_SECRET',
+    'storage',
+    'Alternative name of STORAGE_SIGNING_SECRET; used when neither STORAGE_SIGNING_SECRET nor S3_SIGNING_SECRET is set.',
+    SIGNING_SECRET,
+    false
+  ),
   {
     name: 'EASYCONVERT_STORAGE_DIR',
     area: 'storage',
@@ -920,70 +945,37 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'RESULT_UNDELIVERED_TTL_SECONDS',
-    area: 'storage',
-    description:
-      'Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The upload a job reads is deleted shortly after the last job that reads it ends (RESULT_DELIVERED_GRACE_SECONDS) and does not wait for this. Applies to every storage driver; a bucket lifecycle rule is only a backstop.',
-    kind: { type: 'integer', min: 60, max: 86_400 },
-    default: 3600,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'RESULT_DELIVERED_GRACE_SECONDS',
-    area: 'storage',
-    description:
-      'Seconds a conversion result stays downloadable after its first complete delivery (one response, or ranges that together cover the whole file), so a second click or a resumed download still works. After that it is deleted and its download answers 410 Gone. A download that stops early does not count as a delivery.',
-    kind: { type: 'integer', min: 1, max: 3600 },
-    default: DELIVERED_FILE_RETENTION_MINUTES * 60,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'RESULT_DISK_HIGH_PERCENT',
-    area: 'storage',
-    description:
-      'Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT. A pass that deleted nothing, or whose deletions together did not lower the use, waits five minutes unless the use moved. The files of a queued or running job, undelivered results younger than ten minutes and partly downloaded results are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.',
-    kind: { type: 'integer', min: 1, max: 99 },
-    default: 85,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'RESULT_DISK_LOW_PERCENT',
-    area: 'storage',
-    description:
-      'Disk use, in percent, at or below which the early deletion that RESULT_DISK_HIGH_PERCENT starts stops again. Local storage driver only; must be below RESULT_DISK_HIGH_PERCENT.',
-    kind: { type: 'integer', min: 1, max: 99 },
-    default: 80,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'RESULT_DISK_REFUSE_PERCENT',
-    area: 'storage',
-    description:
-      'Disk use, in percent, above which new uploads and conversions answer 503 with Retry-After, after an early deletion of results did not bring the use down to it, measured on the fuller of the file system that holds EASYCONVERT_STORAGE_DIR and the temporary directory; the parts, completion and abort of a running upload go on. Local storage driver only; must be above RESULT_DISK_HIGH_PERCENT and at most 99.',
-    kind: { type: 'integer', min: 1, max: 99 },
-    default: 95,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'OCI_NAMESPACE',
-    area: 'storage',
-    description: 'OCI Object Storage namespace (a single DNS label). Required when STORAGE_DRIVER is `oci`; checked when storage is selected.',
-    kind: { type: 'string', maxLength: 64 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  intSetting(
+    'RESULT_UNDELIVERED_TTL_SECONDS',
+    'storage',
+    'Seconds a conversion result is kept when nobody has downloaded it completely, counted from the moment it is stored; after that it is deleted and its download answers 410 Gone. The upload a job reads is deleted shortly after the last job that reads it ends (RESULT_DELIVERED_GRACE_SECONDS) and does not wait for this. Applies to every storage driver; a bucket lifecycle rule is only a backstop.',
+    { min: 60, max: 86_400, default: 3600 }
+  ),
+  intSetting(
+    'RESULT_DELIVERED_GRACE_SECONDS',
+    'storage',
+    'Seconds a conversion result stays downloadable after its first complete delivery (one response, or ranges that together cover the whole file), so a second click or a resumed download still works. After that it is deleted and its download answers 410 Gone. A download that stops early does not count as a delivery.',
+    { min: 1, max: 3600, default: DELIVERED_FILE_RETENTION_MINUTES * 60 }
+  ),
+  intSetting(
+    'RESULT_DISK_HIGH_PERCENT',
+    'storage',
+    'Disk use, in percent of the file system that holds EASYCONVERT_STORAGE_DIR, above which the sweep deletes results before their time: delivered results in their grace period first, the earliest delivery first, then undelivered results, the oldest first, until the use is at or below RESULT_DISK_LOW_PERCENT. A pass that deleted nothing, or whose deletions together did not lower the use, waits five minutes unless the use moved. The files of a queued or running job, undelivered results younger than ten minutes and partly downloaded results are never deleted. Such a result answers 410 Gone with the reason `capacity`. Local storage driver only; must be above RESULT_DISK_LOW_PERCENT and below RESULT_DISK_REFUSE_PERCENT.',
+    { min: 1, max: 99, default: 85 }
+  ),
+  intSetting(
+    'RESULT_DISK_LOW_PERCENT',
+    'storage',
+    'Disk use, in percent, at or below which the early deletion that RESULT_DISK_HIGH_PERCENT starts stops again. Local storage driver only; must be below RESULT_DISK_HIGH_PERCENT.',
+    { min: 1, max: 99, default: 80 }
+  ),
+  intSetting(
+    'RESULT_DISK_REFUSE_PERCENT',
+    'storage',
+    'Disk use, in percent, above which new uploads and conversions answer 503 with Retry-After, after an early deletion of results did not bring the use down to it, measured on the fuller of the file system that holds EASYCONVERT_STORAGE_DIR and the temporary directory; the parts, completion and abort of a running upload go on. Local storage driver only; must be above RESULT_DISK_HIGH_PERCENT and at most 99.',
+    { min: 1, max: 99, default: 95 }
+  ),
+  stringVar('OCI_NAMESPACE', 'storage', 'OCI Object Storage namespace (a single DNS label). Required when STORAGE_DRIVER is `oci`; checked when storage is selected.', 64),
   {
     name: 'OCI_REGION',
     area: 'storage',
@@ -1006,15 +998,7 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'OCI_BUCKET_NAME',
-    area: 'storage',
-    description: 'Alternative name of OCI_BUCKET; used when OCI_BUCKET is not set.',
-    kind: { type: 'string', maxLength: 256 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  stringVar('OCI_BUCKET_NAME', 'storage', 'Alternative name of OCI_BUCKET; used when OCI_BUCKET is not set.', 256),
   {
     name: 'OCI_ENDPOINT',
     area: 'storage',
@@ -1024,24 +1008,8 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'OCI_ACCESS_KEY_ID',
-    area: 'storage',
-    description: 'Customer secret key id of the OCI S3-compatible API. Required when STORAGE_DRIVER is `oci`.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'OCI_SECRET_ACCESS_KEY',
-    area: 'storage',
-    description: 'Customer secret key of the OCI S3-compatible API. Required when STORAGE_DRIVER is `oci`.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
+  credentialVar('OCI_ACCESS_KEY_ID', 'storage', 'Customer secret key id of the OCI S3-compatible API. Required when STORAGE_DRIVER is `oci`.'),
+  credentialVar('OCI_SECRET_ACCESS_KEY', 'storage', 'Customer secret key of the OCI S3-compatible API. Required when STORAGE_DRIVER is `oci`.'),
   {
     name: 'S3_ENDPOINT',
     area: 'storage',
@@ -1051,119 +1019,31 @@ const SCHEMA_ENTRIES = [
     secret: false,
     roles: BOTH,
   },
-  {
-    name: 'S3_REGION',
-    area: 'storage',
-    description: 'Region of the S3-compatible service (lowercase letters, digits, hyphens). Required when STORAGE_DRIVER is `s3`.',
-    kind: { type: 'string', maxLength: 64 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'S3_BUCKET',
-    area: 'storage',
-    description: 'Bucket name. Required when STORAGE_DRIVER is `s3` (S3_BUCKET_NAME is accepted instead).',
-    kind: { type: 'string', maxLength: 256 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'S3_BUCKET_NAME',
-    area: 'storage',
-    description: 'Alternative name of S3_BUCKET; used when S3_BUCKET is not set.',
-    kind: { type: 'string', maxLength: 256 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'S3_ACCESS_KEY_ID',
-    area: 'storage',
-    description: 'Access key id of the S3-compatible service. Required when STORAGE_DRIVER is `s3`.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'S3_SECRET_ACCESS_KEY',
-    area: 'storage',
-    description: 'Secret access key of the S3-compatible service. Required when STORAGE_DRIVER is `s3`.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'S3_FORCE_PATH_STYLE',
-    area: 'storage',
-    description: 'Path-style bucket addressing. Set to `false` for virtual-hosted-style addressing.',
-    kind: { type: 'boolean' },
-    default: true,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'AWS_ACCESS_KEY_ID',
-    area: 'storage',
-    description: 'Deprecated fallback of OCI_ACCESS_KEY_ID and S3_ACCESS_KEY_ID; logs a warning when used.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'AWS_SECRET_ACCESS_KEY',
-    area: 'storage',
-    description: 'Deprecated fallback of OCI_SECRET_ACCESS_KEY and S3_SECRET_ACCESS_KEY; logs a warning when used.',
-    kind: { type: 'credential' },
-    requiredInProduction: false,
-    secret: true,
-    roles: BOTH,
-  },
-  {
-    name: 'AWS_REGION',
-    area: 'storage',
-    description: 'Deprecated fallback of OCI_REGION and S3_REGION; logs a warning when used.',
-    kind: { type: 'string', maxLength: 64 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'AWS_BUCKET_NAME',
-    area: 'storage',
-    description: 'Deprecated fallback of OCI_BUCKET and S3_BUCKET; logs a warning when used.',
-    kind: { type: 'string', maxLength: 256 },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST',
-    area: 'storage',
-    description:
-      'Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.',
-    kind: { type: 'string' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'BYOS_S3_DEV_ENDPOINT_ALLOWLIST',
-    area: 'storage',
-    description:
-      'Comma-separated host[:port] list of customer S3 endpoints that may be plain http or private-address. Honoured only when NODE_ENV is exactly `development`.',
-    kind: { type: 'string' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-
-  { name: 'BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST', area: 'storage', description: 'Comma-separated host:port list of customer SFTP servers that may be private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.', kind: { type: 'string' }, requiredInProduction: false, secret: false, roles: BOTH },
+  stringVar('S3_REGION', 'storage', 'Region of the S3-compatible service (lowercase letters, digits, hyphens). Required when STORAGE_DRIVER is `s3`.', 64),
+  stringVar('S3_BUCKET', 'storage', 'Bucket name. Required when STORAGE_DRIVER is `s3` (S3_BUCKET_NAME is accepted instead).', 256),
+  stringVar('S3_BUCKET_NAME', 'storage', 'Alternative name of S3_BUCKET; used when S3_BUCKET is not set.', 256),
+  credentialVar('S3_ACCESS_KEY_ID', 'storage', 'Access key id of the S3-compatible service. Required when STORAGE_DRIVER is `s3`.'),
+  credentialVar('S3_SECRET_ACCESS_KEY', 'storage', 'Secret access key of the S3-compatible service. Required when STORAGE_DRIVER is `s3`.'),
+  boolSetting('S3_FORCE_PATH_STYLE', 'storage', 'Path-style bucket addressing. Set to `false` for virtual-hosted-style addressing.', true),
+  credentialVar('AWS_ACCESS_KEY_ID', 'storage', 'Deprecated fallback of OCI_ACCESS_KEY_ID and S3_ACCESS_KEY_ID; logs a warning when used.'),
+  credentialVar('AWS_SECRET_ACCESS_KEY', 'storage', 'Deprecated fallback of OCI_SECRET_ACCESS_KEY and S3_SECRET_ACCESS_KEY; logs a warning when used.'),
+  stringVar('AWS_REGION', 'storage', 'Deprecated fallback of OCI_REGION and S3_REGION; logs a warning when used.', 64),
+  stringVar('AWS_BUCKET_NAME', 'storage', 'Deprecated fallback of OCI_BUCKET and S3_BUCKET; logs a warning when used.', 256),
+  stringVar(
+    'BYOS_HTTP_DEV_ENDPOINT_ALLOWLIST',
+    'storage',
+    'Comma-separated host:port list of WebDAV, Azure Blob, GCS and import/export URL endpoints that may be plain http or private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.'
+  ),
+  stringVar(
+    'BYOS_S3_DEV_ENDPOINT_ALLOWLIST',
+    'storage',
+    'Comma-separated host[:port] list of customer S3 endpoints that may be plain http or private-address. Honoured only when NODE_ENV is exactly `development`.'
+  ),
+  stringVar(
+    'BYOS_SFTP_DEV_ENDPOINT_ALLOWLIST',
+    'storage',
+    'Comma-separated host:port list of customer SFTP servers that may be private-address, for a local test server. Honoured only when NODE_ENV is exactly `development`.'
+  ),
 
   // ---- queue ------------------------------------------------------------------------------------------
   {
@@ -1176,88 +1056,35 @@ const SCHEMA_ENTRIES = [
     secret: true,
     roles: BOTH,
   },
-  {
-    name: 'REDIS_HOST',
-    area: 'queue',
-    description: 'Redis host, used when REDIS_URL is not set.',
-    kind: { type: 'string' },
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
-  {
-    name: 'REDIS_PORT',
-    area: 'queue',
-    description: 'Redis port, used with REDIS_HOST.',
-    kind: { type: 'integer', min: 1, max: TCP_PORT_MAX },
-    default: 6379,
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  stringVar('REDIS_HOST', 'queue', 'Redis host, used when REDIS_URL is not set.'),
+  intSetting('REDIS_PORT', 'queue', 'Redis port, used with REDIS_HOST.', { min: 1, max: TCP_PORT_MAX, default: 6379 }),
   ...REDIS_SCALE_ENTRIES,
-  {
-    name: 'EASYCONVERT_WORKER_ENABLED',
-    area: 'queue',
-    description: 'Set to `true` to run the queue worker inside the web process (single-node use).',
-    kind: { type: 'boolean' },
-    default: false,
-    requiredInProduction: false,
-    secret: false,
-    roles: WEB,
-  },
+  boolSetting('EASYCONVERT_WORKER_ENABLED', 'queue', 'Set to `true` to run the queue worker inside the web process (single-node use).', false, WEB),
 
   // ---- worker -----------------------------------------------------------------------------------------
-  {
-    name: 'WORKER_CONCURRENCY',
-    area: 'worker',
-    description: 'Jobs a worker runs at once.',
-    kind: { type: 'integer', min: 1, max: 1024 },
-    default: 3,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'WORKER_MAX_JOBS',
-    area: 'worker',
-    description: 'Jobs after which the worker drains and exits so the container manager restarts it. `0` turns recycling by job count off.',
-    kind: { type: 'integer', min: 0, max: INT32_MAX },
-    default: 1000,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'WORKER_MAX_RSS_MB',
-    area: 'worker',
-    description: 'Resident memory in MiB above which the worker drains and exits after a job. `0` turns recycling by memory off.',
-    kind: { type: 'integer', min: 0, max: 1_048_576 },
-    default: 4096,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'WORKER_DRAIN_TIMEOUT_MS',
-    area: 'worker',
-    description: 'Milliseconds a draining worker waits for active jobs before it aborts them.',
-    kind: { type: 'integer', min: 0, max: INT32_MAX },
-    default: 60_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'WORKER_HEARTBEAT_INTERVAL_MS',
-    area: 'worker',
-    description: 'Milliseconds between heartbeat file updates.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 5000,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
+  intSetting('WORKER_CONCURRENCY', 'worker', 'Jobs a worker runs at once.', { min: 1, max: 1024, default: 3 }, WORKER),
+  intSetting(
+    'WORKER_MAX_JOBS',
+    'worker',
+    'Jobs after which the worker drains and exits so the container manager restarts it. `0` turns recycling by job count off.',
+    { min: 0, max: INT32_MAX, default: 1000 },
+    WORKER
+  ),
+  intSetting(
+    'WORKER_MAX_RSS_MB',
+    'worker',
+    'Resident memory in MiB above which the worker drains and exits after a job. `0` turns recycling by memory off.',
+    { min: 0, max: 1_048_576, default: 4096 },
+    WORKER
+  ),
+  intSetting(
+    'WORKER_DRAIN_TIMEOUT_MS',
+    'worker',
+    'Milliseconds a draining worker waits for active jobs before it aborts them.',
+    { min: 0, max: INT32_MAX, default: 60_000 },
+    WORKER
+  ),
+  intSetting('WORKER_HEARTBEAT_INTERVAL_MS', 'worker', 'Milliseconds between heartbeat file updates.', { min: 1, max: INT32_MAX, default: 5000 }, WORKER),
   {
     name: 'WORKER_HEARTBEAT_FILE',
     area: 'worker',
@@ -1266,64 +1093,41 @@ const SCHEMA_ENTRIES = [
     computedDefault: 'worker-heartbeat.json in the operating system temporary directory',
     requiredInProduction: false,
     secret: false,
-    roles: ['worker'],
+    roles: WORKER,
   },
-  {
-    name: 'WORKER_HEARTBEAT_MAX_STALE_MS',
-    area: 'worker',
-    description: 'Age in milliseconds after which the container health check (scripts/worker-healthcheck.js) calls the heartbeat stale.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 35_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'CHECK_REDIS',
-    area: 'worker',
-    description: 'Set to `false` to skip the Redis connection check of the container health check.',
-    kind: { type: 'boolean' },
-    default: true,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'WORKER_QUEUES',
-    area: 'worker',
-    description:
-      'Comma-separated queues this worker takes jobs from (`default`, `light`, `cpu`, `memory`, `gpu`). All queues when unset.',
-    kind: { type: 'string' },
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
-  {
-    name: 'LIBREOFFICE_POOL_READINESS_TIMEOUT_MS',
-    area: 'worker',
-    description: 'Milliseconds the LibreOffice pool waits for a worker process to become ready (5000 to 40000).',
-    kind: { type: 'integer', min: 5000, max: 40_000 },
-    default: 30_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
+  intSetting(
+    'WORKER_HEARTBEAT_MAX_STALE_MS',
+    'worker',
+    'Age in milliseconds after which the container health check (scripts/worker-healthcheck.js) calls the heartbeat stale.',
+    { min: 1, max: INT32_MAX, default: 35_000 },
+    WORKER
+  ),
+  boolSetting('CHECK_REDIS', 'worker', 'Set to `false` to skip the Redis connection check of the container health check.', true, WORKER),
+  stringVar(
+    'WORKER_QUEUES',
+    'worker',
+    'Comma-separated queues this worker takes jobs from (`default`, `light`, `cpu`, `memory`, `gpu`). All queues when unset.',
+    undefined,
+    WORKER
+  ),
+  intSetting(
+    'LIBREOFFICE_POOL_READINESS_TIMEOUT_MS',
+    'worker',
+    'Milliseconds the LibreOffice pool waits for a worker process to become ready (5000 to 40000).',
+    { min: 5000, max: 40_000, default: 30_000 },
+    WORKER
+  ),
 
   // ---- limits -----------------------------------------------------------------------------------------
   intLimit('MAX_IN_MEMORY_BYTES', 'Largest stored object, in bytes, that may be read into memory instead of streamed.', Number.MAX_SAFE_INTEGER, 512 * BYTES_PER_MIB),
   intLimit('GRAPH_URL_IMPORT_MAX_BYTES', 'Largest body, in bytes, that an `import.url` graph node downloads.', Number.MAX_SAFE_INTEGER, 5 * BYTES_PER_GIB),
   intLimit('EASYCONVERT_MAX_INPUT_PIXELS', 'Largest declared canvas, in pixels, of a still-image input. A larger value is lowered to the built-in ceiling.', Number.MAX_SAFE_INTEGER, 100_000_000),
-  {
-    name: 'VIPS_CONCURRENCY',
-    area: 'limits',
-    description:
-      'Threads the image pipeline leases per operation. When unset, non-encode operations use 1 thread and AVIF encodes and OCR page preparations lease up to 8 threads (2 when MALLOC_ARENA_MAX is unset).',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    computedDefault: '1 outside an encode; up to 8 (2 when MALLOC_ARENA_MAX is unset) during an AVIF encode or OCR page preparation',
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  computedIntLimit(
+    'VIPS_CONCURRENCY',
+    'Threads the image pipeline leases per operation. When unset, non-encode operations use 1 thread and AVIF encodes and OCR page preparations lease up to 8 threads (2 when MALLOC_ARENA_MAX is unset).',
+    INT32_MAX,
+    '1 outside an encode; up to 8 (2 when MALLOC_ARENA_MAX is unset) during an AVIF encode or OCR page preparation'
+  ),
   intLimit('EASYCONVERT_PDF_TEXT_DEADLINE_MS', 'Milliseconds the PDF text extraction may run before it is stopped.', INT32_MAX, 60_000),
   intLimit(
     'EASYCONVERT_OCR_PAGE_BUDGET_MS',
@@ -1337,17 +1141,12 @@ const SCHEMA_ENTRIES = [
     INT32_MAX,
     4
   ),
-  {
-    name: 'EASYCONVERT_OCR_ONNX_THREADS',
-    area: 'limits',
-    description:
-      'Upper bound on intra-op compute threads leased by each ONNX OCR helper process, capped at the built-in helper thread ceiling (6). Concurrent corpus pools set it so multiple job servers do not oversubscribe the host CPUs.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    computedDefault: 'floor(CPUs / helper count), capped at 6',
-    requiredInProduction: false,
-    secret: false,
-    roles: BOTH,
-  },
+  computedIntLimit(
+    'EASYCONVERT_OCR_ONNX_THREADS',
+    'Upper bound on intra-op compute threads leased by each ONNX OCR helper process, capped at the built-in helper thread ceiling (6). Concurrent corpus pools set it so multiple job servers do not oversubscribe the host CPUs.',
+    INT32_MAX,
+    'floor(CPUs / helper count), capped at 6'
+  ),
   intLimit('JOB_DEADLINE_BASE_MS_FREE', `${deadlineBase('free')} Must not exceed JOB_DEADLINE_MAX_MS_FREE.`, JOB_DEADLINE_CEILING_MS, 60_000),
   intLimit('JOB_DEADLINE_BASE_MS_PAID', `${deadlineBase('paid')} Must not exceed JOB_DEADLINE_MAX_MS_PAID.`, JOB_DEADLINE_CEILING_MS, 120_000),
   intLimit('JOB_DEADLINE_MAX_MS_FREE', deadlineMax('free'), JOB_DEADLINE_CEILING_MS, PLAN_PROCESSING_MINUTES.free * 60_000),
@@ -1362,17 +1161,13 @@ const SCHEMA_ENTRIES = [
   ),
   intLimit('CONVERSION_CONCURRENCY_FREE', concurrencyNote('an anonymous or free-tier caller'), INT32_MAX, PLAN_CONCURRENCY.free),
   intLimit('CONVERSION_CONCURRENCY_PAID', concurrencyNote('a caller of a paid account'), INT32_MAX, PLAN_CONCURRENCY.paid),
-  {
-    name: 'JOB_STUCK_RECYCLE_MS',
-    area: 'worker',
-    description:
-      'Milliseconds a conversion that ignored its abort at the job deadline may stay unfinished before the worker drains and exits to be restarted (a processor that does not look at its signal cannot be stopped otherwise). The aborted conversion keeps its concurrency slot until it finishes.',
-    kind: { type: 'integer', min: 1, max: INT32_MAX },
-    default: 30_000,
-    requiredInProduction: false,
-    secret: false,
-    roles: ['worker'],
-  },
+  intSetting(
+    'JOB_STUCK_RECYCLE_MS',
+    'worker',
+    'Milliseconds a conversion that ignored its abort at the job deadline may stay unfinished before the worker drains and exits to be restarted (a processor that does not look at its signal cannot be stopped otherwise). The aborted conversion keeps its concurrency slot until it finishes.',
+    { min: 1, max: INT32_MAX, default: 30_000 },
+    WORKER
+  ),
   intLimit(
     'EASYCONVERT_XLS_MAX_GRID_CELLS',
     'Most cells (rows x columns of the used range) of a legacy XLS sheet that an HTML, ODS or XLSX conversion expands to a grid in memory; a larger sheet is refused with HTTP 413. CSV, TSV and JSON are written row by row and are not limited by it.',
@@ -1453,7 +1248,12 @@ const SCHEMA_ENTRIES = [
   toolPath('DCRAW_EMU_HE_PATH', 'Path of the `dcraw_emu` of the pinned LibRaw snapshot (scripts/install-libraw-he.sh) that reads Nikon NEF files with High Efficiency or High Efficiency* compression; searched in the standard locations when unset. Without it such a file is refused with the words of the `dcraw_emu` of `DCRAW_EMU_PATH`; every other camera file never uses it.', BOTH),
   absoluteToolPath('EBOOK_CONVERT_PATH', 'Absolute path of the calibre `ebook-convert` executable that writes MOBI, AZW3, PDB, LRF and OEB books and converts CHM, LIT and TCR books to every e-book format, PDF, RTF and text; searched in the standard locations when unset. Those five formats cannot be written, and those three books cannot be read, without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('PANDOC_PATH', 'Absolute path of the pandoc executable that writes LaTeX from Markdown, plain text and HTML and reStructuredText from Markdown; searched in the standard locations when unset. Those pairs cannot be converted without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
-  { name: 'CAPTURE_WEBSITE_ENABLED', area: 'security', description: 'Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. Off by default pending Debian 13 Qt 6.8 CI container confirmation (docs/policy-decisions.md, entries 270 and 436). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.', kind: { type: 'boolean' }, default: false, requiredInProduction: false, secret: false, roles: BOTH },
+  boolSetting(
+    'CAPTURE_WEBSITE_ENABLED',
+    'security',
+    'Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. Off by default pending Debian 13 Qt 6.8 CI container confirmation (docs/policy-decisions.md, entries 270 and 436). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.',
+    false
+  ),
   absoluteToolPath('CAPTURE_PYTHON_PATH', 'Absolute path of the Python 3 interpreter that runs the website capture driver (native/capture-website) with the PyQt6 WebEngine bindings that calibre brings; searched in the standard locations when unset. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   absoluteToolPath('CAPTURE_DRIVER_PATH', 'Absolute path of the website capture driver script (native/capture-website/capture.py); `/usr/local/lib/easyconvert/capture-website.py` in the worker image, the file in `native/` in a checkout. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.', BOTH),
   toolPath('DWG2DXF_PATH', 'Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).', BOTH),
