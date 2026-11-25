@@ -150,6 +150,7 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
     srv.bind(sock_path)
     srv.listen(32)
     stop_srv = threading.Event()
+    client_saw_early_resp = threading.Event()
     early_403_resp = b'HTTP/1.1 403 Refused\\r\\nx-capture-gate: blocked\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'
 
     def serve_conn(conn):
@@ -163,6 +164,14 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
                 chunks.append(data)
                 read_total += len(data)
                 head = b''.join(chunks[:4])
+                if b'\\r\\n\\r\\n' in head and b'EARLY403_PHASED' in head:
+                    conn.sendall(early_403_resp)
+                    try:
+                        conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                    except OSError:
+                        pass
+                    client_saw_early_resp.wait(timeout=3)
+                    return
                 if b'\\r\\n\\r\\n' in head and b'EARLY403_LINGER' in head:
                     conn.sendall(early_403_resp)
                     try:
@@ -285,10 +294,11 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
         # Live AF_UNIX early-403 + SO_LINGER with unread POST body: relay must propagate SHUT_WR and drain trailing POST bytes instead of resetting client
         stream_early = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
         init_body = b'I' * 16384
-        tail_body = b'T' * 65536
+        tail_chunk = b'T' * 32768
+        tail_chunks = 8
         stream_early.sendall(
             b'POST http://169.254.169.254/EARLY403_LINGER HTTP/1.1\\r\\nHost: 169.254.169.254\\r\\nContent-Length: '
-            + str(len(init_body) + len(tail_body)).encode()
+            + str(len(init_body) + len(tail_chunk) * tail_chunks).encode()
             + b'\\r\\n\\r\\n'
             + init_body
         )
@@ -304,9 +314,47 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
                 stream_errs.append(repr(e))
                 break
         assert bytes(stream_resp) == early_403_resp and not stream_errs, f'stream_early={stream_resp!r} errs={stream_errs!r}'
-        stream_early.sendall(tail_body)
+        for _ in range(tail_chunks):
+            stream_early.sendall(tail_chunk)
+            time.sleep(0.005)
         stream_early.shutdown(socket.SHUT_WR)
         stream_early.close()
+
+        # Phased Case B live probe: wait until client reads 403 (to_client empty) before AF_UNIX closes with unread POST bytes
+        phased_early = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
+        phased_early.sendall(
+            b'POST http://169.254.169.254/EARLY403_PHASED HTTP/1.1\\r\\nHost: 169.254.169.254\\r\\nContent-Length: '
+            + str(len(init_body) + len(tail_chunk) * tail_chunks).encode()
+            + b'\\r\\n\\r\\n'
+            + init_body
+        )
+        phased_resp = bytearray()
+        phased_errs = []
+        try:
+            while len(phased_resp) < len(early_403_resp):
+                d = phased_early.recv(4096)
+                if not d:
+                    break
+                phased_resp.extend(d)
+        except OSError as e:
+            phased_errs.append(repr(e))
+        finally:
+            client_saw_early_resp.set()
+        while True:
+            try:
+                d = phased_early.recv(4096)
+                if not d:
+                    break
+                phased_resp.extend(d)
+            except OSError as e:
+                phased_errs.append(repr(e))
+                break
+        assert bytes(phased_resp) == early_403_resp and not phased_errs, f'phased_early={phased_resp!r} errs={phased_errs!r}'
+        for _ in range(tail_chunks):
+            phased_early.sendall(tail_chunk)
+            time.sleep(0.005)
+        phased_early.shutdown(socket.SHUT_WR)
+        phased_early.close()
 
         # Client SO_LINGER(1, 0) abortive close triggers client.recv OSError and tears down cleanly without breaking subsequent relays
         abortive = socket.create_connection(('127.0.0.1', relay.port), timeout=5)
@@ -348,6 +396,7 @@ with tempfile.TemporaryDirectory(prefix='ecg-drv-') as td:
         finally:
             missing.close()
     finally:
+        client_saw_early_resp.set()
         stop_srv.set()
         relay.close()
         relay.close()  # idempotent
@@ -494,21 +543,35 @@ with tempfile.TemporaryDirectory(prefix='ecg-hp-') as td:
             assert pair_b.discarded_client_bytes == len(unread_1) + len(unread_2)
             assert pair_b not in relay._conns
 
-        # (b2) Discarding trailing client bytes stops at RELAY_DISCARD_LIMIT_BYTES
+        # (b2) Discarding trailing client bytes stops at RELAY_DISCARD_LIMIT_BYTES while flushing buffered 403 + SHUT_WR
         peer_lim, client_lim = tcp_pair()
         u_l1, u_l2 = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         u_l1.setblocking(False)
         u_l2.close()
         pair_lim = mod._RelayPair(client_lim, ResetOnRecvSocket(u_l1), True)
+        pair_lim.to_client.extend(resp_403)
         pair_lim.discarded_client_bytes = mod.RELAY_DISCARD_LIMIT_BYTES - 1024
         relay._conns.add(pair_lim)
         relay._sync_events(pair_lim)
         relay._handle_pair(pair_lim, False, selectors.EVENT_READ)
-        assert pair_lim.closed is False and pair_lim.client_wr_closed is True
+        assert pair_lim.closed is False and pair_lim.client_wr_closed is False
         peer_lim.sendall(b'Z' * 2048)
-        wait_until(lambda: (relay._handle_pair(pair_lim, True, selectors.EVENT_READ), pair_lim.closed)[1])
+        wait_until(lambda: (relay._handle_pair(pair_lim, True, selectors.EVENT_READ), pair_lim.client_eof)[1])
         assert pair_lim.client_eof is True
         assert pair_lim.discarded_client_bytes >= mod.RELAY_DISCARD_LIMIT_BYTES
+        assert pair_lim.closed is False and bytes(pair_lim.to_client) == resp_403
+        for _ in range(10):
+            if pair_lim.closed:
+                break
+            relay._handle_pair(pair_lim, True, selectors.EVENT_WRITE)
+        assert pair_lim.client_wr_closed is True and pair_lim.closed is True
+        got_lim = bytearray()
+        while True:
+            chunk = peer_lim.recv(4096)
+            if not chunk:
+                break
+            got_lim.extend(chunk)
+        assert bytes(got_lim) == resp_403
         peer_lim.close()
 
         # (c) Client recv() OSError (is_client=True) closes the pair cleanly without preserving upstream state
