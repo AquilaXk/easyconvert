@@ -172,9 +172,24 @@ describe('SVG sanitizer scanner semantics', () => {
 
   it('rejects malformed comment shorthands after long spans while keeping HTML/XML parity inside unclosed tags', () => {
     expect(() => sanitizeSvgString(`<svg>${'<g/>'.repeat(100)}<!--><script>x</script></svg>`)).toThrow(SvgSanitizationError);
+    expect(() => sanitizeSvgString(`<svg><a <1>${' '.repeat(80)}<!--><script>bad</script></svg>`)).toThrow(SvgSanitizationError);
+    expect(() =>
+      sanitizeSvgString(`<svg><g ${' '.repeat(80)}<![cdata[>${' '.repeat(80)}<!--><script>bad</script><circle/></svg>`),
+    ).toThrow(SvgSanitizationError);
     expect(sanitizeSvgString(`<svg><rect x=a ${'y'.repeat(100)} <!--><script>bad</script><circle/></svg>`)).toBe(
       `<svg><rect x=a ${'y'.repeat(100)} <!--><circle/></svg>`,
     );
+    expect(sanitizeSvgString(`<svg><g ${' '.repeat(80)}<![cdata[${' '.repeat(80)}<!--><script>bad</script><circle/></svg>`)).toBe(
+      `<svg><g ${' '.repeat(80)}<![cdata[${' '.repeat(80)}<!--><circle/></svg>`,
+    );
+  });
+
+  it('keeps length-aligned ASCII folding and prefilters when non-ASCII expansion characters are present', () => {
+    const pad = ' '.repeat(80);
+    const out = sanitizeSvgString(
+      `<svg><g \u0130="1"/>${pad}<SCRIPT>bad</SCRIPT><FOREIGNOBJECT><p/></FOREIGNOBJECT><rect ONCLICK="1" STYLE="color:red"/><STYLE>@import "http://e";a{color:red}</STYLE></svg>`,
+    );
+    expect(out).toBe(`<svg><g \u0130="1"/>${pad}<rect style="color:red"/><STYLE>a{color:red}</STYLE></svg>`);
   });
 });
 
