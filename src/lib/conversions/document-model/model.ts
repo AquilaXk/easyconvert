@@ -276,6 +276,11 @@ export interface Section {
   omitsFooter?: true;
   /** Top margin of the page this section starts, in points, where it differs from the document's (a page that starts higher than the others). */
   marginTopPt?: number;
+  /** Width and height in points of this section's page, where a section's page differs from the document's. */
+  pageWidthPt?: number;
+  pageHeightPt?: number;
+  /** Gap between equal columns in points, where a multi-column section differs from Word's half-inch default. */
+  columnGapPt?: number;
 }
 
 export type ImageFormat = 'jpeg' | 'png' | 'gif' | 'bmp' | 'tiff' | 'svg';

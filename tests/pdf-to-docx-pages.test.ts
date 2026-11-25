@@ -253,3 +253,69 @@ describe('what the pages need to be set as the page set them', () => {
     TEST_TIMEOUT_MS
   );
 });
+
+const SPILL_REGRESSION_SAMPLES = [
+  { id: 'govdocs1-000341.pdf', minRecall: 0.97, checkPageSizes: false },
+  { id: 'govdocs1-000163.pdf', minRecall: 0.97, checkPageSizes: true },
+  { id: 'govdocs1-000166.pdf', minRecall: 0.99, checkPageSizes: false },
+  { id: 'govdocs1-001383.pdf', minRecall: 0.99, checkPageSizes: true },
+  { id: 'govdocs1-004507.pdf', minRecall: 0.95, checkPageSizes: false },
+] as const;
+
+describe('unequal columns, anchored picture runs, mixed page sizes, omitted footers and tiny runs keep the PDF page count', () => {
+  for (const { id, minRecall, checkPageSizes } of SPILL_REGRESSION_SAMPLES) {
+    oracleTest(
+      `${id}: LibreOffice renders the exact page count, XML is valid, and words stay`,
+      ['soffice', 'pdfinfo', 'pdftotext', 'xmllint'],
+      async (ctx) => {
+        const { source, docx } = await convertedSample(ctx, id);
+        const zip = await JSZip.loadAsync(docx);
+        const xmlParts = await Promise.all(
+          Object.keys(zip.files)
+            .filter((name) => /\.(xml|rels)$/.test(name))
+            .map(async (entry) => [entry.replace(/\//g, '_'), await (zip.file(entry) as JSZip.JSZipObject).async('nodebuffer')] as const)
+        );
+        withFiles({ 'in.pdf': source, 'out.docx': docx }, (dir) => {
+          for (const [name, data] of xmlParts) {
+            const file = path.join(dir, name);
+            fs.writeFileSync(file, data);
+            execFileSync(requireOracleTool('xmllint'), ['--noout', file]);
+          }
+          const inPdf = path.join(dir, 'in.pdf');
+          const outDocx = path.join(dir, 'out.docx');
+          execFileSync(
+            requireOracleTool('soffice'),
+            ['--headless', `-env:UserInstallation=file://${path.join(dir, 'profile')}`, '--convert-to', 'pdf', '--outdir', path.join(dir, 'render'), outDocx],
+            { timeout: SOFFICE_TIMEOUT_MS, stdio: 'ignore' }
+          );
+          const outPdf = path.join(dir, 'render', 'out.pdf');
+          const expectedPages = pdfInfo(inPdf).pages;
+          expect(pdfInfo(outPdf).pages).toBe(expectedPages);
+          if (checkPageSizes) {
+            const sizesOf = (file: string): Array<[number, number]> => {
+              const info = execFileSync(requireOracleTool('pdfinfo'), ['-f', '1', '-l', String(expectedPages), file], { encoding: 'utf8' });
+              const rots = new Map([...info.matchAll(/Page\s+(\d+)\s+rot:\s+(-?\d+)/g)].map((m) => [Number(m[1]), Number(m[2])]));
+              return [...info.matchAll(/Page\s+(\d+)\s+size:\s+([\d.]+) x ([\d.]+)/g)].map((m) => {
+                const w = Math.round(Number(m[2]));
+                const h = Math.round(Number(m[3]));
+                const rot = Math.abs(rots.get(Number(m[1])) ?? 0) % 180;
+                return rot === 90 ? [h, w] : [w, h];
+              });
+            };
+            const expectedSizes = sizesOf(inPdf);
+            const actualSizes = sizesOf(outPdf);
+            expect(actualSizes).toHaveLength(expectedSizes.length);
+            expectedSizes.forEach(([w, h], index) => {
+              expect(Math.abs(actualSizes[index][0] - w)).toBeLessThanOrEqual(2);
+              expect(Math.abs(actualSizes[index][1] - h)).toBeLessThanOrEqual(2);
+            });
+          }
+          const srcText = execFileSync(requireOracleTool('pdftotext'), ['-q', '-enc', 'UTF-8', inPdf, '-'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+          const outText = execFileSync(requireOracleTool('pdftotext'), ['-q', '-enc', 'UTF-8', outPdf, '-'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+          expect(recall(words(srcText), words(outText))).toBeGreaterThanOrEqual(minRecall);
+        });
+      },
+      TEST_TIMEOUT_MS
+    );
+  }
+});

@@ -3,7 +3,8 @@ import JSZip from 'jszip';
 import { documentToDocx } from '../src/lib/conversions/document-model/docx';
 import { blankDocument } from '../src/lib/conversions/document-model/build';
 import type { Block, DocumentModel, ParagraphBlock, ParagraphFormat } from '../src/lib/conversions/document-model/model';
-import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections, type PageSetup } from '../src/lib/conversions/pdf-layout/page-flow';
+import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections, regularColumnGaps, type PageSetup } from '../src/lib/conversions/pdf-layout/page-flow';
+import { layoutPdf } from '../src/lib/conversions/pdf-layout';
 import { hangShapes, type BodyBlocks } from '../src/lib/conversions/pdf-layout/figures';
 import { PageInk } from '../src/lib/conversions/pdf-layout/ink';
 import type { Box, DetectedTable, LayoutLine, Paragraph } from '../src/lib/conversions/pdf-layout/types';
@@ -301,7 +302,7 @@ describe('the DOCX the pages are written as', () => {
       formatted('column', { columnBreakBefore: true }),
       { type: 'image', imageId: 1, widthPt: 50, heightPt: 40, position: { x: 100, y: 300 } },
     ]);
-    expect(xml).toContain('<w:framePr w:w="400" w:hSpace="0" w:vSpace="0" w:wrap="through" w:vAnchor="page" w:hAnchor="page" w:x="6920" w:y="4000"/>');
+    expect(xml).toContain('<w:framePr w:w="400" w:hSpace="0" w:vSpace="0" w:wrap="none" w:vAnchor="page" w:hAnchor="page" w:x="6920" w:y="4000"/>');
     expect(xml).toMatch(/<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"\/><\/w:pPr><w:r><w:br w:type="column"\/><\/w:r><\/w:p><w:p><w:pPr>/);
     expect(xml).toContain('<wp:positionH relativeFrom="page"><wp:posOffset>1270000</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>3810000</wp:posOffset></wp:positionV>');
     expect(xml).toContain('<wp:wrapNone/>');
@@ -351,8 +352,172 @@ describe('the DOCX the pages are written as', () => {
     ]);
     expect(xml).toContain('<w:titlePg/>');
     expect(xml).toContain('w:header="600" w:footer="400"');
+    expect(xml).toContain('w:header="0" w:footer="400"');
     expect(await (zip.file('word/header2.xml') as JSZip.JSZipObject).async('string')).not.toContain('Header');
+    expect(await (zip.file('word/header2.xml') as JSZip.JSZipObject).async('string')).toContain('<w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/>');
     expect(await (zip.file('word/footer1.xml') as JSZip.JSZipObject).async('string')).toContain('Footer');
     expect(await (zip.file('[Content_Types].xml') as JSZip.JSZipObject).async('string')).toContain('/word/header2.xml');
+  });
+
+  it('attaches multiple positioned images to a single non-framed host paragraph or one compact carrier when all are framed', async () => {
+    const imgs: Block[] = [
+      { type: 'image', imageId: 1, widthPt: 10, heightPt: 10, position: { x: 20, y: 30 } },
+      { type: 'image', imageId: 1, widthPt: 10, heightPt: 10, position: { x: 40, y: 50 } },
+      { type: 'image', imageId: 1, widthPt: 10, heightPt: 10, position: { x: 60, y: 70 } },
+    ];
+    const hosted = await documentXml([formatted('host'), ...imgs]);
+    expect(hosted.xml.match(/<w:p>/g) ?? []).toHaveLength(1);
+    expect(hosted.xml.match(/<wp:anchor\b/g) ?? []).toHaveLength(3);
+
+    const carrierOnly = await documentXml([formatted('framed', { frame: { xPt: 36, yPt: 40, widthPt: 100 } }), ...imgs]);
+    expect(carrierOnly.xml.match(/<w:p>/g) ?? []).toHaveLength(2);
+    expect(carrierOnly.xml.match(/<wp:anchor\b/g) ?? []).toHaveLength(3);
+  });
+
+  it('writes section page size, column gap, omitted-footer distance, and positive font size for sub-half-point runs', async () => {
+    const tiny = { text: 'tiny', bold: false, italic: false, monospace: false, sizePt: 0.1 };
+    const wideTableCell = { paragraphs: [formatted('wide', { leftPt: 0 })], colSpan: 1, rowSpan: 1, continuation: false, header: false };
+    const wideTable: Block = { type: 'table', rows: [[wideTableCell]], columnWidths: [900], bordered: false };
+    const { xml } = await documentXml([{ type: 'paragraph', runs: [tiny], rtl: false, align: 'left' }], (model) => {
+      model.pageFooter = [[{ text: 'Footer', bold: false, italic: false, monospace: false, sizePt: 8 }]];
+      model.footerDistancePt = 30;
+      model.sections[0].omitsFooter = true;
+      model.sections.push({
+        columns: 2,
+        blocks: [wideTable],
+        breakType: 'nextPage',
+        pageWidthPt: 1224,
+        pageHeightPt: 792,
+        columnGapPt: 27.7,
+      });
+    });
+    const fontSizes = [...xml.matchAll(/<w:sz w:val="(\d+)"\/>/g)].map((m) => Number(m[1]));
+    expect(fontSizes).toEqual([1]);
+    const pageSizes = [...xml.matchAll(/<w:pgSz w:w="(\d+)" w:h="(\d+)"([^/]*)\/>/g)].map((m) => [Number(m[1]), Number(m[2]), m[3]]);
+    expect(pageSizes).toEqual([
+      [12240, 15840, ''],
+      [24480, 15840, ' w:orient="landscape"'],
+    ]);
+    const footers = [...xml.matchAll(/w:footer="(\d+)"/g)].map((m) => Number(m[1]));
+    expect(footers).toEqual([0, 600]);
+    const cols = [...xml.matchAll(/<w:cols ([^/]*)\/>/g)].map((m) => m[1]);
+    expect(cols).toEqual(['w:space="720"', 'w:num="2" w:space="554"']);
+    // The 900 pt table fits inside the 1224 pt landscape section without narrowing to 612 pt portrait.
+    const gridCols = [...xml.matchAll(/<w:gridCol w:w="(\d+)"\/>/g)].map((m) => Number(m[1]));
+    expect(gridCols).toEqual([18000]);
+  });
+
+  it('computes regular column gaps and per-section page sizes without mutating equal-width documents', () => {
+    const box = (x0: number, x1: number) => ({ x0, y0: 40, x1, y1: 50 });
+    const gaps = regularColumnGaps(
+      [{ pageNumber: 1, columns: 2, boxes: [box(36, 288), box(320, 576)] }],
+      new Set(),
+      new Map([[1, 612]]),
+      612,
+      { top: 36, right: 36, bottom: 0, left: 36 }
+    );
+    expect(gaps.get(1)).toBeCloseTo(28, 1);
+
+    const blocks = [formatted('p1'), formatted('p2')];
+    const sections = pageSections(
+      blocks,
+      [1, 1],
+      [1, 2],
+      [1, 2],
+      {
+        headerPages: new Set(),
+        footerPages: new Set(),
+        documentSize: { width: 612, height: 792 },
+        pageSizes: new Map([[1, { width: 612, height: 792 }], [2, { width: 1224, height: 792 }]]),
+      },
+      new Map()
+    );
+    expect(sections[0].pageWidthPt).toBeUndefined();
+    expect(sections[1].pageWidthPt).toBe(1224);
+    expect(sections[1].pageHeightPt).toBe(792);
+  });
+
+  it('preserves observed column gap when another page had smaller margins and merges mixed-size same-baseline headers', async () => {
+    const box = (x0: number, x1: number) => ({ x0, y0: 40, x1, y1: 50 });
+    const insetGaps = regularColumnGaps(
+      [{ pageNumber: 1, columns: 2, boxes: [box(85, 301.1), box(313, 529.1)] }],
+      new Set(),
+      new Map([[1, 612]]),
+      612,
+      { top: 64.66, right: 82.5, bottom: 0, left: 78.4 }
+    );
+    expect(insetGaps.get(1)).toBeCloseTo(11.9, 1);
+
+    const rightWiderGaps = regularColumnGaps(
+      [{ pageNumber: 1, columns: 2, boxes: [box(36, 288), box(312, 564)] }],
+      new Set(),
+      new Map([[1, 612]]),
+      612,
+      { top: 36, right: 18, bottom: 0, left: 36 }
+    );
+    expect(rightWiderGaps.get(1)).toBeCloseTo(24, 1);
+
+    const makeHdrPage = (pageNumber: number): PdfPageContent => ({
+      pageNumber,
+      width: 612,
+      height: 792,
+      items: [
+        { text: 'Right', x: 400, baseline: 26, width: 30, size: 12, font: 0, rtl: false, angled: false, vertical: false },
+        { text: 'Lower', x: 72, baseline: 46, width: 40, size: 10, font: 0, rtl: false, angled: false, vertical: false },
+        { text: 'Left', x: 72, baseline: 26, width: 25, size: 6, font: 0, rtl: false, angled: false, vertical: false },
+        { text: 'Body', x: 72, baseline: 120, width: 100, size: 10, font: 0, rtl: false, angled: false, vertical: false },
+      ],
+      rules: [],
+      shapes: [],
+      images: [],
+      unmappedGlyphs: 0,
+      operatorsSkipped: false,
+      rulesTruncated: false,
+    });
+    const { model } = layoutPdf([makeHdrPage(1), makeHdrPage(2)], [{ name: 'f', bold: false, italic: false, serif: false, monospace: false }], { pages: true });
+    expect(model.pageHeader?.map((line) => line.map((r) => r.text).join(''))).toEqual(['Left Right', 'Lower']);
+  });
+
+  it('guards missing-media images next to tables, pageBreak positioned-image chunks, and non-finite/non-positive sizes', async () => {
+    const cell = { paragraphs: [formatted('cell')], colSpan: 1, rowSpan: 1, continuation: false, header: false };
+    const table: Block = { type: 'table', rows: [[cell]], columnWidths: [200], bordered: false };
+    const missingImg: Block = { type: 'image', imageId: 999, widthPt: 10, heightPt: 10, position: { x: 10, y: 10 } };
+    const placedImg: Block = { type: 'image', imageId: 1, widthPt: 10, heightPt: 10, position: { x: 20, y: 30 } };
+
+    // Missing-media image between two tables and after last table must not merge tables or leave trailing bare table.
+    const between = await documentXml([table, missingImg, table, missingImg]);
+    expect(between.xml).toContain('</w:tbl><w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/></w:pPr></w:p><w:tbl>');
+    expect(between.xml).toMatch(/<\/w:tbl><w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"\/><\/w:pPr><\/w:p><w:sectPr>/);
+
+    // Table + positioned image without paragraph host puts positioned anchor in the single trailing carrier paragraph.
+    const tableAndImg = await documentXml([table, placedImg]);
+    expect(tableAndImg.xml.match(/<w:p>/g) ?? []).toHaveLength(2); // 1 cell <w:p> + 1 carrier <w:p>
+    expect(tableAndImg.xml.match(/<wp:anchor\b/g) ?? []).toHaveLength(1);
+
+    // pageBreak splits positioned-image chunks independently.
+    const split = await documentXml([
+      formatted('host1'),
+      placedImg,
+      { type: 'pageBreak' },
+      formatted('framed2', { frame: { xPt: 36, yPt: 40, widthPt: 100 } }),
+      placedImg,
+    ]);
+    expect(split.xml.match(/<wp:anchor\b/g) ?? []).toHaveLength(2);
+    expect(split.xml.match(/<w:br w:type="page"\/>/g) ?? []).toHaveLength(1);
+
+    // Non-positive and non-finite sizes/gaps never emit w:sz="0" or NaN.
+    const badRuns = [
+      { text: 'zero', bold: false, italic: false, monospace: false, sizePt: 0 },
+      { text: 'nan', bold: false, italic: false, monospace: false, sizePt: Number.NaN },
+    ];
+    const safe = await documentXml([{ type: 'paragraph', runs: badRuns, rtl: false, align: 'left' }], (model) => {
+      model.pageHeader = [[{ text: 'H', bold: false, italic: false, monospace: false, sizePt: Number.NaN }]];
+      model.sections[0].columnGapPt = Number.NaN;
+      model.sections[0].pageWidthPt = Number.NaN;
+    });
+    expect(safe.xml).not.toContain('NaN');
+    expect(safe.xml).not.toContain('w:val="0"');
+    const hdr = await (safe.zip.file('word/header1.xml') as JSZip.JSZipObject).async('string');
+    expect(hdr).not.toContain('NaN');
   });
 });

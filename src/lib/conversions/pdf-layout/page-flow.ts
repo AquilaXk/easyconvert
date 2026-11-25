@@ -33,6 +33,8 @@ const MIN_MARKER_GAP = 6;
 /** Points from a marker to its text when the page does not say where the text starts. */
 const DEFAULT_MARKER_GAP = 18;
 const MAX_MARKER_GAP = 72;
+const MIN_COLUMN_GAP_PT = 4;
+const DEFAULT_COLUMN_GAP_PT = 36;
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -99,6 +101,8 @@ export interface PageSetup {
   margins: DocumentMargins;
   pageWidth: number;
   pageTops: ReadonlyMap<number, number>;
+  /** Width in points of each page when the document mixes page sizes. */
+  pageWidths?: ReadonlyMap<number, number>;
   /** The face the writer sets the text in and the size it sets a paragraph of the body's size in, so that a paragraph is made to wrap where the page's lines did. */
   wrap?: { metrics: WrapMetrics; bodySize: number };
 }
@@ -136,6 +140,10 @@ export class PageFlow {
     return this.pageTops.get(pageNumber) ?? this.margins.top;
   }
 
+  private widthOf(pageNumber: number): number {
+    return this.page.pageWidths?.get(pageNumber) ?? this.pageWidth;
+  }
+
   private enter(pageNumber: number): void {
     if (pageNumber === this.currentPage) return;
     this.currentPage = pageNumber;
@@ -144,8 +152,8 @@ export class PageFlow {
   }
 
   /** The share of its width a table of `width` points keeps: a table wider than the text area is narrowed by the writer to fit it. */
-  tableScale(width: number): number {
-    const area = this.pageWidth - this.margins.left - this.margins.right;
+  tableScale(width: number, pageNumber = this.currentPage): number {
+    const area = this.widthOf(pageNumber) - this.margins.left - this.margins.right;
     return width > area && area > 0 ? area / width : 1;
   }
 
@@ -239,7 +247,7 @@ export class PageFlow {
   private indentsOf(paragraph: Paragraph, columns: number, marker: boolean): Pick<ParagraphFormat, 'leftPt' | 'firstLinePt' | 'rightPt' | 'align'> {
     if (columns > 1) return { leftPt: 0, firstLinePt: 0, rightPt: 0 };
     const area = this.textArea();
-    const align = marker || this.inCell ? 'left' : alignmentOf(paragraph.lines, area, this.pageWidth / 2);
+    const align = marker || this.inCell ? 'left' : alignmentOf(paragraph.lines, area, this.widthOf(paragraph.pageNumber) / 2);
     const x0 = Math.min(...paragraph.lines.map((line) => line.box.x0));
     const x1 = Math.max(...paragraph.lines.map((line) => line.box.x1));
     if (align === 'center') {
@@ -273,7 +281,9 @@ export class PageFlow {
   /** The area text is set in: between the page's margins, or the cell's edges where they are known. */
   private textArea(): TextArea {
     const { x0, x1 } = this.cellBox ?? {};
-    return this.inCell && x0 !== undefined && x1 !== undefined ? { left: x0, right: x1 } : { left: this.margins.left, right: this.pageWidth - this.margins.right };
+    return this.inCell && x0 !== undefined && x1 !== undefined
+      ? { left: x0, right: x1 }
+      : { left: this.margins.left, right: this.widthOf(this.currentPage) - this.margins.right };
   }
 
   /**
@@ -314,16 +324,25 @@ const BLANK_PAGE: Block = { type: 'paragraph', runs: [], rtl: false, align: 'lef
  * @param furniture the pages that have a running header, and those that have a running footer: a page of a document that has one and
  * lacks it (a first page without a letterhead) omits it
  */
+export interface PageSectionFurniture {
+  headerPages: ReadonlySet<number>;
+  footerPages: ReadonlySet<number>;
+  documentSize?: { width: number; height: number };
+  pageSizes?: ReadonlyMap<number, { width: number; height: number }>;
+  columnGaps?: ReadonlyMap<number, number>;
+}
+
 export function pageSections(
   blocks: readonly Block[],
   columnsOf: readonly number[],
   pageOf: readonly number[],
   pageNumbers: readonly number[],
-  furniture: { headerPages: ReadonlySet<number>; footerPages: ReadonlySet<number> },
+  furniture: PageSectionFurniture,
   topMargins: ReadonlyMap<number, number>
 ): Section[] {
   const sections: Section[] = [];
   let at = 0;
+  const { documentSize: docSize, pageSizes, columnGaps } = furniture;
   pageNumbers.forEach((pageNumber, index) => {
     const start = sections.length;
     for (; at < blocks.length && pageOf[at] <= pageNumber; at++) {
@@ -337,6 +356,16 @@ export function pageSections(
     if (top !== undefined) sections[start].marginTopPt = top;
     if (furniture.headerPages.size > 0 && !furniture.headerPages.has(pageNumber)) sections[start].omitsHeader = true;
     if (furniture.footerPages.size > 0 && !furniture.footerPages.has(pageNumber)) sections[start].omitsFooter = true;
+    const size = pageSizes?.get(pageNumber);
+    const customSize = size && docSize && (Math.abs(size.width - docSize.width) > 0.5 || Math.abs(size.height - docSize.height) > 0.5) ? size : undefined;
+    const gap = columnGaps?.get(pageNumber);
+    for (let s = start; s < sections.length; s++) {
+      if (customSize) {
+        sections[s].pageWidthPt = customSize.width;
+        sections[s].pageHeightPt = customSize.height;
+      }
+      if (gap !== undefined && sections[s].columns > 1) sections[s].columnGapPt = gap;
+    }
   });
   return sections;
 }
@@ -383,11 +412,7 @@ function columnStarts(boxes: readonly Box[]): { start: number }[] {
   return starts;
 }
 
-/**
- * The pages whose columns are not the equal columns of a writer's section (a newsletter with a narrow column beside wide ones): the
- * paragraphs of such a page are set where the page had them, as frames, since columns would put them elsewhere.
- */
-export function irregularColumnPages(blocks: readonly ColumnedBlock[]): Set<number> {
+function groupByColumnPage(blocks: readonly ColumnedBlock[]): Map<number, ColumnedBlock[]> {
   const byPage = new Map<number, ColumnedBlock[]>();
   for (const block of blocks) {
     if (block.columns <= 1) continue;
@@ -395,8 +420,65 @@ export function irregularColumnPages(blocks: readonly ColumnedBlock[]): Set<numb
     members.push(block);
     byPage.set(block.pageNumber, members);
   }
+  return byPage;
+}
+
+function impliedColumnGap(
+  starts: readonly { start: number }[],
+  maxX1: readonly number[],
+  pageWidth: number,
+  margins: DocumentMargins,
+  observedGap: number
+): number | undefined {
+  const columns = starts.length;
+  if (Math.abs(starts[0].start - margins.left) > ALIGN_TOLERANCE) return undefined;
+  const pitch = (starts[columns - 1].start - starts[0].start) / (columns - 1);
+  const lastSpan = maxX1[columns - 1] - starts[columns - 1].start;
+  if (lastSpan >= pitch - observedGap - ALIGN_TOLERANCE && pageWidth - margins.right - maxX1[columns - 1] > ALIGN_TOLERANCE) {
+    return undefined;
+  }
+  const implied = columns * pitch - (pageWidth - margins.left - margins.right);
+  return implied >= MIN_COLUMN_GAP_PT && implied <= observedGap + ALIGN_TOLERANCE ? implied : undefined;
+}
+
+function measurePageColumnGap(
+  members: readonly ColumnedBlock[],
+  pageWidth: number,
+  margins: DocumentMargins
+): number | undefined {
+  const columns = Math.max(...members.map((member) => member.columns));
+  const boxes = members.flatMap((member) => member.boxes);
+  const starts = columnStarts(boxes);
+  if (columns <= 1 || starts.length !== columns) return undefined;
+  const minX0 = Array<number>(columns).fill(Infinity);
+  const maxX1 = Array<number>(columns).fill(-Infinity);
+  for (const box of boxes) {
+    let column = 0;
+    for (let i = 1; i < columns; i++) {
+      if (box.x0 >= starts[i].start - COLUMN_START_TOLERANCE) column = i;
+    }
+    minX0[column] = Math.min(minX0[column], box.x0);
+    maxX1[column] = Math.max(maxX1[column], box.x1);
+  }
+  const edgeGaps: number[] = [];
+  for (let i = 0; i < columns - 1; i++) {
+    if (Number.isFinite(maxX1[i]) && Number.isFinite(minX0[i + 1])) edgeGaps.push(minX0[i + 1] - maxX1[i]);
+  }
+  if (edgeGaps.length === 0) return undefined;
+  const observedGap = Math.min(...edgeGaps);
+  if (observedGap < 0) return undefined;
+  const candidate = impliedColumnGap(starts, maxX1, pageWidth, margins, observedGap) ?? observedGap;
+  const clamped = Math.max(MIN_COLUMN_GAP_PT, Math.min(DEFAULT_COLUMN_GAP_PT, candidate));
+  return clamped < DEFAULT_COLUMN_GAP_PT - 0.5 ? Math.round(clamped * 10) / 10 : undefined;
+}
+
+/**
+ * The pages whose columns are not the equal columns of a writer's section (a newsletter with a narrow column beside wide ones): the
+ * paragraphs of such a page are set where the page had them, as frames, since columns would put them elsewhere.
+ */
+export function irregularColumnPages(blocks: readonly ColumnedBlock[]): Set<number> {
   const irregular = new Set<number>();
-  for (const [page, members] of byPage) {
+  for (const [page, members] of groupByColumnPage(blocks)) {
     const columns = Math.max(...members.map((member) => member.columns));
     const starts = columnStarts(members.flatMap((member) => member.boxes));
     const pitches = starts.slice(1).map((entry, index) => entry.start - starts[index].start);
@@ -404,4 +486,23 @@ export function irregularColumnPages(blocks: readonly ColumnedBlock[]): Set<numb
     if (starts.length !== columns || uneven) irregular.add(page);
   }
   return irregular;
+}
+
+/**
+ * Column gap in points per page for equal multi-column pages whose column spacing is narrower than Word's 36 pt default.
+ */
+export function regularColumnGaps(
+  blocks: readonly ColumnedBlock[],
+  irregular: ReadonlySet<number>,
+  pageWidths: ReadonlyMap<number, number>,
+  defaultPageWidth: number,
+  margins: DocumentMargins
+): Map<number, number> {
+  const gaps = new Map<number, number>();
+  for (const [page, members] of groupByColumnPage(blocks)) {
+    if (irregular.has(page)) continue;
+    const gap = measurePageColumnGap(members, pageWidths.get(page) ?? defaultPageWidth, margins);
+    if (gap !== undefined) gaps.set(page, gap);
+  }
+  return gaps;
 }

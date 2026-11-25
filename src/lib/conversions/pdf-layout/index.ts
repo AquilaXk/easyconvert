@@ -19,7 +19,7 @@ import { LayoutBudget } from './limits';
 import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { hangShapes, type BlockOrigin, type BodyBlocks } from './figures';
-import { irregularColumnPages, PageFlow, pageSections, type PageSetup } from './page-flow';
+import { irregularColumnPages, PageFlow, pageSections, regularColumnGaps, type PageSetup } from './page-flow';
 import { faceWidthPercents, setFaceWidths } from './face-width';
 import { WrapMetrics } from './wrap-fit';
 import { hexOf, PageInk, readableRuns } from './ink';
@@ -309,7 +309,7 @@ interface RowGrowth {
 
 function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk, flow?: PageFlow, growth?: RowGrowth): TableBlock {
   const columnEdges = columnEdgesOf(table);
-  const scale = flow?.tableScale(table.box.x1 - table.box.x0) ?? 1;
+  const scale = flow?.tableScale(table.box.x1 - table.box.x0, table.pageNumber) ?? 1;
   const rows: TableCellBlock[][] = table.rows.map((row, rowIndex) => {
     let column = 0;
     let needed = 0;
@@ -406,12 +406,11 @@ function clampMargin(value: number): number {
 function marginsOf(layouts: PageLayout[]): DocumentMargins {
   const measured = layouts.filter((layout) => layout.bounds !== null);
   if (measured.length === 0) return { top: DEFAULT_MARGIN, right: DEFAULT_MARGIN, bottom: DEFAULT_MARGIN, left: DEFAULT_MARGIN };
-  const first = measured[0].page;
   return {
     left: clampMargin(Math.min(...measured.map((layout) => layout.bounds!.x0))),
     top: clampMargin(Math.min(...measured.map((layout) => layout.bounds!.y0))),
-    right: clampMargin(first.width - Math.max(...measured.map((layout) => layout.bounds!.x1))),
-    bottom: clampMargin(first.height - Math.max(...measured.map((layout) => layout.bounds!.y1))),
+    right: clampMargin(Math.min(...measured.map((layout) => layout.page.width - layout.bounds!.x1))),
+    bottom: clampMargin(Math.min(...measured.map((layout) => layout.page.height - layout.bounds!.y1))),
   };
 }
 
@@ -449,13 +448,26 @@ interface PageKeeping {
   framed: ReadonlySet<number>;
   tops: PageTops;
   margins: DocumentMargins;
+  pageSizes: ReadonlyMap<number, { width: number; height: number }>;
+  columnGaps: ReadonlyMap<number, number>;
 }
 
-function pageKeepingOf(blocks: PageBlock[], furniture: PageFurniture, measured: DocumentMargins, pageWidth: number, wrap?: PageSetup['wrap']): PageKeeping {
+function pageKeepingOf(
+  blocks: PageBlock[],
+  furniture: PageFurniture,
+  measured: DocumentMargins,
+  pages: readonly PdfPageContent[],
+  wrap?: PageSetup['wrap']
+): PageKeeping {
   const tops = pageTopsOf(blocks, furniture.header, furniture.headerPages);
   const margins = pageMarginsOf(measured, tops);
+  const pageSizes = new Map(pages.map((page) => [page.pageNumber, { width: page.width, height: page.height }]));
+  const pageWidths = new Map(pages.map((page) => [page.pageNumber, page.width]));
+  const pageWidth = pages[0]?.width ?? 0;
   const columned = blocks.map((block) => ({ pageNumber: pageOfBlock(block), columns: block.columns, boxes: block.kind === 'paragraph' ? block.paragraph.lines.map((line) => line.box) : [blockBox(block)] }));
-  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts, wrap }), framed: irregularColumnPages(columned), tops, margins };
+  const framed = irregularColumnPages(columned);
+  const columnGaps = regularColumnGaps(columned, framed, pageWidths, pageWidth, margins);
+  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts, pageWidths, wrap }), framed, tops, margins, pageSizes, columnGaps };
 }
 
 /** The margins of a document that keeps its pages: the page's own at the top, and none at the bottom, so a page whose lines come out a hair taller does not start another page. */
@@ -464,11 +476,40 @@ function pageMarginsOf(margins: DocumentMargins, tops: PageTops): DocumentMargin
 }
 
 /** Where the running header and footer of the first page that has them stand against the page's edges, for the document that keeps its pages. */
-function furnitureDistances(furniture: PageFurniture, pageHeight: number): Pick<DocumentModel, 'headerDistancePt' | 'footerDistancePt'> {
+function furnitureDistances(furniture: PageFurniture, pages: readonly PdfPageContent[]): Pick<DocumentModel, 'headerDistancePt' | 'footerDistancePt'> {
+  const defaultHeight = pages[0]?.height ?? 0;
+  const footerPageHeight =
+    furniture.footer.length > 0 ? (pages.find((page) => page.pageNumber === furniture.footer[0].pageNumber)?.height ?? defaultHeight) : defaultHeight;
   return {
     ...(furniture.header.length > 0 ? { headerDistancePt: Math.max(0, Math.min(...furniture.header.map((paragraph) => paragraph.box.y0))) } : {}),
-    ...(furniture.footer.length > 0 ? { footerDistancePt: Math.max(0, pageHeight - Math.max(...furniture.footer.map((paragraph) => paragraph.box.y1))) } : {}),
+    ...(furniture.footer.length > 0 ? { footerDistancePt: Math.max(0, footerPageHeight - Math.max(...furniture.footer.map((paragraph) => paragraph.box.y1))) } : {}),
   };
+}
+
+function furnitureLines(paragraphs: readonly Paragraph[], bodySize: number, carrySizes: boolean): Inline[][] {
+  const orderedByBaseline = [...paragraphs].sort((a, b) => (a.lines[0]?.baseline ?? a.box.y1) - (b.lines[0]?.baseline ?? b.box.y1));
+  const rows: { baseline: number; size: number; items: Paragraph[] }[] = [];
+  for (const paragraph of orderedByBaseline) {
+    const baseline = paragraph.lines[0]?.baseline ?? paragraph.box.y1;
+    const prev = rows[rows.length - 1];
+    if (prev && Math.abs(baseline - prev.baseline) <= Math.max(paragraph.size, prev.size, 1) * 0.5) {
+      prev.items.push(paragraph);
+    } else {
+      rows.push({ baseline, size: paragraph.size, items: [paragraph] });
+    }
+  }
+  return rows.map((row) => {
+    const ordered = [...row.items].sort((a, b) => a.box.x0 - b.box.x0);
+    const runs: Inline[] = [];
+    ordered.forEach((paragraph, index) => {
+      if (index > 0) runs.push({ text: ' ', bold: false, italic: false, monospace: false });
+      const sizePt = carrySizes && paragraph.size > 0 && Math.abs(paragraph.size - bodySize) > 0.5 ? paragraph.size : undefined;
+      for (const run of readableRuns(inlineRuns(paragraph.runs), false)) {
+        runs.push(sizePt !== undefined && run.sizePt === undefined ? { ...run, sizePt } : run);
+      }
+    });
+    return runs;
+  });
 }
 
 /** Share of the page height at the top and at the bottom where running headers and footers sit. */
@@ -772,25 +813,42 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[], opti
   // A document that keeps its pages sets each paragraph to wrap where the page's lines did, in the face the writer sets the text in.
   const wrap = options.pages ? { metrics: new WrapMetrics(bodyFont), bodySize } : undefined;
   if (wrap) setFaceWidths(paragraphsIn(blocks), faceWidthPercents(pages, fonts, wrap.metrics));
-  const keeping = options.pages ? pageKeepingOf(blocks, furniture, marginsOf(layouts), pages[0]?.width ?? 0, wrap) : undefined;
+  const keeping = options.pages ? pageKeepingOf(blocks, furniture, marginsOf(layouts), pages, wrap) : undefined;
   const margins = keeping?.margins ?? marginsOf(layouts);
   const body = bodyOf(blocks, { bodySize, levels, ink, flow: keeping?.flow, framed: keeping?.framed });
   if (ink.active) hangShapes(body, pages, ink, gridBoxesOf(layouts, ink), keeping !== undefined);
-  const sections = keeping ? pageSections(body.model, body.columnsOf, body.pageOf, pages.map((page) => page.pageNumber), furniture, keeping.tops.margins) : sectionsOf(body);
   const first = pages[0];
+  const documentSize = { width: first?.width ?? 0, height: first?.height ?? 0 };
+  const sections = keeping
+    ? pageSections(
+        body.model,
+        body.columnsOf,
+        body.pageOf,
+        pages.map((page) => page.pageNumber),
+        {
+          headerPages: furniture.headerPages,
+          footerPages: furniture.footerPages,
+          documentSize,
+          pageSizes: keeping.pageSizes,
+          columnGaps: keeping.columnGaps,
+        },
+        keeping.tops.margins
+      )
+    : sectionsOf(body);
+  const carryFurnitureSizes = Boolean(options.pages);
   const documentModel: DocumentModel = {
     sections,
     images: documentImages,
-    pageWidthPt: first?.width ?? 0,
-    pageHeightPt: first?.height ?? 0,
+    pageWidthPt: documentSize.width,
+    pageHeightPt: documentSize.height,
     margins,
     bodySize,
     bodyFont,
     headingSizes: headingSizesOf(levels),
     pageCount: pages.length,
-    ...(options.pages ? { pageFlow: true as const, ...furnitureDistances(furniture, first?.height ?? 0) } : {}),
-    ...(furniture.header.length > 0 ? { pageHeader: furniture.header.map((paragraph) => readableRuns(inlineRuns(paragraph.runs), false)) } : {}),
-    ...(furniture.footer.length > 0 ? { pageFooter: furniture.footer.map((paragraph) => readableRuns(inlineRuns(paragraph.runs), false)) } : {}),
+    ...(options.pages ? { pageFlow: true as const, ...furnitureDistances(furniture, pages) } : {}),
+    ...(furniture.header.length > 0 ? { pageHeader: furnitureLines(furniture.header, bodySize, carryFurnitureSizes) } : {}),
+    ...(furniture.footer.length > 0 ? { pageFooter: furnitureLines(furniture.footer, bodySize, carryFurnitureSizes) } : {}),
   };
   return { model: documentModel, tables, pageText: layouts.map((layout) => pageTextOf(layout, furniture.counters, furniture.headerBareCounters)) };
 }

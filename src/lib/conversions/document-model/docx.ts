@@ -206,9 +206,9 @@ const JUSTIFICATION: Record<ParagraphBlock['align'], string> = { left: 'left', c
 const FILLER_LINE_TWIPS = 20;
 const FILLER_SPACING = `<w:spacing w:before="0" w:after="0" w:line="${FILLER_LINE_TWIPS}" w:lineRule="exact"/>`;
 
-/** `w:framePr` for a paragraph set at a place on the page; text flows through it, so the frame takes no room from the text around. */
+/** `w:framePr` for a paragraph set at a place on the page; `w:wrap="none"` disables text wrapping so frames never displace body text or tables. */
 function framePropertiesXml(frame: NonNullable<ParagraphFormat['frame']>): string {
-  return `<w:framePr w:w="${twips(frame.widthPt)}" w:hSpace="0" w:vSpace="0" w:wrap="through" w:vAnchor="page" w:hAnchor="page" w:x="${twips(frame.xPt)}" w:y="${twips(frame.yPt)}"/>`;
+  return `<w:framePr w:w="${twips(frame.widthPt)}" w:hSpace="0" w:vSpace="0" w:wrap="none" w:vAnchor="page" w:hAnchor="page" w:x="${twips(frame.xPt)}" w:y="${twips(frame.yPt)}"/>`;
 }
 
 /** The spacing and indents of a paragraph set as its PDF page set it: an exact line height and the page's gap above, no gap below. */
@@ -258,6 +258,10 @@ class PartWriter {
     private readonly emitAnchoredShapes = true
   ) {}
 
+  setAvailableTwips(availableTwips: number): void {
+    this.availableTwips = availableTwips;
+  }
+
   private relate(type: string, target: string, external: boolean): string {
     const existing = this.relationships.find((rel) => rel.type === type && rel.target === target && rel.external === external);
     if (existing) return existing.id;
@@ -278,7 +282,10 @@ class PartWriter {
     if (run.color) props.push(`<w:color w:val="${run.color}"/>`);
     if (run.widthPercent !== undefined) props.push(`<w:w w:val="${Math.round(run.widthPercent)}"/>`);
     const points = run.sizePt ?? size;
-    if (points !== undefined) props.push(`<w:sz w:val="${Math.round(points * HALF_POINTS)}"/><w:szCs w:val="${Math.round(points * HALF_POINTS)}"/>`);
+    if (points !== undefined) {
+      const halfPoints = Number.isFinite(points) ? Math.max(1, Math.round(points * HALF_POINTS)) : Math.max(1, Math.round(this.model.bodySize * HALF_POINTS) || 1);
+      props.push(`<w:sz w:val="${halfPoints}"/><w:szCs w:val="${halfPoints}"/>`);
+    }
     if (run.underline) props.push('<w:u w:val="single"/>');
     if (run.shading) props.push(`<w:shd w:val="clear" w:color="auto" w:fill="${run.shading}"/>`);
     if (run.superscript) props.push('<w:vertAlign w:val="superscript"/>');
@@ -360,11 +367,11 @@ class PartWriter {
     return this.model.pageFlow ? `<w:p><w:pPr>${FILLER_SPACING}${sectPr ?? ''}</w:pPr></w:p>` : `<w:p>${paragraphProperties({ sectPr })}</w:p>`;
   }
 
-  private paragraph(runs: readonly Inline[], props: ParagraphProperties, size?: number, shapes?: readonly PageShape[]): string {
+  private paragraph(runs: readonly Inline[], props: ParagraphProperties, size?: number, shapes?: readonly PageShape[], extraDrawings?: string): string {
     const hanging = this.emitAnchoredShapes && shapes ? shapes.map((shape) => wordShapeAnchor(shape, this.state.drawingId())).join('') : '';
     // A column of the page starts with a break in a paragraph of its own, as it would not take the space above the paragraph that follows it.
     const columnBreak = props.format?.columnBreakBefore ? `<w:p><w:pPr>${FILLER_SPACING}</w:pPr><w:r><w:br w:type="column"/></w:r></w:p>` : '';
-    return `${columnBreak}<w:p>${paragraphProperties(props)}${hanging}${this.runsXml(runs, size, props.style === 'Code')}</w:p>`;
+    return `${columnBreak}<w:p>${paragraphProperties(props)}${hanging}${extraDrawings ?? ''}${this.runsXml(runs, size, props.style === 'Code')}</w:p>`;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -428,21 +435,21 @@ class PartWriter {
   // -------------------------------------------------------------------------------------------
 
   /** The paragraphs and tables of `block`, one piece per element the schema holds at body level. */
-  pieces(block: Block, quoted: boolean, nextIsTable: boolean, last: boolean): Piece[] {
+  pieces(block: Block, quoted: boolean, nextIsTable: boolean, last: boolean, extraDrawings?: () => string): Piece[] {
     const quoteStyle = quoted ? 'Quote' : undefined;
     switch (block.type) {
       case 'heading':
         return [
           {
             carriesSection: !block.format?.frame,
-            render: (sectPr?: string) => this.paragraph(block.runs, { style: `Heading${Math.min(block.level, HEADING_LEVELS)}`, rtl: block.rtl, shading: block.shading, format: block.format, sectPr }, undefined, block.shapes),
+            render: (sectPr?: string) => this.paragraph(block.runs, { style: `Heading${Math.min(block.level, HEADING_LEVELS)}`, rtl: block.rtl, shading: block.shading, format: block.format, sectPr }, undefined, block.shapes, extraDrawings?.()),
           },
         ];
       case 'paragraph':
         return [
           {
             carriesSection: !block.format?.frame,
-            render: (sectPr?: string) => this.paragraph(block.runs, { style: quoteStyle, rtl: block.rtl, align: block.align, shading: block.shading, spacerPt: block.spacerPt, fixedSpacer: this.model.pageFlow === true, format: block.format, sectPr }, block.size, block.shapes),
+            render: (sectPr?: string) => this.paragraph(block.runs, { style: quoteStyle, rtl: block.rtl, align: block.align, shading: block.shading, spacerPt: block.spacerPt, fixedSpacer: this.model.pageFlow === true, format: block.format, sectPr }, block.size, block.shapes, extraDrawings?.()),
           },
         ];
       case 'list':
@@ -498,9 +505,44 @@ class PartWriter {
     }
   }
 
+  private chunkPieces(chunk: readonly Block[], quoted: boolean, hasNextChunk: boolean): Piece[] {
+    const positioned: ImageBlock[] = [];
+    const emitted: Block[] = [];
+    for (const block of chunk) {
+      if (block.type === 'image' && !this.state.media.has(block.imageId)) continue;
+      if (block.type === 'image' && block.position) positioned.push(block);
+      else emitted.push(block);
+    }
+    if (positioned.length === 0) {
+      return emitted.flatMap((block, index) => this.pieces(block, quoted, emitted[index + 1]?.type === 'table', !hasNextChunk && index === emitted.length - 1));
+    }
+    const drawPositioned = (): string =>
+      positioned.map((img) => this.drawing({ imageId: img.imageId, widthPt: img.widthPt, heightPt: img.heightPt, alt: img.alt ?? '' }, this.state.drawingId(), img.position)).join('');
+    const hostIndex = quoted ? -1 : emitted.findIndex((block) => (block.type === 'paragraph' || block.type === 'heading') && !block.format?.frame);
+    const pieces = emitted.flatMap((block, index) => {
+      const nextIsTable = emitted[index + 1]?.type === 'table';
+      const lastInChunk = !hasNextChunk && hostIndex >= 0 && index === emitted.length - 1;
+      return this.pieces(block, quoted, nextIsTable, lastInChunk, index === hostIndex ? drawPositioned : undefined);
+    });
+    if (hostIndex < 0) {
+      pieces.push({ carriesSection: true, render: (sectPr?: string) => `<w:p><w:pPr>${FILLER_SPACING}${sectPr ?? ''}</w:pPr>${drawPositioned()}</w:p>` });
+    }
+    return pieces;
+  }
+
   blockPieces(blocks: readonly Block[], quoted = false): Piece[] {
     const flat = unwrapOuterLayoutTables(blocks);
-    return flat.flatMap((block, index) => this.pieces(block, quoted, flat[index + 1]?.type === 'table', index === flat.length - 1));
+    const result: Piece[] = [];
+    let chunkStart = 0;
+    for (let i = 0; i < flat.length; i++) {
+      if (flat[i].type === 'pageBreak') {
+        if (i > chunkStart) result.push(...this.chunkPieces(flat.slice(chunkStart, i), quoted, true));
+        result.push(...this.pieces(flat[i], quoted, flat[i + 1]?.type === 'table', i === flat.length - 1));
+        chunkStart = i + 1;
+      }
+    }
+    if (chunkStart < flat.length) result.push(...this.chunkPieces(flat.slice(chunkStart), quoted, false));
+    return result;
   }
 
   blocksXml(blocks: readonly Block[]): string {
@@ -740,15 +782,18 @@ function furnitureReferences(model: DocumentModel, section?: Section): string {
 }
 
 function sectionProperties(model: DocumentModel, section: Section, first: boolean): string {
-  const width = twips(model.pageWidthPt);
-  const height = twips(model.pageHeightPt);
+  const width = twips(section.pageWidthPt !== undefined && Number.isFinite(section.pageWidthPt) && section.pageWidthPt > 0 ? section.pageWidthPt : model.pageWidthPt);
+  const height = twips(section.pageHeightPt !== undefined && Number.isFinite(section.pageHeightPt) && section.pageHeightPt > 0 ? section.pageHeightPt : model.pageHeightPt);
   const { margins } = model;
   const orient = width > height ? ' w:orient="landscape"' : '';
-  const columns = section.columns > 1 ? `<w:cols w:num="${section.columns}" w:space="${DEFAULT_COLUMN_GAP_TWIPS}"/>` : '<w:cols w:space="720"/>';
+  const columnSpace = section.columnGapPt !== undefined && Number.isFinite(section.columnGapPt) ? Math.max(0, twips(section.columnGapPt)) : DEFAULT_COLUMN_GAP_TWIPS;
+  const columns = section.columns > 1 ? `<w:cols w:num="${section.columns}" w:space="${columnSpace}"/>` : '<w:cols w:space="720"/>';
   const type = first ? '' : `<w:type w:val="${section.breakType ?? 'continuous'}"/>`;
+  const headerDist = section.omitsHeader ? 0 : twips(model.headerDistancePt ?? DEFAULT_FURNITURE_DISTANCE_PT);
+  const footerDist = section.omitsFooter ? 0 : twips(model.footerDistancePt ?? DEFAULT_FURNITURE_DISTANCE_PT);
   return (
     `<w:sectPr>${furnitureReferences(model, section)}${type}<w:pgSz w:w="${width}" w:h="${height}"${orient}/>` +
-    `<w:pgMar w:top="${twips(section.marginTopPt ?? margins.top)}" w:right="${twips(margins.right)}" w:bottom="${twips(margins.bottom)}" w:left="${twips(margins.left)}" w:header="${twips(model.headerDistancePt ?? DEFAULT_FURNITURE_DISTANCE_PT)}" w:footer="${twips(model.footerDistancePt ?? DEFAULT_FURNITURE_DISTANCE_PT)}" w:gutter="0"/>` +
+    `<w:pgMar w:top="${twips(section.marginTopPt ?? margins.top)}" w:right="${twips(margins.right)}" w:bottom="${twips(margins.bottom)}" w:left="${twips(margins.left)}" w:header="${headerDist}" w:footer="${footerDist}" w:gutter="0"/>` +
     `${columns}${section.omitsHeader || section.omitsFooter ? '<w:titlePg/>' : ''}</w:sectPr>`
   );
 }
@@ -767,17 +812,28 @@ function blankFurnitureRelationships(blank: boolean): Relationship[] {
 }
 
 /** The empty header and footer parts that the first pages of the sections that omit them point at. */
-function blankFurnitureParts(blank: boolean, part: PartWriter): [string, string][] {
+function blankFurnitureParts(blank: boolean): [string, string][] {
   if (!blank) return [];
+  const empty = `<w:p><w:pPr>${FILLER_SPACING}</w:pPr></w:p>`;
   return [
-    ['word/header2.xml', furniturePartXml('hdr', [[]], part)],
-    ['word/footer2.xml', furniturePartXml('ftr', [[]], part)],
+    ['word/header2.xml', `${XML_HEADER}<w:hdr xmlns:w="${NS_W}" xmlns:r="${NS_R}">${empty}</w:hdr>`],
+    ['word/footer2.xml', `${XML_HEADER}<w:ftr xmlns:w="${NS_W}" xmlns:r="${NS_R}">${empty}</w:ftr>`],
   ];
 }
 
 /** A header (`w:hdr`) or footer (`w:ftr`) part holding one paragraph per running line. */
-function furniturePartXml(tag: 'hdr' | 'ftr', lines: Inline[][], part: PartWriter): string {
-  return `${XML_HEADER}<w:${tag} xmlns:w="${NS_W}" xmlns:r="${NS_R}">${lines.map((runs) => `<w:p>${part.runsXml(runs)}</w:p>`).join('')}</w:${tag}>`;
+function furniturePartXml(tag: 'hdr' | 'ftr', lines: Inline[][], part: PartWriter, pageFlow = false): string {
+  const renderLine = (runs: Inline[]): string => {
+    if (!pageFlow) return `<w:p>${part.runsXml(runs)}</w:p>`;
+    const sizes = runs.map((run) => run.sizePt).filter((size): size is number => size !== undefined && Number.isFinite(size) && size > 0);
+    const maxSize = sizes.length > 0 ? Math.max(...sizes) : undefined;
+    const pPr =
+      maxSize !== undefined
+        ? `<w:pPr><w:spacing w:before="0" w:after="0" w:line="${Math.max(FILLER_LINE_TWIPS, twips(maxSize * 1.15))}" w:lineRule="atLeast"/></w:pPr>`
+        : '';
+    return `<w:p>${pPr}${part.runsXml(runs)}</w:p>`;
+  };
+  return `${XML_HEADER}<w:${tag} xmlns:w="${NS_W}" xmlns:r="${NS_R}">${lines.map(renderLine).join('')}</w:${tag}>`;
 }
 
 const DOCUMENT_NAMESPACES = `xmlns:w="${NS_W}" xmlns:r="${NS_R}" xmlns:wp="${NS_WP}" xmlns:a="${NS_A}" xmlns:pic="${NS_PIC}" xmlns:wps="${NS_WPS}"`;
@@ -914,6 +970,8 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   const documentPart = new PartWriter(model, state, availableTwips, emitAnchoredShapes);
   const bodyParts: string[] = [];
   model.sections.forEach((section, sectionIndex) => {
+    const sectionWidthPt = section.pageWidthPt !== undefined && Number.isFinite(section.pageWidthPt) && section.pageWidthPt > 0 ? section.pageWidthPt : model.pageWidthPt;
+    documentPart.setAvailableTwips(twips(sectionWidthPt - model.margins.left - model.margins.right));
     const last = sectionIndex === model.sections.length - 1;
     const pieces = documentPart.blockPieces(section.blocks);
     pieces.forEach((piece, pieceIndex) => {
@@ -946,8 +1004,8 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   const hasHeader = Boolean(model.pageHeader && model.pageHeader.length > 0);
   const hasFooter = Boolean(model.pageFooter && model.pageFooter.length > 0);
   const furniturePart = new PartWriter(model, state, availableTwips);
-  const header = hasHeader && model.pageHeader ? furniturePartXml('hdr', model.pageHeader, furniturePart) : '';
-  const footer = hasFooter && model.pageFooter ? furniturePartXml('ftr', model.pageFooter, furniturePart) : '';
+  const header = hasHeader && model.pageHeader ? furniturePartXml('hdr', model.pageHeader, furniturePart, model.pageFlow === true) : '';
+  const footer = hasFooter && model.pageFooter ? furniturePartXml('ftr', model.pageFooter, furniturePart, model.pageFlow === true) : '';
   const blankFurniture = omitsFurniture(model);
   const hasSettings = hasFootnotes || hasEndnotes;
   const hasCore = Boolean(title || model.author || language);
@@ -1003,7 +1061,7 @@ export async function documentToDocx(model: DocumentModel, options: DocxWriteOpt
   }
   if (hasHeader) add('word/header1.xml', header);
   if (hasFooter) add('word/footer1.xml', footer);
-  blankFurnitureParts(blankFurniture, furniturePart).forEach(([name, xml]) => add(name, xml));
+  blankFurnitureParts(blankFurniture).forEach(([name, xml]) => add(name, xml));
   if (hasFootnotes) {
     add('word/footnotes.xml', footnotes);
     if (footnotePart.relationships.length > 0) add('word/_rels/footnotes.xml.rels', relationshipsXml(footnotePart.relationships));
