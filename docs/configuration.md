@@ -82,7 +82,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `TRUSTED_CDN`: Name of the CDN whose edge ranges are trusted to forward client addresses.
 - `TRUSTED_CDN_RANGES`: CIDR ranges that replace the built-in edge ranges of TRUSTED_CDN.
 - `TRUSTED_PROXY_HEADER`: The one forwarding header the trusted proxy writes: `x-forwarded-for` (default) or `forwarded`.
-- `CAPTURE_WEBSITE_ENABLED`: Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image. Off by default: the browser keeps the network of the worker and its confinement has not been run on a host with user namespaces (docs/policy-decisions.md, entry 270). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.
+- `CAPTURE_WEBSITE_ENABLED`: Set to `true` to turn on the `capture.website` task, which draws a public web page as a PDF, a PNG or a JPEG with the browser of the worker image inside a relay-only network namespace and Landlock file confinement. Off by default pending Debian 13 Qt 6.8 CI container confirmation (docs/policy-decisions.md, entries 270 and 436). Where it is off, a job that holds the task is refused with a 422 (`capture_unavailable`) and `GET /api/formats` says so. Set it on the web and worker processes alike.
 
 ### Sign-in
 
