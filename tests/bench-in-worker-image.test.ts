@@ -76,6 +76,8 @@ describe('the nightly job of the office rows', () => {
     const pull = job.steps.find((step) => step.name === 'Pull the worker image of main');
     expect(pull?.run).toContain('docker pull');
     expect(pull?.run).toContain('-worker:main');
+    expect(pull?.run).toContain('RepoDigests');
+    expect(pull?.run).toContain('for attempt in 1 2 3');
     expect(job.steps.indexOf(login as never)).toBeLessThan(job.steps.indexOf(pull as never));
     expect(job.steps.some((step) => step.uses?.startsWith('docker/build-push-action'))).toBe(false);
   });

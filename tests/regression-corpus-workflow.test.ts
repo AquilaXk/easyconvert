@@ -134,9 +134,13 @@ describe('storage', () => {
     expect(upload?.with).toMatchObject({ name: 'regression-shard-${{ matrix.shard }}', path: 'regression-shard-${{ matrix.shard }}.json', 'if-no-files-found': 'error' });
   });
 
-  it('keeps only the result set of a full run as the baseline, for longer than a week', () => {
+  it('keeps only the result set of a passing unlimited full run as the baseline, for longer than a week', () => {
     const keep = workflow.jobs.gate.steps.find((step) => step.name === 'Keep the result set of a full run as the baseline');
+    expect(keep?.if).not.toContain('always()');
+    expect(keep?.if).toContain('success()');
+    expect(keep?.if).toContain("needs.shard.result == 'success'");
     expect(keep?.if).toContain("needs.plan.outputs.mode == 'full'");
+    expect(keep?.if).toContain("inputs.limit == ''");
     expect(keep?.with).toMatchObject({ name: 'regression-baseline', path: 'regression-results/corpus.json' });
     expect(Number(keep?.with?.['retention-days'])).toBeGreaterThanOrEqual(30);
     const find = workflow.jobs.gate.steps.find((step) => step.id === 'previous');

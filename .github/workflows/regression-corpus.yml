@@ -197,9 +197,9 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-      # Only a full run is a baseline: a night covers a seventh of the corpus. Kept for 90 days, so a week of failed runs leaves one.
+      # Only a passing unlimited full run is a baseline: a night covers a seventh of the corpus, and a failed or trial run must not replace the last clean one. Kept for 90 days, so a week of failed runs leaves one.
       - name: Keep the result set of a full run as the baseline
-        if: always() && needs.plan.outputs.mode == 'full' && hashFiles('regression-results/corpus.json') != ''
+        if: success() && needs.shard.result == 'success' && needs.plan.outputs.mode == 'full' && inputs.limit == '' && hashFiles('regression-results/corpus.json') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: regression-baseline

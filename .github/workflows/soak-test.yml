@@ -15,6 +15,10 @@ on:
         required: true
         default: '2'
 
+concurrency:
+  group: soak-test
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

@@ -34,6 +34,7 @@ interface Job {
   'timeout-minutes'?: number;
   env?: Record<string, string>;
   permissions?: Record<string, string>;
+  services?: Record<string, unknown>;
   strategy?: { matrix?: Record<string, unknown[]> };
   steps: Step[];
 }
@@ -218,8 +219,21 @@ describe('the nightly workflow', () => {
       `if node -e "process.exit(require('./package.json').scripts?.['${script}'] ? 0 : 1)"; then\n  npm run ${script}\nelse\n  echo "skipped: ${skipped}"\nfi\n`;
     const bench = nightly.jobs.bench.steps.find((step) => step.name === 'Run the quality benchmark');
     expect(bench?.run).toBe(guarded('bench:quality', 'package.json has no bench:quality script'));
+    expect(bench?.env?.ORACLE_STRICT_MODE).toBe('1');
     const licences = nightly.jobs.licenses.steps.find((step) => step.name === 'Check dependency licences');
     expect(licences?.run).toBe(guarded('licenses:check', 'package.json has no licenses:check script yet'));
+  });
+
+  it('declares Redis service containers only on the CI jobs that talk to Redis, and never in nightly.yml or conformance', () => {
+    const ciRedisJobs = Object.entries(ci.jobs)
+      .filter(([, job]) => Boolean(job.services?.redis))
+      .map(([name]) => name)
+      .sort();
+    expect(ciRedisJobs).toEqual(['integration', 'tests']);
+    const nightlyRedisJobs = Object.entries(nightly.jobs)
+      .filter(([, job]) => Boolean(job.services?.redis))
+      .map(([name]) => name);
+    expect(nightlyRedisJobs).toEqual([]);
   });
 
   it('fetches the real-world test files through the shared action before the timing suites read them', () => {
@@ -435,6 +449,15 @@ describe('the tool setup', () => {
     const keys = caches.map((step) => String(step.with?.key));
     expect(keys.some((key) => key.includes('apt-debs') && key.includes('steps.image.outputs.version') && key.includes('apt-packages.txt'))).toBe(true);
     expect(keys.some((key) => key.includes('verapdf') && key.includes('scripts/install-verapdf.sh'))).toBe(true);
+    const aptCache = setup.runs.steps.find((step) => step.id === 'apt-cache');
+    expect(aptCache?.with?.['restore-keys']).toBeUndefined();
+    const install = setup.runs.steps.find((step) => step.name === 'Install the tools and start the S3 test server');
+    const hitVars = Object.entries(install?.env ?? {}).filter(([name]) => name.endsWith('_CACHE_HIT'));
+    expect(hitVars.length).toBeGreaterThanOrEqual(7);
+    for (const [name, value] of hitVars) {
+      expect(value, name).toMatch(/^\$\{\{ steps\.[a-z0-9-]+-cache\.outputs\.cache-hit \}\}$/);
+    }
+    expect(install?.env?.APT_CACHE_HIT).toBe('${{ steps.apt-cache.outputs.cache-hit }}');
   });
 
   it('caches the Python wheels by image version and pin file, and installs from them without the network', () => {

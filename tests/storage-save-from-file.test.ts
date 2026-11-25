@@ -477,32 +477,77 @@ describe('a stream the local driver stores', () => {
   it('keeps the temporary file of a source that sends nothing for longer than the sweep waits, by touching it while it waits', async () => {
     const { TEMP_REFRESH_MS } = await import('../src/lib/storage/temp-file');
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let intervalSpy: { mockRestore(): void } | undefined;
     try {
+      let tempPath: string | undefined;
+      let resolveFirstChunk!: () => void;
+      const firstChunkWritten = new Promise<void>((resolve) => {
+        resolveFirstChunk = resolve;
+      });
+      const createWriteStream = fs.createWriteStream;
+      vi.spyOn(fs, 'createWriteStream').mockImplementation((...args) => {
+        const ws = createWriteStream(...(args as Parameters<typeof createWriteStream>));
+        if (String(args[0]).includes('.tmp.')) {
+          tempPath = String(args[0]);
+          const origWrite = ws._write.bind(ws);
+          ws._write = (chunk, enc, cb) =>
+            origWrite(chunk, enc, (err) => {
+              if (!err) resolveFirstChunk();
+              cb(err);
+            });
+        }
+        return ws;
+      });
+
+      let resolveInterval!: () => void;
+      const refreshIntervalRegistered = new Promise<void>((resolve) => {
+        resolveInterval = resolve;
+      });
+      const origSetInterval = globalThis.setInterval;
+      intervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+        const handle = origSetInterval(fn, ms, ...(rest as []));
+        if (ms === TEMP_REFRESH_MS) resolveInterval();
+        return handle;
+      }) as typeof setInterval);
+
+      let utimesTarget: string | undefined;
+      let resolveRefreshTouch: (() => void) | undefined;
+      const realUtimes = fs.promises.utimes;
+      vi.spyOn(fs.promises, 'utimes').mockImplementation(async (target, atime, mtime) => {
+        await realUtimes(target, atime, mtime);
+        if (utimesTarget && String(target) === utimesTarget) {
+          const resolve = resolveRefreshTouch;
+          resolveRefreshTouch = undefined;
+          resolve?.();
+        }
+      });
+
       const { storageProvider, globalSharedObjects } = await loadStorage();
       const source = new PassThrough();
       const saving = storageProvider.saveObjectFromStream(KEY, source, { filename: 'quiet.bin', mimeType: 'application/octet-stream' });
       source.write(Buffer.alloc(1024, 7));
-      let temp: string | undefined;
-      for (let turn = 0; turn < 400 && !temp; turn++) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        temp = fs.existsSync(storageDir) ? fs.readdirSync(storageDir).find((name) => name.includes('.tmp.')) : undefined;
-      }
-      expect(temp, 'the save writes a temporary file').toBeDefined();
-      const tempPath = path.join(storageDir, temp!);
-      const lastWrite = new Date(Date.now() - 50 * MINUTE_MS);
-      fs.utimesSync(tempPath, lastWrite, lastWrite);
 
+      await Promise.all([refreshIntervalRegistered, firstChunkWritten]);
+      expect(tempPath, 'the save writes a temporary file').toBeDefined();
+      const lastWrite = new Date(Date.now() - 50 * MINUTE_MS);
+      fs.utimesSync(tempPath!, lastWrite, lastWrite);
+
+      utimesTarget = tempPath;
+      const refreshTouched = new Promise<void>((resolve) => {
+        resolveRefreshTouch = resolve;
+      });
       vi.advanceTimersByTime(TEMP_REFRESH_MS);
-      for (let turn = 0; turn < 400 && fs.statSync(tempPath).mtimeMs < lastWrite.getTime() + 1000; turn++) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      await refreshTouched;
+
+      expect(fs.statSync(tempPath!).mtimeMs).toBeGreaterThanOrEqual(lastWrite.getTime() + 1000);
       await globalSharedObjects.sweepStaleTempFiles(Date.now() + 20 * MINUTE_MS);
 
-      expect(fs.existsSync(tempPath), 'the quiet writer keeps its file').toBe(true);
+      expect(fs.existsSync(tempPath!), 'the quiet writer keeps its file').toBe(true);
       source.end(Buffer.alloc(1024, 8));
       const stored = await saving;
       expect(stored.size).toBe(2048);
     } finally {
+      intervalSpy?.mockRestore();
       vi.useRealTimers();
     }
   });

@@ -37,17 +37,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -83,17 +72,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -119,6 +97,7 @@ jobs:
         shell: bash
         env:
           BENCH_CORPUS_TIER: pr
+          ORACLE_STRICT_MODE: "1"
         run: |
           if node -e "process.exit(require('./package.json').scripts?.['bench:quality'] ? 0 : 1)"; then
             npm run bench:quality
@@ -170,17 +149,6 @@ jobs:
             families: pdf-ops,audio
           - group: small
             families: ocr,data,ebook,font,cad,vector,vectorize,hdr-image
-
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
 
     steps:
       - name: Checkout repository
@@ -324,12 +292,29 @@ jobs:
       - name: Pull the worker image of main
         id: image
         run: |
+          set -euo pipefail
           # The registry name must be lower case; the repository name may not be.
           image="ghcr.io/${GITHUB_REPOSITORY,,}-worker:main"
-          docker pull --quiet "$image"
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          pulled=0
+          for attempt in 1 2 3; do
+            if docker pull --quiet "$image"; then
+              pulled=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep "$((attempt * 10))"
+            fi
+          done
+          if [ "$pulled" -ne 1 ]; then
+            echo "::error::could not pull $image after 3 attempts" >&2
+            exit 1
+          fi
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image" 2>/dev/null || true)"
+          pinned="${digest:-$image}"
+          revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$pinned")"
+          echo "image=$pinned" >> "$GITHUB_OUTPUT"
           echo "### Worker image" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`$image\` ($(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image"), $(docker run --rm --entrypoint soffice "$image" --version))" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$image\` (\`$pinned\`, $revision, $(docker run --rm --entrypoint soffice "$pinned" --version))" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run the parity benchmark in the worker image
         env:
@@ -369,17 +354,6 @@ jobs:
     needs: sharp-libvips
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
 
     steps:
       - name: Checkout repository
@@ -472,17 +446,6 @@ jobs:
       fail-fast: false
       matrix:
         family: [image, video, audio, ocr, document, compression, pdf-ops, data, ebook, font, cad, raw, vector, vectorize, hdr-image]
-
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
 
     steps:
       - name: Checkout repository

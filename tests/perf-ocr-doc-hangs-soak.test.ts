@@ -375,6 +375,7 @@ describe('P0 perf / hang / soak / mirror regression guards', () => {
   describe('3. Endurance soak workflow staging & atomic SIGTERM telemetry flush', () => {
     it('configures soak-test.yml jobs safely inside GitHub 360-minute limit with sequential matrix', () => {
       const yml = parseYaml(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'soak-test.yml'), 'utf-8')) as {
+        concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
         env: Record<string, string>;
         jobs: {
           plan: { outputs: Record<string, string> };
@@ -385,6 +386,7 @@ describe('P0 perf / hang / soak / mirror regression guards', () => {
           };
         };
       };
+      expect(yml.concurrency).toEqual({ group: 'soak-test', 'cancel-in-progress': false });
       expect(Number(yml.env.MAX_STAGE_SECONDS)).toBeLessThanOrEqual(19_800);
       expect(yml.jobs['endurance-soak']['timeout-minutes']).toBeLessThan(360);
       expect(yml.jobs['endurance-soak'].strategy['max-parallel']).toBe(1);
