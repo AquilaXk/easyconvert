@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import robots from '../src/app/robots';
-import sitemap from '../src/app/sitemap';
+import sitemap, { dynamic as sitemapDynamic } from '../src/app/sitemap';
 
 describe('Open Beta crawlability: robots.txt and localized sitemap.xml', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
+  });
+
+  it('renders sitemap.xml dynamically per request so runtime CAPTURE_WEBSITE_ENABLED kill-switch takes effect', () => {
+    expect(sitemapDynamic).toBe('force-dynamic');
   });
 
   it('allows public crawling, disallows API/account/dashboard/auth paths, and points to the public sitemap URL', () => {

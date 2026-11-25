@@ -13,6 +13,9 @@ import { parseConverterSlug } from '@/lib/slug-parser';
 
 const DEFAULT_PUBLIC_ORIGIN = 'https://convert.aquilaxk.site';
 
+// Render per request so runtime CAPTURE_WEBSITE_ENABLED=false (kill-switch) immediately drops capture URLs instead of serving build-time static XML.
+export const dynamic = 'force-dynamic';
+
 /** Public top-level pages under `src/app/[locale]` (excluding session/auth/redirect routes `/dashboard`, `/account`, `/auth`). */
 const PUBLIC_STATIC_PATHS = [
   '/',
