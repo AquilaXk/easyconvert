@@ -566,7 +566,7 @@ deploy() {
   cp "$source_dir/docker-compose.prod.yml" "$release/"
   cp "$source_dir/docker/seccomp-worker.json" "$release/docker/"
   cp "$source_dir/deploy/oci/prometheus.yml" "$source_dir/deploy/oci/prometheus-alerts.yml" "$source_dir/deploy/oci/alertmanager.yml" \
-    "$source_dir/deploy/oci/redis-backup-offhost.mjs" "$release/deploy/oci/"
+    "$source_dir/deploy/oci/redis-backup-offhost.mjs" "$source_dir/deploy/oci/nginx-easyconvert.conf" "$release/deploy/oci/"
   printf 'EASYCONVERT_WORKER_IMAGE=%s\nEASYCONVERT_WEB_IMAGE=%s\n' "$worker" "$web" > "$release/images.env"
 
   (
@@ -605,7 +605,7 @@ deploy() {
     [ -z "$previous" ] || ln -sfn "$previous" "$HOME_DIR/previous"
     ln -sfn "$release" "$HOME_DIR/current"
     mkdir -p "$HOME_DIR/bin"
-    cp "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/env-allowlist.txt" "$HOME_DIR/bin/"
+    cp "$SCRIPT_DIR/deploy.sh" "$SCRIPT_DIR/env-allowlist.txt" "$SCRIPT_DIR/nginx-easyconvert.conf" "$HOME_DIR/bin/"
     trap - INT TERM
     prune_releases
     prune_images

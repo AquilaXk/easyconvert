@@ -1292,6 +1292,7 @@ exit 0`
     expect(existsSync(path.join(release, 'deploy', 'oci', 'prometheus.yml'))).toBe(true);
     expect(existsSync(path.join(release, 'deploy', 'oci', 'prometheus-alerts.yml'))).toBe(true);
     expect(existsSync(path.join(release, 'deploy', 'oci', 'alertmanager.yml'))).toBe(true);
+    expect(existsSync(path.join(release, 'deploy', 'oci', 'nginx-easyconvert.conf'))).toBe(true);
     expect(calls().some((call) => / up -d --wait .*--remove-orphans/.test(call))).toBe(true);
     expect(calls().some((call) => call.includes('--profile redis'))).toBe(true);
     expect(calls().some((call) => call.includes('--profile monitoring'))).toBe(false);
@@ -1933,10 +1934,30 @@ exit 0`
     expect(existsSync(path.join(home, 'current', 'docker-compose.prod.yml'))).toBe(true);
   });
 
-  it('copies deploy.sh and the allowlist to bin only after the release passed its checks', () => {
+  it('copies deploy.sh, the allowlist, and the nginx site file to bin only after the release passed its checks, and installed guard detects nginx drift', () => {
     expect(run(['deploy', ref('a')], { env: hostEnv() }).status).toBe(0);
     expect(existsSync(path.join(home, 'bin', 'deploy.sh'))).toBe(true);
     expect(existsSync(path.join(home, 'bin', 'env-allowlist.txt'))).toBe(true);
+    expect(existsSync(path.join(home, 'bin', 'nginx-easyconvert.conf'))).toBe(true);
+
+    const siteFile = path.join(sandbox, 'nginx-site');
+    writeFileSync(siteFile, `${read('deploy/oci/nginx-easyconvert.conf')}\n# drifted\n`);
+    const installedScript = path.join(home, 'bin', 'deploy.sh');
+    const drifted = spawnSync('bash', [installedScript, 'guard', envFile], {
+      encoding: 'utf-8',
+      env: { ...process.env, ...hostEnv({ NGINX_SITE_FILE: siteFile }) } as unknown as NodeJS.ProcessEnv,
+    });
+    expect(drifted.status, drifted.stderr).toBe(0);
+    expect(drifted.stderr).toContain('differs from');
+
+    writeFileSync(siteFile, read('deploy/oci/nginx-easyconvert.conf'));
+    const synced = spawnSync('bash', [installedScript, 'guard', envFile], {
+      encoding: 'utf-8',
+      env: { ...process.env, ...hostEnv({ NGINX_SITE_FILE: siteFile }) } as unknown as NodeJS.ProcessEnv,
+    });
+    expect(synced.status, synced.stderr).toBe(0);
+    expect(synced.stderr).not.toContain('differs from');
+
     rmSync(path.join(home, 'bin'), { recursive: true });
     expect(run(['deploy', ref('b')], { env: hostEnv({ STUB_FAIL_HEALTH: ref('b') }) }).status).toBe(1);
     expect(existsSync(path.join(home, 'bin'))).toBe(false);
