@@ -94,7 +94,7 @@ export function resolvePasswordMode(sourceFormat: string, targetFormat: string):
   if (ENCRYPTABLE_ARCHIVES.has(tgt)) {
     return DECRYPTABLE_ARCHIVES.has(src) ? 'archive-reencrypt' : 'archive-encrypt';
   }
-  if (src === 'pdf') return 'pdf-decrypt';
+  if (src === 'pdf' || src === 'pdfa') return 'pdf-decrypt';
   return null;
 }
 
@@ -140,7 +140,7 @@ function canSelectSourcePages(
 ): boolean {
   // The tracer reads the first page of a TIFF.
   if (TIFF_SOURCES.has(src)) return !isVectorizePair(src, tgt);
-  return src === 'pdf' && (targetCategory === 'image' || tgt === 'svg' || PDF_PAGE_SELECTING_TARGETS.has(tgt));
+  return (src === 'pdf' || src === 'pdfa') && (targetCategory === 'image' || tgt === 'svg' || PDF_PAGE_SELECTING_TARGETS.has(tgt));
 }
 
 function canConfigurePdfOrientation(
@@ -148,7 +148,7 @@ function canConfigurePdfOrientation(
   tgt: string,
   sourceCategory: FormatCategory | undefined
 ): boolean {
-  if (tgt !== 'pdf' || src === 'pdf') return false;
+  if (tgt !== 'pdf' || src === 'pdf' || src === 'pdfa') return false;
   return sourceCategory === 'image' || TEXT_PDF_ORIENTATION_SOURCES.has(src);
 }
 
@@ -167,9 +167,10 @@ function computeDocumentCaps({
 }) {
   const canSelectPages = canSelectSourcePages(src, tgt, targetCategory);
   const canConfigureLayout = canConfigurePdfOrientation(src, tgt, sourceCategory);
-  const canConfigureOcr = (src === 'pdf' || sourceCategory === 'image') && OCR_TARGETS.has(tgt);
+  const isPdfInput = src === 'pdf' || src === 'pdfa';
+  const canConfigureOcr = (isPdfInput || sourceCategory === 'image') && OCR_TARGETS.has(tgt);
   const ocrAlwaysEnabled = tgt === 'hocr' || tgt === 'alto';
-  const canConfigurePdfOptimize = src === 'pdf' && tgt === 'pdf' && operation === 'compress';
+  const canConfigurePdfOptimize = (src === 'pdf' || src === 'pdfa') && tgt === 'pdf' && operation === 'compress';
   const canConfigurePdfa = tgt === 'pdf' && operation === 'pdfa';
   const showDocument =
     canSelectPages ||
@@ -281,7 +282,7 @@ function applySanitizedPdfaOptions(next: ConversionOptions, options: ConversionO
 }
 
 function applySanitizedPdfOptimizeOptions(next: ConversionOptions, options: ConversionOptions, visible: VisibleOptionsSections): void {
-  if (options.optimize?.profile && visible.src === 'pdf' && visible.tgt === 'pdf') {
+  if (options.optimize?.profile && (visible.src === 'pdf' || visible.src === 'pdfa') && visible.tgt === 'pdf') {
     next.optimize = { profile: options.optimize.profile };
   }
 }

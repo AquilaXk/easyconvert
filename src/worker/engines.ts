@@ -1371,7 +1371,7 @@ export async function convertWithNativePoppler(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
-  if (src !== 'pdf') return null;
+  if (src !== 'pdf' && src !== 'pdfa') return null;
 
   const startTime = Date.now();
   const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
@@ -2290,7 +2290,7 @@ async function convertWithinImageSession(
     const chosen = options.engine === undefined ? 'native engine' : `engine '${options.engine}'`;
     throw new UnsupportedTargetError(`No ${chosen} route converts ${src} to ${tgt}`);
   }
-  if (src === 'pdf' && options.password && isUnservedPasswordRequest(lastUnavailable)) {
+  if ((src === 'pdf' || src === 'pdfa') && options.password && isUnservedPasswordRequest(lastUnavailable)) {
     // The in-process engine ignores PDF passwords, so it must not run for a request a native engine could not serve.
     throw lastUnavailable;
   }

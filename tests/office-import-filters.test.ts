@@ -60,7 +60,7 @@ describe.skipIf(registryMissing)('the office suite registry', () => {
   });
 
   it('lists the extension of a format among those of its filter, for the formats that are not variants of another', () => {
-    const own = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp', 'odg', 'rtf', 'sxw', 'sxc', 'sxi', 'sxd', 'wpd', 'lwp', 'abw', 'zabw', 'pages', 'numbers', 'key', 'vsd', 'cdr', 'pub', 'lrf', 'dotx', 'xltx', 'potx', 'ppsx', 'ott', 'ots', 'otp'];
+    const own = ['docx', 'xlsx', 'pptx', 'odt', 'fodt', 'ods', 'fods', 'odp', 'fodp', 'dbf', 'dif', 'slk', 'odg', 'rtf', 'sxw', 'sxc', 'sxi', 'sxd', 'wpd', 'lwp', 'abw', 'zabw', 'pages', 'numbers', 'key', 'vsd', 'cdr', 'pub', 'lrf', 'dotx', 'xltx', 'potx', 'ppsx', 'ott', 'ots', 'otp'];
     const mismatched = own.filter((format) => {
       const type = registry!.filters.get(OFFICE_IMPORT_FILTERS[format]);
       return type === undefined || !registry!.extensions.get(type)?.includes(format);

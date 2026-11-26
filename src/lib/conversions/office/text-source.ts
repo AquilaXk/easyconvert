@@ -1,4 +1,5 @@
 import { detectTextInputEncoding, decodeTextInput } from '../text-input';
+import { emlMessageText, readEmlMessage } from './eml-reader';
 import { outlookMessageText, readOutlookMessage } from './msg-reader';
 import { ConversionFailedError } from '../../types';
 import { assertReadableAsText } from './text-source-guard';
@@ -15,6 +16,7 @@ const UTF16_ENCODINGS: ReadonlySet<string> = new Set(['utf-16le', 'utf-16be']);
  */
 export function sourceBytesAsText(input: Buffer, format: string): string {
   if (format === 'msg') return outlookMessageText(readOutlookMessage(input));
+  if (format === 'eml') return emlMessageText(readEmlMessage(input));
   const declaresUtf16 = UTF16_ENCODINGS.has(detectTextInputEncoding(input));
   if (declaresUtf16 && BOM_DECLARED_TEXT_SOURCES.has(format)) {
     const text = decodeTextInput(input);

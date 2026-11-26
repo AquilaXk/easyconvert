@@ -20,13 +20,13 @@ import {
   IN_PROCESS_RAW_SENSOR_FORMATS,
   ILLUSTRATOR_FORMAT,
   OFFICE_NATIVE_RESAVE_FORMATS,
-  PDF_SOURCE_FORMAT,
   PRESENTATION_HTML_SOURCES,
   RAW_PACKAGING_TARGETS,
   SVG_SOURCE,
   HTML_TARGET,
   fixedPageEngineOf,
   isPdfChainTarget,
+  isPdfSourceFormat,
 } from './native-route-formats';
 import { OFFICE_NATIVE_SOURCES, bridgeFormat, interchangeNeeded, isMarkupPageImagePair, officeSuiteWritesTarget, BIFF8_TARGET } from './office-suite-route';
 import { siblingGhostscript } from './postscript-gs';
@@ -55,7 +55,7 @@ const SIGMA_RAW_SOURCE = 'x3f';
 const PDF_TARGET = 'pdf';
 const PDF_TEXT_TARGETS: ReadonlySet<string> = new Set(['txt', 'text']);
 /** Text and markup sources the in-process converter renders to PDF unless the text needs the office suite's layout. */
-const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
+const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm', 'xhtml']);
 
 /** FFmpeg reads and writes subtitles, calibre writes the ebook targets and reads the books no other engine reads, and pandoc writes LaTeX and reStructuredText: routes no other engine has. */
 function subtitleOrEbookProgram(src: string, tgt: string): EngineId | undefined {
@@ -100,7 +100,7 @@ function mediaProgram(src: string, tgt: string): EngineId | undefined {
 
 /** Poppler draws the pages of a PDF and reads its text; 7-Zip converts between the archives of its tables. */
 function pdfOrArchiveProgram(src: string, tgt: string): EngineId | undefined {
-  if (src === PDF_SOURCE_FORMAT && (isPdfChainTarget(tgt) || PDF_TEXT_TARGETS.has(tgt))) return 'poppler';
+  if (isPdfSourceFormat(src) && (isPdfChainTarget(tgt) || PDF_TEXT_TARGETS.has(tgt))) return 'poppler';
   return isNativeArchivePair(src, tgt) ? '7zip' : undefined;
 }
 
@@ -128,7 +128,7 @@ function converterConverts(src: string, tgt: string, program: EngineId | undefin
   if (program === 'ffmpeg') return PURE_MEDIA_SOURCES.has(src) && PURE_MEDIA_TARGETS.has(tgt);
   if (program === 'libraw') return IN_PROCESS_RAW_SENSOR_FORMATS.has(src);
   // The in-process converter reads the text layer of a PDF, but draws no page: page images, SVG and PostScript need Poppler.
-  if (program === 'poppler') return src === PDF_SOURCE_FORMAT && PDF_TEXT_TARGETS.has(tgt);
+  if (program === 'poppler') return isPdfSourceFormat(src) && PDF_TEXT_TARGETS.has(tgt);
   if (program === 'calibre' || program === 'pandoc' || program === 'ghostscript' || program === 'ghostxps' || program === 'djvulibre') return false;
   if (program === '7zip') return isInProcessArchiveSource(src);
   return true;

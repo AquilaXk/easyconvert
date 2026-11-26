@@ -13,6 +13,8 @@ import { EncryptedOfficeDocumentError } from './legacy-office-errors';
 import { htmlToText } from './html-text';
 import { decodeXmlBytes } from '../package-access';
 import { extractTextFromOdt } from './odt-text';
+import { extractTextFromFlatOdf, isFlatOdfFormat } from './flat-odf';
+import { isMarkupTextSource, markupToMarkdown } from './markup-text';
 import { PARAGRAPH_SEPARATOR } from './text-constants';
 
 /**
@@ -24,7 +26,7 @@ export async function extractTextContentForOffice(
   options: ConversionOptions,
   baseName: string
 ): Promise<string> {
-  if (src === 'pdf') {
+  if (src === 'pdf' || src === 'pdfa') {
     return documentToStructuredText(await readPdfForOffice(inputBuffer, options));
   }
 
@@ -36,12 +38,16 @@ export async function extractTextContentForOffice(
     return extractTextFromOdt(inputBuffer);
   }
 
+  if (isFlatOdfFormat(src)) {
+    return extractTextFromFlatOdf(inputBuffer, src);
+  }
+
   if (src === 'doc') {
     return extractTextFromDoc(inputBuffer);
   }
 
-  if (src === 'tex' || src === 'latex') {
-    return extractTextFromTexString(inputBuffer.toString('utf-8'));
+  if (isMarkupTextSource(src)) {
+    return markupToMarkdown(sourceBytesAsText(inputBuffer, src), src);
   }
 
   if (src === 'xps' || src === 'oxps') {
@@ -52,7 +58,7 @@ export async function extractTextContentForOffice(
     return documentToText(parseHwpDocument(inputBuffer).model);
   }
 
-  if (src === 'html' || src === 'htm') {
+  if (src === 'html' || src === 'htm' || src === 'xhtml') {
     return decodeHtmlInput(inputBuffer);
   }
 
@@ -108,15 +114,6 @@ export async function extractTextContentForOffice(
  */
 export function extractTextFromDoc(buffer: Buffer, canDraw?: (character: string) => boolean): string {
   return readDocText(buffer, canDraw);
-}
-
-function extractTextFromTexString(tex: string): string {
-  return tex
-    .replace(/\\(?:section|chapter|subsection)\*?\{([^}]+)\}/g, '$1\n\n')
-    .replace(/\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{([^}]*)\})?/g, '$1 ')
-    .replace(/[{}]/g, '')
-    .replace(/\n\s*\n/g, '\n\n')
-    .trim();
 }
 
 /**

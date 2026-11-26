@@ -251,12 +251,12 @@ export async function generatePptxFromText(
 }
 
 /** Sources whose extracted text is Markdown (headings, lists, tables), read as such when writing an EPUB or DOCX. */
-const MARKDOWN_TEXT_SOURCES: ReadonlySet<string> = new Set(['md', 'markdown', 'pdf', 'fb2']);
+const MARKDOWN_TEXT_SOURCES: ReadonlySet<string> = new Set(['md', 'markdown', 'pdf', 'fb2', 'rst', 'tex', 'latex', 'man']);
 
 /** The document model of text extracted from a source: Markdown or HTML where the source produces it, else plain paragraphs. */
 export async function modelFromExtractedText(text: string, sourceType: string): Promise<DocumentModel> {
   if (MARKDOWN_TEXT_SOURCES.has(sourceType)) return markdownToDocumentModel(text);
-  if (sourceType === 'html' || sourceType === 'htm') return htmlToDocumentModel(text);
+  if (sourceType === 'html' || sourceType === 'htm' || sourceType === 'xhtml') return htmlToDocumentModel(text);
   return plainTextModel(text, { lines: 'keep' });
 }
 

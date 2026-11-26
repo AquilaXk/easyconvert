@@ -18,11 +18,13 @@ import { convertXlsxSource } from './xlsx-convert';
 import { convertPotxSource, convertPptxSource } from './pptx-convert';
 import { convertOdpSource } from './odp-convert';
 import { convertOdsSource, convertOdtSource, convertOpenDocumentGraphicSource } from './odf-convert';
+import { convertFlatOdfSource } from './flat-odf';
 import { convertXlsSource } from './xls-convert';
 import { convertPptSource } from './ppt-convert';
 import { COMIC_SOURCES, convertCbcSource, convertComicSource, convertEpubSource, convertFb2Source, convertMobiSource, viaPdf } from './ebook-convert';
 import { convertEtSource, convertGenericDocumentSource, convertGenericEbookSource } from './convert-generic';
 import { extractTextContentForOffice } from './text-extraction';
+import { emlMessageHtml, readEmlMessage } from './eml-reader';
 import { generateDocxFromExtractedText, generateDocxFromText, generateEpubFromText, generateFb2FromText, generateHwpFromText, generatePptxFromText, modelFromExtractedText } from './office-from-text';
 import { extractRowsForOffice } from './sheet-extract';
 import { writeSheet } from './sheet-write';
@@ -51,6 +53,9 @@ const SOURCE_READERS: ReadonlyArray<readonly [readonly string[], FormatConverter
   [['ods'], (input, _src, tgt, options, baseName) => convertOdsSource(input, tgt, options, baseName)],
   [['xls'], (input, _src, tgt, options, baseName) => convertXlsSource(input, tgt, options, baseName)],
   [['odt'], (input, _src, tgt, options, baseName) => convertOdtSource(input, tgt, options, baseName)],
+  [['fodt'], (input, _src, tgt, options, baseName) => convertFlatOdfSource(input, 'fodt', tgt, options, baseName)],
+  [['fods'], (input, _src, tgt, options, baseName) => convertFlatOdfSource(input, 'fods', tgt, options, baseName)],
+  [['fodp'], (input, _src, tgt, options, baseName) => convertFlatOdfSource(input, 'fodp', tgt, options, baseName)],
   // PowerPoint 97-2003 binary, PowerPoint templates and Keynote
   [['ppt'], (input, _src, tgt, options, baseName) => convertPptSource(input, tgt, options, baseName)],
   [['potx'], (input, _src, tgt, options, baseName) => convertPotxSource(input, tgt, options, baseName)],
@@ -108,7 +113,7 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   ['docx', async (input, src, _tgt, options, baseName) => {
     // A PDF keeps the structure its layout analysis found: columns, headings, lists, tables and images.
     const maxAnchoredShapes = (options as Record<symbol, unknown>)[DOCX_MAX_ANCHORED_SHAPES];
-    const docxBuffer = src === 'pdf'
+    const docxBuffer = isPdfSource(src)
       ? await documentToDocx(
           await readPdfForOffice(input, options, { images: true, colour: true, pages: true, select: pageSelectionOf(options) }),
           typeof maxAnchoredShapes === 'number' ? { maxAnchoredShapes } : undefined
@@ -119,7 +124,7 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   // Target is PPTX (from Markdown, HTML, TXT, Presentation, etc.)
   ['pptx', async (input, src, _tgt, options, baseName) => {
     // A PDF keeps its pages: one slide for each, with the text, tables and pictures where the page has them.
-    if (src === 'pdf') return officeResult(await pdfToPptx(input, options, baseName), PPTX_MIME_TYPE, baseName, 'pptx');
+    if (isPdfSource(src)) return officeResult(await pdfToPptx(input, options, baseName), PPTX_MIME_TYPE, baseName, 'pptx');
     const textContent = await extractTextContentForOffice(input, src, options, baseName);
     const pptxBuffer = await generatePptxFromText(textContent, src, options, baseName);
     return officeResult(pptxBuffer, PPTX_MIME_TYPE, baseName, 'pptx');
@@ -174,6 +179,9 @@ const TARGET_CONVERTERS: ReadonlyMap<string, FormatConverter> = new Map<string, 
   ['txt', convertToText],
   ['text', convertToText],
   ['html', async (input, src, _tgt, options, baseName) => {
+    if (src === 'eml') {
+      return officeResult(Buffer.from(emlMessageHtml(readEmlMessage(input), baseName), 'utf-8'), 'text/html', baseName, 'html');
+    }
     const textContent = await extractTextContentForOffice(input, src, options, baseName);
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(baseName)}</title></head><body><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
     return officeResult(Buffer.from(html, 'utf-8'), 'text/html', baseName, 'html');
@@ -256,9 +264,13 @@ export async function convertOffice(
   throw new UnsupportedTargetError(`Unsupported office conversion from ${sourceFormat} to ${targetFormat}`);
 }
 
+function isPdfSource(src: string): boolean {
+  return src === 'pdf' || src === 'pdfa';
+}
+
 /** An EPUB from any other source; a PDF is written from its blocks (`pdfToEpub`), the rest from the text extracted from them. */
 async function generateEpubFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
-  if (src === 'pdf') return pdfToEpub(inputBuffer, options, baseName);
+  if (isPdfSource(src)) return pdfToEpub(inputBuffer, options, baseName);
   return generateEpubFromText(await extractTextContentForOffice(inputBuffer, src, options, baseName), src, options, baseName);
 }
 
@@ -266,7 +278,7 @@ async function generateEpubFromSource(inputBuffer: Buffer, src: string, options:
 async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
   if (src === 'epub') return documentToOdt(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
   const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-  if (src === 'pdf') return generateOdtFromText(textContent, baseName);
+  if (isPdfSource(src)) return generateOdtFromText(textContent, baseName);
   return documentToOdt(await modelFromExtractedText(textContent, src), { title: baseName, language: options.language });
 }
 
@@ -277,6 +289,6 @@ async function generateOdtFromSource(inputBuffer: Buffer, src: string, options: 
 async function generateDocxFromSource(inputBuffer: Buffer, src: string, options: ConversionOptions, baseName: string): Promise<Buffer> {
   if (src === 'epub') return documentToDocx(await readEpubModel(inputBuffer), { title: baseName, language: options.language });
   const textContent = await extractTextContentForOffice(inputBuffer, src, options, baseName);
-  if (src === 'pdf') return generateDocxFromText(textContent, src, options, baseName);
+  if (isPdfSource(src)) return generateDocxFromText(textContent, src, options, baseName);
   return generateDocxFromExtractedText(textContent, src, options, baseName);
 }

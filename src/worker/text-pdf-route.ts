@@ -22,7 +22,7 @@ export const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html
 /** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. HTML is decoded whole, by encoding sniffing. */
 const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt']);
 /** HTML always prefers LibreOffice, which keeps its full structure. */
-export const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm']);
+export const HTML_SOURCES: ReadonlySet<string> = new Set(['html', 'htm', 'xhtml']);
 export const HTML_FORMAT = 'html';
 const PLAIN_TEXT_SOURCE = 'txt';
 const MARKDOWN_SOURCE = 'md';

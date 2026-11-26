@@ -27,7 +27,7 @@ import { engineTraceFields, engineTraceHeaders } from '@/lib/api/engine-trace';
 import { conversionWarningsFields, conversionWarningsHeaders } from '@/lib/api/conversion-warnings';
 import { droppedStreamsFields, droppedStreamsHeaders } from '@/lib/api/dropped-streams';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
-import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { detectUploadedSourceFormat, getFormatByExtension } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
@@ -131,8 +131,7 @@ async function parseConvertFormData(formData: FormData, instanceUri: string, hea
   const sourceFormatParam = formData.get('sourceFormat');
   const explicitSource = typeof sourceFormatParam === 'string' && sourceFormatParam.trim() ? sourceFormatParam.trim() : undefined;
   const safeFilename = sanitizeNodeOutputFilename((file as File).name, 'upload');
-  let sourceDef = explicitSource ? getFormatByExtension(explicitSource) : undefined;
-  sourceDef ??= detectFormatFromFilename(safeFilename);
+  let sourceDef = detectUploadedSourceFormat(safeFilename, explicitSource);
   if (!explicitSource && sourceDef?.id === 'xml') {
     const prefix = new Uint8Array(await file.slice(0, ALTO_SNIFF_BYTES).arrayBuffer());
     sourceDef = promoteAltoXmlSource(sourceDef, undefined, targetFormat, prefix);

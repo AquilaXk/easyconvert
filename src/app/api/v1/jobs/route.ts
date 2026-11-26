@@ -26,7 +26,7 @@ import { deleteResult } from '@/lib/storage/retention-service';
 import { CredentialsVaultPersistenceError } from '@/lib/storage/credentials-vault';
 import { storeUploadedBuffer } from '@/lib/api/completed-upload';
 import { OBJECT_HEADER_BYTES, readObjectRange } from '@/lib/storage/object-header';
-import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { detectUploadedSourceFormat, getFormatByExtension } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { resolveEffectiveWebhook } from '@/lib/security/ssrf';
@@ -146,7 +146,7 @@ interface JobSourceLookupInput {
 }
 
 async function resolveJobSourceDef(input: JobSourceLookupInput): Promise<FormatDefinition | undefined> {
-  const sourceDef = (input.explicitSource ? getFormatByExtension(input.explicitSource) : undefined) ?? detectFormatFromFilename(input.originalFilename);
+  const sourceDef = detectUploadedSourceFormat(input.originalFilename, input.explicitSource);
   if (input.explicitSource || input.skipAutoAlto || sourceDef?.id !== 'xml') return sourceDef;
   let prefix: Uint8Array | undefined;
   if (input.storageKey && !isInlineInputKey(input.storageKey)) {
@@ -192,7 +192,7 @@ function collectStoredInputChecks(input: {
       const nodeKey = typeof node.storageKey === 'string' ? node.storageKey.trim() : '';
       if (!nodeKey || isInlineInputKey(nodeKey)) continue;
       const nodeFilename = path.basename(nodeKey) || input.originalFilename;
-      const nodeDef = detectFormatFromFilename(nodeFilename) ?? input.sourceDef;
+      const nodeDef = detectUploadedSourceFormat(nodeFilename) ?? input.sourceDef;
       push(nodeKey, nodeDef.extension, nodeFilename, false);
     }
   }
@@ -920,18 +920,18 @@ function resolveGraphFallbackFormat(
   filename = ''
 ): string {
   if (sourceFormat) return sourceFormat;
-  const fromName = detectFormatFromFilename(filename)?.id;
+  const fromName = detectUploadedSourceFormat(filename)?.id;
   if (fromName) return fromName;
   for (const node of nodes) {
     if (node.op === 'import.upload' && typeof node.storageKey === 'string') {
-      const detected = detectFormatFromFilename(node.storageKey)?.id;
+      const detected = detectUploadedSourceFormat(node.storageKey)?.id;
       if (detected) return detected;
     } else if (storageImportFileName(node)) {
-      const detected = detectFormatFromFilename(storageImportFileName(node) as string)?.id;
+      const detected = detectUploadedSourceFormat(storageImportFileName(node) as string)?.id;
       if (detected) return detected;
     } else if (node.op === 'import.url' && typeof node.url === 'string') {
       try {
-        const detected = detectFormatFromFilename(new URL(node.url).pathname)?.id;
+        const detected = detectUploadedSourceFormat(new URL(node.url).pathname)?.id;
         if (detected) return detected;
       } catch {
         // ignore invalid url

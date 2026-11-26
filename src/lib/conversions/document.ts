@@ -49,6 +49,8 @@ import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
+import { emlMessageHtml, readEmlMessage } from './office/eml-reader';
+import { isMarkupTextSource, markupToMarkdown, markupToPlainText, texToPlainText } from './office/markup-text';
 import { sourceBytesAsText } from './office/text-source';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from '../markdown/safe-markdown';
@@ -83,12 +85,7 @@ export type { DrawingMlShape, TableBorder, DlaBoundingBox, DlaBlock, DlaPageLayo
  * Strips LaTeX macro commands
  */
 export function extractTextFromTex(tex: string): string {
-  return tex
-    .replace(/\\(?:section|chapter|subsection)\*?\{([^}]+)\}/g, '$1\n\n')
-    .replace(/\\[a-zA-Z]+(?:\[[^\]]*\])?(?:\{([^}]*)\})?/g, '$1 ')
-    .replace(/[{}]/g, '')
-    .replace(/\n\s*\n/g, '\n\n')
-    .trim();
+  return texToPlainText(tex);
 }
 
 /**
@@ -353,8 +350,8 @@ export async function convertDocument(
     }
   }
 
-  // PDF as source format
-  if (src === 'pdf') {
+  // PDF / PDF/A as source format
+  if (src === 'pdf' || src === 'pdfa') {
     assertPdfHeader(inputBuffer);
     // The readers below parse the document themselves: an encrypted one is read from a copy that qpdf decrypted with the
     // request's password (the empty one when there is none). A result that is the PDF itself still returns `inputBuffer`.
@@ -669,8 +666,8 @@ export async function convertDocument(
     // A PDF draws with installed fonts: a symbol-font character none of them covers shows as U+FFFD and is reported.
     if (tgt === 'pdf') await loadFontCoverageIndex();
     textContent = extractTextFromDoc(inputBuffer, tgt === 'pdf' ? canDrawInPdf : undefined);
-  } else if (TEX_SOURCE_FORMATS.has(src)) {
-    textContent = extractTextFromTex(sourceBytesAsText(inputBuffer, src));
+  } else if (isMarkupTextSource(src)) {
+    textContent = markupToMarkdown(sourceBytesAsText(inputBuffer, src), src);
   } else if (HTML_SOURCE_FORMATS.has(src)) {
     // HTML declares its own encoding (or none): the standard's sniffing reads it, and no byte refuses the document.
     textContent = decodeHtmlInput(inputBuffer);
@@ -683,7 +680,7 @@ export async function convertDocument(
 
   // Convert to PDF
   if (tgt === 'pdf') {
-    return generatePdfFromText(textContent, src, options, baseName);
+    return generatePdfFromText(textContent, isMarkupTextSource(src) ? MARKDOWN_SOURCE_FORMAT : src, options, baseName);
   }
 
   // Convert to Plain Text
@@ -691,6 +688,8 @@ export async function convertDocument(
     let cleanText = textContent;
     if (HTML_SOURCE_FORMATS.has(src)) {
       cleanText = stripHtmlTags(textContent);
+    } else if (isMarkupTextSource(src)) {
+      cleanText = markupToPlainText(sourceBytesAsText(inputBuffer, src), src);
     } else if (src === 'md') {
       cleanText = stripMarkdownSyntax(textContent);
     }
@@ -706,13 +705,17 @@ export async function convertDocument(
   // Convert to HTML
   if (tgt === 'html') {
     const html =
-      src === 'md'
+      src === 'md' || isMarkupTextSource(src)
         ? markdownToHtml(textContent, baseName)
-        : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
-            baseName
-          )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeMarkupAttribute(
-            baseName
-          )}</h1><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
+        : src === 'eml'
+          ? emlMessageHtml(readEmlMessage(inputBuffer), baseName)
+          : src === 'xhtml'
+            ? textContent.replace(/^\s*<\?xml[^>]*\?>\s*/i, '')
+            : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
+                baseName
+              )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeMarkupAttribute(
+                baseName
+              )}</h1><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
     const buffer = Buffer.from(html, 'utf-8');
     return {
       buffer,
@@ -897,8 +900,7 @@ function stripMarkdownSyntax(md: string): string {
 /** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. HTML is not one: it is decoded by encoding sniffing. */
 const STRICT_TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md']);
 /** Source formats parsed as HTML when rendered to PDF. */
-const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm']);
-const TEX_SOURCE_FORMATS: ReadonlySet<string> = new Set(['tex', 'latex']);
+const HTML_SOURCE_FORMATS: ReadonlySet<string> = new Set(['html', 'htm', 'xhtml']);
 const MARKDOWN_SOURCE_FORMAT = 'md';
 /**
  * Renders text, Markdown or HTML to PDF in-process. The page holds only the document content,

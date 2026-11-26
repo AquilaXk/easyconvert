@@ -382,7 +382,7 @@ function officeEngineWritesSheet(src: string, tgt: string): boolean {
 }
 
 function isDirectPdfPostProcessOnly(src: string, tgt: string, options: ConversionOptions): boolean {
-  if (src !== 'pdf' || tgt !== 'pdf' || options.ocrEnabled) return false;
+  if ((src !== 'pdf' && src !== 'pdfa') || tgt !== 'pdf' || options.ocrEnabled) return false;
   return Boolean(
     options.optimize !== undefined ||
       options.watermark !== undefined ||
@@ -396,7 +396,7 @@ function isDirectPdfPostProcessOnly(src: string, tgt: string, options: Conversio
  * is the one page of the `pages` grammar; both options must name the same text. The syntax is checked before any work.
  */
 function pdfToPdfPagesSpec(src: string, tgt: string, options: ConversionOptions): string | undefined {
-  if (src !== 'pdf' || tgt !== 'pdf') return undefined;
+  if ((src !== 'pdf' && src !== 'pdfa') || tgt !== 'pdf') return undefined;
   const selection = pageSelectionOf(options);
   if (selection === undefined) return undefined;
   const pages = typeof selection.pages === 'string' ? selection.pages.trim() : '';
@@ -499,6 +499,7 @@ async function convertFileInScope(
   // 4. Vector & CAD routing (including EPS and PS)
   if (
     src !== 'pdf' &&
+    src !== 'pdfa' &&
     (srcDef.category === 'vector' ||
       srcDef.category === 'cad' ||
       [
@@ -551,6 +552,7 @@ async function convertFileInScope(
       'odp',
       'ods',
       'odt',
+      'fodt',
       'xls',
       'fb2',
       'cbz',

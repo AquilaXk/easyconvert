@@ -3099,7 +3099,7 @@ const ZIP_EXTENSIONS: ReadonlySet<string> = new Set([
 // OLE2 compound files: Office 97-2003 documents and templates, Hangul 5.0, Outlook messages, Visio 2003,
 // Publisher, and the Kingsoft binary formats.
 const CFBF_EXTENSIONS: ReadonlySet<string> = new Set([
-  'doc', 'dot', 'xls', 'xlt', 'ppt', 'pot', 'pps', 'hwp', 'cfbf', 'msg', 'vsd', 'pub', 'et', 'wps', 'dps',
+  'doc', 'dot', 'xls', 'xlt', 'ppt', 'pot', 'pps', 'hwp', 'cfbf', 'msg', 'vsd', 'pub', 'et', 'wps', 'wks', 'dps',
   ...COMPOUND_FILE_ONLY_EXTENSIONS,
 ]);
 const PDF_EXTENSIONS: ReadonlySet<string> = new Set(['pdf', 'ai']);
@@ -3267,6 +3267,20 @@ export function assertNotSpoofedFile(
       `File spoofing rejected${nameStr}: initial magic bytes indicate MIME type "${sniffed}", which is incompatible with declared format ".${cleanExt}". Operation failed closed.`
     );
   }
+}
+
+/**
+ * Resolves uploaded/remote input source format definition, supporting both explicit format overrides
+ * and compound tarball suffixes like `.tar.bz2` without altering `detectFormatFromFilename` compatibility.
+ */
+export function detectUploadedSourceFormat(
+  filename: string,
+  explicitSource?: string
+): ReturnType<typeof getFormatByExtension> {
+  const named = explicitSource ? getFormatByExtension(explicitSource) : undefined;
+  const detected = named ?? detectFormatFromFilename(filename);
+  if (detected || !filename.toLowerCase().endsWith('.tar.bz2')) return detected;
+  return FORMAT_REGISTRY['tar.bz2'] || FORMAT_REGISTRY['bz2'];
 }
 
 

@@ -52,7 +52,7 @@ export function isPlainCompression(sourceFormat: string, targetFormat: string, o
   }
   const src = canonicalFormat(sourceFormat.toLowerCase());
   const tgt = canonicalFormat(targetFormat.toLowerCase());
-  if (src === 'pdf' && tgt === 'pdf' && options.optimize !== undefined) {
+  if ((src === 'pdf' || src === 'pdfa') && tgt === 'pdf' && options.optimize !== undefined) {
     return Object.entries(options).every(([key, value]) => value === undefined || PLAIN_PDF_COMPRESSION_OPTIONS.includes(key));
   }
   return false;

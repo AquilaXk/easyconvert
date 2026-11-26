@@ -8,12 +8,12 @@ import {
   IN_PROCESS_RAW_SENSOR_FORMATS,
   MEDIA_FORMATS,
   OFFICE_NATIVE_RESAVE_FORMATS,
-  PDF_SOURCE_FORMAT,
   PRESENTATION_HTML_SOURCES,
   RAW_PACKAGING_TARGETS,
   SVG_SOURCE,
   fixedPageEngineOf,
   isPdfChainTarget,
+  isPdfSourceFormat,
 } from './native-route-formats';
 import type { WorkerEngineOptions, WorkerVfsPayload } from './worker-types';
 
@@ -87,7 +87,7 @@ function pageRoutes({ src, tgt, options }: PlanRequest): PageRoutes {
   const pdfTextTarget = PDF_TEXT_TARGETS.has(tgt);
   const drawsFixedPage = fixedPage !== undefined && allowsRoute(options, fixedPage) && (tgt === PDF_TARGET || isPdfChainTarget(tgt));
   // An OCR request skips the text layer of the PDF.
-  const readsPdf = src === PDF_SOURCE_FORMAT && !(pdfTextTarget && Boolean(options.ocrEnabled)) && (isPdfChainTarget(tgt) || pdfTextTarget);
+  const readsPdf = isPdfSourceFormat(src) && !(pdfTextTarget && Boolean(options.ocrEnabled)) && (isPdfChainTarget(tgt) || pdfTextTarget);
   return { fixedPage: drawsFixedPage ? fixedPage : undefined, pdfTextTarget, poppler: allowsRoute(options, 'poppler') && readsPdf };
 }
 

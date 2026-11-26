@@ -6,6 +6,7 @@ import { withLegacyDdsPixelFormat } from './image-dds-header';
 import { decodeWithMagick, type MagickSource } from './image-magick-cli';
 import { decodeWithDjxl } from './image-jxl-cli';
 import { decodeWithOpenJpeg } from './image-openjpeg-cli';
+import { decodeWbmpToPng } from './image-wbmp';
 import { usesOldStyleJpeg, withSortedTiffTags } from './image-tiff-directories';
 import { writesProgramPalette } from './image-content';
 import { pngQualityAsPalette } from './image-encoder-defaults';
@@ -100,6 +101,7 @@ export async function decodeExternalImage(input: Buffer, format: string, signal?
     return HEIF_FORMATS.has(format) ? { ...decoded, buffer: withUprightExifOrientation(decoded.buffer) } : decoded;
   }
   if (TIFF_FORMATS.has(format) && usesOldStyleJpeg(input)) return decodeWithMagick(input, OLD_STYLE_JPEG_TIFF, signal);
+  if (format === 'wbmp') return { buffer: await decodeWbmpToPng(input), format: 'png' };
   return null;
 }
 

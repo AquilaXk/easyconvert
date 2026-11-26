@@ -68,6 +68,10 @@ export const MEDIA_FORMATS: ReadonlySet<string> = new Set(['mp4', 'mkv', 'avi', 
 
 export const ILLUSTRATOR_FORMAT = 'ai';
 export const PDF_SOURCE_FORMAT = 'pdf';
+export const PDF_SOURCE_FORMATS: ReadonlySet<string> = new Set(['pdf', 'pdfa']);
+export function isPdfSourceFormat(src: string): boolean {
+  return PDF_SOURCE_FORMATS.has(src);
+}
 
 /** The sources of each program that draws the pages of a source no other engine can (the routes of `engines.ts` add the renderer). */
 export const FIXED_PAGE_SOURCES: Readonly<Record<Extract<EngineId, 'ghostscript' | 'ghostxps' | 'djvulibre'>, ReadonlySet<string>>> = {

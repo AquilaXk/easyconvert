@@ -5,6 +5,7 @@ import { decodeCheckedDelimitedText } from '../delimited-text-decoder';
 import { decodeSheetJson, delimitedSheetRows, parseJsonTableRows } from '../sheet-text-tables';
 import { parseAllXlsxWorksheets } from './xlsx-parse';
 import { readCfbfWorkbookSheet } from './xls-parse';
+import { LEGACY_SPREADSHEET_FORMATS, readLegacySpreadsheetRows } from './sheet-legacy';
 import { type OfficeWorksheet } from './types';
 
 /**
@@ -34,6 +35,9 @@ export async function extractRowsForOffice(
     // A Kingsoft workbook is an OOXML package or a BIFF8 compound file; neither is CSV text.
     if (startsWithBytes(inputBuffer, ZIP_LOCAL_HEADER_SIGNATURE)) return extractRowsForOffice(inputBuffer, 'xlsx', options);
     if (isCfbfContainer(inputBuffer)) return readCfbfWorkbookSheet(inputBuffer).toRows();
+  }
+  if (LEGACY_SPREADSHEET_FORMATS.has(src)) {
+    return readLegacySpreadsheetRows(inputBuffer, src);
   }
   if (src === 'pdf') throw new UnsupportedTargetError('A PDF is read for a workbook by its tables and pages (readPdfSheets), never as rows of delimited text.');
   if (src === 'json') return parseJsonTableRows(decodeSheetJson(inputBuffer));
