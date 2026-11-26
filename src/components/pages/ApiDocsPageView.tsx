@@ -40,7 +40,7 @@ export default function ApiDocsPageView({ topic }: Readonly<{ topic: ApiDocTopic
       <Header />
       <div className="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 lg:grid lg:grid-cols-10 lg:gap-10">
         <TopicNav current={topic} />
-        <div className="lg:col-span-8 lg:grid lg:grid-cols-10 lg:gap-10">
+        <div className="min-w-0 lg:col-span-8 lg:grid lg:grid-cols-10 lg:gap-10">
           <div className="lg:col-span-2 lg:order-last">
             <TableOfContents title={t('toc')} items={toc} />
           </div>

@@ -23,7 +23,7 @@ const DEFAULT_VOLUME = 1000;
 
 const BUTTON =
   'mt-5 min-h-[44px] inline-flex items-center justify-center self-start px-5 text-sm font-medium rounded-sm bg-accent text-on-accent hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50';
-const CARD = 'rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col';
+const CARD = 'rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 lg:p-5 flex flex-col';
 
 /** The subscription size a volume buys: the smallest subscription is larger than the smallest package, so that volume takes the smallest one. */
 const subscriptionSizeOf = (volume: number): SubscriptionSize => SUBSCRIPTION_SIZES.find((size) => size >= volume) ?? SUBSCRIPTION_SIZES[SUBSCRIPTION_SIZES.length - 1];
@@ -204,7 +204,7 @@ function ComingSoonBadge({ status }: Readonly<{ status: PublicBillingConfig | nu
   const t = useTranslations('billing');
   if (status !== null) return null;
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-sm text-xs font-medium bg-accent-soft text-accent-ink border border-accent-edge">
+    <span className="inline-flex shrink-0 whitespace-nowrap items-center px-1.5 py-0.5 rounded-sm text-[11px] font-medium bg-accent-soft text-accent-ink border border-accent-edge">
       {t('comingSoon')}
     </span>
   );

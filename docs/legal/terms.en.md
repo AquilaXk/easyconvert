@@ -61,7 +61,7 @@ By using the EasyConvert website or API, you accept these terms. EasyConvert is 
 
 ## 6. Termination
 
-- You can stop using EasyConvert at any time. To delete your account, send a request through the [contact page](/contact). We delete it within 10 days, as section 4 of the [Privacy Policy](/privacy) describes. Deleting the account does not cancel a charge already made, and its unused package credits and event credits end with it.
+- You can stop using EasyConvert at any time. To delete your account, delete it directly from your dashboard or send a request through the [contact page](/contact). Deleting your account cancels any active recurring subscription for future periods, removes your active records immediately, and clears remaining backup copies within the window in section 4 of the [Privacy Policy](/privacy); unused package credits and event credits end with the account, and charges already billed are not automatically refunded.
 - We can suspend or end your access when you break these terms or the Acceptable Use Policy, or when a law or an authority requires it. Unless the law or the urgency of the case prevents it, we tell you the reason first.
 
 ## 7. Privacy policy

@@ -495,6 +495,7 @@ Security
 444. [Remove HeroFormatTiles from all converter and tool subpages, render URL-input workbench UI for website capture pages, add anonymous capture queue route on memory class, and gate menus and pages on CAPTURE_WEBSITE_ENABLED](#444-remove-heroformattiles-from-all-converter-and-tool-subpages-render-url-input-workbench-ui-for-website-capture-pages-add-anonymous-capture-queue-route-on-memory-class-and-gate-menus-and-pages-on-capture_website_enabled)
 445. [Key CI apt-debs cache on preinstalled dpkg digest and repair unconfigured dpkg state before fallback apt-get install](#445-key-ci-apt-debs-cache-on-preinstalled-dpkg-digest-and-repair-unconfigured-dpkg-state-before-fallback-apt-get-install)
 446. [Normalize retired legacy tiers on read, block empty or unsupported queued files, preserve server archive filenames, gate upsell links on billing config, and guard Edge workers with WorkerGlobalScope](#446-normalize-retired-legacy-tiers-on-read-block-empty-or-unsupported-queued-files-preserve-server-archive-filenames-gate-upsell-links-on-billing-config-and-guard-edge-workers-with-workerglobalscope)
+447. [Implement remaining unimplemented format decoders (WBMP, PDFA, XHTML, EML, Flat ODF, DBF/DIF/SYLK/PRN/WK1, markup parsers) and align launch UI/legal text](#447-implement-remaining-unimplemented-format-decoders-wbmp-pdfa-xhtml-eml-flat-odf-dbfdifsylkprnwk1-markup-parsers-and-align-launch-uilegal-text)
 
 ---
 
@@ -13084,4 +13085,29 @@ Security
   - **Restoring `typeof window` via custom Webpack DefinePlugin overrides**: Fragile across Next.js upgrades compared to explicit `WorkerGlobalScope` runtime checks.
 - **Verified by**: `tests/live-test-defects.test.ts`, `tests/account-security-and-quota-ui.test.ts`, `tests/edge-canvas-bounds-and-bundle-stream.test.ts`, `tests/website-capture-web-ui.test.ts`, `tests/policy-decisions-numbering.test.ts`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells -- --check-base .github/code-smell-baseline.json`, `npm run test:redis`, live compiled `next start` + Chrome CDP verification, `npm run lint`, `npx --no-install tsc --noEmit`, `npm run build`, and `scripts/ci-parity-families.mjs`.
 - **Revisit when**: Historical pre-`#285` Redis user records are retired or dedicated UI filter controls are exposed for L2 image quantization.
+
+---
+
+## 447. Implement remaining unimplemented format decoders (WBMP, PDFA, XHTML, EML, Flat ODF, DBF/DIF/SYLK/PRN/WK1, markup parsers) and align launch UI/legal text
+
+- **Status**: Implemented on `feat/launch-audit-and-conversions` (QA screenshot approval required before merging UI changes to `main`), decided 2026-11-26.
+- **Decision**:
+  1. **Three-tier OSS & bounded parser evaluation**:
+     - Permissive packages: Reused installed `sharp` (`Apache-2.0`), `saxes` (`ISC`), `jszip` (`MIT`), `iconv-lite` (`MIT`), `markdown-it` (`MIT`), and `papaparse` (`MIT`); no new runtime dependencies added and no GPL code copied.
+     - Existing engine reuse: Wired Flat ODF (`fodt`/`fods`/`fodp`), legacy spreadsheets (`dbf`/`dif`/`slk`/`wk1`/`wks`), and `xhtml` to existing ODF/HTML/PDF/OOXML/LibreOffice pipelines, and aligned `pdfa` input handling across `document.ts`, `index.ts`, `convert-office.ts`, `engines.ts`, `native-route-formats.ts`, `engine-registry.ts`, `image-compression.ts`, and `options-capabilities.ts`.
+     - Bounded custom implementations: Added bounded Type-0 WBMP uintvar decoder (`image-wbmp.ts` enforcing `assertInputPixels` before allocation), RFC 5322/MIME parser (`eml-reader.ts` bounding depth `<= 16`, parts `<= 256`, headers `<= 256 KiB`, decoded bytes `<= 32 MiB`, sanitizing active HTML tags), Flat ODF XML validator/packager (`flat-odf.ts` using `assertWellFormedXml`), legacy spreadsheet decoders (`sheet-legacy.ts` enforcing Excel grid bounds on `dbf`/`dif`/`slk`/`prn`/`wk1`/`wks` and adding `'wks'` to `CFBF_EXTENSIONS` in `src/lib/registry.ts`), unified LaTeX/RST/man markup converter (`markup-text.ts`), `presentation -> pptx` / `keynotes -> key` aliases in `office-suite-sources.ts`, and `detectUploadedSourceFormat` (`.tar.bz2` support for `/api/v1/convert` and `/api/v1/jobs` while leaving `detectFormatFromFilename` unchanged).
+  2. **UI overflow, Pricing card alignment, i18n, and Legal consistency**:
+     - Added `[overflow-wrap:anywhere]` to `DOC.code` / `DOC.smallCode` (`src/components/api-docs/doc-text.tsx`) and `min-w-0` on `ApiDocsPageView.tsx` to eliminate mobile `390px` horizontal viewport overflow on `/api-docs/convert`.
+     - Adjusted desktop Pricing card spacing (`lg:p-5`) and compact non-wrapping `ComingSoonBadge` in `CreditPlans.tsx` so `Subscription` and its badge stay on one row aligned with `Free`, `Package`, and `Enterprise`.
+     - Refined `messages/ko.json` (`revokeKeyGone`, `not-found`) and updated `docs/legal/{terms,privacy}.{en,ko}.md` deletion clauses to match implemented self-serve dashboard deletion (`DELETE /api/auth/account`) and fail-closed Paddle subscription cancellation.
+- **Why**:
+  - Several advertised formats in `FORMAT_REGISTRY` previously fell through to raw byte/text dumps (`eml`, `fods`, `dbf`, `dif`, `slk`, `wk1`, `pdfa`, `xhtml`) or failed with unsupported header errors (`wbmp`), and `v1` API upload routes lacked `.tar.bz2` fallback parity with `/api/convert`.
+  - Legal text in `terms` and `privacy` contradicted live self-serve account erasure behavior, while mobile API docs and desktop English pricing cards had layout misalignment.
+- **Trade-offs**:
+  - Proprietary binary Microsoft Works CFBF `.wks` files remain LibreOffice-only in-process (raising typed `EngineUnavailableError('soffice', ...)` rather than producing mojibake), while Lotus 1-2-3 binary `.wk1`/`.wks` convert in-process and via LibreOffice.
+- **Alternatives rejected**:
+  - **Mutating `detectFormatFromFilename` globally for `.tar.bz2`**: Rejected to preserve the explicit contract pinned by `tests/registry.test.ts`; isolated `.tar.bz2` fallback inside `detectUploadedSourceFormat`.
+  - **Shipping external LaTeX/man binary dependencies (`groff`, `pdflatex`)**: Rejected to keep image size and attack surface bounded; clean linear-time parsers convert structure and text safely in-process.
+- **Verified by**: `tests/launch-conversions-coverage.test.ts`, `tests/registry.test.ts`, `tests/office-import-filters.test.ts`, `tests/engine-registry.test.ts`, `tests/parity-audit.test.ts`, `tests/legal-pages.test.ts`, `tests/document-pairs.test.ts`, `tests/i18n-messages.test.ts`, `tests/i18n-client-messages.test.ts`, `tests/a11y-axe.test.ts`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells -- --check-base .github/code-smell-baseline.json`, `npm run licenses:check`, `npm run lint`, `npx --no-install tsc --noEmit`, `npm run build`, and `scripts/ci-parity-families.mjs`.
+- **Revisit when**: Additional legacy binary formats (`.snb`, `.ace`, `.alz`, `.arc`, `.rz`) receive permissive extractors in the worker runtime.
 
