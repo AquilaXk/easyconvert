@@ -642,9 +642,10 @@ describe('Pre-warmed LibreOffice worker pool', () => {
 
       await vi.waitFor(() => {
         expect(pool.getStats().totalWorkers).toBe(1);
+        expect(pool.getStats().readyWorkers).toBe(1);
+        expect(fs.existsSync(dir2) && fs.existsSync(dir3)).toBe(false);
+        expect([w1.userProfileDir, dir2, dir3].filter((dir) => fs.existsSync(dir))).toHaveLength(1);
       }, { timeout: 2000 });
-      expect(pool.getStats().readyWorkers).toBe(1);
-      expect(fs.existsSync(dir2) && fs.existsSync(dir3)).toBe(false);
     });
   });
 });

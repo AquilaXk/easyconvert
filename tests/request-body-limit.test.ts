@@ -125,8 +125,8 @@ describe('the body a route takes, by its declared length', () => {
   it('gives one request to every route that reads its body whole or takes new files, and the small limit to one that starts a file from JSON', () => {
     /** The query under which a route takes its file, for a route whose other actions are JSON. */
     const fileQuery: Record<string, string> = { '/api/storage/multipart': '?action=chunk' };
-    /** Routes that start a new file from a JSON body alone: a link to fetch, a direct upload to open. */
-    const jsonOnly = new Set(['/api/fetch-url', '/api/v1/uploads/direct']);
+    /** Routes that start a new file from a JSON body alone: a page to capture, a link to fetch, a direct upload to open. */
+    const jsonOnly = new Set(['/api/capture/jobs', '/api/fetch-url', '/api/v1/uploads/direct']);
     const apiDir = path.join(__dirname, '../src/app/api');
     const routes = fs
       .readdirSync(apiDir, { recursive: true, encoding: 'utf8' })
