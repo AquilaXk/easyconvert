@@ -252,10 +252,8 @@ export class WasmWorkerManager {
       this.inFlightJobs += 1;
       try {
         if (!this.activeWorker) {
-          this.activeWorker = new Worker(
-            new URL('../workers/wasm-engine.worker.ts', import.meta.url),
-            { type: 'module' }
-          );
+          // Classic worker mode matches Next.js's importScripts split-chunk loader in worker bundles.
+          this.activeWorker = new Worker(new URL('../workers/wasm-engine.worker.ts', import.meta.url));
         }
 
         const result = await this.sendToWorker({

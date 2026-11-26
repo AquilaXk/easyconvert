@@ -96,11 +96,8 @@ export async function convertWithWebCodecs(
       }
 
       try {
-        // Instantiate Web Worker using Next.js / Webpack worker standard URL
-        worker = new Worker(
-          new URL('../workers/webcodecs.worker.ts', import.meta.url),
-          { type: 'module' }
-        );
+        // Classic worker mode matches Next.js's importScripts split-chunk loader in worker bundles.
+        worker = new Worker(new URL('../workers/webcodecs.worker.ts', import.meta.url));
       } catch {
         if (signal) signal.removeEventListener('abort', onAbort);
         // If worker instantiation fails (e.g., test environment), fallback to in-process execution

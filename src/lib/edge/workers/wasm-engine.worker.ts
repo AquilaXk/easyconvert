@@ -8,6 +8,8 @@
  * 4. Transferable Objects IPC for zero-copy ownership transfer without blocking CDNs.
  */
 
+import { isDedicatedWorkerScope } from './worker-scope';
+
 export interface WasmTaskRequest {
   jobId: string;
   task: 'rgba-grayscale' | 'rgba-invert' | 'rgba-brightness' | 'rgba-quantize' | 'custom-module';
@@ -569,13 +571,7 @@ export async function runWasmWorkerJob(
 // Global engine singleton for worker
 const workerEngine = new WasmEngine();
 
-const workerGlobalScope = (globalThis as { WorkerGlobalScope?: abstract new (...args: never[]) => unknown }).WorkerGlobalScope;
-const workerWindow = (globalThis as { window?: unknown }).window;
-if (
-  typeof self !== 'undefined' &&
-  typeof (self as { postMessage?: unknown }).postMessage === 'function' &&
-  (typeof workerGlobalScope === 'function' ? self instanceof workerGlobalScope : workerWindow == null)
-) {
+if (isDedicatedWorkerScope()) {
   self.onmessage = async (e: MessageEvent) => {
     await runWasmWorkerJob(e.data, (message, transfer) => (self as any).postMessage(message, transfer ?? []), workerEngine);
   };

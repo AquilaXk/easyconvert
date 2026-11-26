@@ -28,6 +28,7 @@ import type {
 import { muxMp4 } from '../media/mp4-mux';
 import { muxOggOpus } from '../media/ogg-opus-mux';
 import { OrderedWorkQueue } from '../media/ordered-work-queue';
+import { isDedicatedWorkerScope } from './worker-scope';
 import { pcmBlockToAudioData } from '../media/pcm-audio';
 import { survivesCanvasRedraw, toWebCodecsColorSpace } from '../media/video-colour';
 import { muxWebm } from '../media/webm-mux';
@@ -1038,13 +1039,7 @@ export async function processWebCodecsConversion(
 }
 
 // Attach worker listener if running inside dedicated Worker environment
-const workerGlobalScope = (globalThis as { WorkerGlobalScope?: abstract new (...args: never[]) => unknown }).WorkerGlobalScope;
-const workerWindow = (globalThis as { window?: unknown }).window;
-if (
-  typeof self !== 'undefined' &&
-  typeof (self as { postMessage?: unknown }).postMessage === 'function' &&
-  (typeof workerGlobalScope === 'function' ? self instanceof workerGlobalScope : workerWindow == null)
-) {
+if (isDedicatedWorkerScope()) {
   self.onmessage = async (e: MessageEvent) => {
     const { type, jobId, fileBuffer, file, sourceFormat, targetFormat, options } = e.data || {};
 

@@ -124,10 +124,8 @@ export async function streamConvertWithOpfs(
       }
 
       try {
-        worker = new Worker(
-          new URL('../workers/opfs-vfs.worker.ts', import.meta.url),
-          { type: 'module' }
-        );
+        // Classic worker mode matches Next.js's importScripts split-chunk loader in worker bundles.
+        worker = new Worker(new URL('../workers/opfs-vfs.worker.ts', import.meta.url));
       } catch {
         if (signal) signal.removeEventListener('abort', onAbort);
         // Fallback to in-process execution on worker instantiation fault

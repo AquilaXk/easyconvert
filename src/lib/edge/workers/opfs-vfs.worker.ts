@@ -23,6 +23,7 @@ import {
   serializeWorkerError,
   type SerializedWorkerError,
 } from './worker-errors';
+import { isDedicatedWorkerScope } from './worker-scope';
 
 export type { ChunkTransformerFn } from './chunk-transformer';
 
@@ -487,13 +488,7 @@ export async function runOpfsWorkerJob(data: Record<string, any>, post: WorkerPo
 }
 
 // Attach worker message handler
-const workerGlobalScope = (globalThis as { WorkerGlobalScope?: abstract new (...args: never[]) => unknown }).WorkerGlobalScope;
-const workerWindow = (globalThis as { window?: unknown }).window;
-if (
-  typeof self !== 'undefined' &&
-  typeof (self as { postMessage?: unknown }).postMessage === 'function' &&
-  (typeof workerGlobalScope === 'function' ? self instanceof workerGlobalScope : workerWindow == null)
-) {
+if (isDedicatedWorkerScope()) {
   self.onmessage = async (e: MessageEvent) => {
     await runOpfsWorkerJob(e.data, (message, transfer) => (self as any).postMessage(message, transfer ?? []));
   };

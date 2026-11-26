@@ -106,10 +106,25 @@ describe('1. Dedicated Edge Workers avoid typeof-window dead-code stripping and 
     'src/lib/edge/workers/webcodecs.worker.ts',
   ];
 
-  it.each(WORKER_FILES)('%s checks WorkerGlobalScope rather than typeof window === undefined', (relPath) => {
+  it.each(WORKER_FILES)('%s uses isDedicatedWorkerScope rather than typeof window === undefined', (relPath) => {
     const source = fs.readFileSync(path.resolve(__dirname, '..', relPath), 'utf8');
     expect(source).not.toMatch(/typeof\s+window\s*===\s*['"]undefined['"]/);
-    expect(source).toContain('WorkerGlobalScope');
+    expect(source).toContain('isDedicatedWorkerScope');
+    const helperSource = fs.readFileSync(path.resolve(__dirname, '..', 'src/lib/edge/workers/worker-scope.ts'), 'utf8');
+    expect(helperSource).not.toMatch(/typeof\s+window\s*===\s*['"]undefined['"]/);
+    expect(helperSource).toContain('WorkerGlobalScope');
+  });
+
+  const PIPELINE_WORKER_CALLERS = [
+    'src/lib/edge/pipelines/opfs-streaming-pipeline.ts',
+    'src/lib/edge/pipelines/wasm-simd-pipeline.ts',
+    'src/lib/edge/pipelines/webcodecs-pipeline.ts',
+  ];
+
+  it.each(PIPELINE_WORKER_CALLERS)('%s instantiates classic Worker without type: module for Next.js importScripts chunk loading', (relPath) => {
+    const source = fs.readFileSync(path.resolve(__dirname, '..', relPath), 'utf8');
+    expect(source).toContain('new Worker(');
+    expect(source).not.toMatch(/type:\s*['"]module['"]/);
   });
 
   it('attaches self.onmessage inside a WorkerGlobalScope and handles messages without touching non-worker envs', async () => {
