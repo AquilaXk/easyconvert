@@ -7,6 +7,7 @@
 
 import { ConversionOptions } from '../../types';
 import { ConversionFailureError, jobFailure, serverRefusal } from '../../conversion-failure';
+import { sanitizeDownloadLeafFilename } from '../../download-filename';
 import { PART_IN_FLIGHT_PROBLEM_TYPE, PART_IN_FLIGHT_STATUS } from '../../part-in-flight';
 import { UPLOAD_PART_MAX_BYTES } from '../../plan-limits';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
@@ -421,7 +422,7 @@ async function waitForResult(jobId: string, call: CallState, hooks: ResumableHoo
       } else if (typeof result.fileName === 'string') {
         rawName = result.fileName;
       }
-      const filename = rawName.trim().replace(/.*[\\/]/, '') || undefined;
+      const filename = sanitizeDownloadLeafFilename(rawName);
       return {
         url: readString(result, 'downloadUrl', 'The conversion'),
         size: typeof result.size === 'number' ? result.size : 0,

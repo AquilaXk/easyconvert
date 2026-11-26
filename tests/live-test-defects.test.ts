@@ -47,7 +47,9 @@ const { AccountQuotaPanel } = await import('../src/components/dashboard/AccountQ
 const { useDashboardController } = await import('../src/components/dashboard/useDashboardController');
 const { default: QueueItemRow } = await import('../src/components/workbench/QueueItemRow');
 const { default: ConversionQueue } = await import('../src/components/ConversionQueue');
-const { buildQueuedFileItem, useClientQueue } = await import('../src/hooks/useClientQueue');
+const { buildQueuedFileItem, buildUniqueArchiveName, useClientQueue } = await import('../src/hooks/useClientQueue');
+const { streamZipReadable } = await import('../src/lib/archive/streaming-zip');
+const { sanitizeDownloadLeafFilename } = await import('../src/lib/download-filename');
 
 let container: HTMLDivElement | undefined;
 let root: Root | null = null;
@@ -835,5 +837,112 @@ describe('4. UI/UX defects: RecentCharges translations, English plurals, ?tab=us
     expect(controller.activeTab).toBe('usage');
     expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/keys')).toBe(false);
     expect(host.textContent).toContain('usage');
+  });
+
+  it('sanitizes newline traversal, NUL bytes, dot segments, header parameter boundaries, and poisoned sessionStorage filenames while preserving compound .tar.* extensions', async () => {
+    // Path traversal across CR/LF, NUL bytes, drive prefixes, dot segments, and non-matching parameter names
+    expect(filenameFromContentDisposition("attachment; filename*=UTF-8''a%0A%2F..%2Fevil.zip")).toBe('evil.zip');
+    expect(filenameFromContentDisposition('attachment; filename="a\r\n/../evil.zip"')).toBe('evil.zip');
+    expect(filenameFromContentDisposition("attachment; filename*=UTF-8''foo.zip%00")).toBe('foo.zip');
+    expect(filenameFromContentDisposition('attachment; filename=".."')).toBeUndefined();
+    expect(filenameFromContentDisposition("attachment; filename*=UTF-8''%2E%2E")).toBeUndefined();
+    expect(filenameFromContentDisposition('attachment; filename="."')).toBeUndefined();
+    expect(filenameFromContentDisposition("attachment; xfilename*=UTF-8''bad.zip")).toBeUndefined();
+    expect(sanitizeDownloadLeafFilename('C:nested/..\\dir\n/../safe\x07.tar.gz')).toBe('safe.tar.gz');
+
+    // Resumable job result drops dot segments and strips NUL/control bytes
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:sanitized', revokeObjectURL: vi.fn() });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes('action=initiate')) {
+          return new Response(JSON.stringify({ uploadId: 'up-san', key: 'k', partSize: 64 * 1024 * 1024 }), { status: 200 });
+        }
+        if (url.includes('action=chunk')) {
+          return new Response(JSON.stringify({ etag: 'etag-1' }), { status: 200 });
+        }
+        if (url.includes('action=complete')) {
+          return new Response(JSON.stringify({ key: 'uploads/up-san_a.pdf' }), { status: 200 });
+        }
+        if (url === '/api/queue/jobs' && init?.method === 'POST') {
+          return new Response(JSON.stringify({ jobId: 'job-san-1' }), { status: 200 });
+        }
+        if (url === '/api/queue/jobs/job-san-1') {
+          return new Response(
+            JSON.stringify({
+              id: 'job-san-1',
+              state: 'completed',
+              progress: 100,
+              returnvalue: { downloadUrl: '/api/storage/file/res-san-1', size: 12, filename: 'foo.zip\0' },
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response('{}', { status: 404 });
+      })
+    );
+    const timing: ResumableTiming = { pollIntervalMs: 0, retryDelayMs: 0, maxWaitMs: 5000, partInFlightWaitMs: 5000 };
+    const cleanJob = await executeResumableCloudConversion(new File(['%PDF'], 'a.pdf'), 'jpg', {}, { onProgress: vi.fn() }, timing);
+    expect(cleanJob.filename).toBe('foo.zip');
+
+    // sessionStorage restoration sanitizes untrusted resultFilename values
+    sessionStorage.setItem(
+      'easyconvert:completed-results:test-poison',
+      JSON.stringify([
+        {
+          id: 'p1',
+          name: 'doc.pdf',
+          size: 10,
+          sourceFormat: 'pdf',
+          targetFormat: 'jpg',
+          resultUrl: '/api/storage/file/res-p1',
+          resultSize: 20,
+          resultFilename: '..',
+          savedAt: Date.now(),
+        },
+        {
+          id: 'p2',
+          name: 'doc2.pdf',
+          size: 10,
+          sourceFormat: 'pdf',
+          targetFormat: 'jpg',
+          resultUrl: '/api/storage/file/res-p2',
+          resultSize: 20,
+          resultFilename: 'dir\n/ok\0.zip',
+          savedAt: Date.now(),
+        },
+      ])
+    );
+    const restored = restoreCompletedServerQueue('test-poison');
+    expect(restored[0]?.resultFilename).toBeUndefined();
+    expect(restored[1]?.resultFilename).toBe('ok.zip');
+
+    // Compound .tar.* extensions stay intact in bundle ZIP entries without NUL errors
+    const used = new Set<string>();
+    const entry1 = buildUniqueArchiveName('a.zip', 'tar.gz', used, 'a.tar.gz');
+    const entry2 = buildUniqueArchiveName('b.tar.bz2', 'zip', used, 'b.zip');
+    const entry3 = buildUniqueArchiveName('c.zip', 'tar.zst', used, 'c\0.tar.zst');
+    expect(entry1).toBe('a.tar.gz');
+    expect(entry2).toBe('b.zip');
+    expect(entry3).toBe('c.tar.zst');
+
+    const zipStream = streamZipReadable(
+      (async function* () {
+        yield { name: entry1, data: new Blob(['x']), size: 1 };
+        yield { name: entry2, data: new Blob(['y']), size: 1 };
+        yield { name: entry3, data: new Blob(['z']), size: 1 };
+      })()
+    );
+    const reader = zipStream.getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    const zipText = new TextDecoder().decode(Buffer.concat(chunks));
+    expect(zipText).toContain('a.tar.gz');
+    expect(zipText).toContain('c.tar.zst');
   });
 });

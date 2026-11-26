@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
 import { materializeZipStreamUrl, triggerAnchorDownload } from '@/lib/download-blob';
+import { extractDownloadExtension, sanitizeDownloadLeafFilename } from '@/lib/download-filename';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
 import { detectFormatFromFilename, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
@@ -132,15 +133,19 @@ function patchIdleItem(item: ConversionQueueItem, patch: IdleItemPatch): Convers
   return optionError !== null ? { ...base, status: 'error' } : { ...base, status: 'ready' };
 }
 
-function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>, resultFilename?: string): string {
-  const resultExtMatch = resultFilename ? /\.([^/.]+)$/.exec(resultFilename) : null;
-  const outExt = resultExtMatch ? resultExtMatch[1] : targetFormat;
-  const dot = itemName.lastIndexOf('.');
-  const baseName = (dot > 0 ? itemName.substring(0, dot) : itemName) || itemName;
-  let candidate = `${baseName}.${outExt}`;
+export function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>, resultFilename?: string): string {
+  const cleanResultName = sanitizeDownloadLeafFilename(resultFilename);
+  const outExt = (cleanResultName ? extractDownloadExtension(cleanResultName) : undefined) ?? targetFormat;
+  const inputExt = extractDownloadExtension(itemName);
+  const baseName =
+    inputExt && itemName.length > inputExt.length + 1
+      ? itemName.slice(0, itemName.length - inputExt.length - 1)
+      : itemName;
+  const safeBase = sanitizeDownloadLeafFilename(baseName) || 'file';
+  let candidate = `${safeBase}.${outExt}`;
   let counter = 1;
   while (used.has(candidate)) {
-    candidate = `${baseName}_(${counter}).${outExt}`;
+    candidate = `${safeBase}_(${counter}).${outExt}`;
     counter += 1;
   }
   used.add(candidate);

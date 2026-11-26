@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { sanitizeDownloadLeafFilename } from './download-filename';
 import type { ConversionQueueItem } from './types';
 
 const STORAGE_KEY_PREFIX = 'easyconvert:completed-results:';
@@ -111,21 +112,24 @@ export function restoreCompletedServerQueue(scope: string, now = Date.now()): Co
     if (valid.length !== parsed.length) {
       sessionStorage.setItem(key, JSON.stringify(valid));
     }
-    return valid.map((entry) => ({
-      id: entry.id,
-      file: new File([], entry.name),
-      name: entry.name,
-      size: entry.size,
-      sourceFormat: entry.sourceFormat,
-      targetFormat: entry.targetFormat,
-      status: 'completed',
-      progress: 100,
-      options: {},
-      resultUrl: entry.resultUrl,
-      resultSize: entry.resultSize,
-      ...(typeof entry.resultFilename === 'string' && entry.resultFilename ? { resultFilename: entry.resultFilename } : {}),
-      unchanged: entry.unchanged,
-    }));
+    return valid.map((entry) => {
+      const cleanResultFilename = sanitizeDownloadLeafFilename(entry.resultFilename);
+      return {
+        id: entry.id,
+        file: new File([], entry.name),
+        name: entry.name,
+        size: entry.size,
+        sourceFormat: entry.sourceFormat,
+        targetFormat: entry.targetFormat,
+        status: 'completed',
+        progress: 100,
+        options: {},
+        resultUrl: entry.resultUrl,
+        resultSize: entry.resultSize,
+        ...(cleanResultFilename ? { resultFilename: cleanResultFilename } : {}),
+        unchanged: entry.unchanged,
+      };
+    });
   } catch {
     return [];
   }

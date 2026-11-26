@@ -10,6 +10,7 @@
 
 import { ConversionFailedError, ConversionOptions, ConversionQueueItem } from '../../types';
 import { serverRefusal } from '../../conversion-failure';
+import { sanitizeDownloadLeafFilename } from '../../download-filename';
 import { resolveConversionTier, TierResolution, EdgeCapabilities } from '../tier-router';
 
 /**
@@ -71,18 +72,17 @@ const MIME_ZIP = 'application/zip';
 
 export function filenameFromContentDisposition(header: string | null | undefined): string | undefined {
   if (!header) return undefined;
-  const extMatch = /filename\*\s*=\s*(?:utf-8|UTF-8)'[^']*'([^;\r\n]+)/i.exec(header);
+  const extMatch = /(?:^|;)\s*filename\*\s*=\s*(?:utf-8|UTF-8)'[^']*'([^;\r\n]+)/i.exec(header);
   if (extMatch) {
     try {
-      const decoded = decodeURIComponent(extMatch[1].trim()).replace(/.*[\\/]/, '');
+      const decoded = sanitizeDownloadLeafFilename(decodeURIComponent(extMatch[1].trim()));
       if (decoded) return decoded;
     } catch {
       // Fall back to plain filename parameter below.
     }
   }
   const plainMatch = /(?:^|;)\s*filename\s*=\s*(?:"([^"]+)"|([^;\r\n]+))/i.exec(header);
-  const raw = (plainMatch?.[1] ?? plainMatch?.[2] ?? '').trim().replace(/.*[\\/]/, '');
-  return raw || undefined;
+  return sanitizeDownloadLeafFilename(plainMatch?.[1] ?? plainMatch?.[2]);
 }
 
 /**
