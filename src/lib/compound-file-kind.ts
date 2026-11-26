@@ -452,6 +452,13 @@ export function compoundFileVerdict(ext: string, buf: Uint8Array): CompoundFileV
   return verdictOfRoot(ext, readCompoundFileRoot(buf));
 }
 
+const NON_WORKS_CFBF_STREAMS: ReadonlySet<string> = new Set([
+  'WORKBOOK',
+  'WORDDOCUMENT',
+  'POWERPOINT DOCUMENT',
+  'FILEHEADER',
+]);
+
 export function isNonOfficeCompoundFile(buf: Uint8Array): boolean {
   const root = readCompoundFileRoot(buf);
   if (root.status !== 'read') return false;
@@ -459,6 +466,24 @@ export function isNonOfficeCompoundFile(buf: Uint8Array): boolean {
   const byClassId = root.classId === undefined ? [] : (CLASS_ID_KINDS.get(root.classId) ?? []);
   const byNames = kindsOfNames(root.names).filter((kind) => kind !== 'xls');
   return byClassId.length > 0 || byNames.length > 0;
+}
+
+/**
+ * Whether a CFBF container whose root is inspected from `buf` is compatible with a Microsoft Works spreadsheet (`.wks`).
+ * Accepts valid non-Office/non-StarOffice/non-Corel/non-Quattro containers and truncated `headerWindowBytes` windows whose directory lies past the header.
+ */
+export function isCompatibleWorksCompoundFile(buf: Uint8Array, headerWindowBytes: number): boolean {
+  const root = readCompoundFileRoot(buf);
+  if (root.status === 'malformed') return false;
+  if (root.status === 'unreadable') return buf.length === headerWindowBytes;
+  if (root.classId !== undefined && (OFFICE_CLASS_IDS.has(root.classId) || CLASS_ID_KINDS.has(root.classId))) {
+    return false;
+  }
+  if (kindsOfNames(root.names).length > 0) return false;
+  for (const name of NON_WORKS_CFBF_STREAMS) {
+    if (root.names.has(name)) return false;
+  }
+  return true;
 }
 
 /** The verdict for a file read at the offsets of its directory (see `readCompoundFileRootFrom`); `unreadable` there means the file ends before its directory does. */

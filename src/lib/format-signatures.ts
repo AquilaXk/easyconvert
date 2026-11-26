@@ -8,7 +8,7 @@
  * is the source of the byte pattern; where they disagree with the format specification, the specification decides.
  */
 
-import { compoundFileVerdict, isNonOfficeCompoundFile } from './compound-file-kind';
+import { compoundFileVerdict, isCompatibleWorksCompoundFile, isNonOfficeCompoundFile } from './compound-file-kind';
 import { isSubtitleHead, type SubtitleFormat } from './subtitle-structure';
 import { isUtf16LeText } from './utf16-text-signature';
 
@@ -687,8 +687,16 @@ function isLotusWordPro(buf: Uint8Array): boolean {
   return LOTUS_WORD_PRO_MAGICS.some((magic) => startsWithBytes(buf, magic));
 }
 
+const LOTUS_WKS_BOF_MAGIC = [0x00, 0x00, 0x02, 0x00] as const;
+
 function isWordPerfect(buf: Uint8Array): boolean {
   return startsWithBytes(buf, WORDPERFECT_MAGIC) || isCompoundFileOfKind('wpd', buf);
+}
+
+function isWks(buf: Uint8Array): boolean {
+  if (buf.length >= 6 && startsWithBytes(buf, LOTUS_WKS_BOF_MAGIC)) return true;
+  if (!startsWithBytes(buf, CFBF_MAGIC)) return false;
+  return isCompatibleWorksCompoundFile(buf, HEADER_WINDOW_BYTES);
 }
 
 function isSonyLrf(buf: Uint8Array): boolean {
@@ -798,6 +806,7 @@ const OWN_SIGNATURE_CHECKS: Readonly<Record<string, (buf: Uint8Array) => boolean
   cdr: isCorelDraw,
   lwp: isLotusWordPro,
   wpd: isWordPerfect,
+  wks: isWks,
   lrf: isSonyLrf,
   chm: startsWith(CHM_MAGIC),
   lit: startsWith(MS_READER_LIT_MAGIC),

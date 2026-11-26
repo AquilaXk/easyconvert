@@ -44,7 +44,7 @@ export default function PricingPageView({ anonymousDaily, billing }: Readonly<{ 
   const t = useTranslations('pricing');
   const values = pricingLimitValues(anonymousDaily);
   const freeCard = (
-    <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 flex flex-col">
+    <section aria-labelledby="free-plan-heading" className="rounded-md border border-rule bg-surface p-6 sm:p-8 md:p-6 lg:p-5 flex flex-col">
       <h2 id="free-plan-heading" className="text-xl text-ink">{t('plan.name')}</h2>
       <p className="mt-1 text-sm leading-relaxed text-ink-3 md:min-h-12">{t('plan.tagline')}</p>
       <p className="mt-4 text-3xl font-semibold tabular-nums text-ink">{t('plan.price')}</p>
@@ -58,9 +58,11 @@ export default function PricingPageView({ anonymousDaily, billing }: Readonly<{ 
       <h3 className="mt-8 text-sm font-semibold text-ink">{t('limitsHeading')}</h3>
       <dl className="mt-2 divide-y divide-rule border-y border-rule">
         {LIMIT_ROWS.map((row) => (
-          <div key={row} className="flex items-baseline justify-between gap-4 py-2.5 text-sm">
-            <dt className="text-ink-3">{t(`limits.${row}.label`)}</dt>
-            <dd className="font-medium text-ink text-right">{t(`limits.${row}.value`, values)}</dd>
+          <div key={row} className="flex items-baseline justify-between gap-3 py-2.5 text-sm">
+            <dt className="min-w-0 text-ink-3">{t(`limits.${row}.label`)}</dt>
+            <dd className={`font-medium text-ink text-right${row === 'deletion' ? '' : ' whitespace-nowrap shrink-0'}`}>
+              {t(`limits.${row}.value`, values)}
+            </dd>
           </div>
         ))}
       </dl>

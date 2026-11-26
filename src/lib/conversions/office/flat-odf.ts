@@ -46,8 +46,22 @@ export function isFlatOdfFormat(format: string): format is FlatOdfFormat {
 }
 
 function normalizeFlatOdfContentXml(xml: string): string {
-  const openReplaced = xml.replace(/<([A-Za-z_][\w.-]*:)?document\b/, (_full, prefix = '') => `<${prefix}document-content`);
-  return openReplaced.replace(/<\/([A-Za-z_][\w.-]*:)?document>\s*$/, (_full, prefix = '') => `</${prefix}document-content>`);
+  const openReplaced = xml.replace(
+    /<([A-Za-z_][\w.-]*:)?document(?=\s|>|\/)/,
+    (_full, prefix = '') => `<${prefix}document-content`
+  );
+  const closeRegex = /<\/([A-Za-z_][\w.-]*:)?document\s*>/g;
+  let lastMatch: RegExpExecArray | null = null;
+  for (let m = closeRegex.exec(openReplaced); m !== null; m = closeRegex.exec(openReplaced)) {
+    lastMatch = m;
+  }
+  if (!lastMatch) return openReplaced;
+  const prefix = lastMatch[1] ?? '';
+  return (
+    openReplaced.slice(0, lastMatch.index) +
+    `</${prefix}document-content>` +
+    openReplaced.slice(lastMatch.index + lastMatch[0].length)
+  );
 }
 
 function assertFlatOdfStructure(xml: string, format: FlatOdfFormat, spec: FlatOdfSpec): void {

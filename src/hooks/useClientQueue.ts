@@ -5,7 +5,7 @@ import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streami
 import { materializeZipStreamUrl, triggerAnchorDownload } from '@/lib/download-blob';
 import { extractDownloadExtension, sanitizeDownloadLeafFilename } from '@/lib/download-filename';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { detectFormatFromFilename, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
+import { detectUploadedSourceFormat, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
 import { releaseEdgeResultResources } from '@/lib/edge/pipelines/opfs-streaming-pipeline';
 import {
@@ -154,7 +154,7 @@ export function buildUniqueArchiveName(itemName: string, targetFormat: string, u
 
 /** A queue item for a dropped file. Whether it is over the viewer's limit is read when the row renders, since the plan can still change. */
 export function buildQueuedFileItem(file: File, effectiveDefault?: string, operation?: HeroOperation): ConversionQueueItem {
-  const detected = detectFormatFromFilename(file.name);
+  const detected = detectUploadedSourceFormat(file.name);
   const sourceFormat = detected?.extension.toLowerCase() ?? extractRawExtension(file.name);
   const targetFormat = resolveInitialTargetFormat(sourceFormat, effectiveDefault);
   return {

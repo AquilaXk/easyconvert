@@ -11,7 +11,15 @@ import { generatePptxFromText } from '../src/lib/conversions/office/office-from-
 import { readOdtText } from '../src/lib/conversions/office/odt-text';
 import { openPackage } from '../src/lib/conversions/package-access';
 import { extractRowsForOffice } from '../src/lib/conversions/office/sheet-extract';
-import { detectFormatFromFilename, detectUploadedSourceFormat } from '../src/lib/registry';
+import {
+  assertNotSpoofedFile,
+  detectFormatFromFilename,
+  detectUploadedSourceFormat,
+  FileExtensionSpoofError,
+} from '../src/lib/registry';
+import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
+import { planTextPdfRoute, TEXT_PDF_SOURCES } from '../src/worker/text-pdf-route';
+import { manToMarkdown } from '../src/lib/conversions/office/markup-text';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError, EngineUnavailableError, SheetLimitError } from '../src/lib/types';
 
@@ -32,6 +40,48 @@ function encodeUintvar(value: number): number[] {
 function buildWbmp(width: number, height: number, pixels: number[]): Buffer {
   const header = [0x00, 0x00, ...encodeUintvar(width), ...encodeUintvar(height)];
   return Buffer.from([...header, ...pixels]);
+}
+
+function buildTestCfbf(opts?: { malformed?: boolean; streamName?: string }): Buffer {
+  // Header (512 bytes) + sector 0 FAT (512) + sector 1 Directory (512) = 1536 bytes
+  const total = Buffer.alloc(1536, 0);
+  Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]).copy(total, 0);
+  total.writeUInt16LE(0x003e, 24);
+  total.writeUInt16LE(0x0003, 26);
+  total.writeUInt16LE(0xfffe, 28);
+  total.writeUInt16LE(9, 30); // sectorBytes = 512
+  total.writeUInt16LE(6, 32);
+  total.writeUInt32LE(1, 44); // 1 FAT sector
+  total.writeUInt32LE(1, 48); // first directory sector = 1
+  total.writeUInt32LE(0x00001000, 56);
+  total.writeUInt32LE(0xfffffffe, 60); // no miniFAT
+  total.writeUInt32LE(0xfffffffe, 68); // no DIFAT
+  total.writeUInt32LE(0, 76); // DIFAT[0] = sector 0
+  for (let i = 1; i < 109; i += 1) total.writeUInt32LE(0xffffffff, 76 + i * 4);
+  // FAT sector at offset 512
+  total.writeUInt32LE(0xfffffffd, 512); // sector 0 = FAT
+  total.writeUInt32LE(0xfffffffe, 516); // sector 1 = ENDOFCHAIN
+  for (let i = 2; i < 128; i += 1) total.writeUInt32LE(0xffffffff, 512 + i * 4);
+  // Directory sector at offset 1024
+  const dirOff = 1024;
+  const rootName = Buffer.from('Root Entry\0', 'utf16le');
+  rootName.copy(total, dirOff);
+  total.writeUInt16LE(rootName.length, dirOff + 64);
+  total[dirOff + 66] = opts?.malformed ? 0 : 5; // ROOT_STORAGE or UNALLOCATED
+  total.writeUInt32LE(0xffffffff, dirOff + 68);
+  total.writeUInt32LE(0xffffffff, dirOff + 72);
+  total.writeUInt32LE(opts?.streamName ? 1 : 0xffffffff, dirOff + 76);
+  if (opts?.streamName) {
+    const sOff = dirOff + 128;
+    const sName = Buffer.from(`${opts.streamName}\0`, 'utf16le');
+    sName.copy(total, sOff);
+    total.writeUInt16LE(sName.length, sOff + 64);
+    total[sOff + 66] = 2; // STREAM_OBJECT
+    total.writeUInt32LE(0xffffffff, sOff + 68);
+    total.writeUInt32LE(0xffffffff, sOff + 72);
+    total.writeUInt32LE(0xffffffff, sOff + 76);
+  }
+  return total;
 }
 
 function buildDbfSample(): Buffer {
@@ -357,8 +407,8 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     expect(wk1Csv).toContain('Item,Price');
     expect(wk1Csv).toContain('Coffee,4.5');
 
-    // Binary CFBF .wks without soffice must refuse with EngineUnavailableError instead of corrupting text
-    const cfbf = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00, 0x00]);
+    // Binary CFBF .wks without soffice must pass spoof check and refuse with EngineUnavailableError instead of corrupting text
+    const cfbf = buildTestCfbf({ streamName: 'MatOST' });
     await expect(dispatchConversion(cfbf, 'wks', 'csv', { engine: 'easyconvert' }, 'works.wks')).rejects.toThrow(EngineUnavailableError);
   }, 30_000);
 
@@ -402,7 +452,199 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     expect(texMd).toContain('## Summary');
 
     expect(detectFormatFromFilename('backup.tar.bz2')).toBeUndefined();
-    expect(['bz2', 'tar.bz2']).toContain(detectUploadedSourceFormat('backup.tar.bz2')?.id);
+    expect(detectUploadedSourceFormat('backup.tar.bz2')?.id).toBe('tar.bz2');
     expect(detectUploadedSourceFormat('backup.tar.bz2', 'bz2')?.id).toBe('bz2');
+    expect(detectUploadedSourceFormat('bundle.tar.zst')?.id).toBe('tar.zst');
+    expect(detectUploadedSourceFormat('bundle.tar.gz')?.id).toBe('tar.gz');
+    expect(detectUploadedSourceFormat('bundle.tar.xz')?.id).toBe('tar.xz');
+    expect(detectUploadedSourceFormat('bundle.tar.7z')?.id).toBe('tar.7z');
+
+    if (typeof File === 'function') {
+      const queuedZst = buildQueuedFileItem(new File([Buffer.from('payload')], 'bundle.tar.zst'));
+      expect(queuedZst.sourceFormat).toBe('tar.zst');
+      const queuedBz2 = buildQueuedFileItem(new File([Buffer.from('payload')], 'backup.tar.bz2'));
+      expect(queuedBz2.sourceFormat).toBe('tar.bz2');
+    }
+  });
+
+  it('passes spoof checks for valid Lotus/CFBF wks, plans xhtml PDF routing via LibreOffice, and handles edge cases in markup/FODT/EML/FoxPro DBF', async () => {
+    // 1. WKS spoof gate: Lotus BOF accepted, minimal unclaimed CFBF accepted, spoofed PNG / Excel CFBF / malformed CFBF rejected
+    expect(() => assertNotSpoofedFile(buildWk1Sample(), 'wks', 'budget.wks')).not.toThrow();
+    expect(() => assertNotSpoofedFile(buildTestCfbf({ streamName: 'MatOST' }), 'wks', 'works.wks')).not.toThrow();
+    expect(() => assertNotSpoofedFile(buildTestCfbf({ streamName: 'Workbook' }), 'wks', 'xls-as-wks.wks')).toThrow(
+      FileExtensionSpoofError
+    );
+    expect(() => assertNotSpoofedFile(buildTestCfbf({ malformed: true }), 'wks', 'bad.wks')).toThrow(
+      FileExtensionSpoofError
+    );
+    const pngMagic = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    expect(() => assertNotSpoofedFile(pngMagic, 'wks', 'fake.wks')).toThrow(FileExtensionSpoofError);
+
+    // 2. XHTML routes through TEXT_PDF_SOURCES / LibreOffice with staged HTML when targeting PDF
+    expect(TEXT_PDF_SOURCES.has('xhtml')).toBe(true);
+    const xhtmlPlan = await planTextPdfRoute(
+      Buffer.from('<html><body><p>Hello</p></body></html>'),
+      'xhtml',
+      'pdf',
+      'page.xhtml'
+    );
+    expect(xhtmlPlan).not.toBeNull();
+    expect(xhtmlPlan?.preferNative).toBe(true);
+    expect(xhtmlPlan?.stagedHtml?.toString('utf-8')).toContain('Hello');
+
+    // 3. Hardened markup parsers: no macro/tabular/directive/register leaks & preserved escapes
+    const complexTex = Buffer.from(
+      [
+        '\\documentclass{article}',
+        '\\newcommand{\\myvar}[1]{LEAKED_MACRO}',
+        '\\setlength{\\parindent}{0pt}',
+        '\\begin{document}',
+        '\\textcolor{red}{Alert} path \\textbackslash{} tilde \\textasciitilde{}.',
+        '\\includegraphics[width=0.5\\textwidth]{photo.png}',
+        '\\cite{knuth1984}',
+        '\\begin{tabular}{|l|r|}',
+        'Alpha & 1 \\\\',
+        '\\end{tabular}',
+        '\\end{document}',
+      ].join('\n'),
+      'utf-8'
+    );
+    const complexTexMd = (await dispatchConversion(complexTex, 'tex', 'md', {}, 'doc.tex')).buffer.toString('utf-8');
+    expect(complexTexMd).toContain('Alert path \\ tilde ~.');
+    expect(complexTexMd).toContain('Alpha');
+    expect(complexTexMd).not.toContain('LEAKED_MACRO');
+    expect(complexTexMd).not.toContain('0pt');
+    expect(complexTexMd).not.toContain('|l|r|');
+    expect(complexTexMd).not.toContain('photo.png');
+    expect(complexTexMd).not.toContain('knuth1984');
+    expect(complexTexMd).not.toContain('redAlert');
+
+    const complexRst = Buffer.from(
+      [
+        '.. image:: diagram.png',
+        '   :alt: Arch diagram',
+        '   :width: 400px',
+        '',
+        '.. code:: python',
+        '   :linenos:',
+        '',
+        '   print("hi")',
+        '',
+        'Visible paragraph.',
+      ].join('\n'),
+      'utf-8'
+    );
+    const complexRstMd = (await dispatchConversion(complexRst, 'rst', 'md', {}, 'guide.rst')).buffer.toString('utf-8');
+    expect(complexRstMd).toContain('```python');
+    expect(complexRstMd).toContain('print("hi")');
+    expect(complexRstMd).toContain('Visible paragraph.');
+    expect(complexRstMd).not.toContain('Arch diagram');
+    expect(complexRstMd).not.toContain('400px');
+    expect(complexRstMd).not.toContain(':linenos:');
+
+    const complexManRaw = [
+      '.TH DEMO 1',
+      '.de MYMACRO',
+      'macro body leak',
+      '..',
+      '.nr count 42',
+      '.ds name Test',
+      '.sp 2',
+      '.RS 4',
+      '.EX',
+      'echo ok',
+      '.EE',
+      '.RE',
+    ].join('\n');
+    const complexManMd = manToMarkdown(complexManRaw);
+    expect(complexManMd).toContain('echo ok');
+    expect(complexManMd).not.toContain('MYMACRO');
+    expect(complexManMd).not.toContain('macro body leak');
+    expect(complexManMd).not.toContain('count 42');
+    expect(complexManMd).not.toContain('name Test');
+    expect(complexManMd).not.toMatch(/^\s*(?:2|4)\s*$/m);
+
+    const complexManTxt = (
+      await dispatchConversion(Buffer.from(complexManRaw, 'utf-8'), 'man', 'txt', {}, 'demo.1')
+    ).buffer.toString('utf-8');
+    expect(complexManTxt).toContain('echo ok');
+    expect(complexManTxt).not.toContain('macro body leak');
+    expect(complexManTxt).not.toContain('count 42');
+
+    // 4. Flat ODF with trailing XML comment after </office:document>
+    const fodtWithComment = Buffer.from(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  office:version="1.2"
+  office:mimetype="application/vnd.oasis.opendocument.text">
+  <office:body><office:text><text:p>Trailing comment OK</text:p></office:text></office:body>
+</office:document>
+<!-- trailing generator comment -->`,
+      'utf-8'
+    );
+    const fodtOdt = await dispatchConversion(fodtWithComment, 'fodt', 'odt', { engine: 'easyconvert' }, 'c.fodt');
+    expect(await readOdtText(fodtOdt.buffer)).toContain('Trailing comment OK');
+    const fodtDocx = await dispatchConversion(fodtWithComment, 'fodt', 'docx', { engine: 'easyconvert' }, 'c.fodt');
+    expect(documentToText((await readDocxModel(await openPackage(fodtDocx.buffer, 'DOCX'))).model)).toContain(
+      'Trailing comment OK'
+    );
+
+    // 5. EML raw Latin-1 header + RFC 5987 filename* + XSS hardening
+    const rawEml = Buffer.concat([
+      Buffer.from('From: alice@example.com\r\nSubject: Caf', 'ascii'),
+      Buffer.from([0xe9]),
+      Buffer.from(
+        '\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="b1"\r\n\r\n' +
+          '--b1\r\nContent-Type: text/html; charset=utf-8\r\n\r\n' +
+          '<body><p>Hello</p><script>alert(1)</script ><svg onload=alert(2)><a href=javascript:alert(3) formaction=javascript:x>Link</a><iframe srcdoc="<script>4</script>"></iframe></body>\r\n' +
+          '--b1\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename*=UTF-8\'\'%EC%9D%B4%EB%A0%A5%EC%84%9C.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n' +
+          '--b1--\r\n',
+        'ascii'
+      ),
+    ]);
+    const sanitizedEmlHtml = (await dispatchConversion(rawEml, 'eml', 'html', {}, 'mail.eml')).buffer.toString('utf-8');
+    expect(sanitizedEmlHtml).toContain('Café');
+    expect(sanitizedEmlHtml).toContain('이력서.pdf');
+    expect(sanitizedEmlHtml).toContain('Hello');
+    expect(sanitizedEmlHtml).not.toContain('alert(');
+    expect(sanitizedEmlHtml).not.toContain('<script');
+    expect(sanitizedEmlHtml).not.toContain('<svg');
+    expect(sanitizedEmlHtml).not.toContain('javascript:');
+    expect(sanitizedEmlHtml).not.toContain('srcdoc');
+    expect(sanitizedEmlHtml).not.toContain('formaction');
+
+    // 6. Visual FoxPro DBF (0x30) binary fields I (Int32LE), B (DoubleLE), Y (Currency)
+    const buildVfpDbf = (): Buffer => {
+      const headerSize = 32 + 3 * 32 + 1; // 129
+      const recordSize = 1 + 4 + 8 + 8; // 21
+      const buf = Buffer.alloc(headerSize + recordSize + 1, 0);
+      buf[0] = 0x30; // Visual FoxPro
+      buf.writeUInt32LE(1, 4);
+      buf.writeUInt16LE(headerSize, 8);
+      buf.writeUInt16LE(recordSize, 10);
+      const writeField = (idx: number, name: string, type: string, len: number) => {
+        const off = 32 + idx * 32;
+        buf.write(name, off, 'ascii');
+        buf[off + 11] = type.charCodeAt(0);
+        buf[off + 16] = len;
+      };
+      writeField(0, 'ID', 'I', 4);
+      writeField(1, 'RATE', 'B', 8);
+      writeField(2, 'AMT', 'Y', 8);
+      buf[128] = 0x0d;
+      const rec = headerSize;
+      buf[rec] = 0x20;
+      buf.writeInt32LE(-42, rec + 1);
+      buf.writeDoubleLE(3.125, rec + 5);
+      buf.writeBigInt64LE(123456n, rec + 13); // 12.3456
+      buf[headerSize + recordSize] = 0x1a;
+      return buf;
+    };
+    const vfpCsv = (await dispatchConversion(buildVfpDbf(), 'dbf', 'csv', { engine: 'easyconvert' }, 'vfp.dbf')).buffer.toString(
+      'utf-8'
+    );
+    expect(vfpCsv).toContain('ID,RATE,AMT');
+    expect(vfpCsv).toContain('-42,3.125,12.3456');
   });
 });

@@ -18,7 +18,7 @@ import type { WorkerVfsPayload } from './worker-types';
 import { escapeMarkupText } from '../lib/text/escape';
 
 /** Text sources rendered to PDF; CJK or complex-script text and all HTML prefer LibreOffice. */
-export const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'hwp']);
+export const TEXT_PDF_SOURCES: ReadonlySet<string> = new Set(['txt', 'md', 'html', 'htm', 'xhtml', 'hwp']);
 /** Sources LibreOffice reads directly; their text is scanned in chunks, whatever the size. HTML is decoded whole, by encoding sniffing. */
 const STREAMED_TEXT_SOURCES: ReadonlySet<string> = new Set(['txt']);
 /** HTML always prefers LibreOffice, which keeps its full structure. */

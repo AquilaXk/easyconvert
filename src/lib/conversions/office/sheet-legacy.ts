@@ -26,6 +26,7 @@ const DBF_EOF_MARKER = 0x1a;
 const DBF_VALID_VERSIONS: ReadonlySet<number> = new Set([
   0x02, 0x03, 0x04, 0x05, 0x30, 0x31, 0x32, 0x43, 0x63, 0x83, 0x8b, 0x8e, 0xcb, 0xe5, 0xf5, 0xfb,
 ]);
+const FOXPRO_DBF_VERSIONS: ReadonlySet<number> = new Set([0x30, 0x31, 0x32, 0xf5, 0xfb]);
 
 const LOTUS_BOF_OPCODE = 0x0000;
 const LOTUS_EOF_OPCODE = 0x0001;
@@ -57,6 +58,42 @@ function decodeFieldBytes(slice: Buffer): string {
   }
 }
 
+function formatFoxProCurrency(rawScaled: bigint): string {
+  const negative = rawScaled < 0n;
+  const abs = negative ? -rawScaled : rawScaled;
+  const whole = abs / 10000n;
+  const frac = (abs % 10000n).toString().padStart(4, '0').replace(/0+$/, '');
+  const sign = negative ? '-' : '';
+  return frac ? `${sign}${whole}.${frac}` : `${sign}${whole}`;
+}
+
+function formatFoxProDateTime(julianDay: number, msSinceMidnight: number): string {
+  if (julianDay === 0 && msSinceMidnight === 0) return '';
+  // Julian Day 2440588 = 1970-01-01T00:00:00Z
+  const unixMs = (julianDay - 2440588) * 86_400_000 + msSinceMidnight;
+  const d = new Date(unixMs);
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString();
+}
+
+function decodeDbfCell(slice: Buffer, fieldType: string, isFoxPro: boolean): string {
+  if (isFoxPro) {
+    if (fieldType === 'I' && slice.length === 4) {
+      return String(slice.readInt32LE(0));
+    }
+    if (fieldType === 'B' && slice.length === 8) {
+      const val = slice.readDoubleLE(0);
+      return Number.isFinite(val) ? String(val) : '';
+    }
+    if (fieldType === 'Y' && slice.length === 8) {
+      return formatFoxProCurrency(slice.readBigInt64LE(0));
+    }
+    if (fieldType === 'T' && slice.length === 8) {
+      return formatFoxProDateTime(slice.readInt32LE(0), slice.readInt32LE(4));
+    }
+  }
+  return decodeFieldBytes(slice).replace(/\0+$/g, '').trim();
+}
+
 function parseDbfRows(input: Buffer): string[][] {
   if (input.length < DBF_HEADER_BYTES + 1) {
     throw new ConversionFailedError('Invalid DBF file: header is shorter than 33 bytes.');
@@ -65,6 +102,7 @@ function parseDbfRows(input: Buffer): string[][] {
   if (!DBF_VALID_VERSIONS.has(version)) {
     throw new ConversionFailedError(`Invalid DBF file: unrecognized dBASE version byte 0x${version.toString(16)}.`);
   }
+  const isFoxPro = FOXPRO_DBF_VERSIONS.has(version);
 
   const recordCount = input.readUInt32LE(4);
   const headerBytes = input.readUInt16LE(8);
@@ -73,7 +111,7 @@ function parseDbfRows(input: Buffer): string[][] {
     throw new ConversionFailedError('Invalid DBF file: malformed header or record length.');
   }
 
-  const fields: { name: string; length: number; offset: number }[] = [];
+  const fields: { name: string; type: string; length: number; offset: number }[] = [];
   let cursor = DBF_HEADER_BYTES;
   let recOffset = 1; // byte 0 of each record is the deletion flag
   while (cursor < headerBytes && input[cursor] !== DBF_HEADER_TERMINATOR) {
@@ -81,11 +119,12 @@ function parseDbfRows(input: Buffer): string[][] {
     const rawName = input.subarray(cursor, cursor + 11);
     const nul = rawName.indexOf(0);
     const name = decodeFieldBytes(nul >= 0 ? rawName.subarray(0, nul) : rawName).trim();
+    const type = String.fromCharCode(input[cursor + 11]).toUpperCase();
     const length = input[cursor + 16];
     if (length === 0 || recOffset + length > recordBytes) {
       throw new ConversionFailedError(`Invalid DBF file: invalid field length for '${name || 'field'}'.`);
     }
-    fields.push({ name: name || `COL_${fields.length + 1}`, length, offset: recOffset });
+    fields.push({ name: name || `COL_${fields.length + 1}`, type, length, offset: recOffset });
     recOffset += length;
     cursor += DBF_DESCRIPTOR_BYTES;
   }
@@ -112,9 +151,7 @@ function parseDbfRows(input: Buffer): string[][] {
     if (input[start] === DBF_EOF_MARKER) break;
     if (input[start] === DBF_DELETED_MARKER) continue;
     rows.push(
-      fields.map((field) =>
-        decodeFieldBytes(input.subarray(start + field.offset, start + field.offset + field.length)).replace(/\0+$/g, '').trim()
-      )
+      fields.map((field) => decodeDbfCell(input.subarray(start + field.offset, start + field.offset + field.length), field.type, isFoxPro))
     );
   }
   return rows;

@@ -118,8 +118,32 @@ function decodeEncodedWords(value: string): string {
   });
 }
 
+function decodeRfc5987Param(headerVal: string | undefined, paramName: string): string | undefined {
+  if (!headerVal) return undefined;
+  const escaped = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const extMatch = new RegExp(`(?:^|;)\\s*${escaped}\\*\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^;\\s]+))`, 'i').exec(headerVal);
+  const rawExt = (extMatch?.[1] ?? extMatch?.[2] ?? extMatch?.[3])?.trim();
+  if (!rawExt) return undefined;
+  const parts = /^([^']*)'[^']*'(.*)$/.exec(rawExt);
+  if (!parts) return undefined;
+  const charset = parts[1] || 'utf-8';
+  const value = parts[2];
+  const bytes: number[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    if (value[i] === '%' && i + 2 < value.length && /^[0-9a-fA-F]{2}$/.test(value.slice(i + 1, i + 3))) {
+      bytes.push(Number.parseInt(value.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else {
+      for (const b of Buffer.from(value[i], 'utf-8')) bytes.push(b);
+    }
+  }
+  return decodeCharset(Buffer.from(bytes), charset);
+}
+
 function extractParam(headerVal: string | undefined, paramName: string): string | undefined {
   if (!headerVal) return undefined;
+  const extVal = decodeRfc5987Param(headerVal, paramName);
+  if (extVal) return extVal;
   const escaped = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = new RegExp(`(?:^|;)\\s*${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^;\\s]+))`, 'i').exec(headerVal);
   const raw = match?.[1] ?? match?.[2] ?? match?.[3];
@@ -250,9 +274,15 @@ export function readEmlMessage(input: Buffer): EmlMessage {
   const headerValue = (name: string): string => {
     const val = topHeaders.get(name);
     if (!val) return '';
-    // Raw Latin-1 bytes of RFC 5322 headers -> reinterpret UTF-8 when unencoded raw UTF-8 headers occur, then decode RFC 2047
-    const reinterpreted = Buffer.from(val, 'latin1').toString('utf-8');
-    return decodeEncodedWords(reinterpreted);
+    // Raw Latin-1 bytes of RFC 5322 headers -> decode strictly as UTF-8 when valid, otherwise Windows-1252, then decode RFC 2047
+    const rawBytes = Buffer.from(val, 'latin1');
+    let decodedRaw: string;
+    try {
+      decodedRaw = new TextDecoder('utf-8', { fatal: true }).decode(rawBytes);
+    } catch {
+      decodedRaw = decodeCharset(rawBytes, 'windows-1252');
+    }
+    return decodeEncodedWords(decodedRaw);
   };
 
   return {
@@ -290,13 +320,47 @@ export function emlMessageText(message: EmlMessage): string {
   return parts.join('\n\n');
 }
 
+const DANGEROUS_URI_ATTR = /\b(href|src|xlink:href|action|poster|background)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+
+function isUnsafeEmailUri(raw: string): boolean {
+  const normalized = raw
+    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/gi, (_m, hex?: string, dec?: string) => {
+      const code = hex ? Number.parseInt(hex, 16) : Number.parseInt(dec ?? '0', 10);
+      return code >= 32 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/[\u0000-\u0020]+/g, '')
+    .toLowerCase();
+  return (
+    normalized.startsWith('javascript:') ||
+    normalized.startsWith('vbscript:') ||
+    normalized.startsWith('data:text/html') ||
+    normalized.startsWith('data:application/xhtml')
+  );
+}
+
 function sanitizeEmailHtmlFragment(html: string): string {
-  const bodyMatch = /<body\b[^>]*>([\s\S]*?)<\/body>/i.exec(html);
+  const bodyMatch = /<body\b[^>]*>([\s\S]*?)<\/body\s*>/i.exec(html);
   let inner = bodyMatch ? bodyMatch[1] : html;
-  inner = inner.replace(/<(script|iframe|object|embed|form|style)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
-  inner = inner.replace(/<(script|iframe|object|embed)\b[^>]*\/?>/gi, '');
-  inner = inner.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
-  inner = inner.replace(/(href|src)\s*=\s*(['"])\s*(?:javascript|vbscript|data:text\/html)[^'"]*\2/gi, '$1=$2#$2');
+  for (let pass = 0; pass < 4; pass += 1) {
+    const prev = inner;
+    inner = inner.replace(
+      /<\s*(script|iframe|object|embed|applet|form|style|svg|math|noscript|template)\b[^>]*>[\s\S]*?<\s*\/\s*\1[^>]*>/gi,
+      ''
+    );
+    inner = inner.replace(
+      /<\s*\/?\s*(?:script|iframe|object|embed|applet|form|style|svg|math|meta|base|link|frame|frameset|noscript|template)\b[^>]*>/gi,
+      ''
+    );
+    if (inner === prev) break;
+  }
+  inner = inner.replace(
+    /\s(?:on[a-z0-9_-]+|srcdoc|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/gi,
+    ''
+  );
+  inner = inner.replace(DANGEROUS_URI_ATTR, (full, attr: string, dq?: string, sq?: string, uq?: string) => {
+    const val = dq ?? sq ?? uq ?? '';
+    return isUnsafeEmailUri(val) ? `${attr}="#"` : full;
+  });
   return inner.trim();
 }
 
