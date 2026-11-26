@@ -14,6 +14,7 @@ import {
   timingSafeHashMatch,
 } from './key-store';
 import { quotaAllowanceOf } from './quota-window';
+import { isUserTier } from '../plan-limits';
 import {
   ApiKeyLimitError,
   type ApiKey,
@@ -270,6 +271,7 @@ export class RedisKeyStore extends KeyStore {
   /** `user` with the paid tier when its package balance, or the package credits that work in flight holds, is above zero: packages are held beside the account, so the tier of the record does not say. Throws `AuthStoreUnavailableError` when the balance cannot be read. */
   public async withCreditTier<T extends { id: string; tier: UserTier }>(user: T): Promise<T> {
     if (user.tier === 'paid') return user;
+    const baseUser = isUserTier(user.tier) ? user : { ...user, tier: 'free' as const };
     try {
       const now = Date.now();
       const cached = this.standingCache.get(user.id);
@@ -284,7 +286,7 @@ export class RedisKeyStore extends KeyStore {
         }
         this.standingCache.set(user.id, { standing, expiresAt: now + 1000 });
       }
-      return standing.balance + standing.held > 0 ? { ...user, tier: 'paid' } : user;
+      return standing.balance + standing.held > 0 ? { ...baseUser, tier: 'paid' } : baseUser;
     } catch (error) {
       // The balance decides the tier of who a caller is, so a store that cannot answer is a 503 here, as for the account store, never a 500 or a guess.
       return failClosed('RedisKeyStore', 'withCreditTier', error);

@@ -3,7 +3,7 @@
 import React from 'react';
 import { useTranslations } from 'next-intl';
 import { Link } from '@/i18n/navigation';
-import { useViewerPlan } from '@/hooks/useViewerPlan';
+import { usePaidPlansOnSale, useViewerPlan } from '@/hooks/useViewerPlan';
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { isQuotaOrBudgetExhausted } from '../i18n/error-wording';
 
@@ -15,18 +15,23 @@ export function QuotaExhaustedActions({
 }: Readonly<{ failure: ConversionFailure | null | undefined }>) {
   const t = useTranslations('errors.quotaActions');
   const plan = useViewerPlan();
+  const paidPlansOnSale = usePaidPlansOnSale();
   if (!isQuotaOrBudgetExhausted(failure)) return null;
+  const showSignIn = plan === 'anonymous';
+  if (!showSignIn && !paidPlansOnSale) return null;
 
   return (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1">
-      {plan === 'anonymous' && (
+      {showSignIn && (
         <Link href="/auth" className={ACTION_LINK_CLASS}>
           {t('signIn')}
         </Link>
       )}
-      <Link href="/pricing" className={ACTION_LINK_CLASS}>
-        {t('viewPlans')}
-      </Link>
+      {paidPlansOnSale && (
+        <Link href="/pricing" className={ACTION_LINK_CLASS}>
+          {t('viewPlans')}
+        </Link>
+      )}
     </span>
   );
 }

@@ -80,10 +80,11 @@ const MS_PER_SECOND = 1000;
 
 const FINISHED_JOB_STATES: ReadonlySet<string> = new Set(['completed', 'failed', 'cancelled']);
 
-/** The result the browser saves: the URL of the converted file on the server and its size. */
+/** The result the browser saves: the URL of the converted file on the server, its size and optional output filename. */
 export interface ResumableConversionResult {
   url: string;
   size: number;
+  filename?: string;
 }
 
 interface PartReceipt {
@@ -414,7 +415,18 @@ async function waitForResult(jobId: string, call: CallState, hooks: ResumableHoo
     if (FINISHED_JOB_STATES.has(jobState)) call.stage = { kind: 'finished' };
     if (jobState === 'completed') {
       const result = (job.returnvalue ?? {}) as Body;
-      return { url: readString(result, 'downloadUrl', 'The conversion'), size: typeof result.size === 'number' ? result.size : 0 };
+      let rawName = '';
+      if (typeof result.filename === 'string') {
+        rawName = result.filename;
+      } else if (typeof result.fileName === 'string') {
+        rawName = result.fileName;
+      }
+      const filename = rawName.trim().replace(/.*[\\/]/, '') || undefined;
+      return {
+        url: readString(result, 'downloadUrl', 'The conversion'),
+        size: typeof result.size === 'number' ? result.size : 0,
+        ...(filename ? { filename } : {}),
+      };
     }
     if (call.stage.kind === 'finished') {
       throw jobFailure(job);

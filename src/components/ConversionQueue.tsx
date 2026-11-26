@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, CircleCheck, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
-import { getAvailableTargetFormats } from '@/lib/registry';
+import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatPickerButton from './workbench/FormatPickerButton';
@@ -49,12 +49,14 @@ function getQueueStatusSummary(
   t: QueueTranslator,
   items: ConversionQueueItem[],
   convertibleItems: ConversionQueueItem[],
-  isBusy: boolean
+  isBusy: boolean,
+  maxLimit: number
 ): string {
   if (isBusy) return t('status.converting');
   if (convertibleItems.length === 0) {
     if (items.length === 0) return t('status.empty');
-    return t('status.oversize', { count: items.length });
+    if (items.every((item) => item.size > maxLimit)) return t('status.oversize', { count: items.length });
+    return t('status.unconvertible', { count: items.length });
   }
   if (convertibleItems.some((i) => !i.targetFormat?.trim())) return t('status.chooseFormat');
   if (convertibleItems.some(hasItemOptionError)) return t('status.fixOptions');
@@ -211,7 +213,8 @@ function deriveQueueViewState(
   t: QueueTranslator,
   items: ConversionQueueItem[],
   convertibleItems: ConversionQueueItem[],
-  isConverting: boolean
+  isConverting: boolean,
+  maxLimit: number
 ) {
   const effectiveBusy =
     isConverting || items.some((i) => i.status === 'uploading' || i.status === 'converting');
@@ -223,7 +226,7 @@ function deriveQueueViewState(
   const hasPending = convertibleItems.some((i) => i.status === 'ready' || i.status === 'error');
   const hasInvalidOptions = convertibleItems.some(hasItemOptionError);
   const canConvert = !effectiveBusy && allHaveTarget && hasPending && !hasInvalidOptions;
-  const statusSummary = getQueueStatusSummary(t, items, convertibleItems, effectiveBusy);
+  const statusSummary = getQueueStatusSummary(t, items, convertibleItems, effectiveBusy, maxLimit);
   // The check mark of page B's bar stands for "ready" or "done", never beside a failure.
   const isSettledWell = allDone || (canConvert && !convertibleItems.some((i) => i.status === 'error'));
   return { effectiveBusy, completedCount, allDone, canConvert, isSettledWell, statusSummary };
@@ -245,10 +248,19 @@ export default function ConversionQueue({
   const plan = useViewerPlan();
   const maxLimit = maxFileBytes(plan);
   const convertibleItems = useMemo(
-    () => items.filter((item) => item.size <= maxLimit),
+    () =>
+      items.filter((item) => {
+        const sourceKey = item.sourceFormat.toLowerCase();
+        return (
+          item.size > 0 &&
+          item.size <= maxLimit &&
+          Boolean(FORMAT_REGISTRY[sourceKey]) &&
+          getAvailableTargetFormats(item.sourceFormat).length > 0
+        );
+      }),
     [items, maxLimit]
   );
-  const view = deriveQueueViewState(t, items, convertibleItems, isConverting);
+  const view = deriveQueueViewState(t, items, convertibleItems, isConverting, maxLimit);
   const batchAvailableFormats = useMemo(
     () => collectBatchTargetFormats(convertibleItems),
     [convertibleItems]
@@ -284,7 +296,7 @@ export default function ConversionQueue({
         effectiveBusy={view.effectiveBusy} completedCount={view.completedCount} allDone={view.allDone} canConvert={view.canConvert}
         isSettledWell={view.isSettledWell} onAddMoreFiles={onAddMoreFiles} onImportFile={onImportFile} onDownloadAllZip={onDownloadAllZip} onConvertAll={onConvertAll}
       />
-      {currentOptionsItem?.targetFormat && currentOptionsItem.size <= maxLimit && (
+      {currentOptionsItem?.targetFormat && currentOptionsItem.size > 0 && currentOptionsItem.size <= maxLimit && (
         <OptionsModal
           key={`${currentOptionsItem.id}:${currentOptionsItem.sourceFormat}:${currentOptionsItem.targetFormat}`}
           filename={currentOptionsItem.name} sourceFormat={currentOptionsItem.sourceFormat}

@@ -21,6 +21,7 @@ export interface ConversionQueueItem {
   progress?: number;
   resultUrl?: string;
   resultSize?: number;
+  resultFilename?: string;
   error?: ConversionFailure;
   options: ConversionOptions;
   edgeProcessed?: boolean;

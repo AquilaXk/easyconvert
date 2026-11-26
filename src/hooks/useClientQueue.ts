@@ -40,12 +40,17 @@ function createQueueItemId(fileName: string): string {
   return typeof crypto?.randomUUID === 'function' ? crypto.randomUUID() : `item-${Date.now()}-${fileName}`;
 }
 
+function isSupportedQueueSource(sourceFormat: string): boolean {
+  const normalized = sourceFormat.toLowerCase();
+  return Boolean(FORMAT_REGISTRY[normalized]) && getAvailableTargetFormats(normalized).length > 0;
+}
+
 function resolveInitialTargetFormat(sourceFormat: string, effectiveDefault?: string): string {
   if (!effectiveDefault || effectiveDefault.toLowerCase() === 'any') return '';
   const cleanTarget = effectiveDefault.toLowerCase();
   const normalizedSource = sourceFormat.toLowerCase();
   if (!FORMAT_REGISTRY[normalizedSource]) {
-    return FORMAT_REGISTRY[cleanTarget]?.available === false ? '' : cleanTarget;
+    return '';
   }
   return getAvailableTargetFormats(normalizedSource).some((f) => f.id === cleanTarget) ? cleanTarget : '';
 }
@@ -88,11 +93,15 @@ function hasValidItemOptions(item: ConversionQueueItem): boolean {
 
 type IdleItemPatch = Pick<ConversionQueueItem, 'targetFormat' | 'options'>;
 
+function isConvertibleFileItem(item: ConversionQueueItem, maxLimit: number): boolean {
+  return item.size > 0 && item.size <= maxLimit && isSupportedQueueSource(item.sourceFormat);
+}
+
 function isConvertiblePendingItem(item: ConversionQueueItem, maxLimit: number): boolean {
   return (
     (item.status === 'ready' || item.status === 'error') &&
     Boolean(item.targetFormat) &&
-    item.size <= maxLimit &&
+    isConvertibleFileItem(item, maxLimit) &&
     hasValidItemOptions(item)
   );
 }
@@ -115,13 +124,15 @@ function patchIdleItem(item: ConversionQueueItem, patch: IdleItemPatch): Convers
   return optionError !== null ? { ...base, status: 'error' } : { ...base, status: 'ready' };
 }
 
-function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>): string {
+function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Set<string>, resultFilename?: string): string {
+  const resultExtMatch = resultFilename ? /\.([^/.]+)$/.exec(resultFilename) : null;
+  const outExt = resultExtMatch ? resultExtMatch[1] : targetFormat;
   const dot = itemName.lastIndexOf('.');
   const baseName = (dot > 0 ? itemName.substring(0, dot) : itemName) || itemName;
-  let candidate = `${baseName}.${targetFormat}`;
+  let candidate = `${baseName}.${outExt}`;
   let counter = 1;
   while (used.has(candidate)) {
-    candidate = `${baseName}_(${counter}).${targetFormat}`;
+    candidate = `${baseName}_(${counter}).${outExt}`;
     counter += 1;
   }
   used.add(candidate);
@@ -178,7 +189,7 @@ async function prepareServerBundleDownload(
       archiveName,
       files: readyItems.map((item, idx) => ({
         key: serverKeys[idx]!,
-        name: buildUniqueArchiveName(item.name, item.targetFormat, used),
+        name: buildUniqueArchiveName(item.name, item.targetFormat, used, item.resultFilename),
       })),
     }),
   });
@@ -241,7 +252,7 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
     try {
       for (; nextYieldIndex < fetched.length; nextYieldIndex++) {
         const { item, res } = fetched[nextYieldIndex];
-        const name = buildUniqueArchiveName(item.name, item.targetFormat, used);
+        const name = buildUniqueArchiveName(item.name, item.targetFormat, used, item.resultFilename);
         if (res.body) {
           yield { name, data: res.body };
         } else {
@@ -348,7 +359,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
   ) => {
     const maxLimit = getViewerMaxFileBytes();
     const canEdit = (item: ConversionQueueItem) =>
-      !ctx.isItemBusy(item) && item.size <= maxLimit && predicate(item);
+      !ctx.isItemBusy(item) && isConvertibleFileItem(item, maxLimit) && predicate(item);
     const matches = ctx.queueRef.current.filter(canEdit);
     if (matches.length === 0) return;
     for (const item of matches) {
@@ -441,7 +452,7 @@ export function createQueueMutators(ctx: QueueMutationContext) {
 
 function failUnavailableResults(ids: ReadonlySet<string>, ctx: QueueMutationContext): void {
   ctx.updateQueue((prev) =>
-    prev.map((i) => (ids.has(i.id) ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined } : i))
+    prev.map((i) => (ids.has(i.id) ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined, resultFilename: undefined } : i))
   );
 }
 
@@ -485,7 +496,7 @@ function canConvertBatchTarget(
   if (!item || ctx.isItemBusy(item) || item.status === 'completed') return false;
   return (
     Boolean(item.targetFormat) &&
-    item.size <= getViewerMaxFileBytes() &&
+    isConvertibleFileItem(item, getViewerMaxFileBytes()) &&
     hasValidItemOptions(item)
   );
 }
@@ -501,7 +512,7 @@ function failInvalidItemOptions(current: ConversionQueueItem, ctx: QueueMutation
   ctx.updateQueue((prev) =>
     prev.map((i) =>
       i.id === current.id
-        ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined }
+        ? { ...i, status: 'error', error: undefined, progress: 0, resultUrl: undefined, resultFilename: undefined }
         : i
     )
   );
@@ -512,7 +523,7 @@ export function createConversionRunners(ctx: QueueMutationContext) {
   const convertSingleItem = async (itemOrId: ConversionQueueItem | string): Promise<void> => {
     const id = typeof itemOrId === 'string' ? itemOrId : itemOrId.id;
     const current = ctx.queueRef.current.find((i) => i.id === id);
-    if (!current?.targetFormat || current.size > getViewerMaxFileBytes() || ctx.inFlightIdsRef.current.has(id)) return;
+    if (!current?.targetFormat || !isConvertibleFileItem(current, getViewerMaxFileBytes()) || ctx.inFlightIdsRef.current.has(id)) return;
     if (failInvalidItemOptions(current, ctx)) return;
     const gen = (ctx.generationRef.current.get(id) ?? 0) + 1;
     ctx.generationRef.current.set(id, gen);
@@ -521,21 +532,31 @@ export function createConversionRunners(ctx: QueueMutationContext) {
     ctx.abortersRef.current.set(id, aborter);
     ctx.syncInFlight();
     ctx.revokeBlobUrl(current.resultUrl);
-    ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'converting', progress: undefined, error: undefined, resultUrl: undefined } : i)));
+    ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'converting', progress: undefined, error: undefined, resultUrl: undefined, resultFilename: undefined } : i)));
     const isFresh = () => ctx.mountedRef.current && ctx.generationRef.current.get(id) === gen && ctx.queueRef.current.some((i) => i.id === id);
     const setStage = (status: 'uploading' | 'converting') => {
       if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, status, progress: undefined } : i)));
     };
     try {
+      let resolvedFilename: string | undefined;
       await executeItemConversion(current, {
         onProgress: (progress) => {
           if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id && isRunning(i) ? { ...i, progress } : i)));
         },
         onStage: setStage,
+        onOutputFilename: (filename) => {
+          if (isFresh()) resolvedFilename = filename;
+        },
         onSuccess: (resultUrl, resultSize, edgeProcessed, edgeTier, _fallback, unchanged) => {
           if (!isFresh()) { ctx.revokeBlobUrl(resultUrl); return; }
           if (resultUrl.startsWith('blob:')) ctx.blobUrlsRef.current.add(resultUrl);
-          ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize, edgeProcessed, edgeTier, unchanged } : i)));
+          ctx.updateQueue((prev) =>
+            prev.map((i) =>
+              i.id === id
+                ? { ...i, status: 'completed', progress: 100, resultUrl, resultSize, resultFilename: resolvedFilename, edgeProcessed, edgeTier, unchanged }
+                : i
+            )
+          );
         },
         onError: (failure) => {
           if (isFresh()) ctx.updateQueue((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'error', error: failure, progress: 0 } : i)));

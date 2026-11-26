@@ -5,7 +5,7 @@ import { NextIntlClientProvider } from 'next-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { User } from '../src/lib/auth/types';
 import type { ConversionQueueItem } from '../src/lib/types';
-import { getViewerAccount, getViewerPlan, setViewerPlan, applySessionChange } from '../src/lib/viewer-plan';
+import { getViewerAccount, getViewerPlan, refreshViewerPlan, setViewerPlan, applySessionChange } from '../src/lib/viewer-plan';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
 const ROUTER = {
@@ -257,7 +257,52 @@ describe('QuotaExhaustedActions on QueueItemRow', () => {
     };
   }
 
-  it('offers sign-in and credit plan links to anonymous visitors on 429 quota-exceeded', () => {
+  async function setBillingSaleState(paidPlansOnSale: boolean, user: { id: string; tier: 'free' | 'paid' } | null = null): Promise<void> {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            success: Boolean(user),
+            authenticated: Boolean(user),
+            user,
+            paidPlansOnSale,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    );
+    await act(async () => {
+      await refreshViewerPlan();
+    });
+    vi.unstubAllGlobals();
+  }
+
+  afterEach(async () => {
+    await setBillingSaleState(false, null);
+  });
+
+  it('offers sign-in and hides pricing links when billing is disabled, and surfaces credit plan links once paid plans are on sale', async () => {
+    await setBillingSaleState(false, null);
+    setViewerPlan('anonymous');
+    mount(
+      createElement(QueueItemRow, {
+        item: makeRow(quotaFailure),
+        onSelectTargetFormat: () => undefined,
+        onOpenOptions: () => undefined,
+        onRemove: () => undefined,
+      }),
+      'ko'
+    );
+    expect(Array.from(container.querySelectorAll('a')).map((a) => a.getAttribute('href'))).toEqual(['/auth']);
+    expect(container.textContent).toContain('로그인');
+    expect(container.textContent).not.toContain('크레딧 충전하기');
+
+    act(() => {
+      root?.unmount();
+      root = null;
+    });
+    await setBillingSaleState(true, null);
     setViewerPlan('anonymous');
     mount(
       createElement(QueueItemRow, {
@@ -275,7 +320,25 @@ describe('QuotaExhaustedActions on QueueItemRow', () => {
     expect(container.textContent).toContain('크레딧 충전하기');
   });
 
-  it('offers only plans link to signed-in free accounts on 429 quota-exceeded and none on non-quota errors', () => {
+  it('offers only plans link to signed-in free accounts when billing is enabled, and hides links when billing is off or non-quota errors occur', async () => {
+    await setBillingSaleState(false, { id: 'usr-free', tier: 'free' });
+    setViewerPlan('free');
+    mount(
+      createElement(QueueItemRow, {
+        item: makeRow(quotaFailure),
+        onSelectTargetFormat: () => undefined,
+        onOpenOptions: () => undefined,
+        onRemove: () => undefined,
+      }),
+      'en'
+    );
+    expect(container.querySelectorAll('a')).toHaveLength(0);
+
+    act(() => {
+      root?.unmount();
+      root = null;
+    });
+    await setBillingSaleState(true, { id: 'usr-free', tier: 'free' });
     setViewerPlan('free');
     mount(
       createElement(QueueItemRow, {

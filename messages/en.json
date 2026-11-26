@@ -554,8 +554,8 @@
       "tier": "Plan: {tier}",
       "quota": "Credits today",
       "quotaMonth": "Subscription credits this period",
-      "remaining": "{count, number} credits left today",
-      "remainingMonth": "{count, number} subscription credits left this period",
+      "remaining": "{count, plural, one {# credit left today} other {# credits left today}}",
+      "remainingMonth": "{count, plural, one {# subscription credit left this period} other {# subscription credits left this period}}",
       "activeKeys": "Active API keys",
       "activeKeysNote": "Keys with scopes that work on this account",
       "reset": "Credits reset",
@@ -587,7 +587,21 @@
         "extra": "{base, number} credits and {surcharge, number} for processing time",
         "batch": "A batch of files",
         "graph": "A job with several steps",
+        "capture": "Website to {to}",
         "tool": "{tool}",
+        "toolNames": {
+          "merge": "Merge PDF",
+          "archiveCreate": "Create archive",
+          "archiveExtract": "Extract archive",
+          "split": "Split PDF",
+          "rotate": "Rotate PDF",
+          "protect": "Protect PDF",
+          "unlock": "Unlock PDF",
+          "watermark": "Watermark PDF",
+          "extractPages": "Extract pages",
+          "deletePages": "Delete pages",
+          "captureWebsite": "Website capture"
+        },
         "pair": "{from} to {to}",
         "fromPackage": "{count, number} from your package",
         "uncharged": "{count, number} owed and not charged"
@@ -1358,6 +1372,7 @@
       "converting": "Converting queued files...",
       "empty": "No files in queue",
       "oversize": "{count, plural, one {# file exceeds the conversion size limit. Remove it to continue.} other {# files exceed the conversion size limit. Remove them to continue.}}",
+      "unconvertible": "{count, plural, one {# file cannot be converted. Remove it to continue.} other {# files cannot be converted. Remove them to continue.}}",
       "chooseFormat": "Please select an output format to continue",
       "fixOptions": "Update password options or output format to continue.",
       "complete": "Conversion complete for {count, plural, one {# file} other {# files}}",
@@ -1389,7 +1404,9 @@
       "optionsLabel": "Conversion options for {name}",
       "cancelLabel": "Cancel {name}",
       "removeLabel": "Remove {name}",
-      "options": "Options"
+      "options": "Options",
+      "emptyFile": "This file is empty (0 bytes) and cannot be converted.",
+      "unsupportedFormat": "{format} files are not supported for conversion."
     },
     "label": "Files to convert"
   },

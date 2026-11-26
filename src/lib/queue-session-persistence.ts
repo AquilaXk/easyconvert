@@ -14,6 +14,7 @@ interface PersistedResultEntry {
   targetFormat: string;
   resultUrl: string;
   resultSize?: number;
+  resultFilename?: string;
   unchanged?: boolean;
   savedAt: number;
 }
@@ -76,6 +77,7 @@ export function persistCompletedServerQueue(items: readonly ConversionQueueItem[
         targetFormat: item.targetFormat,
         resultUrl: item.resultUrl,
         resultSize: item.resultSize,
+        resultFilename: item.resultFilename,
         unchanged: item.unchanged,
         savedAt: previous.get(item.id) ?? now,
       }));
@@ -121,6 +123,7 @@ export function restoreCompletedServerQueue(scope: string, now = Date.now()): Co
       options: {},
       resultUrl: entry.resultUrl,
       resultSize: entry.resultSize,
+      ...(typeof entry.resultFilename === 'string' && entry.resultFilename ? { resultFilename: entry.resultFilename } : {}),
       unchanged: entry.unchanged,
     }));
   } catch {

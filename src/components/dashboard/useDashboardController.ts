@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
 import type { User } from '@/lib/auth/types';
@@ -225,11 +226,19 @@ export function useApiKeysController(
   return { state, actions, copyToClipboard, refresh: fetchKeysAndQuota };
 }
 
+const VALID_DASHBOARD_TABS: ReadonlySet<string> = new Set<DashboardTab>(['api', 'files', 'dlq', 'usage', 'security']);
+
+function parseDashboardTab(raw: string | null | undefined): DashboardTab {
+  return raw && VALID_DASHBOARD_TABS.has(raw) ? (raw as DashboardTab) : 'api';
+}
+
 export function useDashboardController(initial?: DashboardSnapshot) {
   const t = useTranslations('dashboard.errors');
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams?.get('tab');
   const [user, setUser] = useState<User | null>(initial?.user ?? null);
-  const [activeTab, setActiveTab] = useState<DashboardTab>('api');
+  const [activeTab, setActiveTab] = useState<DashboardTab>(() => parseDashboardTab(requestedTab));
   const [loading, setLoading] = useState(!initial);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -308,6 +317,18 @@ export function useDashboardController(initial?: DashboardSnapshot) {
     setActiveTab(tab);
     void readersRef.current[tab]();
   };
+
+  const prevRequestedTabRef = useRef(requestedTab);
+  const { setInspectingDlq } = filesAndDlq;
+  useEffect(() => {
+    if (prevRequestedTabRef.current === requestedTab) return;
+    prevRequestedTabRef.current = requestedTab;
+    const nextTab = parseDashboardTab(requestedTab);
+    clearActionError();
+    setInspectingDlq(null);
+    setActiveTab(nextTab);
+    void readersRef.current[nextTab]();
+  }, [requestedTab, clearActionError, setInspectingDlq]);
 
   return {
     user, loading, activeTab, selectTab, actionError, clearActionError,

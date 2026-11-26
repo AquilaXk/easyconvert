@@ -64,6 +64,25 @@ export interface CloudConversionResult {
   blob: Blob;
   url: string;
   size: number;
+  filename?: string;
+}
+
+const MIME_ZIP = 'application/zip';
+
+export function filenameFromContentDisposition(header: string | null | undefined): string | undefined {
+  if (!header) return undefined;
+  const extMatch = /filename\*\s*=\s*(?:utf-8|UTF-8)''([^;\r\n]+)/i.exec(header);
+  if (extMatch) {
+    try {
+      const decoded = decodeURIComponent(extMatch[1].trim()).replace(/.*[\\/]/, '');
+      if (decoded) return decoded;
+    } catch {
+      // Fall back to plain filename parameter below.
+    }
+  }
+  const plainMatch = /(?:^|;)\s*filename\s*=\s*(?:"([^"]+)"|([^;\r\n]+))/i.exec(header);
+  const raw = (plainMatch?.[1] ?? plainMatch?.[2] ?? '').trim().replace(/.*[\\/]/, '');
+  return raw || undefined;
 }
 
 /**
@@ -95,11 +114,20 @@ export async function executeServerlessCloudFallback(
     throw new ConversionFailedError('This runtime cannot create a download URL for the converted file.');
   }
   const url = URL.createObjectURL(blob);
+  const headerFilename = filenameFromContentDisposition(res.headers?.get?.('content-disposition'));
+  const contentType = (res.headers?.get?.('content-type') ?? blob.type ?? '').split(';')[0]?.trim().toLowerCase();
+  const baseName = file instanceof File && file.name ? file.name.replace(/\.[^/.]+$/, '') || file.name : undefined;
+  const inferredZipName =
+    !headerFilename && contentType === MIME_ZIP && targetFormat.toLowerCase() !== 'zip' && baseName
+      ? `${baseName}.zip`
+      : undefined;
+  const filename = headerFilename ?? inferredZipName;
 
   return {
     blob,
     url,
     size: blob.size,
+    ...(filename ? { filename } : {}),
   };
 }
 

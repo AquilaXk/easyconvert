@@ -3,12 +3,39 @@ import type { ChargeEntry } from '@/lib/api-keys/types';
 
 type Translate = ReturnType<typeof useTranslations<'dashboard.usage.charges'>>;
 
-/** What a charge was for: the pair of formats, a tool, a batch or a graph. */
+const TOOL_CHARGE_KEYS = {
+  merge: 'toolNames.merge',
+  'archive-create': 'toolNames.archiveCreate',
+  'archive-extract': 'toolNames.archiveExtract',
+  split: 'toolNames.split',
+  rotate: 'toolNames.rotate',
+  protect: 'toolNames.protect',
+  unlock: 'toolNames.unlock',
+  watermark: 'toolNames.watermark',
+  'extract-pages': 'toolNames.extractPages',
+  'delete-pages': 'toolNames.deletePages',
+  'capture.website': 'toolNames.captureWebsite',
+} as const;
+
+type ToolChargeId = keyof typeof TOOL_CHARGE_KEYS;
+
+function isToolChargeId(value: string): value is ToolChargeId {
+  return Object.hasOwn(TOOL_CHARGE_KEYS, value);
+}
+
+/** What a charge was for: the pair of formats, a website capture, a tool, a batch or a graph. */
 function chargeLabel(entry: ChargeEntry, t: Translate): string {
   if (entry.kind === 'batch') return t('batch');
   if (entry.kind === 'graph') return t('graph');
-  if (entry.from !== undefined && entry.to !== undefined) return t('pair', { from: entry.from.toUpperCase(), to: entry.to.toUpperCase() });
-  return t('tool', { tool: entry.from ?? '' });
+  if (entry.from === 'capture.website' && entry.to !== undefined) {
+    return t('capture', { to: entry.to.toUpperCase() });
+  }
+  if (entry.from !== undefined && entry.to !== undefined) {
+    return t('pair', { from: entry.from.toUpperCase(), to: entry.to.toUpperCase() });
+  }
+  const toolId = entry.from ?? '';
+  if (isToolChargeId(toolId)) return t(TOOL_CHARGE_KEYS[toolId]);
+  return t('tool', { tool: toolId });
 }
 
 /** The account's newest charges, one row for each conversion with the credits it cost and where they came from. */

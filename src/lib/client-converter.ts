@@ -1,6 +1,11 @@
 import { ConversionQueueItem } from './types';
 import { tryProcessClientEdgeOcr } from './edge-ocr';
-import { resolveConversionTier, resolveTierAfterEdgeFailure, ConversionTier } from './edge/tier-router';
+import {
+  probeEdgeCapabilities,
+  resolveConversionTier,
+  resolveTierAfterEdgeFailure,
+  ConversionTier,
+} from './edge/tier-router';
 import { isInAppWebView } from './edge/mobile-browser-guard';
 import { isPureAudioConvertible, convertPureAudio } from './edge/pure/pure-audio';
 import { isPureCanvasConvertible, convertPureCanvas, isCanvasSupported, encodeBmpFromImageData } from './edge/pure/pure-canvas';
@@ -39,6 +44,8 @@ export interface ConvertItemCallbacks {
   onProgress: (progress: number) => void;
   /** Called when the server's part of a conversion starts a stage; the stage has no progress until it reports some. */
   onStage?: (stage: ResumableStage) => void;
+  /** Called before `onSuccess` when the server provides a concrete download filename (e.g. `.zip` for multi-page PDF to image). */
+  onOutputFilename?: (filename: string) => void;
   onSuccess: (
     resultUrl: string,
     resultSize: number,
@@ -98,7 +105,9 @@ export async function tryProcessClientEdge(
 
   const src = item.sourceFormat.toLowerCase();
   const tgt = item.targetFormat.toLowerCase();
-  const resolution = resolveConversionTier(src, tgt, item.size, item.options);
+  const capabilities = typeof probeEdgeCapabilities === 'function' ? await probeEdgeCapabilities() : undefined;
+  signal?.throwIfAborted();
+  const resolution = resolveConversionTier(src, tgt, item.size, item.options, capabilities);
 
   // 1. Level 0: Pure Isomorphic Fast-Paths (0 MB Wasm)
   if (resolution.tier === 'L0') {
@@ -632,7 +641,10 @@ async function processL2Conversion(
 }
 
 /** What a compression answers: the input itself when the server's result is not smaller, so that a compression never makes a file larger. */
-function answerOfCompression(item: ConversionQueueItem, cloudRes: { url: string; size: number }): { url: string; size: number; unchanged?: true } {
+function answerOfCompression(
+  item: ConversionQueueItem,
+  cloudRes: { url: string; size: number; filename?: string }
+): { url: string; size: number; unchanged?: true; filename?: string } {
   if (!isPlainCompression(item.sourceFormat, item.targetFormat, item.options) || cloudRes.size < item.file.size) return cloudRes;
   if (cloudRes.url.startsWith('blob:')) URL.revokeObjectURL(cloudRes.url);
   return { url: URL.createObjectURL(item.file), size: item.file.size, unchanged: true };
@@ -700,6 +712,9 @@ export async function executeItemConversion(
       ? await executeResumableCloudConversion(item.file, item.targetFormat, serverOptions, { onProgress: callbacks.onProgress, onStage: callbacks.onStage, signal })
       : await executeServerlessCloudFallback(item.file, item.targetFormat, serverOptions, signal);
     const answer = answerOfCompression(item, cloudRes);
+    if (answer.filename) {
+      callbacks.onOutputFilename?.(answer.filename);
+    }
     callbacks.onSuccess(answer.url, answer.size, false, inParts ? CLOUD_PARTS_TIER_NAME : CLOUD_TIER_NAME, escalation, answer.unchanged);
   } catch (err: unknown) {
     if (signal?.aborted) return;

@@ -4,7 +4,7 @@ import { chargeOptionsOf } from './conversion-charge';
 import { leaseToHandedOffWork, RECOVERY_UNKNOWN, renewLease, RESERVATION_ENGINE, type Recovery, type ReservedUnit } from './hand-off';
 import { QueueUnavailableError } from '../types';
 import type { TokenBucketOptions } from './redis-key-store';
-import { API_KEY_BURST_LIMITS, type QuotaPeriod } from '../plan-limits';
+import { API_KEY_BURST_LIMITS, isUserTier, type QuotaPeriod } from '../plan-limits';
 import { getSessionFromRequest } from '../auth/session';
 import { AuthStoreUnavailableError } from '../auth/store-unavailable';
 import { anonymousUserId, isAnonymousUserId, isUnattributedAnonymous } from '../auth/anonymous-identity';
@@ -325,9 +325,10 @@ async function verifyKeyAccess(
   }
 
   // Per-key burst rate limit (token bucket sized by account tier)
+  const effectiveTier = isUserTier(verification.user.tier) ? verification.user.tier : 'free';
   const burst = await redisKeyStore.checkTokenBucketRateLimit(
     `${API_KEY_RATE_LIMIT_PREFIX}${verification.key.id}`,
-    API_KEY_BURST_LIMITS[verification.user.tier]
+    API_KEY_BURST_LIMITS[effectiveTier]
   );
   if (!burst.allowed) {
     if (burst.serviceUnavailable) {

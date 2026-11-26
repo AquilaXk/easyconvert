@@ -34,9 +34,9 @@ function resolveRowError(
   failureWording: ReturnType<typeof useConversionFailureWording>,
   item: ConversionQueueItem,
   optionError: string | null,
-  oversizeError: string | null
+  blockingFileError: string | null
 ): string | null {
-  if (oversizeError) return oversizeError;
+  if (blockingFileError) return blockingFileError;
   if (optionError) return optionError;
   if (item.status !== 'error') return null;
   return failureWording(item.error ?? { code: 'conversionFailed' });
@@ -103,7 +103,8 @@ function RowStatusDisplay({ item, isBusy }: Readonly<{ item: ConversionQueueItem
         {item.unchanged && <span className="text-xs text-ink-3">{t('unchanged')}</span>}
         {item.resultUrl && (
           <a
-            href={item.resultUrl} download={item.unchanged ? item.name : `${baseName}.${item.targetFormat}`}
+            href={item.resultUrl}
+            download={item.unchanged ? item.name : (item.resultFilename ?? `${baseName}.${item.targetFormat}`)}
             className="btn-primary inline-flex items-center justify-center gap-1.5 min-h-[44px] md:min-h-9 px-4 rounded-xs text-sm font-medium"
           >
             <Download aria-hidden="true" className="size-4" /><span>{t('download')}</span>
@@ -134,16 +135,27 @@ export default function QueueItemRow({
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const plan = useViewerPlan();
   const isIdle = !isBusy && item.status !== 'completed';
+  const sourceKey = item.sourceFormat.toLowerCase();
+  const availableFormats = getAvailableTargetFormats(item.sourceFormat);
   // Read at render, not when the file was dropped: the plan of the session may answer after the drop.
   const isOversize = isIdle && item.size > maxFileBytes(plan);
+  const isEmptyFile = isIdle && item.size <= 0;
+  const isUnsupportedFormat = isIdle && (!FORMAT_REGISTRY[sourceKey] || availableFormats.length === 0);
+  const isUnconvertible = isOversize || isEmptyFile || isUnsupportedFormat;
   const hasTarget = Boolean(item.targetFormat);
   const optionError = isIdle ? resolveOptionError(tPassword, item) : null;
-  const rowError = isIdle
-    ? resolveRowError(failureWording, item, optionError, isOversize ? fileTooLargeMessage(plan, item.size) : null)
-    : null;
-  const isBlocked = isOversize || optionError !== null;
   const sourceLabel = item.sourceFormat.toUpperCase();
-  const category = FORMAT_REGISTRY[item.sourceFormat.toLowerCase()]?.category ?? 'other';
+  let blockingFileError: string | null = null;
+  if (isOversize) {
+    blockingFileError = fileTooLargeMessage(plan, item.size);
+  } else if (isEmptyFile) {
+    blockingFileError = t('emptyFile');
+  } else if (isUnsupportedFormat) {
+    blockingFileError = t('unsupportedFormat', { format: sourceLabel });
+  }
+  const rowError = isIdle ? resolveRowError(failureWording, item, optionError, blockingFileError) : null;
+  const isBlocked = isUnconvertible || optionError !== null;
+  const category = FORMAT_REGISTRY[sourceKey]?.category ?? 'other';
 
   return (
     <div className="rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 grid grid-cols-[2.75rem_minmax(0,1fr)_auto] lg:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-3 min-w-0">
@@ -175,10 +187,10 @@ export default function QueueItemRow({
               ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
               : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
           }
-          disabled={isBusy || isOversize}
+          disabled={isBusy || isUnconvertible}
           className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-canvas text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           sourceFormat={item.sourceFormat}
-          availableFormats={getAvailableTargetFormats(item.sourceFormat)}
+          availableFormats={availableFormats}
           selectedFormatId={item.targetFormat}
           onSelect={onSelectTargetFormat}
           title={t('selectorTitle', { format: sourceLabel })}
@@ -191,7 +203,7 @@ export default function QueueItemRow({
           type="button"
           data-testid="queue-options-btn"
           aria-label={t('optionsLabel', { name: item.name })}
-          disabled={!item.targetFormat || isBusy || isOversize}
+          disabled={!item.targetFormat || isBusy || isUnconvertible}
           onClick={onOpenOptions}
           className="transition-colors inline-flex items-center justify-center gap-2 min-w-[44px] min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule text-sm font-medium text-ink hover:border-rule-strong cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >

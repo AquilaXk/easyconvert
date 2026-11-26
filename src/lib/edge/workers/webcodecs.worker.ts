@@ -1038,7 +1038,13 @@ export async function processWebCodecsConversion(
 }
 
 // Attach worker listener if running inside dedicated Worker environment
-if (typeof self !== 'undefined' && typeof (self as any).postMessage === 'function' && typeof window === 'undefined') {
+const workerGlobalScope = (globalThis as { WorkerGlobalScope?: abstract new (...args: never[]) => unknown }).WorkerGlobalScope;
+if (
+  typeof self !== 'undefined' &&
+  typeof (self as { postMessage?: unknown }).postMessage === 'function' &&
+  typeof workerGlobalScope === 'function' &&
+  self instanceof workerGlobalScope
+) {
   self.onmessage = async (e: MessageEvent) => {
     const { type, jobId, fileBuffer, file, sourceFormat, targetFormat, options } = e.data || {};
 

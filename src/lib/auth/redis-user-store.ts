@@ -5,6 +5,7 @@ import { readyGatedRedis } from '../redis/when-ready';
 import { scanClusterSafe } from '../redis/cluster-ops';
 import { isEmailVerified } from './email-verified';
 import type { User, UserRecord, UserRecordUpdates, UserTier } from './types';
+import { isUserTier } from '../plan-limits';
 import { failClosed } from './store-unavailable';
 import { MAX_AVATAR_URL_LENGTH, MAX_DISPLAY_NAME_LENGTH } from '../api/field-limits';
 
@@ -198,9 +199,12 @@ function parseUserRecord(raw: string | null): UserRecord | null {
   }
 }
 
-/** The record as a request sees it: a paid tier whose end has passed reads as free, so the end needs no sweep. */
+/** The record as a request sees it: a paid tier whose end has passed, or a retired legacy tier name, reads as free. */
 function withCurrentTier(record: UserRecord): UserRecord {
   const normalized = normalizeOptionalFields(record);
+  if (!isUserTier(normalized.tier)) {
+    return { ...normalized, tier: 'free' };
+  }
   if (normalized.tierUntil === undefined || normalized.tier === 'free' || normalized.tierUntil > Date.now()) {
     return normalized;
   }
