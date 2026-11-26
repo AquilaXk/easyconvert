@@ -85,7 +85,9 @@ export function assertNotSpoofedFile(buffer: Buffer | Uint8Array, declaredExtens
 function compoundExtensionToRead(header: Uint8Array, declaredExtension: string): string | undefined {
   const ext = extensionOf(declaredExtension);
   if (header.length !== OBJECT_HEADER_BYTES) return undefined;
-  return COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) || (ext === 'wpd' && startsWithBytes(header, CFBF_MAGIC)) ? ext : undefined;
+  return COMPOUND_FILE_ONLY_EXTENSIONS.has(ext) || ((ext === 'wpd' || ext === 'wks') && startsWithBytes(header, CFBF_MAGIC))
+    ? ext
+    : undefined;
 }
 
 /** The file is whole here, so a root that is not of the declared kind, or that its bytes end before, is refused. */

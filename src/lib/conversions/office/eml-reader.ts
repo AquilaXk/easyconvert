@@ -320,22 +320,144 @@ export function emlMessageText(message: EmlMessage): string {
   return parts.join('\n\n');
 }
 
-const DANGEROUS_URI_ATTR = /\b(href|src|xlink:href|action|poster|background)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+const NAMED_URI_ENTITIES: Readonly<Record<string, string>> = {
+  colon: ':',
+  tab: '\t',
+  newline: '\n',
+  amp: '&',
+};
 
 function isUnsafeEmailUri(raw: string): boolean {
-  const normalized = raw
-    .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/gi, (_m, hex?: string, dec?: string) => {
-      const code = hex ? Number.parseInt(hex, 16) : Number.parseInt(dec ?? '0', 10);
-      return code >= 32 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
-    })
-    .replace(/[\u0000-\u0020]+/g, '')
-    .toLowerCase();
+  let decoded = raw;
+  for (let i = 0; i < 2; i += 1) {
+    decoded = decoded
+      .replace(/&#(?:x([0-9a-f]+)|([0-9]+));?/gi, (_m, hex?: string, dec?: string) => {
+        const code = hex ? Number.parseInt(hex, 16) : Number.parseInt(dec ?? '0', 10);
+        return code >= 32 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+      })
+      .replace(/&(colon|tab|newline|amp);/gi, (_m, name: string) => NAMED_URI_ENTITIES[name.toLowerCase()] ?? '');
+  }
+  const normalized = decoded.replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase();
   return (
     normalized.startsWith('javascript:') ||
     normalized.startsWith('vbscript:') ||
     normalized.startsWith('data:text/html') ||
     normalized.startsWith('data:application/xhtml')
   );
+}
+
+function sanitizeTagAttributes(attrsText: string): string {
+  const out: string[] = [];
+  let i = 0;
+  const len = attrsText.length;
+  while (i < len) {
+    const ch = attrsText[i];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f' || ch === '/') {
+      out.push(ch);
+      i += 1;
+      continue;
+    }
+    const nameStart = i;
+    while (i < len && !/[\s/>=]/.test(attrsText[i])) i += 1;
+    const rawName = attrsText.slice(nameStart, i);
+    const lowerName = rawName.toLowerCase();
+    while (i < len && /\s/.test(attrsText[i])) i += 1;
+    let rawVal = '';
+    let hasValue = false;
+    if (i < len && attrsText[i] === '=') {
+      hasValue = true;
+      i += 1;
+      while (i < len && /\s/.test(attrsText[i])) i += 1;
+      if (i < len && (attrsText[i] === '"' || attrsText[i] === "'")) {
+        const q = attrsText[i];
+        const vStart = i;
+        i += 1;
+        while (i < len && attrsText[i] !== q) i += 1;
+        if (i < len) i += 1;
+        rawVal = attrsText.slice(vStart, i);
+      } else {
+        const vStart = i;
+        while (i < len && !/[\s>]/.test(attrsText[i])) i += 1;
+        rawVal = attrsText.slice(vStart, i);
+      }
+    }
+    if (rawName === '' && !hasValue) {
+      i += 1;
+      continue;
+    }
+    const isEventOrFrame =
+      (lowerName.length > 2 && lowerName.startsWith('on')) || lowerName === 'srcdoc' || lowerName === 'formaction';
+    if (isEventOrFrame) {
+      if (out.length > 0 && out[out.length - 1] === '/') out.pop();
+      continue;
+    }
+    const isUriAttr =
+      lowerName === 'href' ||
+      lowerName === 'src' ||
+      lowerName === 'xlink:href' ||
+      lowerName === 'action' ||
+      lowerName === 'poster' ||
+      lowerName === 'background';
+    if (isUriAttr && hasValue) {
+      const innerVal =
+        (rawVal.startsWith('"') && rawVal.endsWith('"')) || (rawVal.startsWith("'") && rawVal.endsWith("'"))
+          ? rawVal.slice(1, -1)
+          : rawVal;
+      if (isUnsafeEmailUri(innerVal)) {
+        out.push(`${rawName}="#"`);
+        continue;
+      }
+    }
+    out.push(hasValue ? `${rawName}=${rawVal}` : rawName);
+  }
+  return out.join('').replace(/^\/+(?=[a-zA-Z])/, ' ');
+}
+
+function sanitizeTagsLinear(html: string): string {
+  const out: string[] = [];
+  let pos = 0;
+  while (pos < html.length) {
+    const lt = html.indexOf('<', pos);
+    if (lt === -1) {
+      out.push(html.slice(pos));
+      break;
+    }
+    out.push(html.slice(pos, lt));
+    const nextChar = html.charCodeAt(lt + 1);
+    const isTagStart = (nextChar >= 0x41 && nextChar <= 0x5a) || (nextChar >= 0x61 && nextChar <= 0x7a);
+    if (!isTagStart) {
+      out.push('<');
+      pos = lt + 1;
+      continue;
+    }
+    let cursor = lt + 2;
+    let quote = '';
+    while (cursor < html.length) {
+      const ch = html[cursor];
+      if (quote !== '') {
+        if (ch === quote) quote = '';
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '>') {
+        cursor += 1;
+        break;
+      }
+      cursor += 1;
+    }
+    const rawTag = html.slice(lt, cursor);
+    const spaceOrSlash = rawTag.search(/[\s/>]/);
+    if (spaceOrSlash === -1) {
+      out.push(rawTag);
+    } else {
+      const head = rawTag.slice(0, spaceOrSlash);
+      const tail = rawTag.slice(spaceOrSlash);
+      const hasClose = tail.endsWith('>');
+      const attrs = hasClose ? tail.slice(0, -1) : tail;
+      out.push(head + sanitizeTagAttributes(attrs) + (hasClose ? '>' : ''));
+    }
+    pos = cursor;
+  }
+  return out.join('');
 }
 
 function sanitizeEmailHtmlFragment(html: string): string {
@@ -353,14 +475,7 @@ function sanitizeEmailHtmlFragment(html: string): string {
     );
     if (inner === prev) break;
   }
-  inner = inner.replace(
-    /\s(?:on[a-z0-9_-]+|srcdoc|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/gi,
-    ''
-  );
-  inner = inner.replace(DANGEROUS_URI_ATTR, (full, attr: string, dq?: string, sq?: string, uq?: string) => {
-    const val = dq ?? sq ?? uq ?? '';
-    return isUnsafeEmailUri(val) ? `${attr}="#"` : full;
-  });
+  inner = sanitizeTagsLinear(inner);
   return inner.trim();
 }
 

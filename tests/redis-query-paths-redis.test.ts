@@ -234,7 +234,7 @@ describe.skipIf(!REDIS_URL)('the Redis query paths on a real Redis server', () =
       expect(trips.trips).toBeLessThanOrEqual(20);
       expect(trips.names).not.toContain('hget');
       expect(trips.names.filter((name) => name === 'lrange')).toHaveLength(1);
-    });
+    }, 20_000);
 
     it('deletes the index when no job is left, and keeps the jobs of a user it does not name', async () => {
       const input: Seed = {

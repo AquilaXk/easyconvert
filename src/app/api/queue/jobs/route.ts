@@ -6,7 +6,7 @@ import { handOffConversionJob, trustedInputBytes } from '@/lib/queue/enqueue';
 import { resolveResourceClass, tierToPriority } from '@/lib/queue/resource-class';
 import { stripEngineControls } from '@/lib/conversions/job-time';
 import { concurrencyLimitResponse, mayEnqueue } from '@/lib/queue/concurrency-limit';
-import { detectFormatFromFilename, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
+import { detectUploadedSourceFormat, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { ConversionOptions, type FormatDefinition } from '@/lib/types';
 import { storageProvider } from '@/lib/storage';
@@ -306,9 +306,9 @@ async function prepareJobInput(user: User, request: JobRequest, instanceUri: str
     request.originalFilename = storageKey.split('/').pop() || 'file';
   }
 
-  let detected = detectFormatFromFilename(request.originalFilename);
+  let detected = detectUploadedSourceFormat(request.originalFilename, request.sourceFormat);
   if (!detected) return { refusal: unknownSourceProblem(request.originalFilename, instanceUri) };
-  if (detected.id === 'xml') {
+  if (!request.sourceFormat && detected.id === 'xml') {
     const prefix = await readQueueJobXmlPrefix(request);
     detected = promoteAltoXmlSource(detected, undefined, request.targetFormat, prefix) ?? detected;
   }
@@ -352,7 +352,7 @@ async function enqueuePreparedJob(
   if (!storageKey && prepared.inlineUploadBuffer) {
     const mimeType =
       request.inlineFile?.type ||
-      detectFormatFromFilename(request.originalFilename)?.mimeType ||
+      detectUploadedSourceFormat(request.originalFilename, request.sourceFormat)?.mimeType ||
       'application/octet-stream';
     storageKey = await storeUploadedBuffer(
       storageProvider,
@@ -409,11 +409,11 @@ function inlinePayloadProblem(instanceUri: string): Response {
   return createProblemDetailsResponse(413, INLINE_PAYLOAD_DETAIL, instanceUri);
 }
 
-function validateInlineFormFile(file: File, instanceUri: string): Response | null {
+function validateInlineFormFile(file: File, explicitSource: string | undefined, instanceUri: string): Response | null {
   if (file.size === 0) {
     return failJson(400, 'Conversion payload is empty. File buffer has 0 bytes.');
   }
-  if (!detectFormatFromFilename(file.name)) {
+  if (!detectUploadedSourceFormat(file.name, explicitSource)) {
     return unknownSourceProblem(file.name, instanceUri);
   }
   if (file.size > INLINE_JOB_PAYLOAD_MAX_BYTES) {
@@ -446,9 +446,15 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string): Promis
     options = parsedOptions.options;
   }
 
+  const sourceFormatRaw = formText(formData, 'sourceFormat');
+  if (sourceFormatRaw !== undefined && sourceFormatRaw.length > MAX_SOURCE_FORMAT_CHARS) {
+    return { refusal: failJson(400, 'Invalid "sourceFormat" parameter: must be a string.') };
+  }
+  const sourceFormat = sourceFormatRaw?.trim() || undefined;
+
   const file = rawFile ?? undefined;
   if (file) {
-    const fileProblem = validateInlineFormFile(file, instanceUri);
+    const fileProblem = validateInlineFormFile(file, sourceFormat, instanceUri);
     if (fileProblem) return { refusal: fileProblem };
   }
 
@@ -462,12 +468,6 @@ async function readFormJobRequest(req: NextRequest, instanceUri: string): Promis
     return { refusal: failJson(400, 'Invalid "storageKey" parameter: must be a non-empty string.') };
   }
   const storageKey = storageKeyRaw?.trim() || undefined;
-
-  const sourceFormatRaw = formText(formData, 'sourceFormat');
-  if (sourceFormatRaw !== undefined && sourceFormatRaw.length > MAX_SOURCE_FORMAT_CHARS) {
-    return { refusal: failJson(400, 'Invalid "sourceFormat" parameter: must be a string.') };
-  }
-  const sourceFormat = sourceFormatRaw?.trim() || undefined;
 
   if (!file && !storageKey) {
     return { refusal: failJson(400, 'Missing required input: provide "file" or "storageKey".') };

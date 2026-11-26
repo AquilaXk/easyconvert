@@ -223,12 +223,14 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     const txt = (await dispatchConversion(xhtml, 'xhtml', 'txt', {}, 'spec.xhtml')).buffer.toString('utf-8');
     expect(txt).toContain('Release Checklist');
     expect(txt).toContain('Verify every endpoint carefully.');
+    expect(txt).not.toContain('XHTML Spec');
     expect(txt).not.toContain('<?xml');
     expect(txt).not.toContain('<strong>');
 
     const md = (await dispatchConversion(xhtml, 'xhtml', 'md', {}, 'spec.xhtml')).buffer.toString('utf-8');
     expect(md).toContain('# Release Checklist');
     expect(md).toContain('**every**');
+    expect(md).not.toContain('XHTML Spec');
 
     const docx = await dispatchConversion(xhtml, 'xhtml', 'docx', {}, 'spec.xhtml');
     const docxModel = await readDocxModel(await openPackage(docx.buffer, 'DOCX'));
@@ -239,7 +241,7 @@ describe('Launch audit: newly supported and repaired conversions', () => {
 
     const pdf = await dispatchConversion(xhtml, 'xhtml', 'pdf', {}, 'spec.xhtml');
     expect(pdf.buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-');
-  });
+  }, 30_000);
 
   it('decodes RFC 5322 / MIME EML messages cleanly (headers, QP, base64, multipart) and bounds pathological nesting', async () => {
     const encodedSubject = Buffer.from('월간 정산 보고서 Report', 'utf-8').toString('base64');
@@ -465,7 +467,7 @@ describe('Launch audit: newly supported and repaired conversions', () => {
       const queuedBz2 = buildQueuedFileItem(new File([Buffer.from('payload')], 'backup.tar.bz2'));
       expect(queuedBz2.sourceFormat).toBe('tar.bz2');
     }
-  });
+  }, 30_000);
 
   it('passes spoof checks for valid Lotus/CFBF wks, plans xhtml PDF routing via LibreOffice, and handles edge cases in markup/FODT/EML/FoxPro DBF', async () => {
     // 1. WKS spoof gate: Lotus BOF accepted, minimal unclaimed CFBF accepted, spoofed PNG / Excel CFBF / malformed CFBF rejected
@@ -597,7 +599,7 @@ describe('Launch audit: newly supported and repaired conversions', () => {
       Buffer.from(
         '\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="b1"\r\n\r\n' +
           '--b1\r\nContent-Type: text/html; charset=utf-8\r\n\r\n' +
-          '<body><p>Hello</p><script>alert(1)</script ><svg onload=alert(2)><a href=javascript:alert(3) formaction=javascript:x>Link</a><iframe srcdoc="<script>4</script>"></iframe></body>\r\n' +
+          '<body><p>Hello https://example.com/onclick=ok</p><a href="https://example.com/onclick=ok">Safe</a><script>alert(1)</script ><svg onload=alert(2)><img/onerror=alert(4) src=x><img title=">" onerror=alert(5) src=y><img src="x"/onerror=alert(9)><a href=javascript:alert(3) formaction=javascript:x>Link</a><a/href="javascript&colon;alert(6)">C</a><a href="java&tab;script:alert(7)">T</a><a href="&#x09;java&NewLine;script&colon;alert(8)">N</a><iframe srcdoc="<script>4</script>"></iframe></body>\r\n' +
           '--b1\r\nContent-Type: application/pdf\r\nContent-Disposition: attachment; filename*=UTF-8\'\'%EC%9D%B4%EB%A0%A5%EC%84%9C.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\nJVBERi0=\r\n' +
           '--b1--\r\n',
         'ascii'
@@ -606,11 +608,15 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     const sanitizedEmlHtml = (await dispatchConversion(rawEml, 'eml', 'html', {}, 'mail.eml')).buffer.toString('utf-8');
     expect(sanitizedEmlHtml).toContain('Café');
     expect(sanitizedEmlHtml).toContain('이력서.pdf');
-    expect(sanitizedEmlHtml).toContain('Hello');
+    expect(sanitizedEmlHtml).toContain('Hello https://example.com/onclick=ok');
+    expect(sanitizedEmlHtml).toContain('href="https://example.com/onclick=ok"');
     expect(sanitizedEmlHtml).not.toContain('alert(');
     expect(sanitizedEmlHtml).not.toContain('<script');
     expect(sanitizedEmlHtml).not.toContain('<svg');
+    expect(sanitizedEmlHtml).not.toContain('onerror');
     expect(sanitizedEmlHtml).not.toContain('javascript:');
+    expect(sanitizedEmlHtml).not.toContain('&colon;');
+    expect(sanitizedEmlHtml).not.toContain('&tab;');
     expect(sanitizedEmlHtml).not.toContain('srcdoc');
     expect(sanitizedEmlHtml).not.toContain('formaction');
 

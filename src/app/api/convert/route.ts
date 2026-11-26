@@ -8,7 +8,7 @@ import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
-import { detectFormatFromFilename, getFormatByExtension, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
+import { detectUploadedSourceFormat, getFormatByExtension, getAvailableTargetFormats } from '@/lib/registry';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {
@@ -136,10 +136,7 @@ async function resolveWebConvertPair(
   return { detectedDef, targetId: targetDef.id };
 }
 function sourceFormatOf(fileName: string, sourceFormatParam: string | undefined): FormatDefinition | undefined {
-  const named = sourceFormatParam ? getFormatByExtension(sourceFormatParam) : undefined;
-  const detected = named ?? detectFormatFromFilename(fileName);
-  if (detected || !fileName.toLowerCase().endsWith('.tar.bz2')) return detected;
-  return FORMAT_REGISTRY['tar.bz2'] || FORMAT_REGISTRY['bz2'];
+  return detectUploadedSourceFormat(fileName, sourceFormatParam);
 }
 
 export const POST = withinSingleRequest(admittingNewFiles(loggingOutcomes('convert', async function POST(req: NextRequest, trace: ConversionTrace) {

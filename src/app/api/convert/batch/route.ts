@@ -9,7 +9,7 @@ import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { fileSizeLimitProblem, withinSingleRequest } from '@/lib/api/file-size-limit';
-import { detectFormatFromFilename, getFormatByExtension } from '@/lib/registry';
+import { detectUploadedSourceFormat, getFormatByExtension } from '@/lib/registry';
 import { assertNotSpoofedFile, spoofCheckRefusal } from '@/lib/security/file-guard';
 import { maskServerText } from '@/lib/security/server-paths';
 import { refusalCodeOf, type ConversionRefusalCode } from '@/lib/refusal-codes';
@@ -167,7 +167,7 @@ function planBatchFiles(
 ): PlannedFile[] {
   const planned: PlannedFile[] = [];
   for (const file of files) {
-    const detected = detectFormatFromFilename(file.name);
+    const detected = detectUploadedSourceFormat(file.name);
     if (!detected) continue;
     if (targetFormatsMap.has(file.name)) {
       const targetFormat = normalizeTargetFormat(targetFormatsMap.get(file.name) ?? '');

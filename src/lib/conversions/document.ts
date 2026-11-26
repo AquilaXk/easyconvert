@@ -871,15 +871,24 @@ const HTML_MARKDOWN_ELEMENTS: ReadonlyArray<readonly [name: string, wrap: (conte
 ];
 
 function htmlToMarkdown(html: string): string {
-  let cleaned = withoutHtmlRawElement(withoutHtmlRawElement(html, 'script'), 'style');
+  let cleaned = withoutHtmlRawElement(
+    withoutHtmlRawElement(withoutHtmlRawElement(withoutHtmlRawElement(html, 'head'), 'title'), 'script'),
+    'style'
+  );
   for (const [name, wrap] of HTML_MARKDOWN_ELEMENTS) cleaned = replaceHtmlElements(cleaned, name, wrap);
   cleaned = removeHtmlOpenings(cleaned.replace(/<br\s*[\/]?>/gi, '\n').replace(/<\/p>/gi, '\n\n'), 'p');
   return stripAngleTags(cleaned).trim();
 }
 
 export function stripHtmlTags(html: string): string {
-  const withoutScripts = withoutHtmlRawElement(withoutHtmlRawElement(html, 'script'), 'style');
-  return stripAngleTags(withoutScripts)
+  const withoutScripts = withoutHtmlRawElement(
+    withoutHtmlRawElement(withoutHtmlRawElement(withoutHtmlRawElement(html, 'head'), 'title'), 'script'),
+    'style'
+  );
+  const withBreaks = withoutScripts
+    .replace(/<br\s*[\/]?>/gi, '\n')
+    .replace(/<\/(?:p|div|li|tr|blockquote|h[1-6])>/gi, '\n');
+  return stripAngleTags(withBreaks)
     .replace(/&nbsp;/g, ' ')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')

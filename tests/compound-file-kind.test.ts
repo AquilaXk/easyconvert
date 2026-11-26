@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { parseCfbf, type CfbfContainer } from '../src/lib/conversions/cfbf-reader';
 import {
@@ -9,6 +13,8 @@ import {
   type ByteSource,
 } from '../src/lib/compound-file-kind';
 import { HEADER_WINDOW_BYTES } from '../src/lib/format-signatures';
+import { assertNotSpoofedFilePath, assertNotSpoofedObject } from '../src/lib/security/file-guard';
+import { FileExtensionSpoofError } from '../src/lib/types';
 import { buildCompoundFile, placeDirectory } from './helpers/cfb-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
 
@@ -481,5 +487,43 @@ describe('a directory spread over a large file', () => {
     const { source, ranges } = countingSource(directoryOfEmptyEntries(65_536 + 32));
     expect(readCompoundFileRootFrom(source).status).toBe('malformed');
     expect(ranges.length).toBeLessThanOrEqual(130);
+  });
+});
+
+describe('Works CFBF (.wks) files whose directory lies past the 64 KiB header window', () => {
+  it('accepts genuine Works CFBF past 64 KiB and rejects Excel/Word CFBF spoofing .wks', async () => {
+    const pastSector = HEADER_WINDOW_BYTES / SECTOR + 150;
+    const works = placeDirectory(compound(['Contents']), { directorySectors: [pastSector] });
+    const excel = placeDirectory(compound(['Workbook'], EXCEL_97), { directorySectors: [pastSector] });
+    const word = placeDirectory(compound(['WordDocument'], OFFICE_CLASS_IDS[1][1]), { directorySectors: [pastSector] });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wks-past-window-'));
+    try {
+      const worksPath = path.join(dir, 'works.wks');
+      const excelPath = path.join(dir, 'excel.wks');
+      const wordPath = path.join(dir, 'word.wks');
+      fs.writeFileSync(worksPath, works);
+      fs.writeFileSync(excelPath, excel);
+      fs.writeFileSync(wordPath, word);
+
+      assertNotSpoofedFilePath(worksPath, 'wks', 'works.wks');
+      expect(() => assertNotSpoofedFilePath(excelPath, 'wks', 'excel.wks')).toThrow(FileExtensionSpoofError);
+      expect(() => assertNotSpoofedFilePath(wordPath, 'wks', 'word.wks')).toThrow(FileExtensionSpoofError);
+
+      const memStorage = (buf: Buffer) => ({
+        openReadStream: (_k: string, opts?: { start?: number; end?: number }) => {
+          const start = opts?.start ?? 0;
+          const end = opts?.end !== undefined ? opts.end + 1 : buf.length;
+          return Readable.from([buf.subarray(start, end)]);
+        },
+      });
+      await expect(
+        assertNotSpoofedObject(memStorage(works), 'k', works.length, works.subarray(0, HEADER_WINDOW_BYTES), 'wks', 'works.wks')
+      ).resolves.toBeUndefined();
+      await expect(
+        assertNotSpoofedObject(memStorage(word), 'k', word.length, word.subarray(0, HEADER_WINDOW_BYTES), 'wks', 'word.wks')
+      ).rejects.toThrow(FileExtensionSpoofError);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

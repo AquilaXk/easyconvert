@@ -431,10 +431,20 @@ function kindsOfNames(names: ReadonlySet<string>): readonly Kind[] {
   return NAME_KINDS.find(([name]) => names.has(name))?.[1] ?? [];
 }
 
+function isCompatibleWorksRoot(root: Extract<CompoundFileRoot, { status: 'read' }>): boolean {
+  if (root.classId !== undefined && CLASS_ID_KINDS.has(root.classId)) return false;
+  if (kindsOfNames(root.names).length > 0) return false;
+  for (const name of NON_WORKS_CFBF_STREAMS) {
+    if (root.names.has(name)) return false;
+  }
+  return true;
+}
+
 function verdictOfRoot(ext: string, root: CompoundFileRoot): CompoundFileVerdict {
   if (root.status === 'unreadable') return 'unreadable';
   if (root.status === 'malformed') return 'mismatch';
   if (root.classId !== undefined && OFFICE_CLASS_IDS.has(root.classId)) return 'mismatch';
+  if (ext === 'wks') return isCompatibleWorksRoot(root) ? 'match' : 'mismatch';
   const byClassId = root.classId === undefined ? [] : (CLASS_ID_KINDS.get(root.classId) ?? []);
   const byNames = kindsOfNames(root.names);
   if ((byClassId.length > 0 && !byClassId.includes(ext)) || (byNames.length > 0 && !byNames.includes(ext))) return 'mismatch';
@@ -473,17 +483,8 @@ export function isNonOfficeCompoundFile(buf: Uint8Array): boolean {
  * Accepts valid non-Office/non-StarOffice/non-Corel/non-Quattro containers and truncated `headerWindowBytes` windows whose directory lies past the header.
  */
 export function isCompatibleWorksCompoundFile(buf: Uint8Array, headerWindowBytes: number): boolean {
-  const root = readCompoundFileRoot(buf);
-  if (root.status === 'malformed') return false;
-  if (root.status === 'unreadable') return buf.length === headerWindowBytes;
-  if (root.classId !== undefined && (OFFICE_CLASS_IDS.has(root.classId) || CLASS_ID_KINDS.has(root.classId))) {
-    return false;
-  }
-  if (kindsOfNames(root.names).length > 0) return false;
-  for (const name of NON_WORKS_CFBF_STREAMS) {
-    if (root.names.has(name)) return false;
-  }
-  return true;
+  const verdict = verdictOfRoot('wks', readCompoundFileRoot(buf));
+  return verdict === 'match' || (verdict === 'unreadable' && buf.length === headerWindowBytes);
 }
 
 /** The verdict for a file read at the offsets of its directory (see `readCompoundFileRootFrom`); `unreadable` there means the file ends before its directory does. */

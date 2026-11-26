@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
+import { POST as convertPost } from '../src/app/api/convert/route';
 import { POST as batchPost } from '../src/app/api/convert/batch/route';
+import { POST as queueJobsPost } from '../src/app/api/queue/jobs/route';
 import { POST as v1ConvertPost } from '../src/app/api/v1/convert/route';
+import { dispatchConversion } from '../src/lib/conversions/dispatch';
 import { createSessionToken } from '../src/lib/auth/session';
 import { userStore } from '../src/lib/auth/user-store';
 
@@ -70,4 +73,50 @@ describe('the name that /api/v1/convert gives a stored result', () => {
     expect(body.fileName).toBe('scores.json');
     expect(decodeURIComponent(body.downloadUrl)).toMatch(/^\/api\/storage\/file\/conversions\/[^/]+\/\d+_scores\.json$/);
   });
+});
+
+describe('compound .tar.* upload source detection across web, batch, and queue job routes', () => {
+  it('routes .tar.zst and .tar.bz2 consistently across /api/convert, /api/convert/batch, and /api/queue/jobs', async () => {
+    const cookie = await sessionCookie();
+    const { tarFromMembers } = await import('../src/lib/conversions/archive-repack');
+    const tarBuf = Buffer.concat(tarFromMembers([{ filename: 'hello.txt', isDirectory: false, data: Buffer.from('hello world\n') }]));
+    const tarZst = (await dispatchConversion(tarBuf, 'tar', 'tar.zst', {}, 'bundle.tar')).buffer;
+    const tarBz2 = (await dispatchConversion(tarBuf, 'tar', 'tar.bz2', {}, 'backup.tar')).buffer;
+
+    // 1. /api/convert accepts bundle.tar.zst -> tar.gz (only tar.zst offers tar.gz, not raw zst)
+    const convertForm = new FormData();
+    convertForm.append('file', new File([new Uint8Array(tarZst)], 'bundle.tar.zst'));
+    convertForm.append('targetFormat', 'tar.gz');
+    const convertRes = await convertPost(new NextRequest(`${BASE_URL}/api/convert`, { method: 'POST', headers: cookie, body: convertForm }));
+    expect(convertRes.status).toBe(200);
+
+    // 2. /api/convert/batch plans backup.tar.bz2 -> zip and bundle.tar.zst -> tar.gz
+    const batchForm = new FormData();
+    batchForm.append('files', new File([new Uint8Array(tarBz2)], 'backup.tar.bz2'));
+    batchForm.append('files', new File([new Uint8Array(tarZst)], 'bundle.tar.zst'));
+    batchForm.append('targetFormats', JSON.stringify({ 'backup.tar.bz2': 'zip', 'bundle.tar.zst': 'tar.gz' }));
+    const batchRes = await batchPost(new NextRequest(`${BASE_URL}/api/convert/batch`, { method: 'POST', headers: cookie, body: batchForm }));
+    expect(batchRes.status).toBe(200);
+
+    // 3. /api/queue/jobs accepts backup.tar.bz2 inline multipart and bundle.tar.zst -> tar.gz
+    const qFormBz2 = new FormData();
+    qFormBz2.append('file', new File([new Uint8Array(tarBz2)], 'backup.tar.bz2'));
+    qFormBz2.append('targetFormat', 'zip');
+    const qResBz2 = await queueJobsPost(new NextRequest(`${BASE_URL}/api/queue/jobs`, { method: 'POST', headers: cookie, body: qFormBz2 }));
+    expect(qResBz2.status).toBe(200);
+
+    const qFormZst = new FormData();
+    qFormZst.append('file', new File([new Uint8Array(tarZst)], 'bundle.tar.zst'));
+    qFormZst.append('targetFormat', 'tar.gz');
+    const qResZst = await queueJobsPost(new NextRequest(`${BASE_URL}/api/queue/jobs`, { method: 'POST', headers: cookie, body: qFormZst }));
+    expect(qResZst.status).toBe(200);
+
+    // 4. /api/queue/jobs honours explicit sourceFormat when filename has no compound extension
+    const qFormExplicit = new FormData();
+    qFormExplicit.append('file', new File([new Uint8Array(tarBz2)], 'opaque.bin'));
+    qFormExplicit.append('sourceFormat', 'tar.bz2');
+    qFormExplicit.append('targetFormat', 'zip');
+    const qResExplicit = await queueJobsPost(new NextRequest(`${BASE_URL}/api/queue/jobs`, { method: 'POST', headers: cookie, body: qFormExplicit }));
+    expect(qResExplicit.status).toBe(200);
+  }, 30_000);
 });
