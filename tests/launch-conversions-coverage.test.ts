@@ -19,7 +19,14 @@ import {
 import { detectUploadedSourceFormat } from '../src/lib/uploaded-source-format';
 import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
 import { planTextPdfRoute, TEXT_PDF_SOURCES } from '../src/worker/text-pdf-route';
-import { manToMarkdown, rstToMarkdown, texToMarkdown } from '../src/lib/conversions/office/markup-text';
+import {
+  manToMarkdown,
+  manToPlainText,
+  rstToMarkdown,
+  rstToPlainText,
+  texToMarkdown,
+  texToPlainText,
+} from '../src/lib/conversions/office/markup-text';
 import { expectNoHang } from './helpers/timing';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError, EngineUnavailableError, SheetLimitError } from '../src/lib/types';
@@ -859,12 +866,18 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     expect(uhHtml).toContain('<body><p>VisibleWithoutBody</p></body>');
   });
 
-  it('preserves TeX, RST, and man edge-case formatting across refactored markup helpers', () => {
+  it('preserves TeX, RST, and man edge-case formatting across refactored markup helpers', async () => {
     const texSrc = [
       '\\author{Alice}',
       '\\newenvironment{myenv}{start}{end}',
-      '\\href{https://example.com}{Docs} and \\url{https://example.org}',
-      '\\texttt{run} \\% \\$ \\& \\_ \\# \\{ \\}',
+      '\\href{https://example.com/a--b}{Docs -- Guide} and \\url{https://example.org/x--y}',
+      '\\texttt{--run} \\% \\$ \\& \\_ \\# \\{ \\} a--b ``q\'\'',
+      '\\begin{verbatim}',
+      'code -- here ``quoted\'\'',
+      '\\end{verbatim}',
+      '\\begin{lstlisting}[language=Python]',
+      'x = 1 -- 2',
+      '\\end{lstlisting}',
       '\\begin{itemize}',
       '\\item First',
       '\\end{itemize}',
@@ -873,12 +886,21 @@ describe('Launch audit: newly supported and repaired conversions', () => {
       [
         '*Alice*',
         '',
-        '[Docs](https://example.com) and https://example.org',
-        '`run` % $ & _ # { }',
+        '[Docs – Guide](https://example.com/a--b) and https://example.org/x--y',
+        '`--run` % $ & _ # { } a–b "q"',
+        '',
+        '```',
+        'code -- here ``quoted\'\'',
+        '```',
+        '',
+        '```',
+        'x = 1 -- 2',
+        '```',
         '',
         '- First',
       ].join('\n')
     );
+    expect(texToPlainText('\\begin{verbatim}\ncode -- here\n\\end{verbatim}')).toBe('code -- here');
 
     const deepBraces = `${'{'.repeat(40)}deep${'}'.repeat(40)}`;
     expect(texToMarkdown(deepBraces)).toBe('deep');
@@ -893,6 +915,11 @@ describe('Launch audit: newly supported and repaired conversions', () => {
       '',
       '.. _ref: https://example.com',
       '',
+      '.. code:: python',
+      '   :linenos:',
+      '',
+      '   print(1)',
+      '',
       'See `Guide <https://example.com/guide>`_ and ``inline``.',
     ].join('\n');
     expect(rstToMarkdown(rstSrc)).toBe(
@@ -904,22 +931,34 @@ describe('Launch audit: newly supported and repaired conversions', () => {
         '',
         'ref: https://example.com',
         '',
+        '```python',
+        'print(1)',
+        '```',
         'See [Guide](https://example.com/guide) and `inline`.',
       ].join('\n')
     );
+    expect(rstToPlainText('.. code:: python\n\n   print(1)')).toBe('print(1)');
 
     const manSrc = [
       '.TH TOOL 1',
       '.SH SYNOPSIS',
       '.SS Flags',
       '.BR --help " , " -h',
+      '.BR "" roman',
       '.BI -f file',
       '.TP',
       '.B --verbose',
+      '.TP ""',
+      'After empty TP.',
+      '.IP "" 4',
+      'Indented para.',
       '.OP -v',
       '.ig ENDIGN',
       'hidden text',
       '.ENDIGN',
+      '.EX',
+      'echo ok',
+      '.EE',
       '.br',
       'End line.',
     ].join('\n');
@@ -932,14 +971,35 @@ describe('Launch audit: newly supported and repaired conversions', () => {
         '### Flags',
         '',
         '**--help** , **-h**',
+        'roman',
         '**-f***file*',
         '',
         '**--verbose**',
+        '',
+        'After empty TP.',
+        '',
+        'Indented para.',
         '[-v]',
+        '',
+        '```',
+        'echo ok',
+        '```',
         '',
         'End line.',
       ].join('\n')
     );
+    expect(manToPlainText('.TH T 1\n.EX\necho ok\n.EE')).toBe('T(1)\n\necho ok');
+
+    // Linear-time plain-text link stripping without [[^\]]+ quadratic backtracking
+    const bracketBomb = '[a'.repeat(100_000);
+    const texPlainBomb = await expectNoHang('texToPlainText 100k unclosed brackets', () => texToPlainText(bracketBomb));
+    expect(texPlainBomb.length).toBe(200_000);
+    const mdTxtBomb = (
+      await expectNoHang('md->txt 100k unclosed brackets', () =>
+        dispatchConversion(Buffer.from(bracketBomb, 'utf-8'), 'md', 'txt', {}, 'bomb.md')
+      )
+    ).buffer.toString('utf-8');
+    expect(mdTxtBomb.length).toBe(200_000);
   });
 
   it('hardens Flat ODF leading comment normalization, .cur vs .wks signature distinction, and legacy spreadsheet bounds', async () => {

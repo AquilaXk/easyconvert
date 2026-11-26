@@ -67,7 +67,7 @@ import {
   SUPPRESSED_CONTAINER_TAGS,
   UNTRUSTED_HTML_CSP,
 } from './office/eml-reader';
-import { isMarkupTextSource, markupToMarkdown, markupToPlainText, texToPlainText } from './office/markup-text';
+import { isMarkupTextSource, markupToMarkdown, markupToPlainText, replaceMarkdownLinksLinear, texToPlainText } from './office/markup-text';
 import { sourceBytesAsText } from './office/text-source';
 import { markdownToSafeHtml } from './markdown-pdf';
 import { renderMarkdownFragment } from '../markdown/safe-markdown';
@@ -1027,13 +1027,12 @@ export function stripHtmlTags(html: string, xmlSelfClosing = false): string {
 }
 
 function stripMarkdownSyntax(md: string): string {
-  return md
+  const withoutInline = md
     .replace(/^#+\s+/gm, '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
-    .trim();
+    .replace(/`([^`]+)`/g, '$1');
+  return replaceMarkdownLinksLinear(withoutInline, (label) => label).trim();
 }
 
 /** Text sources decoded strictly (UTF-8, or UTF-16 with a byte order mark) when rendered to PDF. HTML is not one: it is decoded by encoding sniffing. */

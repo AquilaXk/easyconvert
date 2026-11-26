@@ -145,12 +145,16 @@ function skipEmptyTrailingGroup(text: string, from: number): number {
   return from;
 }
 
+const TEX_CONTROL_TOKEN_AT = /\\[A-Za-z@*]+/y;
+const TEX_COMMAND_AT = /([A-Za-z]+)\*?/y;
+
 function skipMacroControlArgs(text: string, from: number, count: number): number {
   let cursor = from;
   // Handle unbraced control sequence name token like \newcommand\foo[1]{bar}
   while (cursor < text.length && (text[cursor] === ' ' || text[cursor] === '\t')) cursor += 1;
   if (text[cursor] === '\\') {
-    const token = /^\\[A-Za-z@*]+/.exec(text.slice(cursor));
+    TEX_CONTROL_TOKEN_AT.lastIndex = cursor;
+    const token = TEX_CONTROL_TOKEN_AT.exec(text);
     if (token) cursor += token[0].length;
   }
   for (let pass = 0; pass < count + 2; pass += 1) {
@@ -164,6 +168,7 @@ function skipMacroControlArgs(text: string, from: number, count: number): number
 }
 
 const VERBATIM_TEX_ENVS: ReadonlySet<string> = new Set(['verbatim', 'lstlisting']);
+const TEX_CODE_COMMANDS: ReadonlySet<string> = new Set(['texttt', 'code']);
 
 const TEX_INLINE_FORMATS: Readonly<Record<string, (rendered: string) => string>> = {
   textbf: (s) => `**${s}**`,
@@ -205,56 +210,74 @@ function consumeTexSimpleEscape(tex: string, i: number, out: string[]): number |
   return null;
 }
 
+function skipTexEnvMandatorySpecs(tex: string, envName: string, cursor: number): number {
+  let nextCursor = cursor;
+  const specCount = ENV_MANDATORY_SPEC_COUNTS[envName] ?? 0;
+  for (let s = 0; s < specCount; s += 1) {
+    const specArg = readBracedArg(tex, nextCursor);
+    if (!specArg) break;
+    nextCursor = skipOptionalBrackets(tex, specArg.next);
+  }
+  return nextCursor;
+}
+
 function consumeTexEnvironment(tex: string, cmd: 'begin' | 'end', cursor: number, out: string[]): number | null {
   const envArg = readBracedArg(tex, cursor);
   if (!envArg) return null;
+  const envName = envArg.content.trim();
   let nextCursor = skipOptionalBrackets(tex, envArg.next);
   if (cmd === 'begin') {
-    const specCount = ENV_MANDATORY_SPEC_COUNTS[envArg.content.trim()] ?? 0;
-    for (let s = 0; s < specCount; s += 1) {
-      const specArg = readBracedArg(tex, nextCursor);
-      if (!specArg) break;
-      nextCursor = skipOptionalBrackets(tex, specArg.next);
+    nextCursor = skipTexEnvMandatorySpecs(tex, envName, nextCursor);
+    if (VERBATIM_TEX_ENVS.has(envName)) {
+      const endTag = `\\end{${envName}}`;
+      const endIdx = tex.indexOf(endTag, nextCursor);
+      if (endIdx !== -1) {
+        const body = tex.slice(nextCursor, endIdx).replace(/^\n+|\n+$/g, '');
+        out.push(`\n\`\`\`\n${body}\n\`\`\`\n`);
+        return endIdx + endTag.length;
+      }
     }
   }
-  out.push(VERBATIM_TEX_ENVS.has(envArg.content) ? '\n```\n' : '\n');
+  out.push(VERBATIM_TEX_ENVS.has(envName) ? '\n```\n' : '\n');
   return nextCursor;
 }
 
 function consumeTexSingleArgCommand(
   tex: string,
   cmd: string,
-  cmdLower: string,
   cursor: number,
   depth: number,
+  unescapeProse: boolean,
   out: string[]
 ): number {
   const firstArg = readBracedArg(tex, cursor);
   if (!firstArg) return cursor;
   if (Object.hasOwn(HEADING_COMMANDS, cmd)) {
     const hashes = '#'.repeat(HEADING_COMMANDS[cmd]);
-    out.push(`\n\n${hashes} ${transformTexRecursive(firstArg.content, depth + 1).trim()}\n\n`);
+    out.push(`\n\n${hashes} ${transformTexRecursive(firstArg.content, depth + 1, unescapeProse).trim()}\n\n`);
     return firstArg.next;
   }
   if (Object.hasOwn(TEX_INLINE_FORMATS, cmd)) {
-    out.push(TEX_INLINE_FORMATS[cmd](transformTexRecursive(firstArg.content, depth + 1)));
+    const argUnescape = unescapeProse && !TEX_CODE_COMMANDS.has(cmd);
+    out.push(TEX_INLINE_FORMATS[cmd](transformTexRecursive(firstArg.content, depth + 1, argUnescape)));
     return firstArg.next;
   }
   if (cmd === 'url') {
     out.push(firstArg.content.trim());
     return firstArg.next;
   }
-  if (PREAMBLE_OR_CONTROL_COMMANDS.has(cmdLower)) {
+  if (PREAMBLE_OR_CONTROL_COMMANDS.has(cmd.toLowerCase())) {
     return firstArg.next;
   }
-  out.push(transformTexRecursive(firstArg.content, depth + 1));
+  out.push(transformTexRecursive(firstArg.content, depth + 1, unescapeProse));
   return firstArg.next;
 }
 
-function consumeTexCommand(tex: string, i: number, depth: number, out: string[]): number {
+function consumeTexCommand(tex: string, i: number, depth: number, unescapeProse: boolean, out: string[]): number {
   const simpleNext = consumeTexSimpleEscape(tex, i, out);
   if (simpleNext !== null) return simpleNext;
-  const cmdMatch = /^([A-Za-z]+)\*?/.exec(tex.slice(i + 1));
+  TEX_COMMAND_AT.lastIndex = i + 1;
+  const cmdMatch = TEX_COMMAND_AT.exec(tex);
   if (!cmdMatch) {
     out.push(tex.slice(i, i + 2));
     return i + 2;
@@ -277,44 +300,58 @@ function consumeTexCommand(tex: string, i: number, depth: number, out: string[])
   if (cmd === 'href') {
     const pair = readTexBracedPair(tex, cursor);
     if (pair) {
-      out.push(`[${transformTexRecursive(pair.second.content, depth + 1)}](${pair.first.content.trim()})`);
+      out.push(`[${transformTexRecursive(pair.second.content, depth + 1, unescapeProse)}](${pair.first.content.trim()})`);
       return pair.second.next;
     }
   }
   if (cmdLower === 'textcolor' || cmdLower === 'colorbox') {
     const pair = readTexBracedPair(tex, cursor);
     if (pair) {
-      out.push(transformTexRecursive(pair.second.content, depth + 1));
+      out.push(transformTexRecursive(pair.second.content, depth + 1, unescapeProse));
       return pair.second.next;
     }
   }
   if (MULTI_ARG_SUPPRESSED_COMMANDS.has(cmdLower)) return skipMacroControlArgs(tex, cursor, 2);
   if (cmdLower === 'newenvironment' || cmdLower === 'renewenvironment') return skipMacroControlArgs(tex, cursor, 3);
-  return consumeTexSingleArgCommand(tex, cmd, cmdLower, cursor, depth, out);
+  return consumeTexSingleArgCommand(tex, cmd, cursor, depth, unescapeProse, out);
 }
 
-function transformTexRecursive(tex: string, depth: number): string {
-  if (depth > MAX_BRACE_DEPTH) return tex;
+function pushTexProseSlice(tex: string, from: number, to: number, unescapeProse: boolean, out: string[]): void {
+  if (to <= from) return;
+  const slice = tex.slice(from, to);
+  out.push(unescapeProse ? unescapeTexChars(slice) : slice);
+}
+
+function transformTexRecursive(tex: string, depth: number, unescapeProse = true): string {
+  if (depth > MAX_BRACE_DEPTH) return unescapeProse ? unescapeTexChars(tex) : tex;
   const out: string[] = [];
   let i = 0;
+  let proseStart = 0;
 
   while (i < tex.length) {
-    if (tex[i] === '~') {
+    const ch = tex[i];
+    if (ch === '~') {
+      pushTexProseSlice(tex, proseStart, i, unescapeProse, out);
       out.push(' ');
       i += 1;
+      proseStart = i;
       continue;
     }
-    if (tex[i] === '\\' && i + 1 < tex.length) {
-      i = consumeTexCommand(tex, i, depth, out);
+    if (ch === '\\' && i + 1 < tex.length) {
+      pushTexProseSlice(tex, proseStart, i, unescapeProse, out);
+      i = consumeTexCommand(tex, i, depth, unescapeProse, out);
+      proseStart = i;
       continue;
     }
-    if (tex[i] === '{' || tex[i] === '}') {
+    if (ch === '{' || ch === '}') {
+      pushTexProseSlice(tex, proseStart, i, unescapeProse, out);
       i += 1;
+      proseStart = i;
       continue;
     }
-    out.push(tex[i]);
     i += 1;
   }
+  pushTexProseSlice(tex, proseStart, tex.length, unescapeProse, out);
   return out.join('');
 }
 
@@ -327,14 +364,44 @@ function normalizeMarkdownSpacing(md: string): string {
     .trim();
 }
 
+export function replaceMarkdownLinksLinear(md: string, format: (label: string, url: string) => string): string {
+  if (!md.includes('](')) return md;
+  const out: string[] = [];
+  let pos = 0;
+  while (pos < md.length) {
+    const open = md.indexOf('[', pos);
+    if (open === -1) break;
+    const close = md.indexOf(']', open + 1);
+    if (close === -1) break;
+    if (md[close + 1] !== '(') {
+      out.push(md.slice(pos, close + 1));
+      pos = close + 1;
+      continue;
+    }
+    const endParen = md.indexOf(')', close + 2);
+    if (endParen === -1) break;
+    if (close === open + 1 || endParen === close + 2) {
+      out.push(md.slice(pos, close + 1));
+      pos = close + 1;
+      continue;
+    }
+    const nestedOpen = md.lastIndexOf('[', close - 1);
+    const labelStart = nestedOpen > open ? nestedOpen : open;
+    out.push(md.slice(pos, labelStart));
+    out.push(format(md.slice(labelStart + 1, close), md.slice(close + 2, endParen)));
+    pos = endParen + 1;
+  }
+  if (pos === 0) return md;
+  out.push(md.slice(pos));
+  return out.join('');
+}
+
 function markdownToReadablePlain(md: string): string {
-  return md
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+  return replaceMarkdownLinksLinear(md.replace(/^#{1,6}\s+/gm, ''), (label, url) => `${label} (${url})`)
     .replace(/\*\*([^*]+)\*\*/g, '$1')
     .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
     .replace(/^```[^\n]*\n?/gm, '')
+    .replace(/`([^`]+)`/g, '$1')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -342,8 +409,7 @@ function markdownToReadablePlain(md: string): string {
 export function texToMarkdown(tex: string): string {
   assertMarkupWithinLimit(tex, 'tex');
   const withoutComments = stripTexComments(tex);
-  const converted = unescapeTexChars(transformTexRecursive(withoutComments, 0));
-  return normalizeMarkdownSpacing(converted);
+  return normalizeMarkdownSpacing(transformTexRecursive(withoutComments, 0, true));
 }
 
 export function texToPlainText(tex: string): string {
@@ -556,20 +622,31 @@ function splitMacroArgs(raw: string): string[] {
   const args: string[] = [];
   let cur = '';
   let inQuotes = false;
+  let hasToken = false;
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw[i];
     if (ch === '"') {
       inQuotes = !inQuotes;
+      hasToken = true;
       continue;
     }
     if (!inQuotes && (ch === ' ' || ch === '\t')) {
-      if (cur !== '') { args.push(cur); cur = ''; }
+      if (hasToken) {
+        args.push(cur);
+        cur = '';
+        hasToken = false;
+      }
       continue;
     }
     cur += ch;
+    hasToken = true;
   }
-  if (cur !== '') args.push(cur);
+  if (hasToken) args.push(cur);
   return args;
+}
+
+function joinNonEmptyMacroArgs(argStr: string): string {
+  return splitMacroArgs(argStr).filter(Boolean).join(' ');
 }
 
 function renderAlternatingManMacro(macro: string, rawArgs: string): string {
@@ -577,6 +654,7 @@ function renderAlternatingManMacro(macro: string, rawArgs: string): string {
   const firstStyle = macro[0];
   const secondStyle = macro[1];
   const styleToken = (style: string, val: string): string => {
+    if (val === '') return '';
     if (style === 'B') return `**${val}**`;
     if (style === 'I') return `*${val}*`;
     return val;
@@ -589,31 +667,49 @@ const MAN_IGNORE_MACROS: ReadonlySet<string> = new Set(['DE', 'DE1', 'DEI', 'IG'
 const MAN_INLINE_FORMATTERS: Readonly<Record<string, (argStr: string, macro: string) => string | null>> = {
   TH: (argStr) => {
     const args = splitMacroArgs(argStr);
-    const title = args[0] ?? 'MANUAL';
+    const title = args[0] || 'MANUAL';
     const section = args[1] ? `(${args[1]})` : '';
     return `# ${title}${section}\n`;
   },
-  SH: (argStr) => `\n## ${splitMacroArgs(argStr).join(' ')}\n`,
-  SS: (argStr) => `\n### ${splitMacroArgs(argStr).join(' ')}\n`,
+  SH: (argStr) => `\n## ${joinNonEmptyMacroArgs(argStr)}\n`,
+  SS: (argStr) => `\n### ${joinNonEmptyMacroArgs(argStr)}\n`,
   PP: () => '',
   LP: () => '',
   P: () => '',
   BL: () => '',
   HP: () => '',
   BR: (argStr) => (argStr ? renderAlternatingManMacro('BR', argStr) : ''),
-  TP: (argStr) => (argStr ? `\n- **${splitMacroArgs(argStr)[0]}**` : ''),
-  IP: (argStr) => (argStr ? `\n- **${splitMacroArgs(argStr)[0]}**` : ''),
-  B: (argStr) => (argStr ? `**${splitMacroArgs(argStr).join(' ')}**` : null),
-  SB: (argStr) => (argStr ? `**${splitMacroArgs(argStr).join(' ')}**` : null),
-  SY: (argStr) => (argStr ? `**${splitMacroArgs(argStr).join(' ')}**` : null),
-  I: (argStr) => (argStr ? `*${splitMacroArgs(argStr).join(' ')}*` : null),
+  TP: (argStr) => {
+    const tag = splitMacroArgs(argStr)[0];
+    return tag ? `\n- **${tag}**` : '';
+  },
+  IP: (argStr) => {
+    const tag = splitMacroArgs(argStr)[0];
+    return tag ? `\n- **${tag}**` : '';
+  },
+  B: (argStr) => {
+    const text = joinNonEmptyMacroArgs(argStr);
+    return text ? `**${text}**` : null;
+  },
+  SB: (argStr) => {
+    const text = joinNonEmptyMacroArgs(argStr);
+    return text ? `**${text}**` : null;
+  },
+  SY: (argStr) => {
+    const text = joinNonEmptyMacroArgs(argStr);
+    return text ? `**${text}**` : null;
+  },
+  I: (argStr) => {
+    const text = joinNonEmptyMacroArgs(argStr);
+    return text ? `*${text}*` : null;
+  },
   BI: (argStr, macro) => renderAlternatingManMacro(macro, argStr),
   IB: (argStr, macro) => renderAlternatingManMacro(macro, argStr),
   IR: (argStr, macro) => renderAlternatingManMacro(macro, argStr),
   RB: (argStr, macro) => renderAlternatingManMacro(macro, argStr),
   RI: (argStr, macro) => renderAlternatingManMacro(macro, argStr),
   OP: (argStr) => {
-    const args = splitMacroArgs(argStr);
+    const args = splitMacroArgs(argStr).filter(Boolean);
     return args.length > 0 ? `[${args.join(' ')}]` : null;
   },
   UR: (argStr) => argStr || null,
