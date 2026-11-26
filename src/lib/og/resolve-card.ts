@@ -7,6 +7,7 @@ import { routing, type AppLocale } from '@/i18n/routing';
 import { LEGAL_DOCUMENTS, type LegalDocumentId } from '@/lib/legal/documents';
 import { FORMAT_REGISTRY } from '@/lib/registry';
 import { parseConverterSlug } from '@/lib/slug-parser';
+import { websiteCaptureEnabled } from '@/lib/capture/capture-enabled';
 import type { FormatCategory } from '@/lib/types';
 
 /**
@@ -193,6 +194,9 @@ export async function resolveOgCardSpec(locale: AppLocale, pathname: string): Pr
   if (!rawSlug || rawSlug.includes('/')) return null;
   const parsed = parseConverterSlug(rawSlug);
   if (!parsed) return null;
+  if (!websiteCaptureEnabled() && (parsed.copy.kind === 'saveWebsiteAsPdf' || parsed.copy.kind === 'websiteScreenshot')) {
+    return null;
+  }
 
   const tSlug = createTranslator({ locale, messages, namespace: 'slugPages' });
   const copy = localizeSlugCopy(tSlug, parsed, locale);

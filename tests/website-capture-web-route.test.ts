@@ -1,0 +1,415 @@
+import crypto from 'node:crypto';
+import dns, { type LookupAddress } from 'node:dns';
+import net from 'node:net';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { NextRequest } from 'next/server';
+import { getAccessFallbackHTTPStatus, isHTTPAccessFallbackError } from 'next/dist/client/components/http-access-fallback/http-access-fallback';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { POST as captureJobsRoute } from '../src/app/api/capture/jobs/route';
+import { GET as readQueueJobRoute, DELETE as cancelQueueJobRoute } from '../src/app/api/queue/jobs/[id]/route';
+import { GET as storageFileRoute } from '../src/app/api/storage/file/[...key]/route';
+import { GET as ogRoute } from '../src/app/api/og/route';
+import { resolveOgCardSpec } from '../src/lib/og/resolve-card';
+import ConverterPage, { generateMetadata as converterGenerateMetadata } from '../src/app/[locale]/[slug]/page';
+import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
+import { userStore } from '../src/lib/auth/user-store';
+import { processQueuedCaptureJob } from '../src/lib/capture/queued-capture-runner';
+import { finishedData } from '../src/lib/queue/ended-jobs';
+import { Worker } from '../src/lib/queue/bullmq-engine';
+import { attachJobLifecycleListeners, conversionQueue, processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
+import * as workerPresence from '../src/lib/queue/worker-presence';
+import { rateLimitKey } from '../src/lib/security/client-ip';
+import { SecretSealError } from '../src/lib/security/job-secret-seal';
+import { s3Storage } from '../src/lib/storage/s3-storage';
+import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { runWithoutFileConfinement } from './helpers/unconfined-files';
+import { skipUnless } from './helpers/strict-skip';
+
+/**
+ * Anonymous and authenticated website capture via POST /api/capture/jobs -> memory queue -> worker -> /api/storage/file,
+ * plus runtime CAPTURE_WEBSITE_ENABLED=false kill-switch gates on the capture pages and OG card resolver.
+ */
+
+runWithoutFileConfinement();
+
+const CAPTURE_SLUGS = ['save-website-as-pdf', 'website-png-screenshot', 'website-jpg-screenshot'] as const;
+const WAIT = { timeout: 20_000, interval: 40 };
+const PUBLIC = [{ address: '93.184.216.34', family: 4 }] as LookupAddress[];
+const PYTHON = ['/usr/bin/python3', '/usr/local/bin/python3', '/opt/homebrew/bin/python3'].find((candidate) => existsSync(candidate));
+const STAND_IN = `
+import json, sys
+request = json.load(open(sys.argv[1]))
+if 'blocked.example' in request['url']:
+    sys.stdout.write(json.dumps({'ok': False, 'code': 'load_failed'}) + '\\n')
+    sys.exit(0)
+out = sys.argv[1].rsplit('/', 1)[0] + '/' + request['output']
+body = {'pdf': b'%PDF-1.7 captured ', 'png': b'\\x89PNG\\r\\n\\x1a\\n captured ', 'jpg': b'\\xff\\xd8\\xff captured '}[request['format']]
+open(out, 'wb').write(body + request['url'].encode())
+sys.stdout.write(json.dumps({'ok': True, 'output': request['output'], 'finalUrl': request['url'], 'title': 'Captured', 'blocked': []}) + '\\n')
+`;
+
+vi.mock('next-intl/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('next-intl/server')>()),
+  setRequestLocale: () => undefined,
+  getTranslations: async (arg: string | { locale: 'en' | 'ko'; namespace: string }) => {
+    const { locale, namespace } = typeof arg === 'string' ? { locale: 'en' as const, namespace: arg } : arg;
+    return (await import('./helpers/intl')).testTranslator(locale, namespace as 'slugPages');
+  },
+}));
+
+let dir = '';
+let worker: Worker<ConversionJobData, ConversionJobResult> | undefined;
+
+function nextAnonIp(): string {
+  const segA = crypto.randomBytes(2).toString('hex');
+  const segB = crypto.randomBytes(2).toString('hex');
+  return `2001:db8:${segA}:${segB}::1`;
+}
+
+function anonBucketId(ip: string): string {
+  return anonymousUserId(rateLimitKey(ip));
+}
+
+function anonPost(ip: string, body: unknown, headers: Record<string, string> = {}): NextRequest {
+  return new NextRequest('http://localhost/api/capture/jobs', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-forwarded-for': ip,
+      ...headers,
+    },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+}
+
+function standIn(): void {
+  const realLookup = dns.lookup;
+  vi.spyOn(dns, 'lookup').mockImplementation(((name: string, options: unknown, callback: (error: NodeJS.ErrnoException | null, list: LookupAddress[]) => void) => {
+    if (net.isIP(name) !== 0) return (realLookup as (...args: unknown[]) => void)(name, options, callback);
+    process.nextTick(() => callback(null, PUBLIC));
+  }) as never);
+  vi.spyOn(dns.promises, 'lookup').mockImplementation((async () => PUBLIC) as never);
+  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+  vi.stubEnv('CAPTURE_PYTHON_PATH', PYTHON as string);
+  vi.stubEnv('CAPTURE_DRIVER_PATH', path.join(dir, 'capture.py'));
+}
+
+async function pageStatus(call: () => unknown): Promise<number> {
+  try {
+    await call();
+    return 200;
+  } catch (error) {
+    if (isHTTPAccessFallbackError(error)) return getAccessFallbackHTTPStatus(error);
+    throw error;
+  }
+}
+
+beforeAll(() => {
+  skipUnless('a Python 3 interpreter for the stand-in driver', PYTHON !== undefined);
+  dir = mkdtempSync(path.join(os.tmpdir(), 'easyconvert-capture-web-'));
+  writeFileSync(path.join(dir, 'capture.py'), STAND_IN);
+  chmodSync(path.join(dir, 'capture.py'), 0o755);
+});
+
+afterAll(() => {
+  if (dir) rmSync(dir, { recursive: true, force: true });
+});
+
+beforeEach(() => {
+  vi.stubEnv('REDIS_URL', '');
+  vi.stubEnv('REDIS_HOST', '');
+  vi.stubEnv('TRUSTED_PROXIES', '10.0.0.0/8');
+  vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+});
+
+afterEach(async () => {
+  await worker?.close();
+  worker = undefined;
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
+
+describe('POST /api/capture/jobs validation, sealing, and memory-queue routing', () => {
+  it('enqueues anonymous capture requests onto the memory resource queue with the URL sealed under the job id', async () => {
+    const ip = nextAnonIp();
+    const secretUrl = 'https://news.example/report?token=s3cretToken';
+    const res = await captureJobsRoute(
+      anonPost(ip, {
+        url: secretUrl,
+        targetFormat: 'pdf',
+        options: { waitUntil: 'idle', pdf: { paper: 'A4', landscape: true, margin: 12, printBackground: true } },
+      })
+    );
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { success: boolean; jobId: string; status: string; queue: string };
+    expect(body.success).toBe(true);
+    expect(body.queue).toBe('easyconvert-jobs:memory');
+
+    const inMemoryQueue = await resourceQueues.memory.getJob(body.jobId);
+    expect(inMemoryQueue).toBeDefined();
+    expect(inMemoryQueue!.data.resourceClass).toBe('memory');
+    expect(inMemoryQueue!.data.originalFilename).toBe('capture.pdf');
+    expect(inMemoryQueue!.data.targetFormat).toBe('pdf');
+    expect(inMemoryQueue!.data.captureJob?.url).toBeUndefined();
+    expect(typeof inMemoryQueue!.data.captureJob?.sealedUrl).toBe('string');
+    expect(JSON.stringify(inMemoryQueue!.data)).not.toContain('s3cretToken');
+    expect(JSON.stringify(inMemoryQueue!.data)).not.toContain('news.example');
+    expect(inMemoryQueue!.data.captureJob?.options).toEqual({
+      waitUntil: 'idle',
+      pdf: { paper: 'A4', landscape: true, margin: 12, printBackground: true },
+    });
+
+    // Polling GET /api/queue/jobs/[id] succeeds for anonymous capability holders and never exposes captureJob.
+    const poll = await readQueueJobRoute(
+      new NextRequest(`http://localhost/api/queue/jobs/${body.jobId}`),
+      { params: Promise.resolve({ id: body.jobId }) }
+    );
+    expect(poll.status).toBe(200);
+    const pollJson = await poll.json();
+    expect(pollJson.id).toBe(body.jobId);
+    expect(pollJson.data).toEqual({ originalFilename: 'capture.pdf', sourceFormat: 'html', targetFormat: 'pdf' });
+
+    await resourceQueues.memory.cancelJob(body.jobId, 'test cleanup');
+  });
+
+  it('refuses disabled website capture fail-closed with 422 capture_unavailable before reserving quota', async () => {
+    for (const val of ['false', 'FALSE', '0', 'off']) {
+      vi.stubEnv('CAPTURE_WEBSITE_ENABLED', val);
+      const ip = nextAnonIp();
+      const anonId = anonBucketId(ip);
+      const res = await captureJobsRoute(
+        anonPost(ip, { url: 'https://example.com', targetFormat: 'png' })
+      );
+      expect(res.status).toBe(422);
+      expect(res.headers.get('content-type')).toContain('application/problem+json');
+      expect(await res.json()).toMatchObject({ status: 422, code: 'capture_unavailable' });
+      expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+    }
+  });
+
+  it.each([
+    ['empty url', { url: '', targetFormat: 'pdf' }, 422, 'capture_target_blocked'],
+    ['ftp scheme', { url: 'ftp://files.example/a', targetFormat: 'pdf' }, 422, 'capture_target_blocked'],
+    ['file scheme', { url: 'file:///etc/passwd', targetFormat: 'png' }, 422, 'capture_target_blocked'],
+    ['embedded credentials', { url: 'https://user:pass@example.com/', targetFormat: 'jpg' }, 422, 'capture_target_blocked'],
+    ['non-web port', { url: 'https://example.com:6379/', targetFormat: 'pdf' }, 422, 'capture_target_blocked'],
+    ['too-long url', { url: 'https://example.com/' + 'a'.repeat(8200), targetFormat: 'pdf' }, 422, 'capture_target_blocked'],
+    ['unsupported targetFormat', { url: 'https://example.com/', targetFormat: 'gif' }, 400, undefined],
+    ['missing targetFormat', { url: 'https://example.com/' }, 400, undefined],
+    ['unexpected top-level key', { url: 'https://example.com/', targetFormat: 'pdf', proxySocket: '/tmp/evil' }, 422, undefined],
+    ['out-of-range viewport width', { url: 'https://example.com/', targetFormat: 'png', options: { viewport: { width: 10 } } }, 422, undefined],
+    ['out-of-range jpg quality', { url: 'https://example.com/', targetFormat: 'jpg', options: { quality: 101 } }, 422, undefined],
+    ['newline in userAgent', { url: 'https://example.com/', targetFormat: 'png', options: { userAgent: 'Bad\r\nAgent' } }, 422, undefined],
+    ['unknown capture option key', { url: 'https://example.com/', targetFormat: 'png', options: { proxySocket: '/evil' } }, 422, 'option_not_supported'],
+  ])('rejects %s before reserving quota', async (_label, payload, expectedStatus, expectedCode) => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    const res = await captureJobsRoute(anonPost(ip, payload));
+    expect(res.status).toBe(expectedStatus);
+    if (expectedCode) {
+      expect((await res.json()).code).toBe(expectedCode);
+    }
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+  });
+
+  it('rejects prototype keys, non-JSON bodies, and queue-only pool outage before reserving quota', async () => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+
+    const nonJson = await captureJobsRoute(
+      new NextRequest('http://localhost/api/capture/jobs', {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain', 'x-forwarded-for': ip },
+        body: '{}',
+      })
+    );
+    expect(nonJson.status).toBe(415);
+
+    const protoPolluted = await captureJobsRoute(
+      anonPost(ip, '{"url":"https://example.com","targetFormat":"png","options":{"__proto__":{"polluted":true}}}')
+    );
+    expect(protoPolluted.status).toBe(422);
+
+    vi.stubEnv('WEB_EXECUTION_MODE', 'queue-only');
+    vi.spyOn(workerPresence, 'hasLiveQueueWorker').mockResolvedValue(false);
+    const unavailable = await captureJobsRoute(anonPost(ip, { url: 'https://example.com', targetFormat: 'png' }));
+    expect(unavailable.status).toBe(503);
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+  });
+
+  it('replays Idempotency-Key without reserving a second credit', async () => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    const key = `idem_${crypto.randomUUID()}`;
+    const first = await captureJobsRoute(
+      anonPost(ip, { url: 'https://example.com/a', targetFormat: 'png' }, { 'Idempotency-Key': key })
+    );
+    expect(first.status).toBe(201);
+    const firstBody = await first.json();
+
+    const second = await captureJobsRoute(
+      anonPost(ip, { url: 'https://example.com/a', targetFormat: 'png' }, { 'Idempotency-Key': key })
+    );
+    expect(second.status).toBe(201);
+    const secondBody = await second.json();
+    expect(secondBody.jobId).toBe(firstBody.jobId);
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(1);
+
+    await resourceQueues.memory.cancelJob(firstBody.jobId, 'test cleanup');
+  });
+
+  it('cancels an anonymous queued capture job and refunds its quota reservation', async () => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    const res = await captureJobsRoute(anonPost(ip, { url: 'https://example.com/wait', targetFormat: 'jpg' }));
+    expect(res.status).toBe(201);
+    const { jobId } = (await res.json()) as { jobId: string };
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(1);
+
+    const cancel = await cancelQueueJobRoute(
+      new NextRequest(`http://localhost/api/queue/jobs/${jobId}`, { method: 'DELETE' }),
+      { params: Promise.resolve({ id: jobId }) }
+    );
+    expect(cancel.status).toBe(200);
+    await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0), WAIT);
+  });
+
+  it('refuses unsealed capture job payloads inside the worker runner', async () => {
+    const fakeJob = {
+      id: 'capture-unsealed',
+      data: {
+        jobId: 'capture-unsealed',
+        originalFilename: 'capture.pdf',
+        sourceFormat: 'html',
+        targetFormat: 'pdf',
+        fileSize: 0,
+        options: {},
+        captureJob: { url: 'https://example.com/plaintext', format: 'pdf' as const },
+      },
+      signal: new AbortController().signal,
+      updateProgress: vi.fn(async () => undefined),
+    };
+    await expect(processQueuedCaptureJob(fakeJob as never, s3Storage)).rejects.toThrow(SecretSealError);
+  });
+});
+
+describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYTHON !== undefined))('memory queue worker capture execution', () => {
+  it('processes an anonymous capture job from the memory queue, stores the output, drops sealed data, and serves the download', async () => {
+    standIn();
+    worker = new Worker<ConversionJobData, ConversionJobResult>([resourceQueues.memory] as never, (job) => processConversionJob(job), { concurrency: 2 });
+    attachJobLifecycleListeners(worker);
+
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday, 'before route').toBe(0);
+    const created = await captureJobsRoute(
+      anonPost(ip, { url: 'https://docs.example/guide?token=tok123', targetFormat: 'png', options: { fullPage: true } })
+    );
+    expect(created.status).toBe(201);
+    const { jobId } = (await created.json()) as { jobId: string };
+    await vi.waitFor(async () => expect((await conversionQueue.getJob(jobId))?.state).toBe('completed'), WAIT);
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday, 'after completed').toBe(1);
+
+    const poll = await readQueueJobRoute(
+      new NextRequest(`http://localhost/api/queue/jobs/${jobId}`),
+      { params: Promise.resolve({ id: jobId }) }
+    );
+    const pollJson = await poll.json();
+    expect(pollJson.state).toBe('completed');
+    expect(pollJson.returnvalue.filename).toBe('docs.example-guide.png');
+    expect(pollJson.returnvalue.downloadUrl).toMatch(/^\/api\/storage\/file\//);
+
+    const encodedKey = pollJson.returnvalue.downloadUrl.slice('/api/storage/file/'.length);
+    const download = await storageFileRoute(
+      new NextRequest(`http://localhost${pollJson.returnvalue.downloadUrl}`),
+      { params: Promise.resolve({ key: decodeURIComponent(encodedKey).split('/') }) }
+    );
+    expect(download.status).toBe(200);
+    const downloadedBytes = Buffer.from(await download.arrayBuffer()).toString('latin1');
+    expect(downloadedBytes).toBe('\x89PNG\r\n\x1a\n captured https://docs.example/guide?token=tok123');
+
+    const completedJob = await conversionQueue.getJob(jobId);
+    expect(completedJob?.opts.removeDataOnFinish).toContain('captureJob');
+    expect(finishedData(completedJob?.data, completedJob?.opts.removeDataOnFinish)?.captureJob).toBeUndefined();
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(1);
+  }, 30_000);
+
+  it('rolls back quota when a queued capture fails on the worker and records the refusal code', async () => {
+    standIn();
+    worker = new Worker<ConversionJobData, ConversionJobResult>([resourceQueues.memory] as never, (job) => processConversionJob(job), { concurrency: 1 });
+    attachJobLifecycleListeners(worker);
+
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    const created = await captureJobsRoute(
+      anonPost(ip, { url: 'https://blocked.example/fail', targetFormat: 'pdf' })
+    );
+    expect(created.status).toBe(201);
+    const { jobId } = (await created.json()) as { jobId: string };
+
+    await vi.waitFor(async () => expect((await conversionQueue.getJob(jobId))?.state).toBe('failed'), WAIT);
+    const poll = await readQueueJobRoute(
+      new NextRequest(`http://localhost/api/queue/jobs/${jobId}`),
+      { params: Promise.resolve({ id: jobId }) }
+    );
+    const pollJson = await poll.json();
+    expect(pollJson.failedRefusalCode).toBe('capture_failed');
+    await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0), WAIT);
+  }, 30_000);
+
+  it('prevents cross-user access when a capture job belongs to a signed-in account', async () => {
+    const owner = userStore.sanitizeUser(await userStore.createUser({ email: `cap-owner-${Date.now()}@test.local`, name: 'Owner', tier: 'paid' }));
+    const other = userStore.sanitizeUser(await userStore.createUser({ email: `cap-other-${Date.now()}@test.local`, name: 'Other', tier: 'free' }));
+    const { secretKey: ownerKey } = await redisKeyStore.generateApiKey(owner.id, 'owner', { scopes: ['convert:write', 'convert:read'] });
+    const { secretKey: otherKey } = await redisKeyStore.generateApiKey(other.id, 'other', { scopes: ['convert:write', 'convert:read'] });
+
+    const res = await captureJobsRoute(
+      new NextRequest('http://localhost/api/capture/jobs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${ownerKey}` },
+        body: JSON.stringify({ url: 'https://example.com/private', targetFormat: 'pdf' }),
+      })
+    );
+    expect(res.status).toBe(201);
+    const { jobId } = (await res.json()) as { jobId: string };
+
+    const foreignPoll = await readQueueJobRoute(
+      new NextRequest(`http://localhost/api/queue/jobs/${jobId}`, { headers: { authorization: `Bearer ${otherKey}` } }),
+      { params: Promise.resolve({ id: jobId }) }
+    );
+    expect(foreignPoll.status).toBe(404);
+
+    const ownerPoll = await readQueueJobRoute(
+      new NextRequest(`http://localhost/api/queue/jobs/${jobId}`, { headers: { authorization: `Bearer ${ownerKey}` } }),
+      { params: Promise.resolve({ id: jobId }) }
+    );
+    expect(ownerPoll.status).toBe(200);
+    await resourceQueues.memory.cancelJob(jobId, 'cleanup');
+  });
+});
+
+describe('CAPTURE_WEBSITE_ENABLED=false kill-switch gates capture pages and OG previews to 404', () => {
+  it.each(['en', 'ko'] as const)('answers 404 for all 3 website capture slugs in %s while keeping normal converter pages live', async (locale) => {
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', 'false');
+    for (const slug of CAPTURE_SLUGS) {
+      expect(await pageStatus(() => ConverterPage({ params: Promise.resolve({ locale, slug }) })), `${locale}/${slug}`).toBe(404);
+      expect(await pageStatus(() => converterGenerateMetadata({ params: Promise.resolve({ locale, slug }) })), `meta:${locale}/${slug}`).toBe(404);
+      expect(await resolveOgCardSpec(locale, `/${slug}`)).toBeNull();
+      const ogRes = await ogRoute(new NextRequest(`http://localhost/api/og?locale=${locale}&path=/${slug}`));
+      expect(ogRes.status).toBe(404);
+    }
+    expect(await pageStatus(() => ConverterPage({ params: Promise.resolve({ locale, slug: 'pdf-to-jpg' }) }))).toBe(200);
+    expect(await resolveOgCardSpec(locale, '/pdf-to-jpg')).not.toBeNull();
+  });
+
+  it('serves website capture pages and OG previews normally when enabled', async () => {
+    vi.stubEnv('CAPTURE_WEBSITE_ENABLED', undefined as unknown as string);
+    for (const slug of CAPTURE_SLUGS) {
+      expect(await pageStatus(() => converterGenerateMetadata({ params: Promise.resolve({ locale: 'en', slug }) })), slug).toBe(200);
+      expect(await resolveOgCardSpec('en', `/${slug}`)).not.toBeNull();
+    }
+  });
+});

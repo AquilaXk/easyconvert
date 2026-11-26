@@ -967,14 +967,6 @@
       "autoDeleted": "파일 자동 삭제",
       "paidCredits": "충전이나 정기 구독의 크레딧",
       "dailyCredits": "하루 {count, number}크레딧"
-    },
-    "tiles": {
-      "joiner": "→",
-      "any": "전체",
-      "sourceLabel": "원본 형식 {format}",
-      "targetLabel": "대상 형식 {format}",
-      "fromTitle": "원본 형식 선택",
-      "toTitle": "대상 형식 선택"
     }
   },
   "home": {
@@ -2406,6 +2398,69 @@
       "heading": "지금 시작하세요",
       "body": "계정도 신용카드도 없이 하루 {anonymous}크레딧까지 파일을 변환할 수 있습니다.",
       "button": "파일 변환하기"
+    }
+  },
+  "websiteCapture": {
+    "heading": {
+      "pdf": "웹 페이지를 PDF로 저장하세요",
+      "png": "웹 페이지를 PNG로 캡처하세요",
+      "jpg": "웹 페이지를 JPG로 캡처하세요"
+    },
+    "hint": "일반 웹 포트를 쓰는 공개 http 또는 https 주소를 입력하세요.",
+    "urlLabel": "웹 페이지 주소",
+    "urlPlaceholder": "https://example.com",
+    "submit": {
+      "pdf": "PDF로 저장",
+      "png": "PNG 캡처",
+      "jpg": "JPG 캡처"
+    },
+    "optionsButton": "옵션",
+    "cancel": "취소",
+    "capturing": "웹 페이지를 캡처하는 중입니다...",
+    "queued": "대기열에서 기다리는 중입니다...",
+    "progress": "{percent}%",
+    "validation": {
+      "empty": "먼저 웹 페이지 주소를 입력하세요.",
+      "tooLong": "주소가 너무 깁니다.",
+      "invalidUrl": "http:// 또는 https://로 시작하는 올바른 주소를 입력하세요.",
+      "scheme": "공개 http 및 https 주소만 캡처할 수 있습니다.",
+      "credentials": "사용자 이름이나 암호가 들어 있는 주소는 캡처할 수 없습니다.",
+      "port": "표준 웹 포트(80, 443)만 캡처할 수 있습니다."
+    },
+    "result": {
+      "ready": "캡처 완료",
+      "download": "다운로드",
+      "startOver": "다른 주소 캡처",
+      "warningsHeading": "페이지의 일부 요청을 차단했습니다"
+    },
+    "options": {
+      "title": "캡처 옵션",
+      "close": "닫기",
+      "cancel": "취소",
+      "save": "저장",
+      "reset": "초기화",
+      "waitUntilLabel": "캡처 시점",
+      "waitUntilLoad": "페이지 불러오기 완료",
+      "waitUntilIdle": "네트워크 대기 완료",
+      "waitUntilHelp": "페이지가 네트워크 요청을 멈출 때까지 기다린 뒤 캡처합니다.",
+      "pdfSection": "PDF 문서 설정",
+      "paperLabel": "용지 크기",
+      "papers": {
+        "A4": "A4",
+        "Letter": "Letter",
+        "A3": "A3",
+        "A5": "A5",
+        "Legal": "Legal",
+        "Tabloid": "Tabloid"
+      },
+      "landscapeLabel": "가로 방향",
+      "marginLabel": "여백 (mm)",
+      "printBackgroundLabel": "배경 그래픽 포함",
+      "imageSection": "스크린샷 설정",
+      "viewportWidthLabel": "화면 너비 (px)",
+      "viewportHeightLabel": "화면 높이 (px)",
+      "fullPageLabel": "전체 페이지 높이 캡처",
+      "qualityLabel": "JPG 화질"
     }
   }
 }

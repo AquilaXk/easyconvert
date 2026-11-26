@@ -10,6 +10,7 @@ import UserNav from './UserNav';
 import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
 import { primaryLinksFor, TOOL_GROUPS, type SiteLink, type ToolGroup } from './site-links';
+import { useWebsiteCaptureEnabled } from './CaptureAvailabilityProvider';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
 import type { SessionUser } from '@/lib/viewer-plan';
 
@@ -58,12 +59,16 @@ function ToolMenuSection({
   );
 }
 
-export default function Header({ initialUser }: Readonly<{ initialUser?: SessionUser }> = {}) {
+export default function Header({
+  initialUser,
+  websiteCaptureEnabled: websiteCaptureOverride,
+}: Readonly<{ initialUser?: SessionUser; websiteCaptureEnabled?: boolean }> = {}) {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
   const signedIn = useViewerAccount(initialUser) !== null;
+  const captureEnabled = useWebsiteCaptureEnabled(websiteCaptureOverride);
   const [isToolsOpen, setIsToolsOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const toolsContainerRef = useRef<HTMLDivElement>(null);
@@ -156,11 +161,13 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
                           <span className="mt-1 block text-xs leading-relaxed text-ink-3">{t('fileConverterDescription')}</span>
                         </div>
                       </Link>
-                      <ToolMenuSection
-                        groupKey={TOOL_GROUPS[4].key}
-                        links={TOOL_GROUPS[4].links}
-                        onSelect={() => setIsToolsOpen(false)}
-                      />
+                      {captureEnabled && (
+                        <ToolMenuSection
+                          groupKey={TOOL_GROUPS[4].key}
+                          links={TOOL_GROUPS[4].links}
+                          onSelect={() => setIsToolsOpen(false)}
+                        />
+                      )}
                     </div>
                     <div className="col-span-3 flex flex-col gap-6 min-w-0">
                       <ToolMenuSection
@@ -237,7 +244,13 @@ export default function Header({ initialUser }: Readonly<{ initialUser?: Session
         </div>
       </div>
 
-      {isMobileMenuOpen && <MobileMenu onClose={() => setIsMobileMenuOpen(false)} initialUser={initialUser} />}
+      {isMobileMenuOpen && (
+        <MobileMenu
+          onClose={() => setIsMobileMenuOpen(false)}
+          initialUser={initialUser}
+          websiteCaptureEnabled={captureEnabled}
+        />
+      )}
     </header>
   );
 }

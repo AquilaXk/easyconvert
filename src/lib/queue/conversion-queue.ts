@@ -98,12 +98,16 @@ export function attachJobLifecycleListeners(
         try {
           // The reservation holds the credits of the pair's class; the minutes the conversion ran beyond the first are charged on top.
           const isToolJob = Boolean(job.data.toolJob);
+          const isCaptureJob = Boolean(job.data.captureJob);
+          let chargeFrom = job.data.sourceFormat;
+          if (isToolJob) chargeFrom = job.data.toolJob!.tool;
+          else if (isCaptureJob) chargeFrom = 'capture.website';
           await redisKeyStore.commitQuota(
             job.data.reservationId,
             chargeOptionsOf({
-              from: isToolJob ? job.data.toolJob!.tool : job.data.sourceFormat,
+              from: chargeFrom,
               to: isToolJob ? undefined : job.data.targetFormat,
-              base: isToolJob ? 1 : baseCredits(job.data.sourceFormat, job.data.targetFormat),
+              base: isToolJob || isCaptureJob ? 1 : baseCredits(job.data.sourceFormat, job.data.targetFormat),
               processingMs: result.durationMs,
             })
           );

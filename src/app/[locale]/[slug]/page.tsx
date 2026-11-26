@@ -10,15 +10,23 @@ import { resolvePageLocale } from '@/i18n/page';
 import type { AppLocale } from '@/i18n/routing';
 import { aliasRedirectSlug, parseConverterSlug, type ParsedSlug } from '@/lib/slug-parser';
 import { getAnonymousDailyLimit } from '@/lib/plan-limits';
+import { websiteCaptureEnabled } from '@/lib/capture/capture-enabled';
 
 interface ConverterPageProps {
   params: Promise<{ locale: string; slug: string }>;
 }
 
+function isWebsiteCaptureSlug(parsed: ParsedSlug): boolean {
+  return parsed.copy.kind === 'saveWebsiteAsPdf' || parsed.copy.kind === 'websiteScreenshot';
+}
+
 /** The parsed slug of a page of the site; another name of a format is answered 308 to the page of its canonical name, and a path the site offers no page at 404. */
 function pageSlug(slug: string, locale: AppLocale): ParsedSlug {
   const parsed = parseConverterSlug(slug);
-  if (parsed) return parsed;
+  if (parsed) {
+    if (!websiteCaptureEnabled() && isWebsiteCaptureSlug(parsed)) notFound();
+    return parsed;
+  }
   const redirected = aliasRedirectSlug(slug);
   return redirected ? permanentRedirect(getPathname({ locale, href: `/${redirected}` })) : notFound();
 }

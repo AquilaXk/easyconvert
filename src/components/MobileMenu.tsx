@@ -11,7 +11,8 @@ import type { SessionUser } from '@/lib/viewer-plan';
 import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import LanguageSwitcher from './LanguageSwitcher';
-import { API_LINKS, primaryLinksFor, TOOL_GROUPS, type SiteLink, type ToolGroup } from './site-links';
+import { API_LINKS, primaryLinksFor, toolGroupsFor, type SiteLink, type ToolGroup } from './site-links';
+import { useWebsiteCaptureEnabled } from './CaptureAvailabilityProvider';
 
 type LabelledLink = SiteLink & { key: keyof Messages['siteLinks'] };
 
@@ -101,8 +102,9 @@ function MobileToolSubgroup({
 function CollapsibleToolGroups({
   id,
   label,
+  captureEnabled,
   onNavigate,
-}: Readonly<{ id: string; label: string; onNavigate: () => void }>) {
+}: Readonly<{ id: string; label: string; captureEnabled: boolean; onNavigate: () => void }>) {
   const tHeader = useTranslations('header');
   const tGroups = useTranslations('header.toolGroups');
   const [open, setOpen] = useState(false);
@@ -119,7 +121,7 @@ function CollapsibleToolGroups({
         <ChevronDown aria-hidden="true" className={`size-5 transition-transform duration-150 ${open ? 'rotate-180' : ''}`} />
       </button>
       <div id={id} hidden={!open} className="ms-3.5 border-s border-rule ps-2 space-y-1 py-1">
-        {TOOL_GROUPS.map((group, idx) => (
+        {toolGroupsFor(captureEnabled).map((group, idx) => (
           <MobileToolSubgroup
             key={group.key}
             groupKey={group.key}
@@ -170,12 +172,14 @@ function CollapsibleLinks({
 export default function MobileMenu({
   onClose,
   initialUser,
-}: Readonly<{ onClose: () => void; initialUser?: SessionUser }>) {
+  websiteCaptureEnabled: websiteCaptureOverride,
+}: Readonly<{ onClose: () => void; initialUser?: SessionUser; websiteCaptureEnabled?: boolean }>) {
   const t = useTranslations('header');
   const tLinks = useTranslations('siteLinks');
   const tTheme = useTranslations('theme');
   const { isDark, toggleDarkMode } = useThemeToggle();
   const signedIn = useViewerAccount(initialUser) !== null;
+  const captureEnabled = useWebsiteCaptureEnabled(websiteCaptureOverride);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useModalDialog(dialogRef, true, onClose);
@@ -217,7 +221,7 @@ export default function MobileMenu({
 
       <div className="px-4 py-4 space-y-4">
         <nav aria-label={t('mobileNavLabel')} className="flex flex-col gap-0.5">
-          <CollapsibleToolGroups id="mobile-menu-tools" label={t('tools')} onNavigate={onClose} />
+          <CollapsibleToolGroups id="mobile-menu-tools" label={t('tools')} captureEnabled={captureEnabled} onNavigate={onClose} />
           <CollapsibleLinks id="mobile-menu-api" label={t('api')} links={API_LINKS} onNavigate={onClose} />
           {primaryLinksFor(signedIn).filter((item) => item.key !== 'apiDocs').map((item) => (
             <Link key={item.key} href={item.href} onClick={onClose} className={ROW_CLASS}>

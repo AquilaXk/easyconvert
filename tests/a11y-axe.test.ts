@@ -51,6 +51,7 @@ const PAGES: PageCase[] = [
   { name: 'format page /pdf-converter', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('pdf-converter'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
   { name: 'website capture /save-website-as-pdf', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('save-website-as-pdf'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
   { name: 'website capture /save-website-as-pdf in Korean', locale: 'ko', page: () => createElement(ConverterPageView, { parsed: parsedSlug('save-website-as-pdf'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
+  { name: 'website capture /website-png-screenshot', locale: 'en', page: () => createElement(ConverterPageView, { parsed: parsedSlug('website-png-screenshot'), dailyLimit: ANONYMOUS_DAILY_CREDITS }) },
   { name: 'pricing', locale: 'en', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CREDITS, billing: null }) },
   { name: 'pricing in Korean', locale: 'ko', page: () => createElement(PricingPageView, { anonymousDaily: ANONYMOUS_DAILY_CREDITS, billing: null }) },
   { name: 'not found', locale: 'en', page: () => createElement(NotFoundPageView) },

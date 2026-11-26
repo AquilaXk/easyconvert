@@ -396,7 +396,8 @@ export interface PipelineTask {
 import type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy } from './jobs/graph';
 import type { GraphNode, NodeId } from './queue/graph/types';
 import type { QueuedToolJobPayload } from './tools/queued-tool-types';
-export type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy, GraphNode, NodeId, QueuedToolJobPayload };
+import type { QueuedCaptureJobPayload } from './capture-options';
+export type { TaskNode, JobGraph, TaskDependency, GraphFailurePolicy, GraphNode, NodeId, QueuedToolJobPayload, QueuedCaptureJobPayload };
 
 export interface QueuedArchiveInspectPayload { storageKey: string; filename?: string; cleanupUploadKeys?: string[]; options?: { password?: string }; }
 
@@ -423,6 +424,7 @@ export interface ConversionJobData {
   resourceClass?: ResourceClass;
   toolJob?: QueuedToolJobPayload;
   archiveInspect?: QueuedArchiveInspectPayload;
+  captureJob?: QueuedCaptureJobPayload;
   transientSyncWait?: boolean;
 }
 

@@ -11,10 +11,3 @@ export function formatsTitle(t: HeroTranslator, source?: string, target?: string
   if (named(target)) return t('title.target', { tgt: target.toUpperCase() });
   return t('title.default');
 }
-
-/** The line under a title naming the chosen formats. */
-export function formatsSubtitle(t: HeroTranslator, source?: string, target?: string): string {
-  if (named(source) && named(target)) return t('subtitle.pair', { src: source.toUpperCase(), tgt: target.toUpperCase() });
-  if (named(source)) return t('subtitle.source', { src: source.toUpperCase() });
-  return t('subtitle.default');
-}

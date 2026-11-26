@@ -196,7 +196,7 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(allElements(footer).filter((e) => e.tagName === 'a' && classTokens(e).has('font-bold'))).toEqual([]);
   });
 
-  it('verifies Hero implements workbench architecture with Select File CTA and interactive format tiles', () => {
+  it('verifies Hero implements workbench architecture with Select File CTA and omits format tiles on home and subpages', () => {
     const hero = renderHome();
     const text = visibleText(hero);
 
@@ -206,16 +206,17 @@ describe('Redesign & Free Static Architecture Verification', () => {
     expect(select(hero, 'button', 'aria-haspopup', 'menu').map((b) => attrOf(b, 'aria-label'))).toEqual(['More file sources']);
     expect(phrasesMissing(text, ['Select your file to convert', 'or drop your files here'])).toEqual([]);
 
-    // The home page holds no row of trust claims and no format chips in the upload card, and no tiles that name a pair.
+    // The home page and all converter/tool subpages hold no row of trust claims, no format chips, and no hero pair tiles.
     expect(phrasesPresent(text, ['Encrypted transfers', 'No sign-up needed', 'What do you want to convert?'])).toEqual([]);
     expect(select(hero, 'button').filter((b) => attrOf(b, 'aria-label')?.endsWith(', choose a target') ?? false)).toHaveLength(0);
-    // The home page names no pair (entry 273): the file sets the source, the target is picked after it.
     expect(select(hero, 'button', 'data-testid', 'hero-source-format-btn')).toHaveLength(0);
     expect(select(hero, 'button', 'data-testid', 'hero-target-format-btn')).toHaveLength(0);
 
-    const pairPage = renderSlug('png-to-jpg');
-    expect(select(pairPage, 'button', 'data-testid', 'hero-source-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Source format PNG']);
-    expect(select(pairPage, 'button', 'data-testid', 'hero-target-format-btn').map((b) => attrOf(b, 'aria-label'))).toEqual(['Target format JPG']);
+    for (const slug of ['png-to-jpg', 'pdf-converter', 'document-converter', 'compress-pdf', 'pdfa-converter', 'pdf-ocr', 'save-website-as-pdf']) {
+      const subpage = renderSlug(slug);
+      expect(select(subpage, 'button', 'data-testid', 'hero-source-format-btn'), slug).toHaveLength(0);
+      expect(select(subpage, 'button', 'data-testid', 'hero-target-format-btn'), slug).toHaveLength(0);
+    }
 
     expect(phrasesPresent(text, ['Conversion Console', '292 Formats Supported'])).toEqual([]);
     expect(presentIn(classTokens(hero), ['animate-card-flip', 'animate-orbit-slow', 'animate-orbit-fast'])).toEqual([]);

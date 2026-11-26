@@ -12,7 +12,6 @@ vi.mock('../src/i18n/navigation', () => ({
 }));
 
 const { HomeHero, PairHero, QueueHeader } = await import('../src/components/Hero');
-const { usePairTiles } = await import('../src/components/hero/usePairTiles');
 
 /**
  * The ways files reach the page from a hero, driven as a person does: picking them in the file input, dropping them
@@ -91,17 +90,41 @@ describe('the home hero', () => {
 });
 
 describe('a converter page hero', () => {
-  it('hands on files with the target of its pair', async () => {
+  it('hands on files with the target of its pair without rendering format tiles', async () => {
     const onFilesSelected = vi.fn();
     function PngToJpgPage() {
-      const tiles = usePairTiles('png', 'jpg');
-      return createElement(PairHero, { onFilesSelected, dailyLimit: ANONYMOUS_DAILY_CREDITS, tiles, title: 'PNG to JPG Converter', description: 'Convert PNG files to JPG online.' });
+      return createElement(PairHero, {
+        onFilesSelected,
+        dailyLimit: ANONYMOUS_DAILY_CREDITS,
+        targetFormat: 'jpg',
+        title: 'PNG to JPG Converter',
+        description: 'Convert PNG files to JPG online.',
+      });
     }
     const host = await mount(createElement(PngToJpgPage));
     const dropped = file();
     drop(uploadCard(host), [dropped]);
     expect(onFilesSelected).toHaveBeenCalledWith([dropped], 'jpg');
     expect(host.querySelector('h1')!.textContent).toBe('PNG to JPG Converter');
+    expect(host.querySelector('[data-testid=hero-source-format-btn]')).toBeNull();
+    expect(host.querySelector('[data-testid=hero-target-format-btn]')).toBeNull();
+  });
+
+  it('passes undefined target when the converter page target is any', async () => {
+    const onFilesSelected = vi.fn();
+    const host = await mount(
+      createElement(PairHero, {
+        onFilesSelected,
+        dailyLimit: ANONYMOUS_DAILY_CREDITS,
+        targetFormat: 'any',
+        title: 'PNG Converter',
+      })
+    );
+    const dropped = file();
+    drop(uploadCard(host), [dropped]);
+    expect(onFilesSelected).toHaveBeenCalledWith([dropped], undefined);
+    expect(host.querySelector('[data-testid=hero-source-format-btn]')).toBeNull();
+    expect(host.querySelector('[data-testid=hero-target-format-btn]')).toBeNull();
   });
 });
 

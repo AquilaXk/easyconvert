@@ -27,6 +27,7 @@ import { conversionWarningsFields } from '../api/conversion-warnings';
 import { droppedStreamsFields } from '../api/dropped-streams';
 import { assertConversionOptionsObject } from '../conversions/options-guard';
 import { cleanupQueuedToolUploads, processQueuedToolJob } from '../tools/queued-tool-runner';
+import { processQueuedCaptureJob } from '../capture/queued-capture-runner';
 import { openPasswordOption } from './option-secrets';
 
 export type { ConversionEnginePort, EngineResult, VfsPayload };
@@ -269,6 +270,9 @@ function dispatchSpecializedNodeJob(
   }
   if (job.data?.archiveInspect) {
     return processQueuedArchiveInspection(job, rootStorage);
+  }
+  if (job.data?.captureJob) {
+    return processQueuedCaptureJob(job, rootStorage);
   }
   return null;
 }

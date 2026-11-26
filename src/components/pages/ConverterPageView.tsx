@@ -5,7 +5,6 @@ import { useLocale, useTranslations } from 'next-intl';
 import Header from '@/components/Header';
 import { PairHero, QueueHeader } from '@/components/Hero';
 import { MAIN_FILE_INPUT_ID } from '@/components/hero/useHeroUpload';
-import { usePairTiles } from '@/components/hero/usePairTiles';
 import ConversionQueue from '@/components/ConversionQueue';
 import Footer from '@/components/Footer';
 import { FORMAT_REGISTRY } from '@/lib/registry';
@@ -15,6 +14,7 @@ import { offersConversion, type ParsedSlug } from '@/lib/slug-parser';
 import { PAGE_TOOL_SLUGS } from '@/lib/slug-info-pages';
 import type { WebTool } from '@/lib/tools/tool-names';
 import ToolPageView from '@/components/tools/ToolPageView';
+import WebsiteCapturePageView from '@/components/capture/WebsiteCapturePageView';
 import type { HeroOperation } from '@/components/hero/useHeroUpload';
 import { useClientQueue } from '@/hooks/useClientQueue';
 import { localizeSlugCopy } from '@/components/converter/slug-copy';
@@ -61,6 +61,16 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
   const locale = useLocale();
   const copy = localizeSlugCopy(useTranslations('slugPages'), parsed, locale);
   if (tool) return <ToolPageView tool={tool} operation={operationOf(parsed.copy.kind) as HeroOperation} title={copy.title} description={copy.description} dailyLimit={dailyLimit} />;
+  if (parsed.copy.kind === 'saveWebsiteAsPdf' || parsed.copy.kind === 'websiteScreenshot') {
+    return (
+      <WebsiteCapturePageView
+        targetFormat={parsed.targetFormat as 'pdf' | 'png' | 'jpg'}
+        title={copy.title}
+        description={copy.description}
+        dailyLimit={dailyLimit}
+      />
+    );
+  }
   return <ConversionPageView parsed={parsed} dailyLimit={dailyLimit} />;
 }
 
@@ -87,8 +97,8 @@ function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlu
     handleConvertAll,
     handleDownloadAllZip,
   } = useClientQueue({ bundlePrefix, operation });
-  const tiles = usePairTiles(parsed.sourceFormat, parsed.targetFormat);
-  const queueTarget = tiles.chosenTarget ?? queue[0]?.targetFormat;
+  const fixedTarget = parsed.targetFormat && parsed.targetFormat.toLowerCase() !== 'any' ? parsed.targetFormat.toLowerCase() : undefined;
+  const queueTarget = queue[0]?.targetFormat || fixedTarget;
 
   if (parsed.isInfoPage) {
     return <ConverterInfoPage parsed={parsed} copy={copy} totalFormatCount={totalFormatCount} dailyLimit={dailyLimit} />;
@@ -128,7 +138,7 @@ function ConversionPageView({ parsed, dailyLimit }: Readonly<{ parsed: ParsedSlu
           <PairHero
             onFilesSelected={handleFilesSelected}
             dailyLimit={dailyLimit}
-            tiles={tiles}
+            targetFormat={fixedTarget}
             title={copy.title}
             description={visibleIntro}
             operation={operation}

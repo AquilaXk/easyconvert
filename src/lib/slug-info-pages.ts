@@ -39,7 +39,7 @@ export const PAGE_TOOL_SLUGS = {
 } as const;
 export type PageToolKind = keyof typeof PAGE_TOOL_SLUGS;
 
-/** The format a tool page names as its source: the registry holds it, and the page's own tiles never show it. */
+/** The format a tool page names as its source. */
 const PAGE_TOOL_FORMATS: Readonly<Record<PageToolKind, string>> = {
   archiveCreate: 'zip',
   archiveExtract: 'zip',

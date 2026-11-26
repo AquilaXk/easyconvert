@@ -28,3 +28,10 @@ export interface WebsiteCapturePdfOptions {
   /** Zoom of the page, 0.1 to 2 (1). */
   scale?: number;
 }
+
+export interface QueuedCaptureJobPayload {
+  url?: string;
+  sealedUrl?: string;
+  format: 'pdf' | 'png' | 'jpg';
+  options?: WebsiteCaptureOptions;
+}

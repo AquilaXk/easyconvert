@@ -32,7 +32,7 @@ export interface JobDeadlineOwner {
 
 export type ConversionJobOptions = Omit<JobOptions, 'timeout' | 'removeOnComplete' | 'removeOnFail' | 'removeDataOnFinish'>;
 
-const DATA_DROPPED_ON_FINISH: readonly (keyof ConversionJobData)[] = ['inputBufferBase64', 'webhookSecret'];
+const DATA_DROPPED_ON_FINISH: readonly (keyof ConversionJobData)[] = ['inputBufferBase64', 'webhookSecret', 'captureJob'];
 
 /**
  * How long an ended conversion job is kept, in milliseconds: while its result can still be downloaded

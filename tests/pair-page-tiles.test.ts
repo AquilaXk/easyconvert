@@ -18,8 +18,8 @@ vi.mock('../src/components/Footer', () => ({ default: () => null }));
 const { default: ConverterPageView } = await import('../src/components/pages/ConverterPageView');
 
 /**
- * The pair of format tiles of a converter page, driven as a person does: the tiles pick the target of the files dropped on
- * the page and of every file added over the queue, and the pair they name stays when the queue is emptied.
+ * Converter pages no longer render HeroFormatTiles; files still inherit the page's fixed target (when any),
+ * queue rows allow choosing per-file targets, and emptying the queue restores the page's default target for new drops.
  */
 
 let root: Root | undefined;
@@ -27,7 +27,6 @@ let observed: Array<{ callback: ResizeObserverCallback; target?: Element }> = []
 
 beforeEach(() => {
   observed = [];
-  // jsdom lays nothing out; a picker opens only under an anchor on screen.
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(100, 100, 112, 120));
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', false);
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: false }), { status: 401 })));
@@ -63,11 +62,13 @@ async function mountPage(slug: string): Promise<HTMLElement> {
   root = createRoot(host);
   root.render(
     createElement(NextIntlClientProvider, {
-      locale: 'en', messages: testMessages('en'), timeZone: 'UTC',
+      locale: 'en',
+      messages: testMessages('en'),
+      timeZone: 'UTC',
       children: createElement(ConverterPageView, { parsed: parsedSlug(slug), dailyLimit: ANONYMOUS_DAILY_CREDITS }),
     })
   );
-  await vi.waitFor(() => expect(host.querySelector('[data-testid=hero-target-format-btn]')).not.toBeNull());
+  await vi.waitFor(() => expect(host.querySelector('main h1')).not.toBeNull());
   return host;
 }
 
@@ -87,7 +88,6 @@ function paste(files: File[]) {
   document.body.dispatchEvent(event);
 }
 
-/** Opens the picker behind `button`, types `format` into its search and takes the first match with Enter. */
 async function choose(button: HTMLElement, format: string) {
   button.click();
   const search = await vi.waitFor(() => {
@@ -102,50 +102,50 @@ async function choose(button: HTMLElement, format: string) {
   await vi.waitFor(() => expect(document.querySelector('dialog input[type=text]')).toBeNull());
 }
 
-const tileLabel = (host: HTMLElement, side: 'source' | 'target') =>
-  host.querySelector(`[data-testid=hero-${side}-format-btn]`)?.getAttribute('aria-label');
 const rowTargets = (host: HTMLElement) =>
   [...host.querySelectorAll('[data-testid=queue-target-format-btn]')].map((button) => button.textContent);
 const png = (name: string) => new File(['x'], name, { type: 'image/png' });
 
-describe('the format tiles of a converter page', () => {
-  it('reset the target when the new source cannot convert to it, and a dropped file then takes no target, as the tile shows', async () => {
-    const host = await mountPage('png-to-jpg');
-    await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'mp3');
-    await vi.waitFor(() => expect(tileLabel(host, 'source')).toBe('Source format MP3'));
-    expect(tileLabel(host, 'target')).toBe('Target format ANY');
-    drop(host, [png('first.png')]);
-    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['Select format']));
+describe('converter and tool heroes without format tiles', () => {
+  it.each(['png-to-jpg', 'pdf-converter', 'document-converter', 'compress-pdf', 'pdfa-converter', 'pdf-ocr'])(
+    'omits hero format tiles completely on %s',
+    async (slug) => {
+      const host = await mountPage(slug);
+      expect(host.querySelector('[data-testid=hero-source-format-btn]')).toBeNull();
+      expect(host.querySelector('[data-testid=hero-target-format-btn]')).toBeNull();
+    }
+  );
+
+  it('starts dropped files without target on format pages and with pair target on pair pages, then uses queue target for appended files', async () => {
+    const formatHost = await mountPage('pdf-converter');
+    drop(formatHost, [png('first.png')]);
+    await vi.waitFor(() => expect(rowTargets(formatHost)).toEqual(['Select format']));
+
+    root?.unmount();
+    document.body.innerHTML = '';
+
+    const pairHost = await mountPage('png-to-jpg');
+    drop(pairHost, [png('first.png')]);
+    await vi.waitFor(() => expect(rowTargets(pairHost)).toEqual(['JPG']));
+    await choose(pairHost.querySelector<HTMLElement>('[data-testid=queue-target-format-btn]')!, 'webp');
+    await vi.waitFor(() => expect(rowTargets(pairHost)).toEqual(['WEBP']));
+
+    paste([png('second.png')]);
+    await vi.waitFor(() => expect(rowTargets(pairHost)).toEqual(['WEBP', 'WEBP']));
   });
 
-  async function withTarget(target: string) {
+  it('restores the pair page target when the queue is emptied and another file is dropped', async () => {
     const host = await mountPage('png-to-jpg');
-    await choose(host.querySelector('[data-testid=hero-target-format-btn]')!, target);
-    await vi.waitFor(() => expect(tileLabel(host, 'target')).toBe(`Target format ${target.toUpperCase()}`));
-    return host;
-  }
-
-  it('give a dropped file and every file added over the queue the target they name, whatever the first file was changed to', async () => {
-    const host = await withTarget('webp');
     drop(host, [png('first.png')]);
-    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['WEBP']));
+    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['JPG']));
     await choose(host.querySelector<HTMLElement>('[data-testid=queue-target-format-btn]')!, 'gif');
     await vi.waitFor(() => expect(rowTargets(host)).toEqual(['GIF']));
 
-    paste([png('second.png')]);
-    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['GIF', 'WEBP']));
-  });
-
-  it('keep the target they name when the queue empties, for the next file dropped', async () => {
-    const host = await withTarget('webp');
-    drop(host, [png('first.png')]);
-    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['WEBP']));
     host.querySelector<HTMLElement>('[aria-label="Remove first.png"]')!.click();
-
     await vi.waitFor(() => expect(host.querySelector('[data-testid=queue-target-format-btn]')).toBeNull());
-    expect(tileLabel(host, 'target')).toBe('Target format WEBP');
+
     drop(host, [png('second.png')]);
-    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['WEBP']));
+    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['JPG']));
   });
 });
 
@@ -217,28 +217,18 @@ describe('the files of a page that does one operation with them', () => {
 describe('the PDF/A page', () => {
   it('is a page that makes PDF/A files from PDFs, at the path the Tools menu links to, not the converter of a format no file has', () => {
     expect(parseConverterSlug('pdfa-converter')).toMatchObject({
-      sourceFormat: 'pdf', targetFormat: 'pdf', copy: { kind: 'pdfa' }, canonicalPath: '/pdfa-converter',
+      sourceFormat: 'pdf',
+      targetFormat: 'pdf',
+      copy: { kind: 'pdfa' },
+      canonicalPath: '/pdfa-converter',
     });
   });
 
-  it('shows the PDF tiles, not PDFA to any format', async () => {
+  it('drops files with target PDF and omits hero format tiles', async () => {
     const host = await mountPage('pdfa-converter');
-    expect(tileLabel(host, 'source')).toBe('Source format PDF');
-    expect(tileLabel(host, 'target')).toBe('Target format PDF');
-  });
-});
-
-describe('the format tiles when the source becomes the format of the target', () => {
-  it('read any format on a converter page, not PDF to PDF', async () => {
-    const host = await mountPage('docx-to-pdf');
-    await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'pdf');
-    await vi.waitFor(() => expect(tileLabel(host, 'source')).toBe('Source format PDF'));
-    expect(tileLabel(host, 'target')).toBe('Target format ANY');
-  });
-
-  it('keep the target on a page whose pair is its own format, when the source is picked again', async () => {
-    const host = await mountPage('compress-pdf');
-    await choose(host.querySelector('[data-testid=hero-source-format-btn]')!, 'pdf');
-    expect(tileLabel(host, 'target')).toBe('Target format PDF');
+    expect(host.querySelector('[data-testid=hero-source-format-btn]')).toBeNull();
+    expect(host.querySelector('[data-testid=hero-target-format-btn]')).toBeNull();
+    drop(host, [new File(['x'], 'report.pdf', { type: 'application/pdf' })]);
+    await vi.waitFor(() => expect(rowTargets(host)).toEqual(['PDF']));
   });
 });

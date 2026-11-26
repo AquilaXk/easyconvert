@@ -2,11 +2,9 @@
 
 import React from 'react';
 import { useTranslations } from 'next-intl';
-import HeroFormatTiles from './workbench/HeroFormatTiles';
 import HeroDropzoneCard from './workbench/HeroDropzoneCard';
 import { formatsTitle } from './workbench/hero-copy';
 import { useHeroUpload, type HeroOperation } from './hero/useHeroUpload';
-import type { PairTiles } from './hero/usePairTiles';
 
 type FilesSelected = (files: File[], target?: string) => void;
 
@@ -18,7 +16,7 @@ interface HomeHeroProps {
 
 /**
  * The home page's hero: the title and intro centred over the upload card. It names no pair: the file chosen sets the source
- * and the target is picked after it (entry 273); the pair tiles stay on a converter page.
+ * and the target is picked after it.
  */
 export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps>) {
   const t = useTranslations('hero');
@@ -42,9 +40,9 @@ export function HomeHero({ onFilesSelected, dailyLimit }: Readonly<HomeHeroProps
 interface PairHeroProps {
   onFilesSelected: FilesSelected;
   dailyLimit: number;
-  /** The pair the tiles name, which the page holds so that it outlives the queue. */
-  tiles: PairTiles;
-  /** The page's own title and intro, shown until the tiles name another pair. A converter page has no intro: its title says what it does. */
+  /** Target format of the converter page (`any` or omitted means chosen per file in the queue). */
+  targetFormat?: string;
+  /** The page's own title and optional intro (converter pages omit the intro; tool pages keep it). */
   title: string;
   description?: string;
   /** What the page does with the files when it does not convert them: merge, compress or recognise text. */
@@ -52,31 +50,19 @@ interface PairHeroProps {
 }
 
 /**
- * A converter page's hero: its title and intro beside the source and target tiles, and the upload card under them. Files
- * take the target the target tile shows, and none while it shows any format.
+ * A converter or tool page's hero: its title and optional intro centred above the upload card without pair format tiles.
  */
-export function PairHero({ onFilesSelected, dailyLimit, tiles, title, description, operation }: Readonly<PairHeroProps>) {
-  const t = useTranslations('hero');
-  const { source, target, changed } = tiles;
-  const upload = useHeroUpload(onFilesSelected, tiles.chosenTarget, operation);
+export function PairHero({ onFilesSelected, dailyLimit, targetFormat, title, description, operation }: Readonly<PairHeroProps>) {
+  const chosenTarget = targetFormat && targetFormat.toLowerCase() !== 'any' ? targetFormat.toLowerCase() : undefined;
+  const upload = useHeroUpload(onFilesSelected, chosenTarget, operation);
 
   return (
     <section className="pt-10 pb-16 lg:pt-14 lg:pb-20">
       <input {...upload.fileInput} />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="lg:flex lg:items-center lg:justify-between lg:gap-12">
-          <div className="text-center lg:text-left lg:max-w-2xl">
-            <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{changed ? formatsTitle(t, source, target) : title}</h1>
-            {!changed && description && <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{description}</p>}
-          </div>
-          <div className="mt-8 lg:mt-0 flex justify-center shrink-0">
-            <HeroFormatTiles
-              sourceFormat={source}
-              targetFormat={target}
-              onSourceChange={tiles.changeSource}
-              onTargetChange={tiles.changeTarget}
-            />
-          </div>
+        <div className="text-center max-w-2xl mx-auto">
+          <h1 className="text-3xl sm:text-4xl lg:text-5xl text-ink">{title}</h1>
+          {description && <p className="mt-5 text-base sm:text-lg sm:leading-relaxed text-ink-3">{description}</p>}
         </div>
         <div className="mt-10 lg:mt-12 max-w-2xl mx-auto">
           <HeroDropzoneCard {...upload.dropzone} dailyLimit={dailyLimit} />
@@ -90,7 +76,7 @@ interface QueueHeaderProps {
   onFilesSelected: FilesSelected;
   /** The formats the title names without a page title: those of the first file in the queue. */
   sourceFormat: string;
-  /** The target files added over the queue take: the tiles' on a converter page, else the first file's. */
+  /** The target files added over the queue take: the converter page's target, else the first file's. */
   targetFormat?: string;
   /** The title of a converter page, which stays while its queue is shown; the home page names the first file's formats. */
   pageTitle?: string;

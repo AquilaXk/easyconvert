@@ -1,6 +1,6 @@
 import { SecretSealError, sealJobSecret, unsealJobSecret } from '../security/job-secret-seal';
 import { sealWebhookSecret } from '../security/sealed-webhook-secret';
-import { ConversionFailedError, type ConversionJobData } from '../types';
+import { ConversionFailedError, type ConversionJobData, type QueuedCaptureJobPayload } from '../types';
 
 /**
  * The open password of a protected input travels through the queue sealed, never as plaintext.
@@ -131,6 +131,42 @@ export function sealJobDataSecrets(data: ConversionJobData, jobId: string): Conv
   }
 }
 
+function sealCaptureJobPayload(captureJob: QueuedCaptureJobPayload, jobId: string): QueuedCaptureJobPayload {
+  if (typeof captureJob.url !== 'string' || captureJob.url.length === 0) {
+    return captureJob;
+  }
+  const { url, ...rest } = captureJob;
+  return {
+    ...rest,
+    sealedUrl: sealJobSecret(JSON.stringify({ url }), jobId),
+  };
+}
+
+/**
+ * Opens the sealed URL of a queued capture job inside the worker, failing closed on any unsealed or malformed payload.
+ */
+export function openCaptureJobUrl(captureJob: QueuedCaptureJobPayload, jobId: string): string {
+  if (captureJob.url !== undefined) {
+    throw new SecretSealError('UNSEALED_SECRET', '[JobSecretSeal] Refusing a capture job whose url is not sealed.');
+  }
+  if (typeof captureJob.sealedUrl !== 'string') {
+    throw new SecretSealError('MALFORMED_BLOB', '[JobSecretSeal] Sealed capture URL is missing.');
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(unsealJobSecret(captureJob.sealedUrl, jobId));
+  } catch (err) {
+    throw err instanceof SecretSealError
+      ? err
+      : new SecretSealError('MALFORMED_BLOB', '[JobSecretSeal] Sealed capture URL is malformed.');
+  }
+  const url = isRecord(parsed) ? parsed.url : undefined;
+  if (typeof url !== 'string' || url.length === 0) {
+    throw new SecretSealError('MALFORMED_BLOB', '[JobSecretSeal] Sealed capture URL is malformed.');
+  }
+  return url;
+}
+
 function sealJobDataSecretsUnchecked(data: ConversionJobData, jobId: string): ConversionJobData {
   const tasks = data.tasks?.map((task) => ({ ...task, options: sealPasswordOption(task.options, jobId) }));
   const toolJob = data.toolJob
@@ -139,12 +175,14 @@ function sealJobDataSecretsUnchecked(data: ConversionJobData, jobId: string): Co
   const archiveInspect = data.archiveInspect?.options
     ? { ...data.archiveInspect, options: sealPasswordOption(data.archiveInspect.options, jobId) }
     : data.archiveInspect;
+  const captureJob = data.captureJob ? sealCaptureJobPayload(data.captureJob, jobId) : undefined;
   return {
     ...data,
     options: sealPasswordOption(data.options, jobId),
     ...(tasks === undefined ? {} : { tasks }),
     ...(toolJob === undefined ? {} : { toolJob }),
     ...(archiveInspect === undefined ? {} : { archiveInspect }),
+    ...(captureJob === undefined ? {} : { captureJob }),
     ...(data.webhookSecret ? { webhookSecret: sealWebhookSecret(data.webhookSecret, jobId) } : {}),
   };
 }

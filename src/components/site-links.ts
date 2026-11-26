@@ -76,6 +76,16 @@ export const TOOL_ROUTES = [
   ...TOOL_GROUPS[4].links,
 ] as const satisfies readonly SiteLink[];
 
+/** Tool groups visible in navigation menus: website capture drops out when `CAPTURE_WEBSITE_ENABLED=false`. */
+export function toolGroupsFor(websiteCaptureEnabled: boolean): readonly ToolGroup[] {
+  return websiteCaptureEnabled ? TOOL_GROUPS : TOOL_GROUPS.filter((group) => group.key !== 'websiteCapture');
+}
+
+/** Flat list of visible tool navigation routes under the active capture kill-switch. */
+export function toolRoutesFor(websiteCaptureEnabled: boolean): readonly SiteLink[] {
+  return toolGroupsFor(websiteCaptureEnabled).flatMap((group) => group.links);
+}
+
 export const PRIMARY_LINKS = [
   { key: 'formats', href: { pathname: '/', hash: 'format-catalog' } },
   { key: 'apiDocs', href: '/api-docs' },

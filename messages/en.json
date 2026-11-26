@@ -967,14 +967,6 @@
       "autoDeleted": "Files deleted automatically",
       "paidCredits": "Credits from your package or subscription",
       "dailyCredits": "{count, plural, one {# credit} other {# credits}} a day"
-    },
-    "tiles": {
-      "joiner": "to",
-      "any": "ANY",
-      "sourceLabel": "Source format {format}",
-      "targetLabel": "Target format {format}",
-      "fromTitle": "Convert from format",
-      "toTitle": "Convert to format"
     }
   },
   "home": {
@@ -2081,6 +2073,69 @@
       "heading": "Ready to get started?",
       "body": "Convert files with up to {anonymous, plural, one {# credit} other {# credits}} a day, no account and no credit card needed.",
       "button": "Convert a file"
+    }
+  },
+  "websiteCapture": {
+    "heading": {
+      "pdf": "Save a web page as PDF",
+      "png": "Capture a web page as PNG",
+      "jpg": "Capture a web page as JPG"
+    },
+    "hint": "Enter a public http or https address on a standard web port.",
+    "urlLabel": "Web page URL",
+    "urlPlaceholder": "https://example.com",
+    "submit": {
+      "pdf": "Save as PDF",
+      "png": "Capture PNG",
+      "jpg": "Capture JPG"
+    },
+    "optionsButton": "Options",
+    "cancel": "Cancel",
+    "capturing": "Capturing web page...",
+    "queued": "Waiting in queue...",
+    "progress": "{percent}%",
+    "validation": {
+      "empty": "Enter a web page address first.",
+      "tooLong": "The address is too long to capture.",
+      "invalidUrl": "Enter a valid web page address starting with http:// or https://.",
+      "scheme": "Only public http and https web addresses can be captured.",
+      "credentials": "Addresses containing a user name or password cannot be captured.",
+      "port": "Only standard web ports (80 and 443) can be captured."
+    },
+    "result": {
+      "ready": "Capture complete",
+      "download": "Download",
+      "startOver": "Capture another URL",
+      "warningsHeading": "Some page requests were blocked"
+    },
+    "options": {
+      "title": "Capture Options",
+      "close": "Close",
+      "cancel": "Cancel",
+      "save": "Save",
+      "reset": "Reset",
+      "waitUntilLabel": "Wait until",
+      "waitUntilLoad": "Page loaded",
+      "waitUntilIdle": "Network idle",
+      "waitUntilHelp": "Network idle waits until the page stops making network requests.",
+      "pdfSection": "PDF layout",
+      "paperLabel": "Paper size",
+      "papers": {
+        "A4": "A4",
+        "Letter": "Letter",
+        "A3": "A3",
+        "A5": "A5",
+        "Legal": "Legal",
+        "Tabloid": "Tabloid"
+      },
+      "landscapeLabel": "Landscape orientation",
+      "marginLabel": "Margin (mm)",
+      "printBackgroundLabel": "Include background graphics",
+      "imageSection": "Screenshot settings",
+      "viewportWidthLabel": "Viewport width (px)",
+      "viewportHeightLabel": "Viewport height (px)",
+      "fullPageLabel": "Capture full page height",
+      "qualityLabel": "JPG quality"
     }
   }
 }

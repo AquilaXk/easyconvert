@@ -1284,6 +1284,50 @@ export const internalPaths = {
       responses: openApiDocumentResponse,
     },
   },
+  '/api/capture/jobs': {
+    post: {
+      ...INTERNAL,
+      summary: 'Enqueue Website Capture Job (Web Application)',
+      description: 'Validates a public web page URL and capture options, seals the URL, and dispatches a `capture.website` job onto the `memory` queue.',
+      operationId: 'createCaptureJobInternal',
+      security: ANONYMOUS_OR_SCOPE('convert:write'),
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['url', 'targetFormat'],
+              properties: {
+                url: { type: 'string', maxLength: 8192, description: 'Public http or https URL on port 80 or 443.' },
+                targetFormat: { type: 'string', enum: ['pdf', 'png', 'jpg'] },
+                options: { type: 'object', additionalProperties: true, description: 'Optional website capture options (`CaptureOptions`).' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '201': createJsonResponse('Website capture job enqueued.', {
+          success: { type: 'boolean' },
+          jobId: { type: 'string' },
+          status: { type: 'string' },
+          progress: { type: 'number' },
+          createdAt: { type: 'number' },
+          queue: { type: 'string' },
+        }),
+        '400': createProblemResponse('Missing targetFormat or malformed JSON request body.'),
+        '401': createProblemResponse('Authentication required or invalid credentials.'),
+        '409': createProblemResponse('A request with the same `Idempotency-Key` is still running; retry after `Retry-After`.'),
+        '413': createProblemResponse('Request body exceeds limit.'),
+        '415': createProblemResponse('Unsupported Content-Type; expected application/json.'),
+        '422': createProblemResponse('Website capture disabled (`capture_unavailable`), URL rejected (`capture_target_blocked`), or invalid capture options.'),
+        '429': createTooManyRequestsResponse('Concurrency limit or daily quota exceeded.'),
+        '500': createProblemResponse('Internal server fault.'),
+        '503': createProblemResponse('Queue or live worker pool unavailable.'),
+      },
+    },
+  },
   '/api/tools/jobs': {
     post: {
       ...INTERNAL,

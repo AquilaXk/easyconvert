@@ -5,6 +5,7 @@ import ts from 'typescript';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { POST as queueJobsRoute } from '../src/app/api/queue/jobs/route';
+import { POST as captureJobsRoute } from '../src/app/api/capture/jobs/route';
 import { POST as v1ConvertRoute } from '../src/app/api/v1/convert/route';
 import { POST as v1JobsRoute } from '../src/app/api/v1/jobs/route';
 import { conversionQueue } from '../src/lib/queue/conversion-queue';
@@ -84,6 +85,7 @@ describe('no conversion job is queued without a deadline', () => {
       .filter((name) => name !== 'lib/queue/enqueue.ts')
       .sort();
     expect(callers).toEqual([
+      'app/api/capture/jobs/route.ts',
       'app/api/queue/jobs/route.ts',
       'app/api/tools/jobs/route.ts',
       'app/api/v1/convert/route.ts',
@@ -95,6 +97,7 @@ describe('no conversion job is queued without a deadline', () => {
 
   it('passes a resource-class queue (never bare conversionQueue) to enqueueConversionJob and handOffConversionJob across all callers', () => {
     const ENQUEUE_CALLERS = [
+      'app/api/capture/jobs/route.ts',
       'app/api/queue/jobs/route.ts',
       'app/api/tools/jobs/route.ts',
       'app/api/v1/convert/route.ts',
@@ -143,7 +146,7 @@ describe('no conversion job is queued without a deadline', () => {
       visit(sf);
     }
 
-    expect(checkedCalls).toBe(8);
+    expect(checkedCalls).toBe(9);
     expect(offenders).toEqual([]);
   });
 
@@ -309,6 +312,23 @@ describe('each route leaves a job with its tier deadline', () => {
     const graphId = (await res.json()).jobId as string;
     const node = await conversionQueue.getJob(`${graphId}:up`);
     expect(node?.opts.timeout).toBe(PRO_MAX_MS);
+  });
+
+  it.each([
+    ['free', FREE_MAX_MS],
+    ['paid', PRO_MAX_MS],
+  ])('POST /api/capture/jobs (%s) gets the tier maximum deadline and routes to the memory queue', async (tier, expected) => {
+    const res = await captureJobsRoute(
+      jsonRequest('/api/capture/jobs', tier, {
+        url: 'https://example.com/article',
+        targetFormat: 'pdf',
+      })
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.queue).toBe('easyconvert-jobs:memory');
+    const job = await conversionQueue.getJob(body.jobId);
+    expect(job?.opts.timeout).toBe(expected);
   });
 
   it.each([
