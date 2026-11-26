@@ -20,7 +20,7 @@ import { RAW_CAMERA_FORMATS } from '../lib/conversions/raw-formats';
 import { isMediaRoutePair } from '../lib/conversions/route-formats';
 import {
   ARCHIVE_EXTRACT_FORMATS, ARCHIVE_TARGET_FORMATS, ENCODED_RASTER_TARGETS, FIXED_PAGE_SOURCES, HTML_TARGET, ILLUSTRATOR_FORMAT, POPPLER_IMAGE_FORMATS,
-  POSTSCRIPT_TARGETS, PDF_SOURCE_FORMAT, RAW_PACKAGING_TARGETS, IN_PROCESS_RAW_SENSOR_FORMATS, SVG_FORMAT, SVG_SOURCE, isPdfChainTarget,
+  POSTSCRIPT_TARGETS, PDF_SOURCE_FORMAT, RAW_PACKAGING_TARGETS, IN_PROCESS_RAW_SENSOR_FORMATS, SVG_FORMAT, SVG_SOURCE, isPdfChainTarget, isPdfSourceFormat,
 } from './native-route-formats';
 import { planNativeRoutes } from './native-route-plan';
 import { FORMAT_REGISTRY } from '../lib/registry';
@@ -1371,7 +1371,7 @@ export async function convertWithNativePoppler(
 ): Promise<WorkerConversionResult | null> {
   const src = validateFormat(sourceFormat);
   const tgt = validateFormat(targetFormat);
-  if (src !== 'pdf' && src !== 'pdfa') return null;
+  if (!isPdfSourceFormat(src)) return null;
 
   const startTime = Date.now();
   const timeout = Math.min(stageTimeoutMs(options, 45000), 120000);
@@ -2290,7 +2290,7 @@ async function convertWithinImageSession(
     const chosen = options.engine === undefined ? 'native engine' : `engine '${options.engine}'`;
     throw new UnsupportedTargetError(`No ${chosen} route converts ${src} to ${tgt}`);
   }
-  if ((src === 'pdf' || src === 'pdfa') && options.password && isUnservedPasswordRequest(lastUnavailable)) {
+  if (isPdfSourceFormat(src) && options.password && isUnservedPasswordRequest(lastUnavailable)) {
     // The in-process engine ignores PDF passwords, so it must not run for a request a native engine could not serve.
     throw lastUnavailable;
   }

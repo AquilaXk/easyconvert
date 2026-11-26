@@ -60,6 +60,7 @@ import {
   matchesCdataOpen,
   RAW_HTML_TEXT_TAGS,
   readEmlMessage,
+  SAFE_HTML_TAGS,
   sanitizeUntrustedHtmlFragment,
   scanTagNameEnd,
   skipSuppressedElement,
@@ -861,7 +862,7 @@ function findNonRawElementStop(html: string, targetTag: string, from: number, xm
       pos = afterTag;
       continue;
     }
-    if (targetTag === 'head' && currentTag === 'body') {
+    if (targetTag === 'head' && (currentTag === 'body' || SAFE_HTML_TAGS.has(currentTag))) {
       return lt;
     }
     if (SUPPRESSED_CONTAINER_TAGS.has(currentTag) && currentTag !== targetTag) {

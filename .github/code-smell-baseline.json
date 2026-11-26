@@ -360,7 +360,7 @@
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 124
+    "maxValue": 123
   },
   {
     "file": "src/lib/conversions/document.ts",
@@ -374,7 +374,7 @@
     "rule": "max-lines-per-function",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 425
+    "maxValue": 412
   },
   {
     "file": "src/lib/conversions/docx-model.ts",
@@ -586,13 +586,6 @@
     "rule": "no-nested-ternary",
     "function": "validateBayerSensorCalibration",
     "count": 1
-  },
-  {
-    "file": "src/lib/conversions/index.ts",
-    "rule": "complexity",
-    "function": "convertFileInScope",
-    "count": 1,
-    "maxValue": 34
   },
   {
     "file": "src/lib/conversions/lzma-decoder.ts",

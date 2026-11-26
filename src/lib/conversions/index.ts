@@ -1,6 +1,6 @@
 // First import on purpose: the flag must be set before any WebAssembly instance exists (docs/policy-decisions.md, entry 115).
 import './wasm-import-wrappers';
-import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidPageRangeError, UnsupportedOptionError, UnsupportedTargetError } from '../types';
+import { ConversionOptions, ConversionResult, ConversionFailedError, InvalidPageRangeError, UnsupportedOptionError, UnsupportedTargetError, type FormatDefinition } from '../types';
 import { assertNotSubtitlePair } from './subtitle';
 import { isArchiveRoutePair, isMediaRoutePair } from './route-formats';
 import { FORMAT_REGISTRY, sniffMimeTypeFromMagicBytes, isFormatCompatibleWithMagicBytes } from '../registry';
@@ -381,8 +381,30 @@ function officeEngineWritesSheet(src: string, tgt: string): boolean {
   return !STRUCTURED_SHEET_SOURCES.has(src) && ['ods', 'xlsx', 'xls'].includes(tgt);
 }
 
+const VECTOR_CAD_DIRECT_SOURCES: ReadonlySet<string> = new Set([
+  'eps', 'ps', 'dxf', 'dwg', 'step', 'stp', 'iges', 'igs', 'stl', 'obj',
+  'cgm', 'cdr', 'dwf', 'emf', 'sk', 'sk1', 'svgz', 'vsd', 'wmf',
+]);
+const VECTOR_CAD_DIRECT_TARGETS: ReadonlySet<string> = new Set([
+  'dxf', 'dwg', 'step', 'stp', 'iges', 'igs', 'stl', 'obj', 'cgm', 'emf', 'wmf', 'svg',
+]);
+
+function isPdfInputFormat(src: string): boolean {
+  return src === 'pdf' || src === 'pdfa';
+}
+
+function isVectorOrCadDirectSource(srcDef: FormatDefinition, src: string, tgt: string): boolean {
+  if (isPdfInputFormat(src)) return false;
+  return (
+    srcDef.category === 'vector' ||
+    srcDef.category === 'cad' ||
+    VECTOR_CAD_DIRECT_SOURCES.has(src) ||
+    VECTOR_CAD_DIRECT_TARGETS.has(tgt)
+  );
+}
+
 function isDirectPdfPostProcessOnly(src: string, tgt: string, options: ConversionOptions): boolean {
-  if ((src !== 'pdf' && src !== 'pdfa') || tgt !== 'pdf' || options.ocrEnabled) return false;
+  if (!isPdfInputFormat(src) || tgt !== 'pdf' || options.ocrEnabled) return false;
   return Boolean(
     options.optimize !== undefined ||
       options.watermark !== undefined ||
@@ -396,7 +418,7 @@ function isDirectPdfPostProcessOnly(src: string, tgt: string, options: Conversio
  * is the one page of the `pages` grammar; both options must name the same text. The syntax is checked before any work.
  */
 function pdfToPdfPagesSpec(src: string, tgt: string, options: ConversionOptions): string | undefined {
-  if ((src !== 'pdf' && src !== 'pdfa') || tgt !== 'pdf') return undefined;
+  if (!isPdfInputFormat(src) || tgt !== 'pdf') return undefined;
   const selection = pageSelectionOf(options);
   if (selection === undefined) return undefined;
   const pages = typeof selection.pages === 'string' ? selection.pages.trim() : '';
@@ -497,34 +519,7 @@ async function convertFileInScope(
   }
 
   // 4. Vector & CAD routing (including EPS and PS)
-  if (
-    src !== 'pdf' &&
-    src !== 'pdfa' &&
-    (srcDef.category === 'vector' ||
-      srcDef.category === 'cad' ||
-      [
-        'eps',
-        'ps',
-        'dxf',
-        'dwg',
-        'step',
-        'stp',
-        'iges',
-        'igs',
-        'stl',
-        'obj',
-        'cgm',
-        'cdr',
-        'dwf',
-        'emf',
-        'sk',
-        'sk1',
-        'svgz',
-        'vsd',
-        'wmf',
-      ].includes(src) ||
-      ['dxf', 'dwg', 'step', 'stp', 'iges', 'igs', 'stl', 'obj', 'cgm', 'emf', 'wmf', 'svg'].includes(tgt))
-  ) {
+  if (isVectorOrCadDirectSource(srcDef, src, tgt)) {
     return convertVectorCad(inputBuffer, src, tgt, options, originalFilename);
   }
 

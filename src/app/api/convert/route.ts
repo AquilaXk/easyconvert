@@ -8,7 +8,8 @@ import { bindJobLimits } from '@/lib/conversions/job-time';
 import { deadlineErrorResponse, runUnderDeadline } from '@/lib/api/sync-deadline';
 import { payloadLimitStatus } from '@/lib/api/payload-limit';
 import { withinSingleRequest } from '@/lib/api/file-size-limit';
-import { detectUploadedSourceFormat, getFormatByExtension, getAvailableTargetFormats } from '@/lib/registry';
+import { getFormatByExtension, getAvailableTargetFormats } from '@/lib/registry';
+import { detectUploadedSourceFormat } from '@/lib/uploaded-source-format';
 import { ALTO_SNIFF_BYTES, promoteAltoXmlSource } from '@/lib/conversions/ocr-alto-sniff';
 import { assertNotSpoofedFile, spoofCheckStatus } from '@/lib/security/file-guard';
 import {

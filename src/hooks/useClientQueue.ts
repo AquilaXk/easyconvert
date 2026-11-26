@@ -5,7 +5,8 @@ import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streami
 import { materializeZipStreamUrl, triggerAnchorDownload } from '@/lib/download-blob';
 import { extractDownloadExtension, sanitizeDownloadLeafFilename } from '@/lib/download-filename';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { detectUploadedSourceFormat, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
+import { getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
+import { detectUploadedSourceFormat } from '@/lib/uploaded-source-format';
 import { executeItemConversion } from '@/lib/client-converter';
 import { releaseEdgeResultResources } from '@/lib/edge/pipelines/opfs-streaming-pipeline';
 import {

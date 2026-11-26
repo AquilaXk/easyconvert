@@ -14,12 +14,12 @@ import { extractRowsForOffice } from '../src/lib/conversions/office/sheet-extrac
 import {
   assertNotSpoofedFile,
   detectFormatFromFilename,
-  detectUploadedSourceFormat,
   FileExtensionSpoofError,
 } from '../src/lib/registry';
+import { detectUploadedSourceFormat } from '../src/lib/uploaded-source-format';
 import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
 import { planTextPdfRoute, TEXT_PDF_SOURCES } from '../src/worker/text-pdf-route';
-import { manToMarkdown, rstToMarkdown } from '../src/lib/conversions/office/markup-text';
+import { manToMarkdown, rstToMarkdown, texToMarkdown } from '../src/lib/conversions/office/markup-text';
 import { expectNoHang } from './helpers/timing';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError, EngineUnavailableError, SheetLimitError } from '../src/lib/types';
@@ -848,6 +848,98 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     expect(headTemplateHtml).toContain('<title>Good</title>');
     expect(headTemplateHtml).toContain('<body><p>Real</p></body>');
     expect(headTemplateHtml).not.toContain('Fake');
+
+    // 7. Unclosed <head> exits on safe body content tags just like EML HTML sanitization
+    const unclosedHeadXhtml = Buffer.from('<head><meta charset="utf-8"><title>IgnoredTitle</title><p>VisibleWithoutBody</p>', 'utf-8');
+    const uhTxt = (await dispatchConversion(unclosedHeadXhtml, 'xhtml', 'txt', {}, 'uh.xhtml')).buffer.toString('utf-8');
+    expect(uhTxt).toBe('VisibleWithoutBody');
+    const uhMd = (await dispatchConversion(unclosedHeadXhtml, 'xhtml', 'md', {}, 'uh.xhtml')).buffer.toString('utf-8');
+    expect(uhMd).toBe('VisibleWithoutBody');
+    const uhHtml = (await dispatchConversion(unclosedHeadXhtml, 'xhtml', 'html', {}, 'uh.xhtml')).buffer.toString('utf-8');
+    expect(uhHtml).toContain('<body><p>VisibleWithoutBody</p></body>');
+  });
+
+  it('preserves TeX, RST, and man edge-case formatting across refactored markup helpers', () => {
+    const texSrc = [
+      '\\author{Alice}',
+      '\\newenvironment{myenv}{start}{end}',
+      '\\href{https://example.com}{Docs} and \\url{https://example.org}',
+      '\\texttt{run} \\% \\$ \\& \\_ \\# \\{ \\}',
+      '\\begin{itemize}',
+      '\\item First',
+      '\\end{itemize}',
+    ].join('\n');
+    expect(texToMarkdown(texSrc)).toBe(
+      [
+        '*Alice*',
+        '',
+        '[Docs](https://example.com) and https://example.org',
+        '`run` % $ & _ # { }',
+        '',
+        '- First',
+      ].join('\n')
+    );
+
+    const deepBraces = `${'{'.repeat(40)}deep${'}'.repeat(40)}`;
+    expect(texToMarkdown(deepBraces)).toBe('deep');
+
+    const rstSrc = [
+      '===',
+      'Top',
+      '===',
+      '',
+      '.. note:: Keep safe',
+      '   more details',
+      '',
+      '.. _ref: https://example.com',
+      '',
+      'See `Guide <https://example.com/guide>`_ and ``inline``.',
+    ].join('\n');
+    expect(rstToMarkdown(rstSrc)).toBe(
+      [
+        '# Top',
+        '',
+        '**Note:** Keep safe',
+        'more details',
+        '',
+        'ref: https://example.com',
+        '',
+        'See [Guide](https://example.com/guide) and `inline`.',
+      ].join('\n')
+    );
+
+    const manSrc = [
+      '.TH TOOL 1',
+      '.SH SYNOPSIS',
+      '.SS Flags',
+      '.BR --help " , " -h',
+      '.BI -f file',
+      '.TP',
+      '.B --verbose',
+      '.OP -v',
+      '.ig ENDIGN',
+      'hidden text',
+      '.ENDIGN',
+      '.br',
+      'End line.',
+    ].join('\n');
+    expect(manToMarkdown(manSrc)).toBe(
+      [
+        '# TOOL(1)',
+        '',
+        '## SYNOPSIS',
+        '',
+        '### Flags',
+        '',
+        '**--help** , **-h**',
+        '**-f***file*',
+        '',
+        '**--verbose**',
+        '[-v]',
+        '',
+        'End line.',
+      ].join('\n')
+    );
   });
 
   it('hardens Flat ODF leading comment normalization, .cur vs .wks signature distinction, and legacy spreadsheet bounds', async () => {
