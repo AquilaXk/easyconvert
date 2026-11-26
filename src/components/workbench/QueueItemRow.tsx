@@ -176,7 +176,7 @@ export default function QueueItemRow({
       <div className="col-span-3 row-start-2 border-t border-rule pt-3 lg:col-span-1 lg:col-start-3 lg:row-start-1 lg:border-0 lg:pt-0 flex items-center flex-wrap gap-2 lg:gap-2.5">
         <span className="inline-flex items-center gap-1.5 min-h-9 px-2.5 rounded-xs bg-sunken text-sm font-semibold text-ink">
           <FormatIcon format={item.sourceFormat} className="size-[19px] text-ink-3" />
-          {sourceLabel || '—'}
+          {sourceLabel || '-'}
         </span>
         <ArrowRight aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
 
@@ -184,8 +184,8 @@ export default function QueueItemRow({
           testId="queue-target-format-btn"
           ariaLabel={
             hasTarget
-              ? t('targetLabel', { name: item.name, src: sourceLabel || '—', tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
-              : t('chooseTargetLabel', { name: item.name, src: sourceLabel || '—' })
+              ? t('targetLabel', { name: item.name, src: sourceLabel || tFormat('unknownFile'), tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
+              : t('chooseTargetLabel', { name: item.name, src: sourceLabel || tFormat('unknownFile') })
           }
           disabled={isBusy || isUnconvertible}
           className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-canvas text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"

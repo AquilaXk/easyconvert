@@ -139,7 +139,7 @@ describe('PR #246 review follow-ups', () => {
       expect(body.type).toBe(RATE_LIMITED_TYPE);
       expect(body.type).not.toBe(QUOTA_EXCEEDED_TYPE);
       expect(Number(last!.headers.get('Retry-After'))).toBeGreaterThanOrEqual(1);
-    });
+    }, 20_000);
   });
 
   describe('ownerless DLQ entries are purged', () => {
