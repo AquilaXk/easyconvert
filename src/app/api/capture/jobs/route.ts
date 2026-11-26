@@ -24,7 +24,8 @@ import { handOffConversionJob } from '@/lib/queue/enqueue';
 import { tierToPriority } from '@/lib/queue/resource-class';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
-import { QueueUnavailableError, type WebsiteCaptureOptions } from '@/lib/types';
+import { isPrivateOrRestrictedHost } from '@/lib/security/ssrf';
+import { ConversionFailedError, QueueUnavailableError, type WebsiteCaptureOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -170,6 +171,19 @@ function validateCaptureOptions(
   return { options: pickCaptureOptions(rawOptions as WebsiteCaptureOptions) };
 }
 
+function blockedCaptureUrlRefusal(reason: string, instanceUri: string): Response {
+  return createProblemDetailsResponse(
+    422,
+    reason,
+    instanceUri,
+    undefined,
+    undefined,
+    undefined,
+    [{ name: 'url', reason }],
+    { code: 'capture_target_blocked' }
+  );
+}
+
 interface ParsedCaptureRequest {
   url: string;
   targetFormat: CaptureTargetFormat;
@@ -230,16 +244,15 @@ async function readCaptureRequest(
 
   const urlProblem = captureUrlProblem(parsedJson.url);
   if (urlProblem !== undefined) {
+    return { refusal: blockedCaptureUrlRefusal(urlProblem, instanceUri) };
+  }
+
+  const parsedUrl = new URL(parsedJson.url as string);
+  if (isPrivateOrRestrictedHost(parsedUrl.hostname)) {
     return {
-      refusal: createProblemDetailsResponse(
-        422,
-        urlProblem,
-        instanceUri,
-        undefined,
-        undefined,
-        undefined,
-        [{ name: 'url', reason: urlProblem }],
-        { code: 'capture_target_blocked' }
+      refusal: blockedCaptureUrlRefusal(
+        `The address of ${parsedUrl.origin} is not a public one, so it cannot be captured.`,
+        instanceUri
       ),
     };
   }
@@ -261,7 +274,7 @@ function captureErrorResponse(error: unknown, instanceUri: string): Response {
   if (deadlineProblem) return deadlineProblem;
   const queueProblem = queueErrorResponse(error, instanceUri);
   if (queueProblem) return queueProblem;
-  if (error instanceof CaptureUnavailableError) {
+  if (error instanceof ConversionFailedError) {
     return typedFailureProblem(error, instanceUri);
   }
   return serverFault('capture/jobs', error, 'Website capture enqueue error');

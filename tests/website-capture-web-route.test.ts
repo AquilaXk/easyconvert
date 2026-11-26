@@ -17,15 +17,26 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { userStore } from '../src/lib/auth/user-store';
 import { processQueuedCaptureJob } from '../src/lib/capture/queued-capture-runner';
+import { CaptureFailedError, CaptureTargetBlockedError } from '../src/lib/capture/website-capture-errors';
 import { finishedData } from '../src/lib/queue/ended-jobs';
 import { Worker } from '../src/lib/queue/bullmq-engine';
+import * as concurrencyLimit from '../src/lib/queue/concurrency-limit';
 import { attachJobLifecycleListeners, conversionQueue, processConversionJob, resourceQueues } from '../src/lib/queue/conversion-queue';
+import * as enqueueLib from '../src/lib/queue/enqueue';
 import * as workerPresence from '../src/lib/queue/worker-presence';
 import { rateLimitKey } from '../src/lib/security/client-ip';
 import { SecretSealError } from '../src/lib/security/job-secret-seal';
 import * as retentionService from '../src/lib/storage/retention-service';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import { JobTimeoutError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
+import {
+  ConversionFailedError,
+  EngineUnavailableError,
+  JobTimeoutError,
+  PayloadLimitError,
+  WorkerOutputMissingError,
+  type ConversionJobData,
+  type ConversionJobResult,
+} from '../src/lib/types';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 import { skipUnless } from './helpers/strict-skip';
 
@@ -214,6 +225,100 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     if (expectedCode) {
       expect((await res.json()).code).toBe(expectedCode);
     }
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+  });
+
+  it.each([
+    ['localhost', 'http://localhost/'],
+    ['IPv4 loopback', 'http://127.0.0.1/'],
+    ['IPv6 loopback', 'http://[::1]/'],
+    ['link-local metadata IP', 'http://169.254.169.254/latest/meta-data/?token=s3cret'],
+    ['RFC1918 10.0.0.0/8', 'http://10.0.0.1/'],
+    ['GCP metadata domain', 'http://metadata.google.internal/computeMetadata/v1/'],
+    ['mDNS .local domain', 'http://foo.local/'],
+    ['decimal integer IPv4 loopback', 'http://2130706433/'],
+    ['IPv4-mapped IPv6 loopback', 'http://[::ffff:127.0.0.1]/'],
+    ['trailing dot localhost', 'http://localhost./'],
+    ['RFC1918 192.168.0.0/16', 'http://192.168.1.1/'],
+    ['unspecified 0.0.0.0', 'http://0.0.0.0/'],
+  ])('synchronously refuses private/loopback/restricted %s with 422 capture_target_blocked before concurrency, quota, or enqueue', async (_label, targetUrl) => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    const countsBefore = await resourceQueues.memory.getJobCounts();
+    const mayEnqueueSpy = vi.spyOn(concurrencyLimit, 'mayEnqueue');
+    const handOffSpy = vi.spyOn(enqueueLib, 'handOffConversionJob');
+    const queueAddSpy = vi.spyOn(resourceQueues.memory, 'add');
+    const dnsLookupSpy = vi.spyOn(dns, 'lookup');
+    const dnsPromisesSpy = vi.spyOn(dns.promises, 'lookup');
+
+    const res = await captureJobsRoute(anonPost(ip, { url: targetUrl, targetFormat: 'pdf' }));
+    expect(res.status).toBe(422);
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    const body = (await res.json()) as {
+      status: number;
+      code: string;
+      invalidParams?: Array<{ name: string; reason: string }>;
+    };
+    expect(body).toMatchObject({
+      status: 422,
+      code: 'capture_target_blocked',
+      invalidParams: [{ name: 'url', reason: expect.any(String) }],
+    });
+    expect(JSON.stringify(body)).not.toContain('s3cret');
+    expect(mayEnqueueSpy).not.toHaveBeenCalled();
+    expect(handOffSpy).not.toHaveBeenCalled();
+    expect(queueAddSpy).not.toHaveBeenCalled();
+    expect(dnsLookupSpy).not.toHaveBeenCalled();
+    expect(dnsPromisesSpy).not.toHaveBeenCalled();
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+    expect(await resourceQueues.memory.getJobsByUser(anonId, ['waiting', 'active', 'delayed'], 100, 0)).toEqual([]);
+    expect(await resourceQueues.memory.getJobCounts()).toEqual(countsBefore);
+  });
+
+  it.each([
+    ['CaptureFailedError', () => new CaptureFailedError('The browser could not load the page.'), 422, 'capture_failed', 'The browser could not load the page.'],
+    ['CaptureTargetBlockedError', () => new CaptureTargetBlockedError('Target host is restricted.'), 422, 'capture_target_blocked', 'Target host is restricted.'],
+    ['EngineUnavailableError', () => new EngineUnavailableError('capture-website', 'browser missing'), 503, 'engine_unavailable', 'browser missing'],
+    ['ConversionFailedError', () => new ConversionFailedError('Malformed capture stream.'), 400, 'conversion_failed', 'Malformed capture stream.'],
+    ['PayloadLimitError', () => new PayloadLimitError('Capture payload exceeded limit.'), 413, 'input_over_limit', 'Capture payload exceeded limit.'],
+  ])('maps %s through typedFailureProblem and rolls back reserved quota', async (_label, makeError, expectedStatus, expectedCode, expectedDetail) => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+    vi.spyOn(enqueueLib, 'handOffConversionJob').mockRejectedValueOnce(makeError());
+
+    const res = await captureJobsRoute(anonPost(ip, { url: 'https://example.com/error-map', targetFormat: 'png' }));
+    expect(res.status).toBe(expectedStatus);
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    if (expectedStatus === 503) {
+      expect(res.headers.get('retry-after')).toBe('5');
+    }
+    const body = (await res.json()) as { status: number; code: string; detail: string };
+    expect(body).toMatchObject({ status: expectedStatus, code: expectedCode });
+    expect(body.detail).toContain(expectedDetail);
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+  });
+
+  it('redacts 500-status ConversionFailedError subclasses and untyped errors in captureErrorResponse', async () => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+
+    vi.spyOn(enqueueLib, 'handOffConversionJob').mockRejectedValueOnce(
+      new WorkerOutputMissingError('/secret/worker/tmp/capture.pdf')
+    );
+    const workerFaultRes = await captureJobsRoute(anonPost(ip, { url: 'https://example.com/fault1', targetFormat: 'pdf' }));
+    expect(workerFaultRes.status).toBe(500);
+    expect(workerFaultRes.headers.get('content-type')).toContain('application/problem+json');
+    const workerFaultText = await workerFaultRes.text();
+    expect(workerFaultText).toContain('Internal conversion error');
+    expect(workerFaultText).not.toContain('/secret/worker/tmp');
+
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    vi.spyOn(enqueueLib, 'handOffConversionJob').mockRejectedValueOnce(new Error('/secret/db/conn'));
+    const genericFaultRes = await captureJobsRoute(anonPost(ip, { url: 'https://example.com/fault2', targetFormat: 'pdf' }));
+    expect(genericFaultRes.status).toBe(500);
+    const genericFaultText = await genericFaultRes.text();
+    expect(genericFaultText).toContain('Website capture enqueue error');
+    expect(genericFaultText).not.toContain('/secret/db/conn');
     expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
   });
 
