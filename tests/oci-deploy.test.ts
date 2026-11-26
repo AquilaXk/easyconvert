@@ -450,10 +450,10 @@ describe('nginx site file', () => {
     expect(withoutComments).not.toMatch(/letsencrypt/);
   });
 
-  it('applies method-scoped POST conversion rate limiting across every conversion, job, tool, fetch, bundle, and archive-inspect route while allowing GET polling under the API zone', () => {
+  it('applies method-scoped POST conversion rate limiting across every conversion, job, capture, tool, fetch, bundle, and archive-inspect route while allowing GET polling under the API zone', () => {
     expect(withoutComments).toMatch(/map \$request_method \$easyconvert_convert_post_key \{\s*default "";\s*POST \$binary_remote_addr;\s*\}/);
     expect(withoutComments).toMatch(/limit_req_zone \$easyconvert_convert_post_key zone=easyconvert_convert:10m rate=2r\/s;/);
-    expect(withoutComments).toMatch(/"~\^\/api\/\(v1\/jobs\|queue\/jobs\|tools\/\|fetch-url\|v1\/archives\/inspect\)"\s+"convert";/);
+    expect(withoutComments).toMatch(/"~\^\/api\/\(v1\/jobs\|queue\/jobs\|capture\/jobs\|tools\/\|fetch-url\|v1\/archives\/inspect\)"\s+"convert";/);
 
     const blocks = [...withoutComments.matchAll(/^\s*location ([^{]+)\{([^}]*)\}/gm)].map((match) => ({
       match: match[1].trim(),
@@ -464,6 +464,7 @@ describe('nginx site file', () => {
       '/api/v1/convert',
       '/api/v1/jobs',
       '/api/queue/jobs',
+      '/api/capture/jobs',
       '/api/tools/',
       '/api/fetch-url',
       '/api/storage/bundle',
