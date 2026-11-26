@@ -570,11 +570,11 @@ export async function runWasmWorkerJob(
 const workerEngine = new WasmEngine();
 
 const workerGlobalScope = (globalThis as { WorkerGlobalScope?: abstract new (...args: never[]) => unknown }).WorkerGlobalScope;
+const workerWindow = (globalThis as { window?: unknown }).window;
 if (
   typeof self !== 'undefined' &&
   typeof (self as { postMessage?: unknown }).postMessage === 'function' &&
-  typeof workerGlobalScope === 'function' &&
-  self instanceof workerGlobalScope
+  (typeof workerGlobalScope === 'function' ? self instanceof workerGlobalScope : workerWindow == null)
 ) {
   self.onmessage = async (e: MessageEvent) => {
     await runWasmWorkerJob(e.data, (message, transfer) => (self as any).postMessage(message, transfer ?? []), workerEngine);

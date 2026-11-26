@@ -584,7 +584,7 @@
         "when": "Time",
         "what": "Conversion",
         "credits": "Credits",
-        "extra": "{base, number} credits and {surcharge, number} for processing time",
+        "extra": "{base, plural, one {# credit} other {# credits}} and {surcharge, number} for processing time",
         "batch": "A batch of files",
         "graph": "A job with several steps",
         "capture": "Website to {to}",
@@ -771,7 +771,8 @@
     "noMatches": "No formats matching \"{search}\"",
     "searchLabel": "Search format",
     "searchPlaceholder": "Search format...",
-    "formatName": "{format} {category, select, image {Image} document {Document} archive {Archive} video {Video} audio {Audio} ebook {Ebook} spreadsheet {Spreadsheet} presentation {Presentation} data {Data} vector {Vector} font {Font} cad {CAD} other {File}}"
+    "formatName": "{format} {category, select, image {Image} document {Document} archive {Archive} video {Video} audio {Audio} ebook {Ebook} spreadsheet {Spreadsheet} presentation {Presentation} data {Data} vector {Vector} font {Font} cad {CAD} other {File}}",
+    "unknownFile": "Unknown file"
   },
   "formatSpecs": {
     "pdf": {
@@ -1382,7 +1383,7 @@
     "convertAllTo": "Convert all to",
     "chooseFormat": "Choose format",
     "convertAllTitle": "Convert all compatible files to",
-    "filesInQueue": "{count} files in queue",
+    "filesInQueue": "{count, plural, one {# file in queue} other {# files in queue}}",
     "clearAll": "Clear all",
     "dismissZipError": "Dismiss archive error",
     "addMore": "Add more files",
@@ -1406,7 +1407,8 @@
       "removeLabel": "Remove {name}",
       "options": "Options",
       "emptyFile": "This file is empty (0 bytes) and cannot be converted.",
-      "unsupportedFormat": "{format} files are not supported for conversion."
+      "unsupportedFormat": "{format} files are not supported for conversion.",
+      "unsupportedFile": "This file type is not supported for conversion."
     },
     "label": "Files to convert"
   },

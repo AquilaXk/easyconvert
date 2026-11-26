@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { act, createElement, type ReactElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { NextIntlClientProvider } from 'next-intl';
+import { NextIntlClientProvider, useTranslations } from 'next-intl';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChargeEntry, QuotaUsage } from '../src/lib/api-keys/types';
@@ -22,6 +22,8 @@ import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { RedisUserStore } from '../src/lib/auth/redis-user-store';
 import { userStore } from '../src/lib/auth/user-store';
 import { setViewerPlan, applySessionChange } from '../src/lib/viewer-plan';
+import { countsAsAnonymousForConversions } from '../src/lib/auth/email-verified';
+import { registerSessionCleanupOnPageExit } from '../src/lib/edge/opfs/storage-gc';
 import { WEB_TOOLS } from '../src/lib/tools/tool-names';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
@@ -668,5 +670,155 @@ describe('4. UI/UX defects: RecentCharges translations, English plurals, ?tab=us
 
     expect(calls.some((u) => u.includes('action=abort'))).toBe(true);
     expect(calls.some((u) => u === '/api/queue/jobs')).toBe(false);
+  });
+
+  it('keeps self.onmessage in worker mocks without WorkerGlobalScope, ignores browser window without WorkerGlobalScope, and preserves storage-gc self fallback', async () => {
+    const scope = { postMessage: vi.fn() } as { postMessage: ReturnType<typeof vi.fn>; onmessage?: (e: MessageEvent) => Promise<void> | void };
+    vi.stubGlobal('WorkerGlobalScope', undefined);
+    vi.stubGlobal('window', undefined);
+    vi.stubGlobal('self', scope);
+    vi.resetModules();
+    await import('../src/lib/edge/workers/opfs-vfs.worker');
+    expect(typeof scope.onmessage).toBe('function');
+
+    const winScope = { postMessage: vi.fn() } as { postMessage: ReturnType<typeof vi.fn>; onmessage?: unknown };
+    vi.stubGlobal('window', winScope);
+    vi.stubGlobal('self', winScope);
+    vi.resetModules();
+    await import('../src/lib/edge/workers/wasm-engine.worker');
+    expect(winScope.onmessage).toBeUndefined();
+
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    vi.stubGlobal('window', undefined);
+    vi.stubGlobal('self', { addEventListener, removeEventListener });
+    const unregister = registerSessionCleanupOnPageExit(new Set(['sess-1']));
+    expect(addEventListener).toHaveBeenCalledTimes(2);
+    unregister();
+    expect(removeEventListener).toHaveBeenCalledTimes(2);
+  });
+
+  it('supports RFC 5987 language tags in Content-Disposition and clamps unverified legacy tiers as anonymous', () => {
+    expect(filenameFromContentDisposition("attachment; filename*=UTF-8'en'%ED%85%8C%EC%8A%A4%ED%8A%B8.zip")).toBe('테스트.zip');
+    expect(
+      countsAsAnonymousForConversions({
+        provider: 'email',
+        emailVerified: false,
+        tier: 'enterprise' as UserTier,
+      })
+    ).toBe(true);
+    expect(
+      countsAsAnonymousForConversions({
+        provider: 'email',
+        emailVerified: false,
+        tier: 'paid',
+      })
+    ).toBe(false);
+  });
+
+  it('blocks extensionless (README, png), trailing-dot (file.), and Object.prototype-keyed files without misclassifying them', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(JSON.stringify({ success: false, authenticated: false, user: null, paidPlansOnSale: false }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+    );
+
+    const weirdFiles = [
+      new File(['plain'], 'README', { type: 'text/plain' }),
+      new File(['not-a-png'], 'png', { type: 'text/plain' }),
+      new File(['trailing-dot'], 'file.', { type: 'application/octet-stream' }),
+      new File(['proto'], 'bad.constructor', { type: 'application/octet-stream' }),
+    ];
+    for (const f of weirdFiles) {
+      const built = buildQueuedFileItem(f, 'pdf');
+      expect(built.targetFormat).toBe('');
+      if (f.name === 'bad.constructor') {
+        expect(built.sourceFormat).toBe('constructor');
+      } else {
+        expect(built.sourceFormat).toBe('');
+      }
+    }
+
+    let hookApi: ReturnType<typeof useClientQueue> | undefined;
+    function Harness() {
+      hookApi = useClientQueue();
+      return createElement(ConversionQueue, {
+        items: hookApi.queue,
+        onRemoveItem: hookApi.handleRemoveItem,
+        onClearAll: hookApi.handleClearAll,
+        onUpdateTargetFormat: hookApi.handleUpdateTargetFormat,
+        onUpdateAllTargets: hookApi.handleUpdateAllTargets,
+        onUpdateOptions: hookApi.handleUpdateOptions,
+        onConvertAll: hookApi.handleConvertAll,
+        onAddMoreFiles: vi.fn(),
+        onImportFile: vi.fn(),
+        onDownloadAllZip: hookApi.handleDownloadAllZip,
+        isConverting: hookApi.isConverting,
+      });
+    }
+
+    const host = mountDom(createElement(Harness), 'en');
+    await act(async () => {
+      hookApi!.handleFilesSelected([weirdFiles[0]!, weirdFiles[1]!], 'pdf');
+    });
+    expect(host.textContent).toContain('2 files in queue');
+    expect(host.textContent).toContain('Unknown file');
+    expect(host.textContent).toContain('This file type is not supported for conversion.');
+    const convertBtn = Array.from(host.querySelectorAll('button')).find((b) => b.textContent?.includes('Convert'));
+    expect(convertBtn?.disabled).toBe(true);
+
+    function SingularCountCheck() {
+      const t = useTranslations('queue');
+      return createElement('span', null, t('filesInQueue', { count: 1 }));
+    }
+    const singularHost = mountDom(createElement(SingularCountCheck), 'en');
+    expect(singularHost.textContent).toBe('1 file in queue');
+  });
+
+  it('uses singular English credit wording in RecentCharges when base is 1 and skips tab refetches before dashboard user resolves', async () => {
+    const charges: ChargeEntry[] = [
+      { at: 1_700_000_000_000, from: 'pdf', to: 'docx', credits: 2, base: 1, surcharge: 1, fromPackage: 0, uncharged: 0 },
+    ];
+    const chargeHost = mountDom(createElement(RecentCharges, { charges }), 'en');
+    expect(chargeHost.textContent).toContain('1 credit and 1 for processing time');
+
+    searchState.tab = 'api';
+    let controller!: ReturnType<typeof useDashboardController>;
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      const url = String(input);
+      if (url === '/api/auth/me') {
+        return new Response(JSON.stringify({ success: false, authenticated: false }), { status: 401 });
+      }
+      return new Response(JSON.stringify({ success: true, keys: [], charges: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    function Harness() {
+      controller = useDashboardController();
+      return createElement('div', null, controller.activeTab);
+    }
+
+    const host = mountDom(createElement(Harness), 'en');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    searchState.tab = 'usage';
+    await act(async () => {
+      root!.render(
+        createElement(NextIntlClientProvider, {
+          locale: 'en',
+          messages: testMessages('en'),
+          timeZone: 'UTC',
+          children: createElement(Harness),
+        })
+      );
+    });
+    expect(controller.activeTab).toBe('usage');
+    expect(fetchMock.mock.calls.some(([u]) => String(u) === '/api/keys')).toBe(false);
+    expect(host.textContent).toContain('usage');
   });
 });

@@ -771,7 +771,8 @@
     "noMatches": "‘{search}’ 검색 결과가 없습니다",
     "searchLabel": "형식 검색",
     "searchPlaceholder": "형식 검색...",
-    "formatName": "{format} {category, select, image {이미지} document {문서} archive {압축 파일} video {동영상} audio {오디오} ebook {전자책} spreadsheet {스프레드시트} presentation {프레젠테이션} data {데이터} vector {벡터} font {글꼴} cad {CAD} other {파일}}"
+    "formatName": "{format} {category, select, image {이미지} document {문서} archive {압축 파일} video {동영상} audio {오디오} ebook {전자책} spreadsheet {스프레드시트} presentation {프레젠테이션} data {데이터} vector {벡터} font {글꼴} cad {CAD} other {파일}}",
+    "unknownFile": "알 수 없는 파일"
   },
   "formatSpecs": {
     "pdf": {
@@ -1406,7 +1407,8 @@
       "removeLabel": "{name} 제거",
       "options": "옵션",
       "emptyFile": "파일 크기가 0바이트여서 변환할 수 없습니다.",
-      "unsupportedFormat": "{format} 형식은 변환을 지원하지 않습니다."
+      "unsupportedFormat": "{format} 형식은 변환을 지원하지 않습니다.",
+      "unsupportedFile": "지원하지 않는 파일 형식입니다."
     },
     "label": "변환할 파일"
   },

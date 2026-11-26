@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import { ArrowRight, ChevronDown, Download, Sliders, X } from 'lucide-react';
 import type { ConversionFailure } from '@/lib/conversion-failure';
 import { ConversionQueueItem } from '@/lib/types';
-import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
+import { getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
@@ -135,27 +135,27 @@ export default function QueueItemRow({
   const isBusy = item.status === 'uploading' || item.status === 'converting';
   const plan = useViewerPlan();
   const isIdle = !isBusy && item.status !== 'completed';
-  const sourceKey = item.sourceFormat.toLowerCase();
+  const sourceDef = getFormatByExtension(item.sourceFormat);
   const availableFormats = getAvailableTargetFormats(item.sourceFormat);
   // Read at render, not when the file was dropped: the plan of the session may answer after the drop.
   const isOversize = isIdle && item.size > maxFileBytes(plan);
   const isEmptyFile = isIdle && item.size <= 0;
-  const isUnsupportedFormat = isIdle && (!FORMAT_REGISTRY[sourceKey] || availableFormats.length === 0);
+  const isUnsupportedFormat = isIdle && (!sourceDef || availableFormats.length === 0);
   const isUnconvertible = isOversize || isEmptyFile || isUnsupportedFormat;
   const hasTarget = Boolean(item.targetFormat);
   const optionError = isIdle ? resolveOptionError(tPassword, item) : null;
-  const sourceLabel = item.sourceFormat.toUpperCase();
+  const sourceLabel = item.sourceFormat ? item.sourceFormat.toUpperCase() : '';
   let blockingFileError: string | null = null;
   if (isOversize) {
     blockingFileError = fileTooLargeMessage(plan, item.size);
   } else if (isEmptyFile) {
     blockingFileError = t('emptyFile');
   } else if (isUnsupportedFormat) {
-    blockingFileError = t('unsupportedFormat', { format: sourceLabel });
+    blockingFileError = sourceLabel ? t('unsupportedFormat', { format: sourceLabel }) : t('unsupportedFile');
   }
   const rowError = isIdle ? resolveRowError(failureWording, item, optionError, blockingFileError) : null;
   const isBlocked = isUnconvertible || optionError !== null;
-  const category = FORMAT_REGISTRY[sourceKey]?.category ?? 'other';
+  const category = sourceDef?.category ?? 'other';
 
   return (
     <div className="rounded-xs border border-rule bg-surface px-4 py-3.5 sm:px-6 grid grid-cols-[2.75rem_minmax(0,1fr)_auto] lg:grid-cols-[2.75rem_minmax(0,1fr)_auto_auto] items-center gap-x-4 gap-y-3 min-w-0">
@@ -169,14 +169,14 @@ export default function QueueItemRow({
         <p className="mt-0.5 text-xs text-ink-3 truncate">
           <span className="tabular-nums">{formatBytes(item.size)}</span>
           <span aria-hidden="true">{' · '}</span>
-          <span>{tFormat('formatName', { format: sourceLabel, category })}</span>
+          <span>{sourceLabel ? tFormat('formatName', { format: sourceLabel, category }) : tFormat('unknownFile')}</span>
         </p>
       </div>
 
       <div className="col-span-3 row-start-2 border-t border-rule pt-3 lg:col-span-1 lg:col-start-3 lg:row-start-1 lg:border-0 lg:pt-0 flex items-center flex-wrap gap-2 lg:gap-2.5">
         <span className="inline-flex items-center gap-1.5 min-h-9 px-2.5 rounded-xs bg-sunken text-sm font-semibold text-ink">
           <FormatIcon format={item.sourceFormat} className="size-[19px] text-ink-3" />
-          {sourceLabel}
+          {sourceLabel || '—'}
         </span>
         <ArrowRight aria-hidden="true" className="size-4 text-ink-3 shrink-0" />
 
@@ -184,8 +184,8 @@ export default function QueueItemRow({
           testId="queue-target-format-btn"
           ariaLabel={
             hasTarget
-              ? t('targetLabel', { name: item.name, src: sourceLabel, tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
-              : t('chooseTargetLabel', { name: item.name, src: sourceLabel })
+              ? t('targetLabel', { name: item.name, src: sourceLabel || '—', tgt: item.targetFormat.toUpperCase(), state: rowState(item, isBusy, isBlocked) })
+              : t('chooseTargetLabel', { name: item.name, src: sourceLabel || '—' })
           }
           disabled={isBusy || isUnconvertible}
           className="transition-colors inline-flex items-center justify-between gap-2 min-w-32 min-h-[44px] md:min-h-9 px-2.5 rounded-xs border border-rule bg-canvas text-sm text-ink hover:border-accent cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
@@ -193,7 +193,7 @@ export default function QueueItemRow({
           availableFormats={availableFormats}
           selectedFormatId={item.targetFormat}
           onSelect={onSelectTargetFormat}
-          title={t('selectorTitle', { format: sourceLabel })}
+          title={t('selectorTitle', { format: sourceLabel || item.name })}
         >
           <span>{hasTarget ? item.targetFormat.toUpperCase() : t('selectFormat')}</span>
           <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-ink-3" />

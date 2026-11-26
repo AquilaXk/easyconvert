@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CaptureAvailabilityProvider } from '../src/components/CaptureAvailabilityProvider';
 import { TOOL_ROUTES, toolGroupsFor } from '../src/components/site-links';
 import { ANONYMOUS_DAILY_CREDITS } from '../src/lib/plan-limits';
+import { refreshViewerPlan, setViewerPlan } from '../src/lib/viewer-plan';
 import { parsedSlug } from './helpers/intl';
 import { testMessages, type TestLocale } from './helpers/intl-messages';
 
@@ -26,10 +27,23 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: false }), { status: 401 })));
 });
 
-afterEach(() => {
+afterEach(async () => {
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = '';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () =>
+      new Response(JSON.stringify({ success: false, authenticated: false, user: null, paidPlansOnSale: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+  );
+  await act(async () => {
+    await refreshViewerPlan();
+  });
+  setViewerPlan('anonymous');
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -348,6 +362,7 @@ describe('Dedicated URL-input workbench UI for website capture pages', () => {
       {
         locale: 'en' as const,
         status: 429,
+        paidPlansOnSale: false,
         body: {
           status: 429,
           type: 'https://easyconvert.local/problems/quota-exceeded',
@@ -358,7 +373,23 @@ describe('Dedicated URL-input workbench UI for website capture pages', () => {
           detail: 'INTERNAL_SECRET_DETAIL_DO_NOT_SHOW',
         },
         expectedText: 'This job needs more credits than are left. Try again after your credits reset.',
-        expectQuotaLinks: true,
+        expectedLinks: ['/auth'],
+      },
+      {
+        locale: 'en' as const,
+        status: 429,
+        paidPlansOnSale: true,
+        body: {
+          status: 429,
+          type: 'https://easyconvert.local/problems/quota-exceeded',
+          code: 'quota_exceeded',
+          dailyLimit: 10,
+          remaining: 0,
+          period: 'day',
+          detail: 'INTERNAL_SECRET_DETAIL_DO_NOT_SHOW',
+        },
+        expectedText: 'This job needs more credits than are left. Try again after your credits reset.',
+        expectedLinks: ['/auth', '/pricing'],
       },
     ];
 
@@ -367,6 +398,17 @@ describe('Dedicated URL-input workbench UI for website capture pages', () => {
         'fetch',
         vi.fn(async (input: RequestInfo | URL) => {
           const url = typeof input === 'string' ? input : input.toString();
+          if (url === '/api/auth/me') {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                authenticated: false,
+                user: null,
+                paidPlansOnSale: Boolean('paidPlansOnSale' in testCase && testCase.paidPlansOnSale),
+              }),
+              { status: 200, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
           if (url === '/api/viewer/plan') return new Response(JSON.stringify({ success: false }), { status: 401 });
           if (url === '/api/capture/jobs') {
             return new Response(JSON.stringify(testCase.body), { status: testCase.status });
@@ -388,8 +430,8 @@ describe('Dedicated URL-input workbench UI for website capture pages', () => {
       });
 
       const actionLinks = [...host.querySelectorAll<HTMLAnchorElement>('main a')].map((a) => a.getAttribute('href'));
-      if (testCase.expectQuotaLinks) {
-        expect(actionLinks).toEqual(['/auth', '/pricing']);
+      if ('expectedLinks' in testCase) {
+        expect(actionLinks).toEqual(testCase.expectedLinks);
       } else {
         expect(actionLinks).toEqual([]);
       }

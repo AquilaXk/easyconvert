@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, CircleCheck, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
-import { getAvailableTargetFormats, FORMAT_REGISTRY } from '@/lib/registry';
+import { getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatPickerButton from './workbench/FormatPickerButton';
@@ -249,15 +249,13 @@ export default function ConversionQueue({
   const maxLimit = maxFileBytes(plan);
   const convertibleItems = useMemo(
     () =>
-      items.filter((item) => {
-        const sourceKey = item.sourceFormat.toLowerCase();
-        return (
+      items.filter(
+        (item) =>
           item.size > 0 &&
           item.size <= maxLimit &&
-          Boolean(FORMAT_REGISTRY[sourceKey]) &&
+          Boolean(getFormatByExtension(item.sourceFormat)) &&
           getAvailableTargetFormats(item.sourceFormat).length > 0
-        );
-      }),
+      ),
     [items, maxLimit]
   );
   const view = deriveQueueViewState(t, items, convertibleItems, isConverting, maxLimit);

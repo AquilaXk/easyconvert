@@ -14,7 +14,7 @@ import { MAIN_FILE_INPUT_ID, useHeroUpload, type HeroOperation } from '@/compone
 import { useFileTooLargeMessage, useFormatBytes } from '@/components/i18n/format';
 import { useConversionFailureWording } from '@/components/i18n/error-wording';
 import { isSingleFileTool, useToolRun, type ToolFileItem } from '@/hooks/useToolRun';
-import { useViewerPlan } from '@/hooks/useViewerPlan';
+import { useRefreshViewerPlan, useViewerPlan } from '@/hooks/useViewerPlan';
 import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
 import { warnBrowserFailure } from '@/lib/browser-failure';
 import type { ConversionFailure } from '@/lib/conversion-failure';
@@ -333,6 +333,7 @@ export default function ToolPageView({ tool, operation, title, description, dail
   const t = useTranslations('tools');
   const run = useToolRun(tool);
   const upload = useHeroUpload((files) => run.add(files), undefined, operation, !isSingleFileTool(tool));
+  useRefreshViewerPlan();
   const plan = useViewerPlan();
   const formatBytes = useFormatBytes();
   const fileTooLarge = useFileTooLargeMessage();

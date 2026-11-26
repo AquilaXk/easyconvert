@@ -5,7 +5,7 @@ import { useTranslations } from 'next-intl';
 import { Download, Globe, Loader2, Sliders } from 'lucide-react';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
-import { useViewerPlan } from '@/hooks/useViewerPlan';
+import { useRefreshViewerPlan, useViewerPlan } from '@/hooks/useViewerPlan';
 import { useWebsiteCaptureRun, type CompletedCapture } from '@/hooks/useWebsiteCaptureRun';
 import { useConversionFailureWording } from '@/components/i18n/error-wording';
 import { useFormatBytes } from '@/components/i18n/format';
@@ -133,6 +133,7 @@ export default function WebsiteCapturePageView({
 }: Readonly<WebsiteCapturePageViewProps>) {
   const t = useTranslations('websiteCapture');
   const tDropzone = useTranslations('hero.dropzone');
+  useRefreshViewerPlan();
   const plan = useViewerPlan();
   const run = useWebsiteCaptureRun(targetFormat);
 

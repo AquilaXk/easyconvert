@@ -26,5 +26,5 @@ export function isPasswordAccount(record: Pick<UserRecord, 'provider' | 'passwor
  * confirming the address (the link of the verification mail, or a password reset) ends it. Google accounts and paid accounts are never treated so.
  */
 export function countsAsAnonymousForConversions(user: Pick<UserRecord, 'provider' | 'emailVerified' | 'tier'>): boolean {
-  return user.provider === 'email' && !isEmailVerified(user) && user.tier === 'free';
+  return user.provider === 'email' && !isEmailVerified(user) && user.tier !== 'paid';
 }

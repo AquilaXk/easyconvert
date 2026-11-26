@@ -227,11 +227,8 @@ export function registerSessionCleanupOnPageExit(
   activeSessionIds: Set<string>,
   rootDir?: any
 ): () => void {
-  if (typeof window === 'undefined' && typeof self === 'undefined') {
-    return () => {};
-  }
-
-  const target = typeof window !== 'undefined' ? window : (self as any);
+  const g = typeof globalThis !== 'undefined' ? (globalThis as { window?: EventTarget }) : undefined;
+  const target = g?.window ?? (typeof self !== 'undefined' ? (self as unknown as EventTarget) : undefined);
   if (!target || typeof target.addEventListener !== 'function') {
     return () => {};
   }

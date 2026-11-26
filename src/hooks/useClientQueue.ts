@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { streamZipReadable, type StreamingZipEntry } from '@/lib/archive/streaming-zip';
 import { materializeZipStreamUrl, triggerAnchorDownload } from '@/lib/download-blob';
 import { ConversionQueueItem, ConversionOptions } from '@/lib/types';
-import { detectFormatFromFilename, FORMAT_REGISTRY, getAvailableTargetFormats } from '@/lib/registry';
+import { detectFormatFromFilename, getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
 import { executeItemConversion } from '@/lib/client-converter';
 import { releaseEdgeResultResources } from '@/lib/edge/pipelines/opfs-streaming-pipeline';
 import {
@@ -41,18 +41,26 @@ function createQueueItemId(fileName: string): string {
 }
 
 function isSupportedQueueSource(sourceFormat: string): boolean {
-  const normalized = sourceFormat.toLowerCase();
-  return Boolean(FORMAT_REGISTRY[normalized]) && getAvailableTargetFormats(normalized).length > 0;
+  return Boolean(getFormatByExtension(sourceFormat)) && getAvailableTargetFormats(sourceFormat).length > 0;
 }
 
 function resolveInitialTargetFormat(sourceFormat: string, effectiveDefault?: string): string {
   if (!effectiveDefault || effectiveDefault.toLowerCase() === 'any') return '';
   const cleanTarget = effectiveDefault.toLowerCase();
-  const normalizedSource = sourceFormat.toLowerCase();
-  if (!FORMAT_REGISTRY[normalizedSource]) {
+  if (!getFormatByExtension(sourceFormat)) {
     return '';
   }
-  return getAvailableTargetFormats(normalizedSource).some((f) => f.id === cleanTarget) ? cleanTarget : '';
+  return getAvailableTargetFormats(sourceFormat).some((f) => f.id === cleanTarget) ? cleanTarget : '';
+}
+
+function extractRawExtension(filename: string): string {
+  const trimmed = filename.trim();
+  if (trimmed.toLowerCase().endsWith('.tar.bz2') && trimmed.length > '.tar.bz2'.length) {
+    return 'tar.bz2';
+  }
+  const dot = trimmed.lastIndexOf('.');
+  if (dot <= 0 || dot === trimmed.length - 1) return '';
+  return trimmed.slice(dot + 1).trim().toLowerCase();
 }
 
 function isPlainRecord(val: unknown): val is Record<string, unknown> {
@@ -142,8 +150,7 @@ function buildUniqueArchiveName(itemName: string, targetFormat: string, used: Se
 /** A queue item for a dropped file. Whether it is over the viewer's limit is read when the row renders, since the plan can still change. */
 export function buildQueuedFileItem(file: File, effectiveDefault?: string, operation?: HeroOperation): ConversionQueueItem {
   const detected = detectFormatFromFilename(file.name);
-  const ext = detected?.extension ?? (file.name.split('.').pop() || 'bin');
-  const sourceFormat = ext.toLowerCase();
+  const sourceFormat = detected?.extension.toLowerCase() ?? extractRawExtension(file.name);
   const targetFormat = resolveInitialTargetFormat(sourceFormat, effectiveDefault);
   return {
     id: createQueueItemId(file.name),
@@ -189,7 +196,7 @@ async function prepareServerBundleDownload(
       archiveName,
       files: readyItems.map((item, idx) => ({
         key: serverKeys[idx]!,
-        name: buildUniqueArchiveName(item.name, item.targetFormat, used, item.resultFilename),
+        name: buildUniqueArchiveName(item.name, item.targetFormat, used, item.unchanged ? item.name : item.resultFilename),
       })),
     }),
   });
@@ -252,7 +259,7 @@ async function downloadCompletedBundle(items: ConversionQueueItem[], prefix: str
     try {
       for (; nextYieldIndex < fetched.length; nextYieldIndex++) {
         const { item, res } = fetched[nextYieldIndex];
-        const name = buildUniqueArchiveName(item.name, item.targetFormat, used, item.resultFilename);
+        const name = buildUniqueArchiveName(item.name, item.targetFormat, used, item.unchanged ? item.name : item.resultFilename);
         if (res.body) {
           yield { name, data: res.body };
         } else {

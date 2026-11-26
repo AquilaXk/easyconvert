@@ -613,7 +613,7 @@ describe('P1-13: Canvas 2D pixel/side bounds, ImageBitmap cleanup, PNG tail meta
       let decodedDims = { width: 5000, height: 5000 };
 
       vi.stubGlobal('window', globalThis);
-      vi.stubGlobal('navigator', { gpu: { requestAdapter: async () => null } });
+      vi.stubGlobal('navigator', { gpu: { requestAdapter: async () => ({}) } });
       vi.stubGlobal('createImageBitmap', async () => ({
         width: decodedDims.width,
         height: decodedDims.height,

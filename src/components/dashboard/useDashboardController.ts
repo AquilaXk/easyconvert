@@ -297,6 +297,8 @@ export function useDashboardController(initial?: DashboardSnapshot) {
   readersRef.current = { ...readers, all: [keys.refresh, filesAndDlq.fetchUserFiles, filesAndDlq.fetchDlqEntries] };
 
   const enabled = Boolean(user);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   useEffect(() => {
     if (!enabled) return;
     const refreshAll = () => {
@@ -315,7 +317,7 @@ export function useDashboardController(initial?: DashboardSnapshot) {
     clearActionError();
     filesAndDlq.setInspectingDlq(null);
     setActiveTab(tab);
-    void readersRef.current[tab]();
+    if (enabledRef.current) void readersRef.current[tab]();
   };
 
   const prevRequestedTabRef = useRef(requestedTab);
@@ -327,7 +329,7 @@ export function useDashboardController(initial?: DashboardSnapshot) {
     clearActionError();
     setInspectingDlq(null);
     setActiveTab(nextTab);
-    void readersRef.current[nextTab]();
+    if (enabledRef.current) void readersRef.current[nextTab]();
   }, [requestedTab, clearActionError, setInspectingDlq]);
 
   return {

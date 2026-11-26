@@ -71,7 +71,7 @@ const MIME_ZIP = 'application/zip';
 
 export function filenameFromContentDisposition(header: string | null | undefined): string | undefined {
   if (!header) return undefined;
-  const extMatch = /filename\*\s*=\s*(?:utf-8|UTF-8)''([^;\r\n]+)/i.exec(header);
+  const extMatch = /filename\*\s*=\s*(?:utf-8|UTF-8)'[^']*'([^;\r\n]+)/i.exec(header);
   if (extMatch) {
     try {
       const decoded = decodeURIComponent(extMatch[1].trim()).replace(/.*[\\/]/, '');
