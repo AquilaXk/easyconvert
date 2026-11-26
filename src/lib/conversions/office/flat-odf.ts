@@ -13,7 +13,7 @@ import { assertReadableAsText } from './text-source-guard';
  * (`mimetype`, `META-INF/manifest.xml`, `content.xml`), and delegates to the ODT/ODS/ODP pipelines.
  */
 
-const MAX_FLAT_ODF_BYTES = 128 * 1024 * 1024;
+const MAX_FLAT_ODF_BYTES = 64 * 1024 * 1024;
 
 export type FlatOdfFormat = 'fodt' | 'fods' | 'fodp';
 
@@ -45,30 +45,141 @@ export function isFlatOdfFormat(format: string): format is FlatOdfFormat {
   return format === 'fodt' || format === 'fods' || format === 'fodp';
 }
 
-function normalizeFlatOdfContentXml(xml: string): string {
-  const openReplaced = xml.replace(
-    /<([A-Za-z_][\w.-]*:)?document(?=\s|>|\/)/,
-    (_full, prefix = '') => `<${prefix}document-content`
-  );
-  const closeRegex = /<\/([A-Za-z_][\w.-]*:)?document\s*>/g;
-  let lastMatch: RegExpExecArray | null = null;
-  for (let m = closeRegex.exec(openReplaced); m !== null; m = closeRegex.exec(openReplaced)) {
-    lastMatch = m;
+function skipXmlDoctype(xml: string, from: number): number {
+  let i = from + 9; // past '<!DOCTYPE'
+  let inSubset = false;
+  let quote = '';
+  while (i < xml.length) {
+    const ch = xml[i];
+    if (quote !== '') {
+      if (ch === quote) quote = '';
+      i += 1;
+      continue;
+    }
+    if (inSubset && xml.startsWith('<!--', i)) {
+      const commentEnd = xml.indexOf('-->', i + 4);
+      if (commentEnd === -1) return xml.length;
+      i = commentEnd + 3;
+      continue;
+    }
+    if (ch === '"' || ch === "'") quote = ch;
+    else if (!inSubset && ch === '[') inSubset = true;
+    else if (inSubset && ch === ']') inSubset = false;
+    else if (!inSubset && ch === '>') return i + 1;
+    i += 1;
   }
-  if (!lastMatch) return openReplaced;
-  const prefix = lastMatch[1] ?? '';
+  return xml.length;
+}
+
+function findXmlRootStart(xml: string): number {
+  let at = xml.startsWith('\ufeff') ? 1 : 0;
+  while (at < xml.length) {
+    while (at < xml.length && /\s/.test(xml[at])) at += 1;
+    if (xml.startsWith('<?', at)) {
+      const end = xml.indexOf('?>', at + 2);
+      if (end === -1) break;
+      at = end + 2;
+      continue;
+    }
+    if (xml.startsWith('<!--', at)) {
+      const end = xml.indexOf('-->', at + 4);
+      if (end === -1) break;
+      at = end + 3;
+      continue;
+    }
+    if (xml.slice(at, at + 9).toUpperCase() === '<!DOCTYPE') {
+      at = skipXmlDoctype(xml, at);
+      continue;
+    }
+    break;
+  }
+  return at;
+}
+
+function findXmlTagEnd(xml: string, from: number): number {
+  let quote = '';
+  for (let i = from; i < xml.length; i += 1) {
+    const ch = xml[i];
+    if (quote !== '') {
+      if (ch === quote) quote = '';
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '>') {
+      return i;
+    }
+  }
+  return xml.length - 1;
+}
+
+function findLastRealDocumentClose(
+  xml: string,
+  from: number
+): { index: number; length: number; prefix: string } | null {
+  const closePattern = /<\/([A-Za-z_][\w.-]*:)?document\s*>/y;
+  let last: { index: number; length: number; prefix: string } | null = null;
+  let pos = from;
+  while (pos < xml.length) {
+    const lt = xml.indexOf('<', pos);
+    if (lt === -1) break;
+    if (xml.startsWith('<!--', lt)) {
+      const end = xml.indexOf('-->', lt + 4);
+      pos = end === -1 ? xml.length : end + 3;
+      continue;
+    }
+    if (xml.startsWith('<![CDATA[', lt)) {
+      const end = xml.indexOf(']]>', lt + 9);
+      pos = end === -1 ? xml.length : end + 3;
+      continue;
+    }
+    if (xml.startsWith('<?', lt)) {
+      const end = xml.indexOf('?>', lt + 2);
+      pos = end === -1 ? xml.length : end + 2;
+      continue;
+    }
+    if (xml.charCodeAt(lt + 1) === 0x2f /* '/' */) {
+      closePattern.lastIndex = lt;
+      const match = closePattern.exec(xml);
+      if (match) {
+        last = { index: lt, length: match[0].length, prefix: match[1] ?? '' };
+        pos = lt + match[0].length;
+        continue;
+      }
+    }
+    pos = findXmlTagEnd(xml, lt + 1) + 1;
+  }
+  return last;
+}
+
+function normalizeFlatOdfContentXml(xml: string): string {
+  const rootStart = findXmlRootStart(xml);
+  const openPattern = /<([A-Za-z_][\w.-]*:)?document(?=\s|>|\/)/y;
+  openPattern.lastIndex = rootStart;
+  const openMatch = openPattern.exec(xml);
+  if (!openMatch) return xml;
+  const openPrefix = openMatch[1] ?? '';
+  const openReplacement = `<${openPrefix}document-content`;
+  const openReplaced =
+    xml.slice(0, rootStart) + openReplacement + xml.slice(rootStart + openMatch[0].length);
+  const afterOpenTag = findXmlTagEnd(openReplaced, rootStart + openReplacement.length) + 1;
+  const closeMatch = findLastRealDocumentClose(openReplaced, afterOpenTag);
+  if (!closeMatch) return openReplaced;
   return (
-    openReplaced.slice(0, lastMatch.index) +
-    `</${prefix}document-content>` +
-    openReplaced.slice(lastMatch.index + lastMatch[0].length)
+    openReplaced.slice(0, closeMatch.index) +
+    `</${closeMatch.prefix}document-content>` +
+    openReplaced.slice(closeMatch.index + closeMatch.length)
   );
 }
 
 function assertFlatOdfStructure(xml: string, format: FlatOdfFormat, spec: FlatOdfSpec): void {
-  if (!/<(?:[A-Za-z_][\w.-]*:)?document(?:\s|>)/.test(xml)) {
+  const rootStart = findXmlRootStart(xml);
+  const rootPattern = /<([A-Za-z_][\w.-]*:)?document(?:\s|>)/y;
+  rootPattern.lastIndex = rootStart;
+  if (!rootPattern.test(xml)) {
     throw new ConversionFailedError(`Invalid ${format.toUpperCase()} document: missing <office:document> root element.`);
   }
-  const mimeMatch = /\boffice:mimetype\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(xml);
+  const rootEnd = findXmlTagEnd(xml, rootStart + 1);
+  const rootOpenTag = xml.slice(rootStart, rootEnd + 1);
+  const mimeMatch = /\boffice:mimetype\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(rootOpenTag);
   const declaredMime = mimeMatch?.[1] ?? mimeMatch?.[2];
   if (declaredMime !== undefined && declaredMime.trim() !== '' && declaredMime.trim().toLowerCase() !== spec.mime) {
     throw new ConversionFailedError(

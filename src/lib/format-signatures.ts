@@ -689,12 +689,38 @@ function isLotusWordPro(buf: Uint8Array): boolean {
 
 const LOTUS_WKS_BOF_MAGIC = [0x00, 0x00, 0x02, 0x00] as const;
 
+function isWindowsCursorHeader(buf: Uint8Array, count: number): boolean {
+  const dirEnd = 6 + count * 16;
+  if (count === 0 || buf.length < dirEnd) return false;
+  const view = dataView(buf);
+  for (let i = 0; i < count; i += 1) {
+    const entryOffset = 6 + i * 16;
+    if (buf[entryOffset + 3] !== 0) return false;
+    const bytesInRes = view.getUint32(entryOffset + 8, true);
+    const imageOffset = view.getUint32(entryOffset + 12, true);
+    if (bytesInRes === 0 || imageOffset < dirEnd || imageOffset >= buf.length) return false;
+  }
+  return true;
+}
+
+function isLotusWksBof(buf: Uint8Array): boolean {
+  if (buf.length < 6 || !startsWithBytes(buf, LOTUS_WKS_BOF_MAGIC)) return false;
+  const revision = dataView(buf).getUint16(4, true);
+  const validRevision =
+    (revision >= 0x0400 && revision <= 0x040f) ||
+    (revision >= 0x1000 && revision <= 0x1005) ||
+    revision === 0x0008;
+  if (!validRevision) return false;
+  if (revision === 0x0008 && isWindowsCursorHeader(buf, revision)) return false;
+  return true;
+}
+
 function isWordPerfect(buf: Uint8Array): boolean {
   return startsWithBytes(buf, WORDPERFECT_MAGIC) || isCompoundFileOfKind('wpd', buf);
 }
 
 function isWks(buf: Uint8Array): boolean {
-  if (buf.length >= 6 && startsWithBytes(buf, LOTUS_WKS_BOF_MAGIC)) return true;
+  if (isLotusWksBof(buf)) return true;
   if (!startsWithBytes(buf, CFBF_MAGIC)) return false;
   return isCompatibleWorksCompoundFile(buf, HEADER_WINDOW_BYTES);
 }

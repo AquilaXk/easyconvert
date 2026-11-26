@@ -444,7 +444,10 @@ function verdictOfRoot(ext: string, root: CompoundFileRoot): CompoundFileVerdict
   if (root.status === 'unreadable') return 'unreadable';
   if (root.status === 'malformed') return 'mismatch';
   if (root.classId !== undefined && OFFICE_CLASS_IDS.has(root.classId)) return 'mismatch';
-  if (ext === 'wks') return isCompatibleWorksRoot(root) ? 'match' : 'mismatch';
+  if (ext === 'wks') {
+    if (!isCompatibleWorksRoot(root)) return 'mismatch';
+    return root.complete ? 'match' : 'unreadable';
+  }
   const byClassId = root.classId === undefined ? [] : (CLASS_ID_KINDS.get(root.classId) ?? []);
   const byNames = kindsOfNames(root.names);
   if ((byClassId.length > 0 && !byClassId.includes(ext)) || (byNames.length > 0 && !byNames.includes(ext))) return 'mismatch';
@@ -464,9 +467,16 @@ export function compoundFileVerdict(ext: string, buf: Uint8Array): CompoundFileV
 
 const NON_WORKS_CFBF_STREAMS: ReadonlySet<string> = new Set([
   'WORKBOOK',
+  'BOOK',
   'WORDDOCUMENT',
   'POWERPOINT DOCUMENT',
   'FILEHEADER',
+  'ENCRYPTEDPACKAGE',
+  'ENCRYPTIONINFO',
+  'VISIODOCUMENT',
+  'QUILL',
+  '__PROPERTIES_VERSION1.0',
+  'PERFECTOFFICE_MAIN',
 ]);
 
 export function isNonOfficeCompoundFile(buf: Uint8Array): boolean {

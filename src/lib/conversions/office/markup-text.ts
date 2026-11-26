@@ -475,7 +475,7 @@ export function rstToMarkdown(rst: string): string {
 
     let cleaned = line
       .replace(/``([^`]+)``/g, '`$1`')
-      .replace(/`([^`<]+?)\s*<([^>]+)>`_/g, (_m, label: string, url: string) => `[${label.trim()}](${url.trim()})`)
+      .replace(/`([^`<\n]+)<([^>`<\n]+)>`_/g, (_m, label: string, url: string) => `[${label.trim()}](${url.trim()})`)
       .replace(/`([^`]+)`_/g, '$1')
       .replace(/^([ \t]*)[*+](\s+)/, '$1-$2');
     if (cleaned.endsWith('::')) cleaned = cleaned.slice(0, -1);

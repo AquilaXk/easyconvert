@@ -19,7 +19,8 @@ import {
 } from '../src/lib/registry';
 import { buildQueuedFileItem } from '../src/hooks/useClientQueue';
 import { planTextPdfRoute, TEXT_PDF_SOURCES } from '../src/worker/text-pdf-route';
-import { manToMarkdown } from '../src/lib/conversions/office/markup-text';
+import { manToMarkdown, rstToMarkdown } from '../src/lib/conversions/office/markup-text';
+import { expectNoHang } from './helpers/timing';
 import { InputPixelLimitError } from '../src/lib/conversions/image-input-limits';
 import { ConversionFailedError, EngineUnavailableError, SheetLimitError } from '../src/lib/types';
 
@@ -652,5 +653,198 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     );
     expect(vfpCsv).toContain('ID,RATE,AMT');
     expect(vfpCsv).toContain('-42,3.125,12.3456');
+  });
+
+  it('hardens EML HTML allowlist sanitizer against comment quotes, RCDATA breakouts, 5-deep split tags, unsafe URIs, and ReDoS', async () => {
+    const emlWithBody = (htmlBody: string): Buffer =>
+      Buffer.from(
+        `From: sec@example.com\r\nSubject: Security Check\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=utf-8\r\n\r\n${htmlBody}`,
+        'utf-8'
+      );
+
+    // 1. Comment + quote breakout + RCDATA breakout + unclosed quote + unsafe URIs + style stripping + CSP
+    const payloadHtml = [
+      '<!--<img src="--><img src=x onerror=alert(1)>',
+      '<textarea><img title="</textarea><img src=x onerror=alert(2)>"></textarea>',
+      '<title><img title="</title><img src=x onerror=alert(3)>"></title>',
+      '<a href="data:image/svg+xml;base64,PHN2Zy8+">SvgLink</a>',
+      '<img src="data:image/svg+xml;base64,PHN2Zy8+">',
+      '<img src="data:image/png;base64,iVBORw0KGgo=" alt="ok" width="16" height="16" style="width:1px" onclick="alert(4)" />',
+      '<div style="position:fixed;inset:0"><p>StyledBody</p></div>',
+      '<a href="https://example.com/docs?a=1&amp;b=2" title="Docs">SafeLink</a>',
+    ].join('');
+    const resHtml = (await dispatchConversion(emlWithBody(payloadHtml), 'eml', 'html', {}, 'xss.eml')).buffer.toString('utf-8');
+    expect(resHtml).toContain(
+      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src http: https: data:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'">'
+    );
+    expect(resHtml).not.toContain('<img src=x');
+    expect(resHtml).not.toContain('onerror');
+    expect(resHtml).not.toContain('alert(');
+    expect(resHtml).not.toContain('<textarea');
+    expect(resHtml).not.toContain('data:image/svg+xml');
+    expect(resHtml).not.toContain('position:fixed');
+    expect(resHtml).not.toContain('width:1px');
+    expect(resHtml).toContain('<img src="data:image/png;base64,iVBORw0KGgo=" alt="ok" width="16" height="16">');
+    expect(resHtml).toContain('<div><p>StyledBody</p></div>');
+    expect(resHtml).toContain('<a href="https://example.com/docs?a=1&amp;b=2" rel="noopener noreferrer" title="Docs">SafeLink</a>');
+
+    // 2. Unclosed quote bypass on <a href="javascript:alert(1)>x</a>
+    const unclosedQuoteHtml = '<p>Lead</p><a href="javascript:alert(1)>x</a>';
+    const unclosedOut = (await dispatchConversion(emlWithBody(unclosedQuoteHtml), 'eml', 'html', {}, 'unclosed.eml')).buffer.toString(
+      'utf-8'
+    );
+    expect(unclosedOut).toContain('<p>Lead</p>');
+    expect(unclosedOut).not.toContain('javascript:');
+    expect(unclosedOut).not.toContain('alert(');
+
+    // 3. 5-deep split tag reassembly & <ob<meta>ject data="data:text/html;...">
+    const splitPayload =
+      '<scr<me<me<me<meta>ta>ta>ta>ipt>alert(1)</scr<me<me<me<meta>ta>ta>ta>ipt>' +
+      '<ob<meta>ject data="data:text/html;base64,PHNjcmlwdD4="></object>' +
+      '<object data="data:text/html;base64,PHNjcmlwdD4=">blocked</object>';
+    const splitOut = (await dispatchConversion(emlWithBody(splitPayload), 'eml', 'html', {}, 'split.eml')).buffer.toString('utf-8');
+    expect(splitOut).not.toContain('<script');
+    expect(splitOut).not.toContain('<object');
+    expect(splitOut).not.toContain('<meta>');
+    expect(splitOut).not.toContain('blocked');
+
+    // 4. Quoted-printable decoded-byte limit fails cleanly
+    const oversizedQpBody = 'A'.repeat(32 * 1024 * 1024 + 64);
+    await expect(dispatchConversion(emlWithBody(oversizedQpBody.replace(/^/m, '')), 'eml', 'txt', {}, 'big.eml')).rejects.toThrow(
+      ConversionFailedError
+    );
+    const qpHeaders =
+      'From: sec@example.com\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n' +
+      oversizedQpBody;
+    await expect(dispatchConversion(Buffer.from(qpHeaders, 'utf-8'), 'eml', 'txt', {}, 'big-qp.eml')).rejects.toThrow(
+      ConversionFailedError
+    );
+
+    // 5. ReDoS linear-time guards (expectNoHang) for >= 50,000 unclosed <script> in EML and backticks/spaces in rstToMarkdown
+    const evilScripts = '<script>'.repeat(100_000) + '<p>End</p>';
+    const evilScriptOut = (
+      await expectNoHang('EML 100k unclosed <script>', () =>
+        dispatchConversion(emlWithBody(evilScripts), 'eml', 'html', {}, 'redos.eml')
+      )
+    ).buffer.toString('utf-8');
+    expect(evilScriptOut).not.toContain('<script');
+
+    const evilRst = '`' + ' '.repeat(100_000) + '\n' + '`a<b '.repeat(25_000);
+    const rstOut = await expectNoHang('rstToMarkdown 100k backticks and spaces', () => rstToMarkdown(evilRst));
+    expect(rstOut.length).toBeGreaterThan(0);
+  });
+
+  it('handles U+0130, quoted attributes, comments, rawtext self-closing, and CSP sanitization across XHTML -> txt/md/html', async () => {
+    // 1. U+0130 (İ) case-folding index shift & head stripping
+    const turkishXhtml = Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>İstanbul</title></head><body><p>Merhaba Dünya</p></body></html>',
+      'utf-8'
+    );
+    const turkishTxt = (await dispatchConversion(turkishXhtml, 'xhtml', 'txt', {}, 'tr.xhtml')).buffer.toString('utf-8');
+    expect(turkishTxt).toBe('Merhaba Dünya');
+    const turkishMd = (await dispatchConversion(turkishXhtml, 'xhtml', 'md', {}, 'tr.xhtml')).buffer.toString('utf-8');
+    expect(turkishMd).toBe('Merhaba Dünya');
+    const turkishHtml = (await dispatchConversion(turkishXhtml, 'xhtml', 'html', {}, 'tr.xhtml')).buffer.toString('utf-8');
+    expect(turkishHtml).toContain('<title>İstanbul</title>');
+    expect(turkishHtml).toContain('<body><p>Merhaba Dünya</p></body>');
+
+    // 2. Quoted '/>' inside <head data-x="/>">
+    const quotedHead = Buffer.from(
+      '<html xmlns="http://www.w3.org/1999/xhtml"><head data-x="/>"><title>SecretTitle</title></head><body><p>Visible</p></body></html>',
+      'utf-8'
+    );
+    const quotedTxt = (await dispatchConversion(quotedHead, 'xhtml', 'txt', {}, 'q.xhtml')).buffer.toString('utf-8');
+    expect(quotedTxt).toBe('Visible');
+    expect(quotedTxt).not.toContain('SecretTitle');
+    const quotedMd = (await dispatchConversion(quotedHead, 'xhtml', 'md', {}, 'q.xhtml')).buffer.toString('utf-8');
+    expect(quotedMd).toBe('Visible');
+
+    // 3. <!-- <head> --> comment before body must not drop body or leak '-->'
+    const commentedXhtml = Buffer.from('<!-- <head> --><body><p>Kept</p></body>', 'utf-8');
+    expect((await dispatchConversion(commentedXhtml, 'xhtml', 'txt', {}, 'c.xhtml')).buffer.toString('utf-8')).toBe('Kept');
+    expect((await dispatchConversion(commentedXhtml, 'xhtml', 'md', {}, 'c.xhtml')).buffer.toString('utf-8')).toBe('Kept');
+
+    // 4. Unquoted rawtext <script src=https://example.com/>alert(1)</script><p>Safe</p>
+    const rawScriptXhtml = Buffer.from('<script src=https://example.com/>alert(1)</script><p>Safe</p>', 'utf-8');
+    expect((await dispatchConversion(rawScriptXhtml, 'xhtml', 'txt', {}, 's.xhtml')).buffer.toString('utf-8')).toBe('Safe');
+    expect((await dispatchConversion(rawScriptXhtml, 'xhtml', 'md', {}, 's.xhtml')).buffer.toString('utf-8')).toBe('Safe');
+    const rawScriptHtml = (await dispatchConversion(rawScriptXhtml, 'xhtml', 'html', {}, 's.xhtml')).buffer.toString('utf-8');
+    expect(rawScriptHtml).not.toContain('<script');
+    expect(rawScriptHtml).not.toContain('alert(1)');
+    expect(rawScriptHtml).toContain('<p>Safe</p>');
+
+    // 5. XHTML self-closing <title /><div /><textarea /> -> valid non-swallowing HTML5 with CSP and stripped script/onerror
+    const selfClosingXhtml = Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title /></head><body><title /><div /><textarea /><p onerror="alert(1)">VisibleAfter</p><script>alert(2)</script></body></html>',
+      'utf-8'
+    );
+    const safeXhtmlOut = (await dispatchConversion(selfClosingXhtml, 'xhtml', 'html', {}, 'sc.xhtml')).buffer.toString('utf-8');
+    expect(safeXhtmlOut).toContain('<!DOCTYPE html>');
+    expect(safeXhtmlOut).toContain('Content-Security-Policy');
+    expect(safeXhtmlOut).toContain('<div></div><p>VisibleAfter</p>');
+    expect(safeXhtmlOut).not.toContain('<div />');
+    expect(safeXhtmlOut).not.toContain('<title />');
+    expect(safeXhtmlOut).not.toContain('<textarea');
+    expect(safeXhtmlOut).not.toContain('<script');
+    expect(safeXhtmlOut).not.toContain('onerror');
+    expect(safeXhtmlOut).not.toContain('alert(');
+  });
+
+  it('hardens Flat ODF leading comment normalization, .cur vs .wks signature distinction, and legacy spreadsheet bounds', async () => {
+    // 1. Flat ODF with <!-- <office:document> --> before root and <!-- </office:document> --> after root
+    const fodtLeadingComment = Buffer.from(
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!-- <office:document> comment before root -->
+<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+  office:mimetype="application/vnd.oasis.opendocument.text" office:version="1.2">
+  <office:body><office:text><text:p>Leading comment OK</text:p></office:text></office:body>
+</office:document>
+<!-- </office:document> comment after root -->`,
+      'utf-8'
+    );
+    const odtOut = await dispatchConversion(fodtLeadingComment, 'fodt', 'odt', { engine: 'easyconvert' }, 'lead.fodt');
+    expect(await readOdtText(odtOut.buffer)).toContain('Leading comment OK');
+
+    // 2. .cur cursor headers (00 00 02 00 01 00 / 02 00) rejected as .wks, accepted as .cur; real Lotus/Works BOF accepted as .wks
+    const curOne = Buffer.alloc(22, 0);
+    curOne.writeUInt16LE(0, 0);
+    curOne.writeUInt16LE(2, 2); // CURSOR_RESOURCE_TYPE
+    curOne.writeUInt16LE(1, 4); // 1 image
+    curOne[6] = 16;
+    curOne[7] = 16;
+    curOne.writeUInt32LE(40, 14);
+    curOne.writeUInt32LE(22, 18);
+    expect(() => assertNotSpoofedFile(curOne, 'cur', 'arrow.cur')).not.toThrow();
+    expect(() => assertNotSpoofedFile(curOne, 'wks', 'arrow.wks')).toThrow(FileExtensionSpoofError);
+
+    const curTwo = Buffer.from(curOne);
+    curTwo.writeUInt16LE(2, 4);
+    expect(() => assertNotSpoofedFile(curTwo, 'wks', 'two.wks')).toThrow(FileExtensionSpoofError);
+
+    const curEight = Buffer.alloc(6 + 8 * 16 + 4, 0);
+    curEight.writeUInt16LE(0, 0);
+    curEight.writeUInt16LE(2, 2);
+    curEight.writeUInt16LE(8, 4);
+    for (let k = 0; k < 8; k += 1) {
+      const off = 6 + k * 16;
+      curEight.writeUInt32LE(4, off + 8);
+      curEight.writeUInt32LE(6 + 8 * 16, off + 12);
+    }
+    expect(() => assertNotSpoofedFile(curEight, 'wks', 'eight.wks')).toThrow(FileExtensionSpoofError);
+
+    const lotusRev0404 = buildWk1Sample();
+    lotusRev0404.writeUInt16LE(0x0404, 4);
+    expect(() => assertNotSpoofedFile(lotusRev0404, 'wks', 'r1a.wks')).not.toThrow();
+
+    const lotusRev1000 = buildWk1Sample();
+    lotusRev1000.writeUInt16LE(0x1000, 4);
+    expect(() => assertNotSpoofedFile(lotusRev1000, 'wks', 'r3.wks')).not.toThrow();
+
+    // 3. PRN / DIF row bounds fail before full materialization
+    const tooManyPrnRows = Buffer.from('1\n'.repeat(1_048_577), 'ascii');
+    await expect(dispatchConversion(tooManyPrnRows, 'prn', 'csv', { engine: 'easyconvert' }, 'rows.prn')).rejects.toThrow(
+      SheetLimitError
+    );
   });
 });

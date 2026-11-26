@@ -49,7 +49,21 @@ import { canDrawInPdf, loadFontCoverageIndex } from './pdf-fonts';
 import { parseHtmlToPdfBlocks } from './html-blocks';
 import { decodeHtmlInput } from './html-encoding';
 import { decodeTextInput } from './text-input';
-import { emlMessageHtml, readEmlMessage } from './office/eml-reader';
+import {
+  asciiLower,
+  emlMessageHtml,
+  extractHtmlTitleText,
+  findHtmlCommentEnd,
+  findHtmlTagEnd,
+  findRawTextEndTagRange,
+  isAsciiLetterCode,
+  matchesCdataOpen,
+  RAW_HTML_TEXT_TAGS,
+  readEmlMessage,
+  sanitizeUntrustedHtmlFragment,
+  scanTagNameEnd,
+  UNTRUSTED_HTML_CSP,
+} from './office/eml-reader';
 import { isMarkupTextSource, markupToMarkdown, markupToPlainText, texToPlainText } from './office/markup-text';
 import { sourceBytesAsText } from './office/text-source';
 import { markdownToSafeHtml } from './markdown-pdf';
@@ -685,15 +699,7 @@ export async function convertDocument(
 
   // Convert to Plain Text
   if (tgt === 'txt') {
-    let cleanText = textContent;
-    if (HTML_SOURCE_FORMATS.has(src)) {
-      cleanText = stripHtmlTags(textContent);
-    } else if (isMarkupTextSource(src)) {
-      cleanText = markupToPlainText(sourceBytesAsText(inputBuffer, src), src);
-    } else if (src === 'md') {
-      cleanText = stripMarkdownSyntax(textContent);
-    }
-    const buffer = Buffer.from(cleanText, 'utf-8');
+    const buffer = Buffer.from(renderDocumentTxtTarget(src, textContent, inputBuffer), 'utf-8');
     return {
       buffer,
       mimeType: 'text/plain',
@@ -704,18 +710,7 @@ export async function convertDocument(
 
   // Convert to HTML
   if (tgt === 'html') {
-    const html =
-      src === 'md' || isMarkupTextSource(src)
-        ? markdownToHtml(textContent, baseName)
-        : src === 'eml'
-          ? emlMessageHtml(readEmlMessage(inputBuffer), baseName)
-          : src === 'xhtml'
-            ? textContent.replace(/^\s*<\?xml[^>]*\?>\s*/i, '')
-            : `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
-                baseName
-              )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeMarkupAttribute(
-                baseName
-              )}</h1><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
+    const html = renderDocumentHtmlTarget(src, textContent, inputBuffer, baseName);
     const buffer = Buffer.from(html, 'utf-8');
     return {
       buffer,
@@ -727,7 +722,7 @@ export async function convertDocument(
 
   // Convert to Markdown
   if (tgt === 'md') {
-    const md = HTML_SOURCE_FORMATS.has(src) ? htmlToMarkdown(textContent) : textContent;
+    const md = HTML_SOURCE_FORMATS.has(src) ? htmlToMarkdown(textContent, src === 'xhtml') : textContent;
     const buffer = Buffer.from(md, 'utf-8');
     return {
       buffer,
@@ -765,8 +760,38 @@ export async function convertDocument(
 
 // Defense in depth for the generated page: no script execution or network access beyond images,
 // even if a future renderer change let active content through.
-const MARKDOWN_HTML_CSP =
-  "default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
+const MARKDOWN_HTML_CSP = UNTRUSTED_HTML_CSP;
+
+function renderDocumentTxtTarget(src: string, textContent: string, inputBuffer: Buffer): string {
+  if (HTML_SOURCE_FORMATS.has(src)) return stripHtmlTags(textContent, src === 'xhtml');
+  if (isMarkupTextSource(src)) return markupToPlainText(sourceBytesAsText(inputBuffer, src), src);
+  if (src === 'md') return stripMarkdownSyntax(textContent);
+  return textContent;
+}
+
+function renderDocumentHtmlTarget(
+  src: string,
+  textContent: string,
+  inputBuffer: Buffer,
+  baseName: string
+): string {
+  if (src === 'md' || isMarkupTextSource(src)) return markdownToHtml(textContent, baseName);
+  if (src === 'eml') return emlMessageHtml(readEmlMessage(inputBuffer), baseName);
+  if (HTML_SOURCE_FORMATS.has(src)) return untrustedMarkupToHtml(textContent, baseName, src === 'xhtml');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeMarkupAttribute(
+    baseName
+  )}</title><style>body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; color:#1F2340; }h1{color:#5C6BC0;}</style></head><body><h1>${escapeMarkupAttribute(
+    baseName
+  )}</h1><pre>${escapeMarkupAttribute(textContent)}</pre></body></html>`;
+}
+
+function untrustedMarkupToHtml(html: string, fallbackTitle: string, xmlSelfClosing: boolean): string {
+  const title = extractHtmlTitleText(html, xmlSelfClosing) || fallbackTitle;
+  const body = sanitizeUntrustedHtmlFragment(html, { xmlSelfClosing });
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MARKDOWN_HTML_CSP}"><title>${escapeMarkupAttribute(
+    title
+  )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.6;padding:2rem;max-width:800px;margin:0 auto;color:#1F2340;}</style></head><body>${body}</body></html>`;
+}
 
 function markdownToHtml(md: string, title: string): string {
   const body = renderMarkdownFragment(md);
@@ -795,40 +820,107 @@ ${body}</body>
 </html>`;
 }
 
-function withoutHtmlRawElement(html: string, tagName: string): string {
-  const lower = html.toLowerCase();
-  const openPrefix = `<${tagName}`;
-  if (!lower.includes(openPrefix)) return html;
-  const closeTag = `</${tagName}`;
-  const out: string[] = [];
-  let pos = 0;
+function skipNonTagToken(html: string, lt: number): number {
+  if (html.startsWith('<!--', lt)) return findHtmlCommentEnd(html, lt + 4);
+  if (matchesCdataOpen(html, lt)) {
+    const cdataEnd = html.indexOf(']]>', lt + 9);
+    return cdataEnd === -1 ? html.length : cdataEnd + 3;
+  }
+  const gt = html.indexOf('>', lt + 2);
+  return gt === -1 ? html.length : gt + 1;
+}
+
+function findNonRawElementStop(html: string, targetTag: string, from: number, xmlSelfClosing: boolean): number {
+  let depth = 1;
+  let pos = from;
   while (pos < html.length) {
-    const idx = lower.indexOf(openPrefix, pos);
-    if (idx === -1) {
-      out.push(html.slice(pos));
-      break;
-    }
-    const nextIdx = idx + openPrefix.length;
-    if (nextIdx < html.length) {
-      const ch = lower.charCodeAt(nextIdx);
-      if (ch !== 0x3e && ch !== 0x2f && ch !== 0x20 && ch !== 0x09 && ch !== 0x0a && ch !== 0x0d) {
-        out.push(html.slice(pos, nextIdx));
-        pos = nextIdx;
-        continue;
-      }
-    }
-    out.push(html.slice(pos, idx));
-    const openEnd = lower.indexOf('>', nextIdx);
-    if (openEnd === -1) break;
-    if (lower.charCodeAt(openEnd - 1) === 0x2f) {
-      pos = openEnd + 1;
+    const lt = html.indexOf('<', pos);
+    if (lt === -1) return html.length;
+    const next = html.charCodeAt(lt + 1);
+    if (next === 0x21 /* '!' */ || next === 0x3f /* '?' */) {
+      pos = skipNonTagToken(html, lt);
       continue;
     }
-    const closeIdx = lower.indexOf(closeTag, openEnd + 1);
-    if (closeIdx === -1) break;
-    const closeEnd = lower.indexOf('>', closeIdx + closeTag.length);
-    pos = closeEnd === -1 ? html.length : closeEnd + 1;
+    const isEnd = next === 0x2f /* '/' */;
+    const nameStart = isEnd ? lt + 2 : lt + 1;
+    if (!isAsciiLetterCode(html.charCodeAt(nameStart))) {
+      pos = lt + 1;
+      continue;
+    }
+    const nameEnd = scanTagNameEnd(html, nameStart);
+    const currentTag = asciiLower(html.slice(nameStart, nameEnd));
+    const endInfo = findHtmlTagEnd(html, nameEnd, false);
+    const afterTag = endInfo.closed ? endInfo.end + 1 : html.length;
+    if (isEnd) {
+      if (currentTag === targetTag) {
+        depth -= 1;
+        if (depth === 0) return afterTag;
+      }
+      pos = afterTag;
+      continue;
+    }
+    if (targetTag === 'head' && currentTag === 'body') {
+      return lt;
+    }
+    if (RAW_HTML_TEXT_TAGS.has(currentTag) && !(xmlSelfClosing && endInfo.selfClosing)) {
+      pos = findRawTextEndTagRange(html, currentTag, afterTag).afterClose;
+      continue;
+    }
+    if (currentTag === targetTag && !endInfo.selfClosing) {
+      depth += 1;
+    }
+    pos = afterTag;
   }
+  return html.length;
+}
+
+function withoutHtmlRawElement(html: string, tagName: string, xmlSelfClosing = false): string {
+  if (!html.includes('<')) return html;
+  const targetTag = asciiLower(tagName);
+  const targetIsRaw = RAW_HTML_TEXT_TAGS.has(targetTag);
+  const out: string[] = [];
+  let pos = 0;
+  let scan = 0;
+  while (scan < html.length) {
+    const lt = html.indexOf('<', scan);
+    if (lt === -1) break;
+    const next = html.charCodeAt(lt + 1);
+    if (next === 0x21 || next === 0x3f) {
+      scan = skipNonTagToken(html, lt);
+      continue;
+    }
+    const isEnd = next === 0x2f;
+    const nameStart = isEnd ? lt + 2 : lt + 1;
+    if (!isAsciiLetterCode(html.charCodeAt(nameStart))) {
+      scan = lt + 1;
+      continue;
+    }
+    const nameEnd = scanTagNameEnd(html, nameStart);
+    const currentTag = asciiLower(html.slice(nameStart, nameEnd));
+    const endInfo = findHtmlTagEnd(html, nameEnd, false);
+    const afterTag = endInfo.closed ? endInfo.end + 1 : html.length;
+    if (!isEnd && currentTag === targetTag) {
+      out.push(html.slice(pos, lt));
+      let stopAt: number;
+      if (endInfo.selfClosing && (!targetIsRaw || xmlSelfClosing)) {
+        stopAt = afterTag;
+      } else if (targetIsRaw) {
+        stopAt = findRawTextEndTagRange(html, targetTag, afterTag).afterClose;
+      } else {
+        stopAt = findNonRawElementStop(html, targetTag, afterTag, xmlSelfClosing);
+      }
+      pos = stopAt;
+      scan = stopAt;
+      continue;
+    }
+    if (!isEnd && RAW_HTML_TEXT_TAGS.has(currentTag) && !(xmlSelfClosing && endInfo.selfClosing)) {
+      scan = findRawTextEndTagRange(html, currentTag, afterTag).afterClose;
+      continue;
+    }
+    scan = afterTag;
+  }
+  if (pos === 0) return html;
+  out.push(html.slice(pos));
   return out.join('');
 }
 
@@ -842,18 +934,43 @@ function stripAngleTags(html: string): string {
       out.push(html.slice(pos));
       break;
     }
-    const gt = html.indexOf('>', lt + 1);
-    if (gt === -1) {
-      out.push(html.slice(pos));
-      break;
+    if (html.startsWith('<!--', lt)) {
+      out.push(html.slice(pos, lt));
+      pos = findHtmlCommentEnd(html, lt + 4);
+      continue;
     }
-    if (gt === lt + 1) {
-      out.push(html.slice(pos, gt + 1));
+    if (matchesCdataOpen(html, lt)) {
+      out.push(html.slice(pos, lt));
+      const cdataEnd = html.indexOf(']]>', lt + 9);
+      out.push(html.slice(lt + 9, cdataEnd === -1 ? html.length : cdataEnd));
+      pos = cdataEnd === -1 ? html.length : cdataEnd + 3;
+      continue;
+    }
+    const next = html.charCodeAt(lt + 1);
+    if (next === 0x21 || next === 0x3f) {
+      const gt = html.indexOf('>', lt + 2);
+      if (gt === -1) {
+        out.push(html.slice(pos));
+        break;
+      }
+      out.push(html.slice(pos, lt));
       pos = gt + 1;
       continue;
     }
+    const nameStart = next === 0x2f ? lt + 2 : lt + 1;
+    if (!isAsciiLetterCode(html.charCodeAt(nameStart))) {
+      out.push(html.slice(pos, lt + 1));
+      pos = lt + 1;
+      continue;
+    }
+    const nameEnd = scanTagNameEnd(html, nameStart);
+    const endInfo = findHtmlTagEnd(html, nameEnd, false);
+    if (!endInfo.closed) {
+      out.push(html.slice(pos));
+      break;
+    }
     out.push(html.slice(pos, lt));
-    pos = gt + 1;
+    pos = endInfo.end + 1;
   }
   return out.join('');
 }
@@ -870,21 +987,31 @@ const HTML_MARKDOWN_ELEMENTS: ReadonlyArray<readonly [name: string, wrap: (conte
   ['code', (content) => `\`${content}\``],
 ];
 
-function htmlToMarkdown(html: string): string {
-  let cleaned = withoutHtmlRawElement(
-    withoutHtmlRawElement(withoutHtmlRawElement(withoutHtmlRawElement(html, 'head'), 'title'), 'script'),
-    'style'
+function stripHtmlStructuralContainers(html: string, xmlSelfClosing = false): string {
+  return withoutHtmlRawElement(
+    withoutHtmlRawElement(
+      withoutHtmlRawElement(
+        withoutHtmlRawElement(html, 'script', xmlSelfClosing),
+        'style',
+        xmlSelfClosing
+      ),
+      'head',
+      xmlSelfClosing
+    ),
+    'title',
+    xmlSelfClosing
   );
+}
+
+function htmlToMarkdown(html: string, xmlSelfClosing = false): string {
+  let cleaned = stripHtmlStructuralContainers(html, xmlSelfClosing);
   for (const [name, wrap] of HTML_MARKDOWN_ELEMENTS) cleaned = replaceHtmlElements(cleaned, name, wrap);
   cleaned = removeHtmlOpenings(cleaned.replace(/<br\s*[\/]?>/gi, '\n').replace(/<\/p>/gi, '\n\n'), 'p');
   return stripAngleTags(cleaned).trim();
 }
 
-export function stripHtmlTags(html: string): string {
-  const withoutScripts = withoutHtmlRawElement(
-    withoutHtmlRawElement(withoutHtmlRawElement(withoutHtmlRawElement(html, 'head'), 'title'), 'script'),
-    'style'
-  );
+export function stripHtmlTags(html: string, xmlSelfClosing = false): string {
+  const withoutScripts = stripHtmlStructuralContainers(html, xmlSelfClosing);
   const withBreaks = withoutScripts
     .replace(/<br\s*[\/]?>/gi, '\n')
     .replace(/<\/(?:p|div|li|tr|blockquote|h[1-6])>/gi, '\n');

@@ -157,6 +157,50 @@ function parseDbfRows(input: Buffer): string[][] {
   return rows;
 }
 
+const MAX_DIF_LINES = XLSX_MAX_MATERIALISED_CELLS * 2 + XLSX_MAX_ROWS * 2 + 1024;
+const MAX_SYLK_RECORDS = XLSX_MAX_MATERIALISED_CELLS * 2 + 1024;
+
+class TextLineReader {
+  private pos = 0;
+  private readonly hasCr: boolean;
+
+  constructor(private readonly text: string) {
+    this.hasCr = text.includes('\r');
+  }
+
+  next(): string | null {
+    if (this.pos > this.text.length) return null;
+    if (this.pos === this.text.length) {
+      this.pos += 1;
+      return '';
+    }
+    if (!this.hasCr) {
+      const nl = this.text.indexOf('\n', this.pos);
+      if (nl === -1) {
+        const line = this.text.slice(this.pos);
+        this.pos = this.text.length + 1;
+        return line;
+      }
+      const line = this.text.slice(this.pos, nl);
+      this.pos = nl + 1;
+      return line;
+    }
+    let end = this.pos;
+    while (end < this.text.length) {
+      const ch = this.text.charCodeAt(end);
+      if (ch === 0x0a || ch === 0x0d) break;
+      end += 1;
+    }
+    const line = this.text.slice(this.pos, end);
+    if (end < this.text.length) {
+      this.pos = this.text.charCodeAt(end) === 0x0d && this.text.charCodeAt(end + 1) === 0x0a ? end + 2 : end + 1;
+    } else {
+      this.pos = this.text.length + 1;
+    }
+    return line;
+  }
+}
+
 function unquoteDifString(line: string): string {
   const trimmed = line.trim();
   if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
@@ -167,21 +211,30 @@ function unquoteDifString(line: string): string {
 
 function parseDifRows(input: Buffer): string[][] {
   assertReadableAsText(input, 'dif');
-  const lines = decodeTextInput(input).replace(/\r\n?/g, '\n').split('\n');
-  let i = 0;
+  const reader = new TextLineReader(decodeTextInput(input));
+  let lineCount = 0;
+  const readLine = (): string | null => {
+    const line = reader.next();
+    if (line !== null) {
+      lineCount += 1;
+      if (lineCount > MAX_DIF_LINES) {
+        throw sheetLimitError('The DIF spreadsheet', lineCount, 'lines', 'a worksheet', MAX_DIF_LINES);
+      }
+    }
+    return line;
+  };
+
   let seenData = false;
   let declaredCols = 0;
   let declaredRows = 0;
 
-  while (i < lines.length) {
-    const topic = lines[i].trim().toUpperCase();
-    i += 1;
+  for (let line = readLine(); line !== null; line = readLine()) {
+    const topic = line.trim().toUpperCase();
     if (!topic) continue;
-    const tupleLine = (lines[i] ?? '').trim();
+    const tupleLine = (readLine() ?? '').trim();
     const parts = tupleLine.split(',');
     const countOrNum = Number.parseInt(parts[1] ?? '0', 10) || 0;
-    i += 1;
-    if (i < lines.length) i += 1; // consume header string value line
+    readLine(); // consume header string value line
 
     if (topic === 'VECTORS') declaredCols = Math.max(declaredCols, countOrNum);
     else if (topic === 'TUPLES') declaredRows = Math.max(declaredRows, countOrNum);
@@ -200,30 +253,25 @@ function parseDifRows(input: Buffer): string[][] {
   let currentRow: string[] | null = null;
   let totalCells = 0;
 
-  while (i < lines.length) {
-    const tuple = lines[i].trim();
-    if (!tuple) {
-      i += 1;
-      continue;
-    }
+  for (let line = readLine(); line !== null; line = readLine()) {
+    const tuple = line.trim();
+    if (!tuple) continue;
     const comma = tuple.indexOf(',');
-    if (comma <= 0) {
-      i += 1;
-      continue;
-    }
+    if (comma <= 0) continue;
     const typeFlag = Number.parseInt(tuple.slice(0, comma).trim(), 10);
     const numPart = tuple.slice(comma + 1).trim();
-    const valLine = lines[i + 1] ?? '';
-    i += 2;
+    const valLine = readLine() ?? '';
 
     if (typeFlag === -1) {
       const marker = valLine.trim().toUpperCase();
       if (marker === 'BOT') {
-        if (currentRow !== null) rows.push(currentRow);
-        currentRow = [];
-        if (rows.length > XLSX_MAX_ROWS) {
-          throw sheetLimitError('The DIF spreadsheet', rows.length, 'rows', 'a worksheet', XLSX_MAX_ROWS);
+        if (currentRow !== null) {
+          if (rows.length + 1 > XLSX_MAX_ROWS) {
+            throw sheetLimitError('The DIF spreadsheet', rows.length + 1, 'rows', 'a worksheet', XLSX_MAX_ROWS);
+          }
+          rows.push(currentRow);
         }
+        currentRow = [];
       } else if (marker === 'EOD') {
         break;
       }
@@ -247,7 +295,12 @@ function parseDifRows(input: Buffer): string[][] {
       throw sheetLimitError('The DIF spreadsheet', totalCells, 'cells', 'a worksheet', XLSX_MAX_MATERIALISED_CELLS);
     }
   }
-  if (currentRow !== null && currentRow.length > 0) rows.push(currentRow);
+  if (currentRow !== null && currentRow.length > 0) {
+    if (rows.length + 1 > XLSX_MAX_ROWS) {
+      throw sheetLimitError('The DIF spreadsheet', rows.length + 1, 'rows', 'a worksheet', XLSX_MAX_ROWS);
+    }
+    rows.push(currentRow);
+  }
   if (rows.length === 0) throw new ConversionFailedError('The DIF spreadsheet contains no data rows.');
   return rows;
 }
@@ -306,19 +359,32 @@ function materializeSparseCells(cells: Map<number, Map<number, string>>, maxRow:
 
 function parseSylkRows(input: Buffer): string[][] {
   assertReadableAsText(input, 'slk');
-  const lines = decodeTextInput(input).replace(/\r\n?/g, '\n').split('\n').filter((l) => l.trim() !== '');
-  if (lines.length === 0 || !lines[0].trim().startsWith('ID')) {
-    throw new ConversionFailedError('Invalid SYLK spreadsheet: missing ID header record.');
-  }
+  const reader = new TextLineReader(decodeTextInput(input));
 
   const cells = new Map<number, Map<number, string>>();
   let maxRow = 0;
   let maxCol = 0;
   let lastY = 1;
   let lastX = 1;
+  let recordCount = 0;
+  let cellCount = 0;
+  let seenHeader = false;
 
-  for (const line of lines) {
-    const fields = splitSylkFields(line.trim());
+  for (let rawLine = reader.next(); rawLine !== null; rawLine = reader.next()) {
+    const trimmed = rawLine.trim();
+    if (trimmed === '') continue;
+    if (!seenHeader) {
+      if (!trimmed.startsWith('ID')) {
+        throw new ConversionFailedError('Invalid SYLK spreadsheet: missing ID header record.');
+      }
+      seenHeader = true;
+    }
+    recordCount += 1;
+    if (recordCount > MAX_SYLK_RECORDS) {
+      throw sheetLimitError('The SYLK spreadsheet', recordCount, 'records', 'a worksheet', MAX_SYLK_RECORDS);
+    }
+
+    const fields = splitSylkFields(trimmed);
     const recType = fields[0];
     if (recType === 'E') break;
     if (recType === 'B') {
@@ -333,6 +399,11 @@ function parseSylkRows(input: Buffer): string[][] {
       continue;
     }
     if (recType !== 'C') continue;
+
+    cellCount += 1;
+    if (cellCount > XLSX_MAX_MATERIALISED_CELLS) {
+      throw sheetLimitError('The SYLK spreadsheet', cellCount, 'cells', 'a worksheet', XLSX_MAX_MATERIALISED_CELLS);
+    }
 
     let y = lastY;
     let x = lastX;
@@ -360,25 +431,43 @@ function parseSylkRows(input: Buffer): string[][] {
       rowMap.set(x, value);
     }
   }
+  if (!seenHeader) {
+    throw new ConversionFailedError('Invalid SYLK spreadsheet: missing ID header record.');
+  }
   return materializeSparseCells(cells, maxRow, maxCol, 'SYLK');
 }
 
 function parsePrnRows(input: Buffer): string[][] {
   assertReadableAsText(input, 'prn');
-  const lines = decodeTextInput(input)
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .map((line) => line.replace(/\s+$/, ''))
-    .filter((line) => line.trim() !== '');
-  if (lines.length === 0) throw new ConversionFailedError('The PRN file holds no data.');
+  const reader = new TextLineReader(decodeTextInput(input));
+  const rows: string[][] = [];
+  const fallbackRows: string[][] = [];
+  let maxMultiCols = 0;
+  let maxFallbackCols = 0;
 
-  const rows = lines.map((line) => line.trim().split(/\s{2,}|\t+/).map((cell) => cell.trim()));
-  const maxCols = rows.reduce((best, r) => Math.max(best, r.length), 0);
-  // If single spaces were used throughout, fall back to whitespace splitting.
-  const finalRows = maxCols <= 1 ? lines.map((line) => line.trim().split(/\s+/)) : rows;
-  const cols = finalRows.reduce((best, r) => Math.max(best, r.length), 0);
-  assertGridDimensions('The PRN table', finalRows.length, cols);
-  return finalRows;
+  for (let rawLine = reader.next(); rawLine !== null; rawLine = reader.next()) {
+    const trimmed = rawLine.trim();
+    if (trimmed === '') continue;
+    const nextRowCount = rows.length + 1;
+    if (nextRowCount > XLSX_MAX_ROWS) {
+      throw sheetLimitError('The PRN table', nextRowCount, 'rows', 'a worksheet', XLSX_MAX_ROWS);
+    }
+    const multiCells = trimmed.split(/\s{2,}|\t+/).map((cell) => cell.trim());
+    maxMultiCols = Math.max(maxMultiCols, multiCells.length);
+    assertGridDimensions('The PRN table', nextRowCount, maxMultiCols);
+    rows.push(multiCells);
+
+    if (maxMultiCols <= 1) {
+      const singleCells = trimmed.split(/\s+/);
+      maxFallbackCols = Math.max(maxFallbackCols, singleCells.length);
+      assertGridDimensions('The PRN table', nextRowCount, maxFallbackCols);
+      fallbackRows.push(singleCells);
+    } else if (fallbackRows.length > 0) {
+      fallbackRows.length = 0;
+    }
+  }
+  if (rows.length === 0) throw new ConversionFailedError('The PRN file holds no data.');
+  return maxMultiCols <= 1 ? fallbackRows : rows;
 }
 
 function readLotusNullTerminatedText(buf: Buffer): string {

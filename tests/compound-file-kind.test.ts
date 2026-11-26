@@ -13,7 +13,7 @@ import {
   type ByteSource,
 } from '../src/lib/compound-file-kind';
 import { HEADER_WINDOW_BYTES } from '../src/lib/format-signatures';
-import { assertNotSpoofedFilePath, assertNotSpoofedObject } from '../src/lib/security/file-guard';
+import { assertNotSpoofedFile, assertNotSpoofedFilePath, assertNotSpoofedObject } from '../src/lib/security/file-guard';
 import { FileExtensionSpoofError } from '../src/lib/types';
 import { buildCompoundFile, placeDirectory } from './helpers/cfb-craft';
 import { requireRealworldSample } from './helpers/realworld-sample';
@@ -522,8 +522,61 @@ describe('Works CFBF (.wks) files whose directory lies past the 64 KiB header wi
       await expect(
         assertNotSpoofedObject(memStorage(word), 'k', word.length, word.subarray(0, HEADER_WINDOW_BYTES), 'wks', 'word.wks')
       ).rejects.toThrow(FileExtensionSpoofError);
+
+      // Incomplete/truncated directory (root.complete === false) must fail-closed across assertNotSpoofedFile, assertNotSpoofedFilePath, and assertNotSpoofedObject
+      const twoDirWorks = compound(['Contents', 'StreamA', 'StreamB', 'StreamC']);
+      const placedTwoDir = placeDirectory(twoDirWorks, { directorySectors: [pastSector, pastSector + 20] });
+      // Truncate before the second directory sector (and before FAT if placed after it; keep >= >64 KiB)
+      const truncatedLarge = placedTwoDir.subarray(0, (pastSector + 10) * SECTOR);
+      expect(truncatedLarge.length).toBeGreaterThan(HEADER_WINDOW_BYTES);
+      const truncatedLargeRoot = readCompoundFileRoot(truncatedLarge);
+      expect(truncatedLargeRoot.status).toBe('read');
+      if (truncatedLargeRoot.status === 'read') {
+        expect(truncatedLargeRoot.complete).toBe(false);
+      }
+      expect(compoundFileVerdict('wks', truncatedLarge)).toBe('unreadable');
+      expect(() => assertNotSpoofedFile(truncatedLarge, 'wks', 'truncated-large.wks')).toThrow(FileExtensionSpoofError);
+
+      const truncatedLargePath = path.join(dir, 'truncated-large.wks');
+      fs.writeFileSync(truncatedLargePath, truncatedLarge);
+      expect(() => assertNotSpoofedFilePath(truncatedLargePath, 'wks', 'truncated-large.wks')).toThrow(FileExtensionSpoofError);
+      await expect(
+        assertNotSpoofedObject(
+          memStorage(truncatedLarge),
+          'k',
+          truncatedLarge.length,
+          truncatedLarge.subarray(0, HEADER_WINDOW_BYTES),
+          'wks',
+          'truncated-large.wks'
+        )
+      ).rejects.toThrow(FileExtensionSpoofError);
+
+      // Small truncated CFBF (< 64 KiB) whose second directory sector is cut off must also fail-closed
+      const smallTwoDir = placeDirectory(twoDirWorks, { directorySectors: [2, 10] }).subarray(0, 6 * SECTOR);
+      const smallRoot = readCompoundFileRoot(smallTwoDir);
+      expect(smallRoot.status === 'read' && smallRoot.complete === false).toBe(true);
+      expect(() => assertNotSpoofedFile(smallTwoDir, 'wks', 'truncated-small.wks')).toThrow(FileExtensionSpoofError);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses non-Works CFBF stream names (Book, EncryptedPackage, VisioDocument, Quill, MSG, PerfectOffice) as .wks', () => {
+    for (const streamName of [
+      'Book',
+      'book',
+      'EncryptedPackage',
+      'EncryptionInfo',
+      'VisioDocument',
+      'Quill',
+      '__properties_version1.0',
+      'PerfectOffice_MAIN',
+    ]) {
+      const cfbf = compound([streamName]);
+      expect(compoundFileVerdict('wks', cfbf), `${streamName} verdict`).toBe('mismatch');
+      expect(() => assertNotSpoofedFile(cfbf, 'wks', `fake-${streamName}.wks`), `${streamName} assertNotSpoofedFile`).toThrow(
+        FileExtensionSpoofError
+      );
     }
   });
 });
