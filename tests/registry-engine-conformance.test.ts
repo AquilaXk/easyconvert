@@ -556,7 +556,104 @@ const EXTRA_PROBES: Readonly<Record<string, () => Buffer | Promise<Buffer>>> = {
   // A DWG is read by the DWG reader, which refuses everything that is not a DWG of a release it decodes, so the probe is a real
   // drawing: three circles, AutoCAD 2000, a pinned sample of an open-source test set (fetched by digest, never committed).
   dwg: async () => readFileSync(await ensureSample(pinnedDwgSample('dwg-gdal-circles-2000.dwg'))),
+  // Independently authored binary/XML probes from public specs for WBMP, PDF/A, OpenXML/Flat-ODF aliases, and legacy worksheets.
+  wbmp: () => Buffer.from([0x00, 0x00, 0x02, 0x02, 0xc0, 0x80]),
+  pdfa: () => readFileSync(path.join(FIXTURE_ROOT, 'sample.pdf')),
+  presentation: () => readFileSync(path.join(FIXTURE_ROOT, 'golden', 'office', 'drawingml-shapes-presentation.pptx')),
+  fods: () =>
+    Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?><office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet><table:table table:name="Sheet1"><table:table-row><table:table-cell office:value-type="string"><text:p>name</text:p></table:table-cell><table:table-cell office:value-type="string"><text:p>count</text:p></table:table-cell></table:table-row><table:table-row><table:table-cell office:value-type="string"><text:p>alpha</text:p></table:table-cell><table:table-cell office:value-type="float" office:value="1"><text:p>1</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document>',
+      'utf-8'
+    ),
+  fodp: () =>
+    Buffer.from(
+      '<?xml version="1.0" encoding="UTF-8"?><office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" office:version="1.2" office:mimetype="application/vnd.oasis.opendocument.presentation"><office:body><office:presentation><draw:page draw:name="page1"><draw:frame><draw:text-box><text:p>Probe slide</text:p></draw:text-box></draw:frame></draw:page></office:presentation></office:body></office:document>',
+      'utf-8'
+    ),
+  dif: () =>
+    Buffer.from(
+      'TABLE\n0,1\n""\nVECTORS\n0,2\n""\nTUPLES\n0,2\n""\nDATA\n0,0\n""\n-1,0\nBOT\n1,0\n"name"\n1,0\n"count"\n-1,0\nBOT\n1,0\n"alpha"\n0,1\nV\n-1,0\nEOD\n',
+      'utf-8'
+    ),
+  slk: () =>
+    Buffer.from(
+      'ID;PCALCOOO32\nB;Y2;X2\nC;Y1;X1;K"name"\nC;Y1;X2;K"count"\nC;Y2;X1;K"alpha"\nC;Y2;X2;K1\nE\n',
+      'utf-8'
+    ),
+  dbf: () => buildProbeDbf(),
+  wk1: () => buildProbeLotus(0x0406),
+  wks: () => buildProbeLotus(0x0404),
 };
+
+function buildProbeDbf(): Buffer {
+  const headerSize = 97;
+  const recordSize = 16;
+  const recordCount = 2;
+  const buf = Buffer.alloc(headerSize + recordCount * recordSize + 1, 0x20);
+  buf[0] = 0x03;
+  buf[1] = 26;
+  buf[2] = 11;
+  buf[3] = 26;
+  buf.writeUInt32LE(recordCount, 4);
+  buf.writeUInt16LE(headerSize, 8);
+  buf.writeUInt16LE(recordSize, 10);
+  buf.write('NAME', 32, 'ascii');
+  buf[43] = 0x43;
+  buf[48] = 10;
+  buf.write('QTY', 64, 'ascii');
+  buf[75] = 0x4e;
+  buf[80] = 5;
+  buf[96] = 0x0d;
+  let off = headerSize;
+  for (const [n, q] of [
+    ['alpha', '1'],
+    ['beta', '2'],
+  ]) {
+    buf[off] = 0x20;
+    buf.write(n.padEnd(10, ' '), off + 1, 'ascii');
+    buf.write(q.padStart(5, ' '), off + 11, 'ascii');
+    off += recordSize;
+  }
+  buf[off] = 0x1a;
+  return buf;
+}
+
+function buildProbeLotus(revision: number): Buffer {
+  const parts: Buffer[] = [];
+  const rec = (op: number, body: Buffer) => {
+    const h = Buffer.alloc(4);
+    h.writeUInt16LE(op, 0);
+    h.writeUInt16LE(body.length, 2);
+    parts.push(h, body);
+  };
+  const bof = Buffer.alloc(2);
+  bof.writeUInt16LE(revision, 0);
+  rec(0x0000, bof);
+  const label = (col: number, row: number, text: string) => {
+    const b = Buffer.alloc(6 + text.length + 1);
+    b[0] = 0xff;
+    b.writeUInt16LE(col, 1);
+    b.writeUInt16LE(row, 3);
+    b[5] = 0x27;
+    b.write(text, 6, 'ascii');
+    b[6 + text.length] = 0x00;
+    rec(0x000f, b);
+  };
+  const num = (col: number, row: number, v: number) => {
+    const b = Buffer.alloc(13);
+    b[0] = 0xff;
+    b.writeUInt16LE(col, 1);
+    b.writeUInt16LE(row, 3);
+    b.writeDoubleLE(v, 5);
+    rec(0x000e, b);
+  };
+  label(0, 0, 'name');
+  label(1, 0, 'count');
+  label(0, 1, 'alpha');
+  num(1, 1, 1);
+  rec(0x0001, Buffer.alloc(0));
+  return Buffer.concat(parts);
+}
 
 /** TrueType probe font: glyf/loca outlines for A, B and C, mapped in the cmap. */
 const FONT_TTF_SEED = buildTrueTypeFont({ family: 'Probe Sans' });
