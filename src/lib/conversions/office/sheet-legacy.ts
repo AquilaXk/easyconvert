@@ -252,6 +252,7 @@ function parseDifRows(input: Buffer): string[][] {
   const rows: string[][] = [];
   let currentRow: string[] | null = null;
   let totalCells = 0;
+  let maxCols = 0;
 
   for (let line = readLine(); line !== null; line = readLine()) {
     const tuple = line.trim();
@@ -266,9 +267,7 @@ function parseDifRows(input: Buffer): string[][] {
       const marker = valLine.trim().toUpperCase();
       if (marker === 'BOT') {
         if (currentRow !== null) {
-          if (rows.length + 1 > XLSX_MAX_ROWS) {
-            throw sheetLimitError('The DIF spreadsheet', rows.length + 1, 'rows', 'a worksheet', XLSX_MAX_ROWS);
-          }
+          assertGridDimensions('The DIF spreadsheet', rows.length + 1, maxCols);
           rows.push(currentRow);
         }
         currentRow = [];
@@ -287,18 +286,15 @@ function parseDifRows(input: Buffer): string[][] {
       cell = indicator === 'V' ? numPart : indicator;
     }
     currentRow.push(cell);
-    if (currentRow.length > XLSX_MAX_COLUMNS) {
-      throw sheetLimitError('The DIF spreadsheet', currentRow.length, 'columns', 'a worksheet', XLSX_MAX_COLUMNS);
-    }
+    if (currentRow.length > maxCols) maxCols = currentRow.length;
+    assertGridDimensions('The DIF spreadsheet', rows.length + 1, maxCols);
     totalCells += 1;
     if (totalCells > XLSX_MAX_MATERIALISED_CELLS) {
       throw sheetLimitError('The DIF spreadsheet', totalCells, 'cells', 'a worksheet', XLSX_MAX_MATERIALISED_CELLS);
     }
   }
   if (currentRow !== null && currentRow.length > 0) {
-    if (rows.length + 1 > XLSX_MAX_ROWS) {
-      throw sheetLimitError('The DIF spreadsheet', rows.length + 1, 'rows', 'a worksheet', XLSX_MAX_ROWS);
-    }
+    assertGridDimensions('The DIF spreadsheet', rows.length + 1, maxCols);
     rows.push(currentRow);
   }
   if (rows.length === 0) throw new ConversionFailedError('The DIF spreadsheet contains no data rows.');
@@ -437,6 +433,8 @@ function parseSylkRows(input: Buffer): string[][] {
   return materializeSparseCells(cells, maxRow, maxCol, 'SYLK');
 }
 
+const MAX_PRN_LINES = XLSX_MAX_ROWS * 4 + 1024;
+
 function parsePrnRows(input: Buffer): string[][] {
   assertReadableAsText(input, 'prn');
   const reader = new TextLineReader(decodeTextInput(input));
@@ -444,8 +442,13 @@ function parsePrnRows(input: Buffer): string[][] {
   const fallbackRows: string[][] = [];
   let maxMultiCols = 0;
   let maxFallbackCols = 0;
+  let lineCount = 0;
 
   for (let rawLine = reader.next(); rawLine !== null; rawLine = reader.next()) {
+    lineCount += 1;
+    if (lineCount > MAX_PRN_LINES) {
+      throw sheetLimitError('The PRN table', lineCount, 'lines', 'a worksheet', MAX_PRN_LINES);
+    }
     const trimmed = rawLine.trim();
     if (trimmed === '') continue;
     const nextRowCount = rows.length + 1;

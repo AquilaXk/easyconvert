@@ -732,6 +732,54 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     const evilRst = '`' + ' '.repeat(100_000) + '\n' + '`a<b '.repeat(25_000);
     const rstOut = await expectNoHang('rstToMarkdown 100k backticks and spaces', () => rstToMarkdown(evilRst));
     expect(rstOut.length).toBeGreaterThan(0);
+
+    // 6. Suppressed-container body/title boundaries, HTML5 non-self-closing containers, void embed, and &colon; URI consistency
+    const nestedContainerHtml = [
+      '<head><template><body><p>Fake</p></body><title>WrongTitle</title></template></head>',
+      '<body>',
+      '<p>Before</p>',
+      '<svg><foreignObject></body></foreignObject></svg>',
+      '<iframe></body></iframe>',
+      '<template /><img src="https://evil.com/t.png"></template>',
+      '<noscript /><img src="https://evil.com/n.png"></noscript>',
+      '<iframe /><p>Fallback</p></iframe>',
+      '<embed src="https://evil.com/e.swf">',
+      '<p>AfterEmbed</p>',
+      '<img src="data&colon;image/png;base64,iVBORw0KGgo=">',
+      '<a href="https&colon;//example.com?a=1&amp;colon=2&copy=3">EntityLink</a>',
+      '</body>',
+    ].join('');
+    const nestedContainerOut = (
+      await dispatchConversion(emlWithBody(nestedContainerHtml), 'eml', 'html', {}, 'containers.eml')
+    ).buffer.toString('utf-8');
+    expect(nestedContainerOut).toContain('<p>Before</p><p>AfterEmbed</p>');
+    expect(nestedContainerOut).not.toContain('Fake');
+    expect(nestedContainerOut).not.toContain('Fallback');
+    expect(nestedContainerOut).not.toContain('evil.com');
+    expect(nestedContainerOut).toContain('<img src="data:image/png;base64,iVBORw0KGgo=">');
+    expect(nestedContainerOut).toContain(
+      '<a href="https://example.com?a=1&amp;colon=2&amp;copy=3" rel="noopener noreferrer">EntityLink</a>'
+    );
+
+    const omittedHeadCloseOut = (
+      await dispatchConversion(
+        emlWithBody('<head><meta charset=utf-8><p>VisibleWithoutBodyTag</p>'),
+        'eml',
+        'html',
+        {},
+        'noheadclose.eml'
+      )
+    ).buffer.toString('utf-8');
+    expect(omittedHeadCloseOut).toContain('<p>VisibleWithoutBodyTag</p>');
+
+    const deepContainers = '<template><iframe>'.repeat(25_000);
+    const deepContainersOut = (
+      await expectNoHang('EML 50k nested unclosed <template><iframe>', () =>
+        dispatchConversion(emlWithBody(deepContainers), 'eml', 'html', {}, 'deep-containers.eml')
+      )
+    ).buffer.toString('utf-8');
+    expect(deepContainersOut).not.toContain('<template');
+    expect(deepContainersOut).not.toContain('<iframe');
   });
 
   it('handles U+0130, quoted attributes, comments, rawtext self-closing, and CSP sanitization across XHTML -> txt/md/html', async () => {
@@ -788,6 +836,18 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     expect(safeXhtmlOut).not.toContain('<script');
     expect(safeXhtmlOut).not.toContain('onerror');
     expect(safeXhtmlOut).not.toContain('alert(');
+
+    // 6. <template> inside <head> must not hijack <title> or <body> boundaries
+    const headTemplateXhtml = Buffer.from(
+      '<html xmlns="http://www.w3.org/1999/xhtml"><head><template><body><p>Fake</p></body><title>Bad</title></template><title>Good</title></head><body><p>Real</p></body></html>',
+      'utf-8'
+    );
+    expect((await dispatchConversion(headTemplateXhtml, 'xhtml', 'txt', {}, 'ht.xhtml')).buffer.toString('utf-8')).toBe('Real');
+    expect((await dispatchConversion(headTemplateXhtml, 'xhtml', 'md', {}, 'ht.xhtml')).buffer.toString('utf-8')).toBe('Real');
+    const headTemplateHtml = (await dispatchConversion(headTemplateXhtml, 'xhtml', 'html', {}, 'ht.xhtml')).buffer.toString('utf-8');
+    expect(headTemplateHtml).toContain('<title>Good</title>');
+    expect(headTemplateHtml).toContain('<body><p>Real</p></body>');
+    expect(headTemplateHtml).not.toContain('Fake');
   });
 
   it('hardens Flat ODF leading comment normalization, .cur vs .wks signature distinction, and legacy spreadsheet bounds', async () => {
@@ -833,6 +893,28 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     }
     expect(() => assertNotSpoofedFile(curEight, 'wks', 'eight.wks')).toThrow(FileExtensionSpoofError);
 
+    const curEightLargeHeader = Buffer.alloc(65_536, 0);
+    curEightLargeHeader.writeUInt16LE(0, 0);
+    curEightLargeHeader.writeUInt16LE(2, 2);
+    curEightLargeHeader.writeUInt16LE(8, 4);
+    for (let k = 0; k < 8; k += 1) {
+      const off = 6 + k * 16;
+      curEightLargeHeader.writeUInt32LE(16_384, off + 8);
+      curEightLargeHeader.writeUInt32LE(6 + 8 * 16 + k * 16_384, off + 12);
+    }
+    expect(() => assertNotSpoofedFile(curEightLargeHeader, 'wks', 'eight-large.wks')).toThrow(FileExtensionSpoofError);
+
+    const cur1024Header = Buffer.alloc(65_536, 0);
+    cur1024Header.writeUInt16LE(0, 0);
+    cur1024Header.writeUInt16LE(2, 2);
+    cur1024Header.writeUInt16LE(0x0400, 4);
+    for (let k = 0; k < 0x0400; k += 1) {
+      const off = 6 + k * 16;
+      cur1024Header.writeUInt32LE(32, off + 8);
+      cur1024Header.writeUInt32LE(6 + 0x0400 * 16 + k * 32, off + 12);
+    }
+    expect(() => assertNotSpoofedFile(cur1024Header, 'wks', 'many-cur.wks')).toThrow(FileExtensionSpoofError);
+
     const lotusRev0404 = buildWk1Sample();
     lotusRev0404.writeUInt16LE(0x0404, 4);
     expect(() => assertNotSpoofedFile(lotusRev0404, 'wks', 'r1a.wks')).not.toThrow();
@@ -841,9 +923,19 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     lotusRev1000.writeUInt16LE(0x1000, 4);
     expect(() => assertNotSpoofedFile(lotusRev1000, 'wks', 'r3.wks')).not.toThrow();
 
-    // 3. PRN / DIF row bounds fail before full materialization
+    // 3. PRN / DIF row and materialized-grid bounds fail before full materialization
     const tooManyPrnRows = Buffer.from('1\n'.repeat(1_048_577), 'ascii');
     await expect(dispatchConversion(tooManyPrnRows, 'prn', 'csv', { engine: 'easyconvert' }, 'rows.prn')).rejects.toThrow(
+      SheetLimitError
+    );
+
+    const wideSparseDif = Buffer.from(
+      'TABLE\n0,1\n"T"\nDATA\n0,0\n""\n-1,0\nBOT\n' +
+        '0,1\nV\n'.repeat(10_000) +
+        '-1,0\nBOT\n0,1\nV\n'.repeat(2_000),
+      'ascii'
+    );
+    await expect(dispatchConversion(wideSparseDif, 'dif', 'csv', { engine: 'easyconvert' }, 'wide.dif')).rejects.toThrow(
       SheetLimitError
     );
   });

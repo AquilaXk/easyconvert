@@ -391,7 +391,7 @@ export const RAW_HTML_TEXT_TAGS: ReadonlySet<string> = new Set([
   'script', 'style', 'title', 'textarea', 'xmp', 'noembed', 'noframes',
 ]);
 
-const SUPPRESSED_CONTAINER_TAGS: ReadonlySet<string> = new Set([
+export const SUPPRESSED_CONTAINER_TAGS: ReadonlySet<string> = new Set([
   ...RAW_HTML_TEXT_TAGS,
   'svg', 'math', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'noscript', 'template', 'head',
 ]);
@@ -579,9 +579,17 @@ function skipCommentCdataOrDecl(html: string, lt: number): number {
   return gt === -1 ? html.length : gt + 1;
 }
 
+const VOID_SUPPRESSED_TAGS: ReadonlySet<string> = new Set(['embed', 'frame']);
+
+function isSuppressedSelfClosing(tagName: string, parsedSelfClosing: boolean, xmlSelfClosing: boolean): boolean {
+  if (VOID_SUPPRESSED_TAGS.has(tagName)) return true;
+  if (tagName === 'svg' || tagName === 'math') return parsedSelfClosing;
+  return xmlSelfClosing && parsedSelfClosing;
+}
+
 function findSuppressedContainerEnd(html: string, containerTag: string, from: number, xmlSelfClosing: boolean): number {
-  const isForeign = containerTag === 'svg' || containerTag === 'math';
-  let depth = 1;
+  const stack: string[] = [containerTag];
+  const counts = new Map<string, number>([[containerTag, 1]]);
   let pos = from;
   while (pos < html.length) {
     const lt = html.indexOf('<', pos);
@@ -602,21 +610,48 @@ function findSuppressedContainerEnd(html: string, containerTag: string, from: nu
     const endInfo = findHtmlTagEnd(html, nameEnd, false);
     const afterTag = endInfo.closed ? endInfo.end + 1 : html.length;
     if (isEnd) {
-      if (tagName === containerTag) {
-        depth -= 1;
-        if (depth === 0) return afterTag;
+      const openCount = counts.get(tagName) ?? 0;
+      if (openCount > 0) {
+        while (stack.length > 0) {
+          const popped = stack.pop() as string;
+          counts.set(popped, (counts.get(popped) ?? 1) - 1);
+          if (popped === tagName) break;
+        }
+        if (stack.length === 0) return afterTag;
       }
       pos = afterTag;
       continue;
     }
-    if (RAW_HTML_TEXT_TAGS.has(tagName) && !(endInfo.selfClosing && (isForeign || xmlSelfClosing))) {
+    if (stack[stack.length - 1] === 'head' && (tagName === 'body' || SAFE_HTML_TAGS.has(tagName))) {
+      stack.pop();
+      counts.set('head', (counts.get('head') ?? 1) - 1);
+      if (stack.length === 0) return lt;
+    }
+    if (RAW_HTML_TEXT_TAGS.has(tagName) && !(xmlSelfClosing && endInfo.selfClosing)) {
       pos = findRawTextEndTagRange(html, tagName, afterTag).afterClose;
       continue;
     }
-    if (tagName === containerTag && !endInfo.selfClosing) depth += 1;
+    if (SUPPRESSED_CONTAINER_TAGS.has(tagName) && !isSuppressedSelfClosing(tagName, endInfo.selfClosing, xmlSelfClosing)) {
+      stack.push(tagName);
+      counts.set(tagName, (counts.get(tagName) ?? 0) + 1);
+    }
     pos = afterTag;
   }
   return html.length;
+}
+
+export function skipSuppressedElement(
+  html: string,
+  tagName: string,
+  afterTag: number,
+  parsedSelfClosing: boolean,
+  xmlSelfClosing: boolean
+): number {
+  if (RAW_HTML_TEXT_TAGS.has(tagName)) {
+    return xmlSelfClosing && parsedSelfClosing ? afterTag : findRawTextEndTagRange(html, tagName, afterTag).afterClose;
+  }
+  if (isSuppressedSelfClosing(tagName, parsedSelfClosing, xmlSelfClosing)) return afterTag;
+  return findSuppressedContainerEnd(html, tagName, afterTag, xmlSelfClosing);
 }
 
 function extractBodyFragment(html: string, xmlSelfClosing: boolean): string {
@@ -653,12 +688,8 @@ function extractBodyFragment(html: string, xmlSelfClosing: boolean): string {
       pos = afterTag;
       continue;
     }
-    if (RAW_HTML_TEXT_TAGS.has(tagName) && !(xmlSelfClosing && endInfo.selfClosing)) {
-      pos = findRawTextEndTagRange(html, tagName, afterTag).afterClose;
-      continue;
-    }
-    if (!inBody && (tagName === 'svg' || tagName === 'math')) {
-      pos = endInfo.selfClosing ? afterTag : findSuppressedContainerEnd(html, tagName, afterTag, xmlSelfClosing);
+    if (SUPPRESSED_CONTAINER_TAGS.has(tagName) && tagName !== 'head') {
+      pos = skipSuppressedElement(html, tagName, afterTag, endInfo.selfClosing, xmlSelfClosing);
       continue;
     }
     pos = afterTag;
@@ -714,8 +745,28 @@ function isSafeImageUri(raw: string): boolean {
   return DATA_RASTER_IMAGE_URI.test(compact);
 }
 
+const SINGLE_PASS_URI_REF = /&(?:#[xX][0-9a-fA-F]{1,8};?|#[0-9]{1,10};?|[A-Za-z][A-Za-z0-9]{1,31};?)/g;
+
+function decodeSafeUriEntitiesOnce(raw: string): string {
+  if (!raw.includes('&')) return raw;
+  return raw.replace(SINGLE_PASS_URI_REF, (match, offset: number) => {
+    if (match.endsWith(';')) {
+      const lower = asciiLower(match);
+      if (lower === '&colon;') return ':';
+      if (lower === '&tab;') return '\t';
+      if (lower === '&newline;') return '\n';
+      return decodeHtmlCharacterReferences(match, true);
+    }
+    const following = raw[offset + match.length];
+    if (following !== undefined) {
+      return decodeHtmlCharacterReferences(`${match}${following}`, true).slice(0, -1);
+    }
+    return decodeHtmlCharacterReferences(match, true);
+  });
+}
+
 function cleanSafeUriForEmit(raw: string): string {
-  return decodeHtmlCharacterReferences(raw, true)
+  return decodeSafeUriEntitiesOnce(raw)
     .trim()
     .replace(SURROUNDING_QUOTES, '')
     .replace(ATTR_CONTROL_CHARS, '');
@@ -840,12 +891,8 @@ export function extractHtmlTitleText(html: string, xmlSelfClosing = false): stri
       pos = range.afterClose;
       continue;
     }
-    if (!isEnd && RAW_HTML_TEXT_TAGS.has(tagName) && !(xmlSelfClosing && endInfo.selfClosing)) {
-      pos = findRawTextEndTagRange(html, tagName, afterTag).afterClose;
-      continue;
-    }
-    if (!isEnd && (tagName === 'svg' || tagName === 'math')) {
-      pos = endInfo.selfClosing ? afterTag : findSuppressedContainerEnd(html, tagName, afterTag, xmlSelfClosing);
+    if (!isEnd && SUPPRESSED_CONTAINER_TAGS.has(tagName) && tagName !== 'head') {
+      pos = skipSuppressedElement(html, tagName, afterTag, endInfo.selfClosing, xmlSelfClosing);
       continue;
     }
     pos = afterTag;
@@ -919,11 +966,7 @@ export function sanitizeUntrustedHtmlFragment(
       continue;
     }
     if (SUPPRESSED_CONTAINER_TAGS.has(tagName)) {
-      if (RAW_HTML_TEXT_TAGS.has(tagName)) {
-        pos = xmlSelfClosing && endInfo.selfClosing ? afterTag : findRawTextEndTagRange(inner, tagName, afterTag).afterClose;
-      } else {
-        pos = endInfo.selfClosing ? afterTag : findSuppressedContainerEnd(inner, tagName, afterTag, xmlSelfClosing);
-      }
+      pos = skipSuppressedElement(inner, tagName, afterTag, endInfo.selfClosing, xmlSelfClosing);
       continue;
     }
     if (SAFE_HTML_TAGS.has(tagName)) {

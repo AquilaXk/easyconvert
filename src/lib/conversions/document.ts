@@ -62,6 +62,8 @@ import {
   readEmlMessage,
   sanitizeUntrustedHtmlFragment,
   scanTagNameEnd,
+  skipSuppressedElement,
+  SUPPRESSED_CONTAINER_TAGS,
   UNTRUSTED_HTML_CSP,
 } from './office/eml-reader';
 import { isMarkupTextSource, markupToMarkdown, markupToPlainText, texToPlainText } from './office/markup-text';
@@ -862,8 +864,8 @@ function findNonRawElementStop(html: string, targetTag: string, from: number, xm
     if (targetTag === 'head' && currentTag === 'body') {
       return lt;
     }
-    if (RAW_HTML_TEXT_TAGS.has(currentTag) && !(xmlSelfClosing && endInfo.selfClosing)) {
-      pos = findRawTextEndTagRange(html, currentTag, afterTag).afterClose;
+    if (SUPPRESSED_CONTAINER_TAGS.has(currentTag) && currentTag !== targetTag) {
+      pos = skipSuppressedElement(html, currentTag, afterTag, endInfo.selfClosing, xmlSelfClosing);
       continue;
     }
     if (currentTag === targetTag && !endInfo.selfClosing) {

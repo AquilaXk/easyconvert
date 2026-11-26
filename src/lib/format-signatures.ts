@@ -693,12 +693,14 @@ function isWindowsCursorHeader(buf: Uint8Array, count: number): boolean {
   const dirEnd = 6 + count * 16;
   if (count === 0 || buf.length < dirEnd) return false;
   const view = dataView(buf);
+  const fullFile = buf.length < HEADER_WINDOW_BYTES;
   for (let i = 0; i < count; i += 1) {
     const entryOffset = 6 + i * 16;
     if (buf[entryOffset + 3] !== 0) return false;
     const bytesInRes = view.getUint32(entryOffset + 8, true);
     const imageOffset = view.getUint32(entryOffset + 12, true);
-    if (bytesInRes === 0 || imageOffset < dirEnd || imageOffset >= buf.length) return false;
+    if (bytesInRes === 0 || imageOffset < dirEnd) return false;
+    if (fullFile && imageOffset >= buf.length) return false;
   }
   return true;
 }
@@ -711,7 +713,7 @@ function isLotusWksBof(buf: Uint8Array): boolean {
     (revision >= 0x1000 && revision <= 0x1005) ||
     revision === 0x0008;
   if (!validRevision) return false;
-  if (revision === 0x0008 && isWindowsCursorHeader(buf, revision)) return false;
+  if (revision <= 0x040f && isWindowsCursorHeader(buf, revision)) return false;
   return true;
 }
 
