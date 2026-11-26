@@ -14,10 +14,11 @@ import { GET as ogRoute } from '../src/app/api/og/route';
 import { resolveOgCardSpec } from '../src/lib/og/resolve-card';
 import ConverterPage, { generateMetadata as converterGenerateMetadata } from '../src/app/[locale]/[slug]/page';
 import { redisKeyStore } from '../src/lib/api-keys/redis-key-store';
+import * as apiGuard from '../src/lib/api-keys/guard';
 import { anonymousUserId } from '../src/lib/auth/anonymous-identity';
 import { userStore } from '../src/lib/auth/user-store';
 import { processQueuedCaptureJob } from '../src/lib/capture/queued-capture-runner';
-import { CaptureFailedError, CaptureTargetBlockedError } from '../src/lib/capture/website-capture-errors';
+import { CaptureFailedError, CaptureTargetBlockedError, CaptureUnavailableError } from '../src/lib/capture/website-capture-errors';
 import { finishedData } from '../src/lib/queue/ended-jobs';
 import { Worker } from '../src/lib/queue/bullmq-engine';
 import * as concurrencyLimit from '../src/lib/queue/concurrency-limit';
@@ -30,9 +31,11 @@ import * as retentionService from '../src/lib/storage/retention-service';
 import { s3Storage } from '../src/lib/storage/s3-storage';
 import {
   ConversionFailedError,
+  CpuTaskTimeoutError,
   EngineUnavailableError,
   JobTimeoutError,
   PayloadLimitError,
+  SandboxUnavailableError,
   WorkerOutputMissingError,
   type ConversionJobData,
   type ConversionJobResult,
@@ -234,9 +237,15 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     ['IPv6 loopback', 'http://[::1]/'],
     ['link-local metadata IP', 'http://169.254.169.254/latest/meta-data/?token=s3cret'],
     ['RFC1918 10.0.0.0/8', 'http://10.0.0.1/'],
+    ['RFC1918 172.16.0.0/12', 'http://172.16.0.1/'],
+    ['CGNAT 100.64.0.0/10', 'http://100.64.0.1/'],
     ['GCP metadata domain', 'http://metadata.google.internal/computeMetadata/v1/'],
+    ['AWS IPv6 IMDS', 'http://[fd00:ec2::254]/latest/meta-data/'],
     ['mDNS .local domain', 'http://foo.local/'],
     ['decimal integer IPv4 loopback', 'http://2130706433/'],
+    ['octal IPv4 loopback', 'http://0177.0.0.1/'],
+    ['hex IPv4 loopback', 'http://0x7f.0.0.1/'],
+    ['short IPv4 loopback', 'http://127.1/'],
     ['IPv4-mapped IPv6 loopback', 'http://[::ffff:127.0.0.1]/'],
     ['trailing dot localhost', 'http://localhost./'],
     ['RFC1918 192.168.0.0/16', 'http://192.168.1.1/'],
@@ -246,6 +255,7 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     const anonId = anonBucketId(ip);
     const countsBefore = await resourceQueues.memory.getJobCounts();
     const mayEnqueueSpy = vi.spyOn(concurrencyLimit, 'mayEnqueue');
+    const reserveSpy = vi.spyOn(apiGuard, 'reserveConversionUnit');
     const handOffSpy = vi.spyOn(enqueueLib, 'handOffConversionJob');
     const queueAddSpy = vi.spyOn(resourceQueues.memory, 'add');
     const dnsLookupSpy = vi.spyOn(dns, 'lookup');
@@ -266,6 +276,7 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     });
     expect(JSON.stringify(body)).not.toContain('s3cret');
     expect(mayEnqueueSpy).not.toHaveBeenCalled();
+    expect(reserveSpy).not.toHaveBeenCalled();
     expect(handOffSpy).not.toHaveBeenCalled();
     expect(queueAddSpy).not.toHaveBeenCalled();
     expect(dnsLookupSpy).not.toHaveBeenCalled();
@@ -275,10 +286,35 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     expect(await resourceQueues.memory.getJobCounts()).toEqual(countsBefore);
   });
 
+  it('refuses private URLs with 422 before concurrency or quota exhaustion and releases Idempotency-Key locks', async () => {
+    const ip = nextAnonIp();
+    const idemKey = `blocked_${crypto.randomUUID()}`;
+    vi.spyOn(concurrencyLimit, 'mayEnqueue').mockResolvedValue({ allowed: false, limit: 5 });
+    const reserveSpy = vi.spyOn(apiGuard, 'reserveConversionUnit');
+
+    const blocked = await captureJobsRoute(
+      anonPost(ip, { url: 'http://127.0.0.1/internal', targetFormat: 'png' }, { 'Idempotency-Key': idemKey })
+    );
+    expect(blocked.status).toBe(422);
+    expect((await blocked.json()).code).toBe('capture_target_blocked');
+    expect(reserveSpy).not.toHaveBeenCalled();
+
+    // The failed 422 refusal must release the Idempotency-Key lock so reusing the key on a fixed public URL reaches the concurrency gate instead of 422 idempotency-key-reused or 409.
+    const retried = await captureJobsRoute(
+      anonPost(ip, { url: 'https://example.com/public', targetFormat: 'png' }, { 'Idempotency-Key': idemKey })
+    );
+    expect(retried.status).toBe(429);
+    expect(retried.headers.get('idempotent-replayed')).toBeNull();
+    expect(reserveSpy).not.toHaveBeenCalled();
+  });
+
   it.each([
+    ['CaptureUnavailableError', () => new CaptureUnavailableError(), 422, 'capture_unavailable', 'Website capture is not enabled on this server.'],
     ['CaptureFailedError', () => new CaptureFailedError('The browser could not load the page.'), 422, 'capture_failed', 'The browser could not load the page.'],
     ['CaptureTargetBlockedError', () => new CaptureTargetBlockedError('Target host is restricted.'), 422, 'capture_target_blocked', 'Target host is restricted.'],
+    ['CpuTaskTimeoutError', () => new CpuTaskTimeoutError('website capture', 15_000), 422, 'timeout', 'The website capture task exceeded its 15000 ms time limit'],
     ['EngineUnavailableError', () => new EngineUnavailableError('capture-website', 'browser missing'), 503, 'engine_unavailable', 'browser missing'],
+    ['SandboxUnavailableError', () => new SandboxUnavailableError('unshare denied'), 503, 'engine_unavailable', 'unshare denied'],
     ['ConversionFailedError', () => new ConversionFailedError('Malformed capture stream.'), 400, 'conversion_failed', 'Malformed capture stream.'],
     ['PayloadLimitError', () => new PayloadLimitError('Capture payload exceeded limit.'), 413, 'input_over_limit', 'Capture payload exceeded limit.'],
   ])('maps %s through typedFailureProblem and rolls back reserved quota', async (_label, makeError, expectedStatus, expectedCode, expectedDetail) => {
@@ -298,9 +334,10 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
   });
 
-  it('redacts 500-status ConversionFailedError subclasses and untyped errors in captureErrorResponse', async () => {
+  it('logs and redacts 500-status ConversionFailedError subclasses and untyped errors in captureErrorResponse', async () => {
     const ip = nextAnonIp();
     const anonId = anonBucketId(ip);
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     vi.spyOn(enqueueLib, 'handOffConversionJob').mockRejectedValueOnce(
       new WorkerOutputMissingError('/secret/worker/tmp/capture.pdf')
@@ -311,14 +348,15 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     const workerFaultText = await workerFaultRes.text();
     expect(workerFaultText).toContain('Internal conversion error');
     expect(workerFaultText).not.toContain('/secret/worker/tmp');
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[capture/jobs]', expect.any(WorkerOutputMissingError));
 
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     vi.spyOn(enqueueLib, 'handOffConversionJob').mockRejectedValueOnce(new Error('/secret/db/conn'));
     const genericFaultRes = await captureJobsRoute(anonPost(ip, { url: 'https://example.com/fault2', targetFormat: 'pdf' }));
     expect(genericFaultRes.status).toBe(500);
     const genericFaultText = await genericFaultRes.text();
     expect(genericFaultText).toContain('Website capture enqueue error');
     expect(genericFaultText).not.toContain('/secret/db/conn');
+    expect(consoleErrorSpy).toHaveBeenCalledWith('[capture/jobs]', expect.any(Error));
     expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
   });
 

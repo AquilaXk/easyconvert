@@ -25,7 +25,7 @@ import { tierToPriority } from '@/lib/queue/resource-class';
 import { hasLiveQueueWorker, isQueueOnlyWebMode } from '@/lib/queue/worker-presence';
 import { PROBLEM_TYPE_BASE } from '@/lib/refusal-codes';
 import { isPrivateOrRestrictedHost } from '@/lib/security/ssrf';
-import { ConversionFailedError, QueueUnavailableError, type WebsiteCaptureOptions } from '@/lib/types';
+import { ConversionFailedError, EngineMissingError, QueueUnavailableError, type WebsiteCaptureOptions } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -269,13 +269,19 @@ async function readCaptureRequest(
   };
 }
 
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+
 function captureErrorResponse(error: unknown, instanceUri: string): Response {
   const deadlineProblem = deadlineErrorResponse(error, instanceUri);
   if (deadlineProblem) return deadlineProblem;
   const queueProblem = queueErrorResponse(error, instanceUri);
   if (queueProblem) return queueProblem;
   if (error instanceof ConversionFailedError) {
-    return typedFailureProblem(error, instanceUri);
+    const response = typedFailureProblem(error, instanceUri);
+    if (response.status >= HTTP_INTERNAL_SERVER_ERROR && !(error instanceof EngineMissingError)) {
+      console.error('[capture/jobs]', error);
+    }
+    return response;
   }
   return serverFault('capture/jobs', error, 'Website capture enqueue error');
 }
