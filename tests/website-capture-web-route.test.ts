@@ -23,8 +23,9 @@ import { attachJobLifecycleListeners, conversionQueue, processConversionJob, res
 import * as workerPresence from '../src/lib/queue/worker-presence';
 import { rateLimitKey } from '../src/lib/security/client-ip';
 import { SecretSealError } from '../src/lib/security/job-secret-seal';
+import * as retentionService from '../src/lib/storage/retention-service';
 import { s3Storage } from '../src/lib/storage/s3-storage';
-import type { ConversionJobData, ConversionJobResult } from '../src/lib/types';
+import { JobTimeoutError, type ConversionJobData, type ConversionJobResult } from '../src/lib/types';
 import { runWithoutFileConfinement } from './helpers/unconfined-files';
 import { skipUnless } from './helpers/strict-skip';
 
@@ -203,6 +204,7 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     ['out-of-range viewport width', { url: 'https://example.com/', targetFormat: 'png', options: { viewport: { width: 10 } } }, 422, undefined],
     ['out-of-range jpg quality', { url: 'https://example.com/', targetFormat: 'jpg', options: { quality: 101 } }, 422, undefined],
     ['newline in userAgent', { url: 'https://example.com/', targetFormat: 'png', options: { userAgent: 'Bad\r\nAgent' } }, 422, undefined],
+    ['escape control char in userAgent', { url: 'https://example.com/', targetFormat: 'png', options: { userAgent: 'Bad\x1bAgent' } }, 422, undefined],
     ['unknown capture option key', { url: 'https://example.com/', targetFormat: 'png', options: { proxySocket: '/evil' } }, 422, 'option_not_supported'],
   ])('rejects %s before reserving quota', async (_label, payload, expectedStatus, expectedCode) => {
     const ip = nextAnonIp();
@@ -212,6 +214,31 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     if (expectedCode) {
       expect((await res.json()).code).toBe(expectedCode);
     }
+    expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
+  });
+
+  it('names options.* paths in invalidParams and refuses full disk before reserving quota', async () => {
+    const ip = nextAnonIp();
+    const anonId = anonBucketId(ip);
+
+    const badWidth = await captureJobsRoute(
+      anonPost(ip, { url: 'https://example.com/', targetFormat: 'png', options: { viewport: { width: 10 } } })
+    );
+    expect(badWidth.status).toBe(422);
+    const badWidthJson = (await badWidth.json()) as { invalidParams?: Array<{ name: string }> };
+    expect(badWidthJson.invalidParams?.map((p) => p.name)).toEqual(['options.viewport.width']);
+
+    const protoRes = await captureJobsRoute(
+      anonPost(ip, '{"url":"https://example.com","targetFormat":"png","options":{"__proto__":{"polluted":true}}}')
+    );
+    expect(protoRes.status).toBe(422);
+    const protoJson = (await protoRes.json()) as { invalidParams?: Array<{ name: string; reason: string }> };
+    expect(protoJson.invalidParams).toEqual([{ name: 'options.__proto__', reason: 'prototype_key' }]);
+
+    vi.spyOn(retentionService, 'admitsNewFiles').mockResolvedValue(false);
+    const diskFull = await captureJobsRoute(anonPost(ip, { url: 'https://example.com/', targetFormat: 'pdf' }));
+    expect(diskFull.status).toBe(503);
+    expect((await diskFull.json()).type).toContain('storage-full');
     expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0);
   });
 
@@ -277,7 +304,7 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
     await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0), WAIT);
   });
 
-  it('refuses unsealed capture job payloads inside the worker runner', async () => {
+  it('refuses unsealed capture job payloads and expired deadlines inside the worker runner', async () => {
     const fakeJob = {
       id: 'capture-unsealed',
       data: {
@@ -293,6 +320,25 @@ describe('POST /api/capture/jobs validation, sealing, and memory-queue routing',
       updateProgress: vi.fn(async () => undefined),
     };
     await expect(processQueuedCaptureJob(fakeJob as never, s3Storage)).rejects.toThrow(SecretSealError);
+
+    const expiredJob = {
+      id: 'capture-expired',
+      data: {
+        jobId: 'capture-expired',
+        originalFilename: 'capture.pdf',
+        sourceFormat: 'html',
+        targetFormat: 'pdf',
+        fileSize: 0,
+        options: {},
+        captureJob: { url: 'https://example.com/expired', format: 'pdf' as const },
+      },
+      opts: { timeout: 1000, deadlineAt: Date.now() - 100 },
+      signal: new AbortController().signal,
+      updateProgress: vi.fn(async () => undefined),
+    };
+    const sealed = (await import('../src/lib/queue/option-secrets')).sealJobDataSecrets(expiredJob.data, expiredJob.id);
+    expiredJob.data = sealed as never;
+    await expect(processQueuedCaptureJob(expiredJob as never, s3Storage)).rejects.toThrow(JobTimeoutError);
   });
 });
 
@@ -360,11 +406,15 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     await vi.waitFor(async () => expect((await redisKeyStore.getQuotaUsage(anonId)).usedToday).toBe(0), WAIT);
   }, 30_000);
 
-  it('prevents cross-user access when a capture job belongs to a signed-in account', async () => {
+  it('prevents cross-user access when a capture job belongs to a signed-in account and lets the owner download', async () => {
+    standIn();
+    worker = new Worker<ConversionJobData, ConversionJobResult>([resourceQueues.memory] as never, (job) => processConversionJob(job), { concurrency: 1 });
+    attachJobLifecycleListeners(worker);
+
     const owner = userStore.sanitizeUser(await userStore.createUser({ email: `cap-owner-${Date.now()}@test.local`, name: 'Owner', tier: 'paid' }));
     const other = userStore.sanitizeUser(await userStore.createUser({ email: `cap-other-${Date.now()}@test.local`, name: 'Other', tier: 'free' }));
-    const { secretKey: ownerKey } = await redisKeyStore.generateApiKey(owner.id, 'owner', { scopes: ['convert:write', 'convert:read'] });
-    const { secretKey: otherKey } = await redisKeyStore.generateApiKey(other.id, 'other', { scopes: ['convert:write', 'convert:read'] });
+    const { secretKey: ownerKey } = await redisKeyStore.generateApiKey(owner.id, 'owner', { scopes: ['convert:write', 'convert:read', 'storage:download'] });
+    const { secretKey: otherKey } = await redisKeyStore.generateApiKey(other.id, 'other', { scopes: ['convert:write', 'convert:read', 'storage:download'] });
 
     const res = await captureJobsRoute(
       new NextRequest('http://localhost/api/capture/jobs', {
@@ -382,13 +432,28 @@ describe.skipIf(skipUnless('a Python 3 interpreter for the stand-in driver', PYT
     );
     expect(foreignPoll.status).toBe(404);
 
+    await vi.waitFor(async () => expect((await conversionQueue.getJob(jobId))?.state).toBe('completed'), WAIT);
     const ownerPoll = await readQueueJobRoute(
       new NextRequest(`http://localhost/api/queue/jobs/${jobId}`, { headers: { authorization: `Bearer ${ownerKey}` } }),
       { params: Promise.resolve({ id: jobId }) }
     );
     expect(ownerPoll.status).toBe(200);
-    await resourceQueues.memory.cancelJob(jobId, 'cleanup');
-  });
+    const ownerJson = await ownerPoll.json();
+    const dlUrl = ownerJson.returnvalue.downloadUrl as string;
+    const encodedKey = dlUrl.slice('/api/storage/file/'.length);
+
+    const foreignDownload = await storageFileRoute(
+      new NextRequest(`http://localhost${dlUrl}`, { headers: { authorization: `Bearer ${otherKey}` } }),
+      { params: Promise.resolve({ key: decodeURIComponent(encodedKey).split('/') }) }
+    );
+    expect(foreignDownload.status).toBe(404);
+
+    const ownerDownload = await storageFileRoute(
+      new NextRequest(`http://localhost${dlUrl}`, { headers: { authorization: `Bearer ${ownerKey}` } }),
+      { params: Promise.resolve({ key: decodeURIComponent(encodedKey).split('/') }) }
+    );
+    expect(ownerDownload.status).toBe(200);
+  }, 30_000);
 });
 
 describe('CAPTURE_WEBSITE_ENABLED=false kill-switch gates capture pages and OG previews to 404', () => {

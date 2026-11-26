@@ -3,17 +3,18 @@ import { jobDeadlineAt } from '../queue/job-deadline';
 import { openCaptureJobUrl } from '../queue/option-secrets';
 import type { IStorageBackend } from '../storage/types';
 import { eraseOwnedFile, saveRetainedResult } from '../storage/retention-service';
-import type { ConversionJobData, ConversionJobResult } from '../types';
+import { JobTimeoutError, type ConversionJobData, type ConversionJobResult } from '../types';
 import { websiteCaptureEnabled } from './capture-enabled';
 import { captureWebsite } from './website-capture';
 import { CaptureUnavailableError } from './website-capture-errors';
 
 function resolveCaptureTimeoutMs(requestedTimeout: number | undefined, deadlineAt: number | undefined): number | undefined {
-  const remainingMs = deadlineAt === undefined ? undefined : Math.max(1, deadlineAt - Date.now());
-  if (requestedTimeout !== undefined && remainingMs !== undefined) {
-    return Math.min(requestedTimeout, remainingMs);
+  if (deadlineAt === undefined) return requestedTimeout;
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw new JobTimeoutError(Math.max(0, requestedTimeout ?? 0));
   }
-  return requestedTimeout ?? remainingMs;
+  return requestedTimeout !== undefined ? Math.min(requestedTimeout, remainingMs) : remainingMs;
 }
 
 /**

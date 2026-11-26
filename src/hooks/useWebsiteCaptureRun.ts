@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WebsiteCaptureOptions } from '@/lib/capture-options';
+import { useBeforeUnloadWhileBusy } from '@/lib/queue-session-persistence';
 import {
   conversionFailureOf,
   ConversionFailureError,
@@ -85,6 +86,7 @@ export function useWebsiteCaptureRun(targetFormat: 'pdf' | 'png' | 'jpg') {
   const mountedRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
+  useBeforeUnloadWhileBusy(busy);
 
   useEffect(() => {
     mountedRef.current = true;

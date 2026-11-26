@@ -193,6 +193,107 @@ describe('Dedicated URL-input workbench UI for website capture pages', () => {
     expect(urlInput.value).toBe('');
   });
 
+  it('allows clearing and typing multi-digit viewport dimensions keystroke-by-keystroke and resets cleanly on format switch', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/api/viewer/plan') return new Response(JSON.stringify({ success: false }), { status: 401 });
+      if (url === '/api/capture/jobs' && init?.method === 'POST') {
+        return new Response(
+          JSON.stringify({ success: true, jobId: 'cap-nav-1', status: 'waiting', progress: 0 }),
+          { status: 201 }
+        );
+      }
+      if (url === '/api/queue/jobs/cap-nav-1') {
+        return new Response(
+          JSON.stringify({
+            id: 'cap-nav-1',
+            state: 'completed',
+            progress: 100,
+            returnvalue: {
+              jobId: 'cap-nav-1',
+              status: 'completed',
+              downloadUrl: '/api/storage/file/results%2Fcap-nav-1%2Fexample.com.png',
+              filename: 'example.com.png',
+              size: 1024,
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // 1. Start on PDF page, configure PDF options, then switch to PNG page via re-render (same tree position).
+    const host = await mountCaptureSlug('save-website-as-pdf', 'en');
+    const pdfOptionsBtn = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('Options'))!;
+    await act(async () => pdfOptionsBtn.click());
+    const landscapeCheck = document.querySelector<HTMLInputElement>('dialog input[type=checkbox]')!;
+    await act(async () => landscapeCheck.click());
+    const pdfSaveBtn = [...document.querySelectorAll<HTMLButtonElement>('dialog button')].find((b) => b.textContent === 'Save')!;
+    await act(async () => pdfSaveBtn.click());
+
+    await act(async () => {
+      root!.render(
+        createElement(NextIntlClientProvider, {
+          locale: 'en',
+          messages: testMessages('en'),
+          timeZone: 'UTC',
+          children: createElement(ConverterPageView, {
+            parsed: parsedSlug('website-png-screenshot'),
+            dailyLimit: ANONYMOUS_DAILY_CREDITS,
+          }),
+        })
+      );
+    });
+
+    const pngOptionsBtn = [...host.querySelectorAll('button')].find((b) => b.textContent?.includes('Options'))!;
+    await act(async () => pngOptionsBtn.click());
+
+    const widthInput = document.querySelector<HTMLInputElement>('#capture-viewport-width')!;
+    const heightInput = document.querySelector<HTMLInputElement>('#capture-viewport-height')!;
+    for (const step of ['', '8', '80', '800']) {
+      await act(async () => setInputValue(widthInput, step));
+      expect(widthInput.value).toBe(step);
+    }
+    for (const step of ['', '7', '72', '720']) {
+      await act(async () => setInputValue(heightInput, step));
+      expect(heightInput.value).toBe(step);
+    }
+
+    const saveBtn = [...document.querySelectorAll<HTMLButtonElement>('dialog button')].find((b) => b.textContent === 'Save')!;
+    await act(async () => saveBtn.click());
+
+    await act(async () => setInputValue(host.querySelector<HTMLInputElement>('#capture-url-input')!, 'https://example.com'));
+    await act(async () => {
+      host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+
+    await vi.waitFor(() => expect(host.querySelector('a[download="example.com.png"]')).not.toBeNull());
+    const postCall = fetchMock.mock.calls.find(([reqUrl]) => reqUrl === '/api/capture/jobs');
+    expect(JSON.parse(String(postCall![1]?.body))).toEqual({
+      url: 'https://example.com',
+      targetFormat: 'png',
+      options: { viewport: { width: 800, height: 720 } },
+    });
+
+    // Switching to JPG unmounts previous completed PNG result card cleanly.
+    await act(async () => {
+      root!.render(
+        createElement(NextIntlClientProvider, {
+          locale: 'en',
+          messages: testMessages('en'),
+          timeZone: 'UTC',
+          children: createElement(ConverterPageView, {
+            parsed: parsedSlug('website-jpg-screenshot'),
+            dailyLimit: ANONYMOUS_DAILY_CREDITS,
+          }),
+        })
+      );
+    });
+    expect(host.querySelector('a[download]')).toBeNull();
+  });
+
   it('cancels an active capture job via DELETE /api/queue/jobs/[id]', async () => {
     const deleteCalls: string[] = [];
     vi.stubGlobal(

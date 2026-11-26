@@ -64,6 +64,7 @@ export default function ConverterPageView({ parsed, dailyLimit }: Readonly<{ par
   if (parsed.copy.kind === 'saveWebsiteAsPdf' || parsed.copy.kind === 'websiteScreenshot') {
     return (
       <WebsiteCapturePageView
+        key={parsed.targetFormat}
         targetFormat={parsed.targetFormat as 'pdf' | 'png' | 'jpg'}
         title={copy.title}
         description={copy.description}
