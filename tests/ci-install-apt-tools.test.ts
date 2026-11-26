@@ -115,12 +115,20 @@ describe('install-apt-tools.sh', () => {
     expect(outcome.commands.some((command) => command.startsWith('dpkg'))).toBe(false);
   });
 
-  it.skipIf(skipUnless('bash', available))('falls back to the download, with a warning, when the cached files cannot be installed', () => {
+  it.skipIf(skipUnless('bash', available))('falls back to repairing dpkg state and downloading packages, with a warning, when cached files fail to install', () => {
     const outcome = runScript({ hit: true, cached: ['a_1.deb'], dpkgFails: true });
     expect(outcome.status).toBe(0);
     expect(outcome.stdout).toContain('::warning::the cached packages could not be installed');
-    expect(outcome.commands[0]).toMatch(/^dpkg -i /);
-    expect(outcome.commands).toContain(`apt-get update ${APT_FLAGS}`);
+    expect(outcome.commands).toEqual([
+      `dpkg -i ${outcome.debs}/a_1.deb`,
+      `rm -rf ${outcome.debs}`,
+      `mkdir -p ${outcome.debs}`,
+      `apt-get update ${APT_FLAGS}`,
+      `apt-get install -y -f --no-install-recommends ${APT_FLAGS} -o Dir::Cache::archives=${outcome.debs}`,
+      `apt-get install -y --no-install-recommends ${APT_FLAGS} -o Dir::Cache::archives=${outcome.debs} ffmpeg 7zip libreoffice-calc`,
+      `rm -rf ${outcome.debs}/partial ${outcome.debs}/lock`,
+      expect.stringMatching(/^chown -R \d+:\d+ /),
+    ]);
     expect(readdirSync(outcome.debs)).toEqual(['fetched.deb']);
   });
 

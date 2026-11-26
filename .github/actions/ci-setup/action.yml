@@ -26,19 +26,23 @@ runs:
         fi
         unshare -r -n -p --fork true
 
-    # The cached .deb files fit one runner image, so the image version is part of the key; a new image rebuilds
-    # the cache once. Changing the package list or the install script does the same.
+    # The cached .deb files fit one base package set, so both the runner image version and a digest of the
+    # preinstalled dpkg status are part of the key (AWS and Azure runners share ImageVersion while shipping
+    # different preinstalled packages); a new image or base package set rebuilds the cache once.
     - name: Name the runner image
       id: image
       shell: bash
-      run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+        dpkg_hash="$(dpkg-query -W -f='${binary:Package}=${Version}\n' | LC_ALL=C sort | sha256sum | cut -c1-16)"
+        echo "dpkg=${dpkg_hash}" >> "$GITHUB_OUTPUT"
 
     - name: Restore the cached package files
       id: apt-cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: ${{ runner.temp }}/apt-debs
-        key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('.github/actions/ci-setup/apt-packages.txt', '.github/actions/ci-setup/install-apt-tools.sh') }}
+        key: apt-debs-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ steps.image.outputs.dpkg }}-${{ hashFiles('.github/actions/ci-setup/apt-packages.txt', '.github/actions/ci-setup/install-apt-tools.sh') }}
 
     # The Python oracles are pinned in pip-packages.txt, so its hash is the key. The task downloads the pinned wheels
     # into this directory as the runner user (a restored cache makes that a metadata-only request) and installs from it

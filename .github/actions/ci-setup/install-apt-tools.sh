@@ -23,9 +23,15 @@ fi
 APT_OPTS=(-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o DPkg::Lock::Timeout=60)
 
 install_from_network() {
+  local repair="${1:-false}"
   sudo rm -rf "$debs"
   sudo mkdir -p "$debs"
   sudo apt-get update "${APT_OPTS[@]}"
+  if [ "$repair" = true ]; then
+    # A failed `dpkg -i` leaves unpacked packages unconfigured in `/var/lib/dpkg/status`; `apt-get install` with
+    # package names refuses to run until `apt-get install -f` (with no package arguments) resolves them.
+    sudo apt-get install -y -f --no-install-recommends "${APT_OPTS[@]}" -o Dir::Cache::archives="$debs"
+  fi
   sudo apt-get install -y --no-install-recommends "${APT_OPTS[@]}" -o Dir::Cache::archives="$debs" "${packages[@]}"
   # `partial` and `lock` belong to apt and are not readable by the runner user that saves the cache.
   sudo rm -rf "$debs/partial" "$debs/lock"
@@ -38,5 +44,7 @@ if [ "$cache_hit" = true ] && compgen -G "$debs/*.deb" > /dev/null; then
     exit 0
   fi
   echo "::warning::the cached packages could not be installed; falling back to apt-get"
+  install_from_network true
+  exit 0
 fi
 install_from_network

@@ -447,7 +447,9 @@ describe('the tool setup', () => {
   it('caches the package files and the veraPDF install, keyed on what they were built from', () => {
     const caches = setup.runs.steps.filter((step) => step.uses?.startsWith('actions/cache@'));
     const keys = caches.map((step) => String(step.with?.key));
-    expect(keys.some((key) => key.includes('apt-debs') && key.includes('steps.image.outputs.version') && key.includes('apt-packages.txt'))).toBe(true);
+    expect(keys.some((key) => key.includes('apt-debs') && key.includes('steps.image.outputs.version') && key.includes('steps.image.outputs.dpkg') && key.includes('apt-packages.txt'))).toBe(true);
+    const imageStep = setup.runs.steps.find((step) => step.id === 'image');
+    expect(imageStep?.run).toContain('dpkg-query -W');
     expect(keys.some((key) => key.includes('verapdf') && key.includes('scripts/install-verapdf.sh'))).toBe(true);
     const aptCache = setup.runs.steps.find((step) => step.id === 'apt-cache');
     expect(aptCache?.with?.['restore-keys']).toBeUndefined();

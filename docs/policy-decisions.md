@@ -493,6 +493,7 @@ Security
 442. [Move PDF draw caps for real 1-bit stipple documents, encode 1-bpp PDF images as 1-bit grayscale PNG, bound corpus ONNX helper threads and recycle healthy pool workers, prune recovered PPS regressions, and align regression-corpus runner parity](#442-move-pdf-draw-caps-for-real-1-bit-stipple-documents-encode-1-bpp-pdf-images-as-1-bit-grayscale-png-bound-corpus-onnx-helper-threads-and-recycle-healthy-pool-workers-prune-recovered-pps-regressions-and-align-regression-corpus-runner-parity)
 443. [Enable website capture by default and add website capture routes to TOOL_GROUPS and TOOL_ROUTES](#443-enable-website-capture-by-default-and-add-website-capture-routes-to-tool_groups-and-tool_routes)
 444. [Remove HeroFormatTiles from all converter and tool subpages, render URL-input workbench UI for website capture pages, add anonymous capture queue route on memory class, and gate menus and pages on CAPTURE_WEBSITE_ENABLED](#444-remove-heroformattiles-from-all-converter-and-tool-subpages-render-url-input-workbench-ui-for-website-capture-pages-add-anonymous-capture-queue-route-on-memory-class-and-gate-menus-and-pages-on-capture_website_enabled)
+445. [Key CI apt-debs cache on preinstalled dpkg digest and repair unconfigured dpkg state before fallback apt-get install](#445-key-ci-apt-debs-cache-on-preinstalled-dpkg-digest-and-repair-unconfigured-dpkg-state-before-fallback-apt-get-install)
 
 ---
 
@@ -13042,3 +13043,23 @@ Security
   - **Keeping plaintext URLs in queue payloads or exposing `capture/jobs/[id]` duplicates**: Rejected because query tokens in URLs are bearer secrets that must be AES-GCM sealed bound to `jobId`, and `/api/queue/jobs/[id]` already enforces `denyUnlessOwner`, `redactText`, SSE streaming, and quota-refund cancellation across resource queues.
 - **Verified by**: `tests/website-capture-web-route.test.ts`, `tests/website-capture-web-ui.test.ts`, `tests/job-deadline-enqueue-sites.test.ts`, `tests/hero-upload.test.ts`, `tests/pair-page-tiles.test.ts`, `tests/redesign-verification.test.ts`, `tests/a11y-axe.test.ts`, `tests/mobile-menu.test.ts`, `tests/internal-links.test.ts`, `tests/unknown-path-404.test.ts`, `tests/seo-robots-sitemap.test.ts`, `tests/i18n-messages.test.ts`, `tests/i18n-client-messages.test.ts`, `tests/i18n-hardcoded-strings.test.ts`, `tests/i18n-queue-errors.test.ts`, `tests/web-font-licenses.test.ts`, `tests/openapi-route-parity.test.ts`, `tests/oci-deploy.test.ts`, `tests/policy-decisions-numbering.test.ts`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells`, `npm run guard:code-smells -- --check-base .github/code-smell-baseline.json`, `npx --no-install tsx scripts/generate-config-docs.ts --check`, `npm run sdk:check`, `npm run licenses:check`, `npm run lint`, `npx --no-install tsc --noEmit`, `npm run build`, and `scripts/ci-parity-families.mjs`.
 - **Revisit when**: Additional URL-based conversion tools or per-worker capture pool health advertisements are introduced.
+
+---
+
+## 445. Key CI apt-debs cache on preinstalled dpkg digest and repair unconfigured dpkg state before fallback apt-get install
+
+- **Status**: Implemented (follow-up to `CI` run `45762239366` `task apt` failures on `ubuntu-24.04` image `20261122.23.1`), decided 2026-11-26. Amends entry #441's `apt-cache` key and `install-apt-tools.sh` fallback behavior.
+- **Decision**:
+  1. **Base package digest in `apt-debs` cache key (`.github/actions/ci-setup/action.yml`)**: Extend the `Name the runner image` step (`steps.image`) to hash installed packages (`dpkg-query -W -f='${binary:Package}=${Version}\n' | LC_ALL=C sort | sha256sum | cut -c1-16`) into `outputs.dpkg`, and include `${{ steps.image.outputs.dpkg }}` in the `apt-debs` cache key while leaving `outputs.version` unchanged for `pip-wheels` and `djvulibre`.
+  2. **Two-stage `dpkg` repair before network fallback (`.github/actions/ci-setup/install-apt-tools.sh`)**: Pass a `repair` flag into `install_from_network` when `dpkg -i "$debs"/*.deb` fails (`repair=true`), running `sudo apt-get install -y -f --no-install-recommends ... -o Dir::Cache::archives="$debs"` with no package arguments before `sudo apt-get install -y --no-install-recommends ... "${packages[@]}"` so broken unpacked packages in `/var/lib/dpkg/status` are repaired first.
+- **Why**:
+  - Hosted Ubuntu 24.04 runners sharing `ImageVersion=20261122.23.1` across compute backends ship different preinstalled package sets (`337` vs `340` missing `.deb` files, differing on `libboost-thread1.83.0` and `libboost-iostreams1.83.0`), causing cross-backend `dpkg -i` cache failures (`libboost-locale1.83.0`, `liborcus-0.18-0`, `libreoffice-*`).
+  - Once `dpkg -i` leaves unpacked packages unconfigured, `apt-get install -y ... "${packages[@]}"` exits `100` (`Unmet dependencies`) unless `apt-get install -y -f` without package arguments repairs the broken `dpkg` database state first.
+- **Trade-offs**:
+  - Each distinct preinstalled base package manifest maintains its own `apt-debs` cache entry, avoiding cross-backend dependency mismatches at the cost of one extra cache archive (~450 MB).
+- **Alternatives rejected**:
+  - **One-shot manual cache deletion without fixing the cache key**: Fails again on the next shared `ImageVersion` rotation across runner backends.
+  - **Passing `-f` directly alongside `${packages[@]}`**: Verified in a clean `ubuntu:24.04` container to exit `100` whenever a prior `dpkg -i` left unconfigured dependencies; running `-f` with no package arguments first resolves them and exits `0`.
+- **Verified by**: `tests/ci-install-apt-tools.test.ts`, `tests/ci-workflows.test.ts`, `tests/ci-setup-tasks.test.ts`, `tests/policy-decisions-numbering.test.ts`, `tests/container-ci-job.test.ts`, `tests/ci-parity-families.test.ts`, ephemeral `ubuntu:24.04` two-step `apt-get install -y -f` + `install` container verification, `node scripts/guard-policy-decisions.mjs`, `npm run guard:anti-cheat`, `npm run guard:code-smells`, `npm run lint`, `npx --no-install tsc --noEmit`, and `scripts/ci-parity-families.mjs`.
+- **Revisit when**: GitHub hosted runners unify preinstalled packages per `ImageVersion` or CI shifts package installation into a prebuilt container image.
+
