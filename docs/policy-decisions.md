@@ -498,6 +498,7 @@ Security
 447. [Implement remaining unimplemented format decoders (WBMP, PDFA, XHTML, EML, Flat ODF, DBF/DIF/SYLK/PRN/WK1, markup parsers) and align launch UI/legal text](#447-implement-remaining-unimplemented-format-decoders-wbmp-pdfa-xhtml-eml-flat-odf-dbfdifsylkprnwk1-markup-parsers-and-align-launch-uilegal-text)
 448. [Match TeX groups and trim blanks in one pass, and keep the open part of a truncated multipart mail](#448-match-tex-groups-and-trim-blanks-in-one-pass-and-keep-the-open-part-of-a-truncated-multipart-mail)
 449. [Load no remote image in the HTML page of a converted mail](#449-load-no-remote-image-in-the-html-page-of-a-converted-mail)
+450. [Decode DBF text by the code page of its language driver byte](#450-decode-dbf-text-by-the-code-page-of-its-language-driver-byte)
 
 ---
 
@@ -13154,3 +13155,20 @@ Security
   - **Change `UNTRUSTED_HTML_CSP` for every page**: Markdown and XHTML pages are written by the person who converts them, and their remote images are intended.
 - **Verified by**: `tests/eml-remote-content.test.ts`, `tests/launch-conversions-coverage.test.ts`.
 - **Revisit when**: a user asks for remote images in the mail output (add an option, default off), or the reference service lists `eml` and its default differs.
+
+## 450. Decode DBF text by the code page of its language driver byte
+
+- **Date**: 2026-11-27
+- **Status**: Implemented (review of range 63653b2d..origin/main). Nothing is deployed.
+- **Decision**: **The text of a `.dbf` table is decoded with the code page that its language driver byte (header byte 29) names.** `dbf-code-pages.ts` holds the table of dbfread (MIT) with iconv-lite names: `0x79` and `0x4e` read as CP949, `0x7b` and `0x13` as CP932, `0x01` as CP437, `0x03` and `0x57` as CP1252, and so on for the other drivers of that table. The field names use the same page. A byte of `0x00`, or one that the table does not list (`0x68` Kamenicky, `0x69` Mazovia, any other), keeps the earlier rule: UTF-8 when the bytes are valid UTF-8, Windows-1252 otherwise. A field of ASCII bytes skips the codec.
+- **Why**:
+  - **The reader ignored the byte, so every non-Latin table came out as mojibake.** A Korean table (CP949, driver `0x79`) is not valid UTF-8, fell to Windows-1252 and showed `°¡³ª´Ù`-style text; a DOS table (CP437) showed Windows-1252 letters for its accents. The driver byte is the one place a dBASE file says which page it uses.
+  - **Readers of dBASE files follow the same byte.** dbfread takes the encoding from it (`guess_encoding`) and LibreOffice's dBASE import maps the same IDs to the same pages, so a table converts the way people already see it.
+- **Trade-offs**:
+  - **The label wins over a guess.** A table that says `0x03` (CP1252) but holds UTF-8 text now reads as CP1252 (`CafÃ©`), where the earlier rule read it as UTF-8. The tables that carry such a wrong label are rare against the ones that carry a right one for a page that is not UTF-8, and dbfread and LibreOffice behave the same way. An unlabeled table (`0x00`) still gets the UTF-8 first rule, which is what modern writers that add a `.cpg` file produce.
+  - **The `.cpg` side file is not read.** A conversion gets one file, not the table with its companions.
+- **Alternatives rejected**:
+  - **A detector over the field bytes**: guesses wrong on short fields, and the file already names the page.
+  - **`TextDecoder` for the pages**: it does not name every page of the table (CP437, CP850, CP865 and the Mac pages among them); iconv-lite is already a dependency and has all of them.
+- **Verified by**: `tests/dbf-code-pages.test.ts` (CP949, CP437 and CP1252 tables, the fallback for `0x00`, `0x68` and `0x20`, the table), `tests/launch-conversions-coverage.test.ts`, `tests/office-import-filters.test.ts`.
+- **Revisit when**: a table with a `.cpg` file arrives next to its conversion (a multi-file upload), or a driver byte outside the table shows up in real files.

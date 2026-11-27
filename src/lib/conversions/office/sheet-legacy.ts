@@ -1,6 +1,7 @@
 import { ConversionFailedError, EngineUnavailableError } from '../../types';
 import { startsWithBytes } from '../package-access';
 import { decodeTextInput } from '../text-input';
+import { dbfCodePageForLdid, decodeDbfBytes } from './dbf-code-pages';
 import { decodeWindows1252 } from './windows-1252';
 import { assertReadableAsText } from './text-source-guard';
 import {
@@ -21,6 +22,7 @@ const CFBF_HEADER = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
 const DBF_HEADER_BYTES = 32;
 const DBF_DESCRIPTOR_BYTES = 32;
 const DBF_HEADER_TERMINATOR = 0x0d;
+const DBF_LDID_OFFSET = 29;
 const DBF_DELETED_MARKER = 0x2a;
 const DBF_EOF_MARKER = 0x1a;
 const DBF_VALID_VERSIONS: ReadonlySet<number> = new Set([
@@ -50,7 +52,9 @@ function assertGridDimensions(subject: string, rows: number, cols: number): void
   }
 }
 
-function decodeFieldBytes(slice: Buffer): string {
+/** `codePage` is the one the header's language driver names; without it a field is UTF-8 when valid and Windows-1252 otherwise. */
+function decodeFieldBytes(slice: Buffer, codePage?: string): string {
+  if (codePage !== undefined) return decodeDbfBytes(slice, codePage);
   try {
     return new TextDecoder('utf-8', { fatal: true }).decode(slice);
   } catch {
@@ -75,7 +79,7 @@ function formatFoxProDateTime(julianDay: number, msSinceMidnight: number): strin
   return Number.isNaN(d.getTime()) ? '' : d.toISOString();
 }
 
-function decodeDbfCell(slice: Buffer, fieldType: string, isFoxPro: boolean): string {
+function decodeDbfCell(slice: Buffer, fieldType: string, isFoxPro: boolean, codePage?: string): string {
   if (isFoxPro) {
     if (fieldType === 'I' && slice.length === 4) {
       return String(slice.readInt32LE(0));
@@ -91,7 +95,7 @@ function decodeDbfCell(slice: Buffer, fieldType: string, isFoxPro: boolean): str
       return formatFoxProDateTime(slice.readInt32LE(0), slice.readInt32LE(4));
     }
   }
-  return decodeFieldBytes(slice).replace(/\0+$/g, '').trim();
+  return decodeFieldBytes(slice, codePage).replace(/\0+$/g, '').trim();
 }
 
 function parseDbfRows(input: Buffer): string[][] {
@@ -103,6 +107,7 @@ function parseDbfRows(input: Buffer): string[][] {
     throw new ConversionFailedError(`Invalid DBF file: unrecognized dBASE version byte 0x${version.toString(16)}.`);
   }
   const isFoxPro = FOXPRO_DBF_VERSIONS.has(version);
+  const codePage = dbfCodePageForLdid(input[DBF_LDID_OFFSET]);
 
   const recordCount = input.readUInt32LE(4);
   const headerBytes = input.readUInt16LE(8);
@@ -118,7 +123,7 @@ function parseDbfRows(input: Buffer): string[][] {
     if (cursor + DBF_DESCRIPTOR_BYTES > headerBytes) break;
     const rawName = input.subarray(cursor, cursor + 11);
     const nul = rawName.indexOf(0);
-    const name = decodeFieldBytes(nul >= 0 ? rawName.subarray(0, nul) : rawName).trim();
+    const name = decodeFieldBytes(nul >= 0 ? rawName.subarray(0, nul) : rawName, codePage).trim();
     const type = String.fromCharCode(input[cursor + 11]).toUpperCase();
     const length = input[cursor + 16];
     if (length === 0 || recOffset + length > recordBytes) {
@@ -151,7 +156,7 @@ function parseDbfRows(input: Buffer): string[][] {
     if (input[start] === DBF_EOF_MARKER) break;
     if (input[start] === DBF_DELETED_MARKER) continue;
     rows.push(
-      fields.map((field) => decodeDbfCell(input.subarray(start + field.offset, start + field.offset + field.length), field.type, isFoxPro))
+      fields.map((field) => decodeDbfCell(input.subarray(start + field.offset, start + field.offset + field.length), field.type, isFoxPro, codePage))
     );
   }
   return rows;

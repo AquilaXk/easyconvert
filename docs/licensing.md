@@ -249,6 +249,12 @@ Certain format conversions require specialized external command-line utilities. 
 - **Read for behaviour only, no code taken**: the documented behaviour of the credit grants of Stripe (category `promotional`, optional expiry, applied before paid credits), of Lago (AGPL-3.0, granted and purchased wallet credits), and the grant tables of Polar (Apache-2.0), Saleor (BSD-3-Clause) and LiteLLM (MIT); entry 374 lists what each one gave.
 - **Compliance**: the repository is Apache-2.0 too, so the licence text of `LICENSE` travels with the file; `NOTICE` names the file, its origin and its commit. The OpenMeter repository has no `NOTICE` file. Nothing of the AGPL-3.0 project is in the tree.
 
+### 2.39 Language driver table of dbfread (MIT)
+- **Role**: `src/lib/conversions/office/dbf-code-pages.ts` maps the language driver byte of a dBASE header to the code page of its text fields (entry 450 of `docs/policy-decisions.md`).
+- **Source**: `olemb/dbfread`, file `dbfread/codepages.py` at commit `dce544641065d966c76a97864b4e9908ec922ce8` (MIT License, Copyright (c) Ole Martin Bjorndalen / UiT The Arctic University of Norway). The SHA-256 of the file as read is `0317e781bb80b21f02283bc1c22bca3760d45c9af868a354ea68e1e764333146`. The file states that its table comes from dbf.py by Ethan Furman.
+- **What differs from the original**: the table is the same list of byte values and code pages, written as a TypeScript `Map` with the iconv-lite names (`mac_roman` is `macintosh`, `mac_cyrillic` is `maccyrillic`, `mac_latin2` is `maccenteuro`, `mac_greek` is `macgreek`). The entry for `0x00` (ASCII) is left out: that byte keeps the reader's earlier rule.
+- **Compliance**: the MIT licence asks that the copyright notice and the permission notice travel with copies of the software; the header of `dbf-code-pages.ts` names the repository, the file and the copyright holder, and `NOTICE` lists the file.
+
 ---
 
 ## 3. LGPL Relinking & On-Premises Container Images
