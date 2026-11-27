@@ -21,14 +21,11 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'xls->xps',
   'xlsx->numbers', 'xlsx->xps',
   // Entry 187: pairs the reference offers that the product leaves out, each with the reason measured on real files. Entry 454 offers the PDF,
-  // presentation, CorelDRAW, CGM, EMF and WMF sources as EMF and WMF through the office suite, and entry 458 the PostScript files; what stays withdrawn:
-  // Illustrator and EPS files (of 29 real Illustrator files 9 and of 56 real EPS files 4 are written as a wrong drawing: a gradient under a curved clip, a
-  // mask or a filter, which the office suite's PDF import draws as a flat or cut shape, and nothing tells those pages from the faithful ones before the
-  // file is written), a page that is only a picture or has a curved clip is not written as DXF from EMF (1 of 3), the SVG a DXF is drawn as holds text
-  // and round line caps that the CGM and WMF writers refuse (WMF 7 of 14 public drawings, CGM 0 of 14), and no reader of DWF, Sketch or sK1 files is included (entry 42).
-  'ai->emf', 'ai->wmf',
+  // presentation, CorelDRAW, CGM, EMF and WMF sources as EMF and WMF, entry 458 the PostScript files, and entry 460 the Illustrator and EPS files
+  // (entry 459 draws what the writers cannot as bitmap records); what stays withdrawn: a page that is only a picture or has a curved clip is not
+  // written as DXF from EMF (1 of 3), the SVG a DXF is drawn as holds text and round line caps that the CGM and WMF writers refuse (WMF 7 of 14 public
+  // drawings, CGM 0 of 14), and no reader of DWF, Sketch or sK1 files is included (entry 42).
   'dxf->cgm', 'dxf->dwg', 'dxf->wmf',
-  'eps->emf', 'eps->wmf',
   'dwf->cgm', 'dwf->dwg', 'dwf->wmf',
   'dwg->cgm', 'dwg->dwg', 'dwg->wmf',
   'emf->dxf',

@@ -66,6 +66,18 @@ async function onlyPage(output: Buffer): Promise<Buffer> {
   return Buffer.from(await archive.files[Object.keys(archive.files).sort()[0]].async('uint8array'));
 }
 
+/** The metafile of the page is redrawn by the office suite and by Inkscape and compared with Poppler's page of the PDF. */
+async function expectPageDrawn(sample: PageCase, pdf: Buffer, metafile: Buffer): Promise<void> {
+  const reference = pdfPagePicture(pdf, sample.page);
+  const office = officeSuitePicture(metafile, sample.target);
+  expect(office, 'the office suite reads the file').toBeDefined();
+  expect(await differingShare(reference, office as Buffer, { cutToDrawing: true }), 'office suite').toBeLessThanOrEqual(MAX_DIFFERING_SHARE);
+  const inkscape = inkscapePicture(metafile, sample.target);
+  expect(inkscape, 'Inkscape reads the file').toBeDefined();
+  expect(await differingShare(reference, inkscape as Buffer, { blurSigma: 9, inkLevel: 240, colourDifference: 50 }), 'Inkscape').toBeLessThanOrEqual(MAX_FRAMED_DIFFERING_SHARE);
+  expect(bitmapRecords(metafile, sample.target), 'bitmap records').toBeGreaterThan(0);
+}
+
 describe.skipIf(toolsMissing)('real pages written with a picture for what the in-process writer cannot draw', () => {
   for (const sample of CASES) {
     it(
@@ -74,14 +86,21 @@ describe.skipIf(toolsMissing)('real pages written with a picture for what the in
         const { bytes } = await requireRealworldSample(ctx, sample.id);
         const pdf = sample.extension === 'pdf' ? bytes : (await dispatchConversion(bytes, sample.extension, 'pdf', {}, sample.id)).buffer;
         const metafile = await onlyPage((await dispatchConversion(pdf, 'pdf', sample.target, { pages: String(sample.page) }, sample.id)).buffer);
-        const reference = pdfPagePicture(pdf, sample.page);
-        const office = officeSuitePicture(metafile, sample.target);
-        expect(office, 'the office suite reads the file').toBeDefined();
-        expect(await differingShare(reference, office as Buffer, { cutToDrawing: true }), 'office suite').toBeLessThanOrEqual(MAX_DIFFERING_SHARE);
-        const inkscape = inkscapePicture(metafile, sample.target);
-        expect(inkscape, 'Inkscape reads the file').toBeDefined();
-        expect(await differingShare(reference, inkscape as Buffer, { blurSigma: 9, inkLevel: 240, colourDifference: 50 }), 'Inkscape').toBeLessThanOrEqual(MAX_FRAMED_DIFFERING_SHARE);
-        expect(bitmapRecords(metafile, sample.target), 'bitmap records').toBeGreaterThan(0);
+        await expectPageDrawn(sample, pdf, metafile);
+      },
+      CONVERSION_TIMEOUT_MS
+    );
+  }
+
+  // Entry 460 offers Illustrator and EPS files as EMF and WMF: the same pages, converted from the file itself.
+  for (const sample of CASES.filter((page) => page.extension === 'ai' || page.extension === 'eps')) {
+    it(
+      `${sample.id} converts as ${sample.target} from the ${sample.extension} file itself: ${sample.lost} is drawn`,
+      async (ctx) => {
+        const { bytes } = await requireRealworldSample(ctx, sample.id);
+        const pdf = (await dispatchConversion(bytes, sample.extension, 'pdf', {}, sample.id)).buffer;
+        const metafile = await onlyPage((await dispatchConversion(bytes, sample.extension, sample.target, { pages: String(sample.page) }, sample.id)).buffer);
+        await expectPageDrawn(sample, pdf, metafile);
       },
       CONVERSION_TIMEOUT_MS
     );
@@ -93,5 +112,14 @@ describe.skipIf(toolsMissing)('real pages written with a picture for what the in
     const refusal = dispatchConversion(pdf, 'pdf', 'emf', { pages: '1' }, 'asf-apache-20th-badge-1-cmyk.pdf');
     await expect(refusal).rejects.toBeInstanceOf(RasterFallbackTooLargeError);
     await expect(refusal).rejects.toThrow(/more than 72 dpi allows within 12000000 pixels/);
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('refuses a 69-inch Illustrator art board as EMF and WMF with the same typed error', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'asf-apache-20th-badge-1-cmyk.ai');
+    for (const target of ['emf', 'wmf']) {
+      const refusal = dispatchConversion(bytes, 'ai', target, { pages: '1' }, 'asf-apache-20th-badge-1-cmyk.ai');
+      await expect(refusal, `ai -> ${target}`).rejects.toBeInstanceOf(RasterFallbackTooLargeError);
+      await expect(refusal, `ai -> ${target}`).rejects.toThrow(/more than 72 dpi allows within 12000000 pixels/);
+    }
   }, CONVERSION_TIMEOUT_MS);
 });

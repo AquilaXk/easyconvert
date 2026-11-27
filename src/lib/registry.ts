@@ -1710,7 +1710,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/illustrator',
     category: 'image',
     description: 'Adobe Illustrator vector graphics project format.',
-    targetFormats: ['pdf', 'png', 'jpg', 'zip', 'eps', 'ps', 'svg', 'dxf'],
+    targetFormats: ['pdf', 'png', 'jpg', 'zip', 'eps', 'ps', 'svg', 'dxf', 'emf', 'wmf'],
   },
   eps: {
     id: 'eps',
@@ -1719,7 +1719,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/postscript',
     category: 'image',
     description: 'PostScript vector file format commonly used in commercial print houses.',
-    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp', 'ico', 'odd', 'psd'],
+    targetFormats: ['pdf', 'svg', 'png', 'jpg', 'zip', 'dxf', 'avif', 'bmp', 'eps', 'gif', 'ps', 'tiff', 'webp', 'ico', 'odd', 'psd', 'emf', 'wmf'],
   },
   tga: {
     id: 'tga',

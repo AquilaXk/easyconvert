@@ -747,7 +747,7 @@ async function probeInputs(source: string): Promise<Buffer[]> {
  * `ebook-convert` for every source that offers them. Authored by hand from the native tools' capabilities.
  */
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
-  ai: ['dxf', 'svg'],
+  ai: ['dxf', 'emf', 'svg', 'wmf'],
   csv: ['jpg', 'png', 'xls'],
   azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
@@ -767,7 +767,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   docx: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   dot: ['doc'],
   dotx: ['doc', 'jpg', 'png', 'rtf'],
-  eps: ['avif', 'bmp', 'dxf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp'],
+  eps: ['avif', 'bmp', 'dxf', 'emf', 'eps', 'gif', 'ico', 'jpg', 'odd', 'pdf', 'png', 'ps', 'psd', 'svg', 'tiff', 'webp', 'wmf'],
   htm: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
   html: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf', 'tex'],
   htmlz: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
@@ -1141,7 +1141,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
   // re-advertised pair fails here even if its probe input stops reaching the routing step.
   // Pairs that the dispatcher routes to a native engine moved to NATIVE_ENGINE_PAIRS.
   const WITHDRAWN: Readonly<Record<string, readonly string[]>> = {
-    ai: ['emf', 'wmf'],
     azw3: ['docx'],
     cb7: ['cbz'],
     cbr: ['cbz'],
@@ -1159,7 +1158,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     dwg: ['cgm', 'dwg', 'wmf'],
     dxf: ['cgm', 'dwg', 'wmf'],
     emf: ['dxf'],
-    eps: ['emf', 'wmf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     ibooks: ['epub', 'pdf', 'txt'],

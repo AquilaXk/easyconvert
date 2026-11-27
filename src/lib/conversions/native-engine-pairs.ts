@@ -10,9 +10,9 @@ import { isPandocPair } from './pandoc-pairs';
  */
 const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   // An Illustrator file is a PDF (or a PostScript program) that Poppler draws as SVG and the DXF writer reads.
-  'ai->dxf', 'ai->svg',
+  'ai->dxf', 'ai->emf', 'ai->svg', 'ai->wmf',
   'doc->jpg', 'doc->png', 'doc->rtf',
-  'eps->avif', 'eps->bmp', 'eps->dxf', 'eps->eps', 'eps->gif', 'eps->ico', 'eps->jpg', 'eps->odd', 'eps->pdf', 'eps->png', 'eps->ps', 'eps->psd', 'eps->svg', 'eps->tiff', 'eps->webp',
+  'eps->avif', 'eps->bmp', 'eps->dxf', 'eps->emf', 'eps->eps', 'eps->gif', 'eps->ico', 'eps->jpg', 'eps->odd', 'eps->pdf', 'eps->png', 'eps->ps', 'eps->psd', 'eps->svg', 'eps->tiff', 'eps->webp', 'eps->wmf',
   'djv->avif', 'djv->bmp', 'djv->eps', 'djv->gif', 'djv->ico', 'djv->jpg', 'djv->pdf', 'djv->png', 'djv->ps', 'djv->psd', 'djv->svg', 'djv->tiff', 'djv->webp',
   'djvu->avif', 'djvu->bmp', 'djvu->eps', 'djvu->gif', 'djvu->ico', 'djvu->jpg', 'djvu->pdf', 'djvu->png', 'djvu->ps', 'djvu->psd', 'djvu->svg', 'djvu->tiff', 'djvu->webp',
   // A CSV table's page images: Poppler draws the pages of the PDF the in-process engine writes of it.
