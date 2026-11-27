@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { DELETE as deleteKeyRoute } from '../src/app/api/keys/[id]/route';
 import { GET as listKeysRoute, POST as createKeyRoute } from '../src/app/api/keys/route';
@@ -34,6 +34,15 @@ const request = (path: string, cookie: string, init: { method?: string; body?: u
     headers: { Cookie: cookie, 'Content-Type': 'application/json' },
     ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
+
+/** Marks the stored record as an earlier version left it: revoked, with its hash kept. */
+async function markRevoked(keyId: string): Promise<void> {
+  const redis = redisKeyStore.getRedisClient();
+  if (redis) await redis.hset(`${redisKeyStore.getPrefix()}apikeys:${keyId}`, 'status', 'revoked');
+  else (redisKeyStore as unknown as { keys: Map<string, { status: string }> }).keys.get(keyId)!.status = 'revoked';
+}
+
+afterEach(() => vi.restoreAllMocks());
 
 async function listedIds(cookie: string): Promise<string[]> {
   const res = await listKeysRoute(request('/api/keys', cookie));
@@ -103,13 +112,56 @@ describe('deleting an API key', () => {
     const { user, cookie } = await owner();
     const live = await redisKeyStore.generateApiKey(user.id, 'Live');
     const old = await redisKeyStore.generateApiKey(user.id, 'Marked revoked');
-    // Earlier versions only set the status of the stored record.
-    const redis = redisKeyStore.getRedisClient();
-    if (redis) await redis.hset(`${redisKeyStore.getPrefix()}apikeys:${old.key.id}`, 'status', 'revoked');
-    else (redisKeyStore as unknown as { keys: Map<string, { status: string }> }).keys.get(old.key.id)!.status = 'revoked';
-
+    await markRevoked(old.key.id);
     expect(await listedIds(cookie)).toEqual([live.key.id]);
     expect((await redisKeyStore.listApiKeys(user.id)).map((listed) => listed.id)).toEqual([live.key.id]);
     expect((await loadDashboardSnapshot(user as never)).keys?.map((key) => key.id)).toEqual([live.key.id]);
+  });
+
+  it('leaves the signing secrets of an endpoint alone when the id names an endpoint and not a key, and answers 404', async () => {
+    const { user, cookie } = await owner();
+    await getWebhookSecretStore().setPrimarySecret(user.id, 'ep_billing', 'whsec_endpoint_secret');
+
+    const res = await deleteKeyRoute(request('/api/keys/ep_billing', cookie, { method: 'DELETE' }), params('ep_billing'));
+
+    expect(res.status).toBe(404);
+    expect((await getWebhookSecretStore().getSecretRecord(user.id, 'ep_billing'))?.primary).toBe('whsec_endpoint_secret');
+  });
+
+  it('lists the other keys when the purge of one legacy revoked record fails, and tries it again on the next read', async () => {
+    const { user, cookie } = await owner();
+    const live = await redisKeyStore.generateApiKey(user.id, 'Live');
+    const stuck = await redisKeyStore.generateApiKey(user.id, 'Stuck legacy');
+    const other = await redisKeyStore.generateApiKey(user.id, 'Other legacy');
+    await markRevoked(stuck.key.id);
+    await markRevoked(other.key.id);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const realDelete = redisKeyStore.deleteApiKey.bind(redisKeyStore);
+    const failing = vi.spyOn(redisKeyStore, 'deleteApiKey').mockImplementation((userId, keyId) =>
+      keyId === stuck.key.id ? Promise.reject(new Error('store down')) : realDelete(userId, keyId)
+    );
+
+    expect(await listedIds(cookie)).toEqual([live.key.id]);
+    const stored = (await redisKeyStore.listApiKeys(user.id)).map((listed) => listed.id);
+    expect(stored).toContain(stuck.key.id);
+    expect(stored).not.toContain(other.key.id);
+
+    failing.mockRestore();
+    expect(await listedIds(cookie)).toEqual([live.key.id]);
+    expect((await redisKeyStore.listApiKeys(user.id)).map((listed) => listed.id)).toEqual([live.key.id]);
+  });
+
+  it('keeps a key that a retry can delete when the first step of the deletion fails', async () => {
+    const { user, cookie } = await owner();
+    const { key, secretKey } = await redisKeyStore.generateApiKey(user.id, 'Retried');
+    vi.spyOn(getWebhookSecretStore(), 'deleteSecretRecord').mockRejectedValueOnce(new Error('secret store down'));
+
+    await expect(deleteKeyRoute(request(`/api/keys/${key.id}`, cookie, { method: 'DELETE' }), params(key.id))).rejects.toThrow('secret store down');
+    expect(await listedIds(cookie)).toEqual([key.id]);
+    expect((await redisKeyStore.verifyApiKey(secretKey)).valid).toBe(true);
+
+    expect((await deleteKeyRoute(request(`/api/keys/${key.id}`, cookie, { method: 'DELETE' }), params(key.id))).status).toBe(200);
+    expect(await listedIds(cookie)).toEqual([]);
+    expect((await redisKeyStore.verifyApiKey(secretKey)).valid).toBe(false);
   });
 });
