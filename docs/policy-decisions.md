@@ -497,6 +497,7 @@ Security
 446. [Normalize retired legacy tiers on read, block empty or unsupported queued files, preserve server archive filenames, gate upsell links on billing config, and guard Edge workers with WorkerGlobalScope](#446-normalize-retired-legacy-tiers-on-read-block-empty-or-unsupported-queued-files-preserve-server-archive-filenames-gate-upsell-links-on-billing-config-and-guard-edge-workers-with-workerglobalscope)
 447. [Implement remaining unimplemented format decoders (WBMP, PDFA, XHTML, EML, Flat ODF, DBF/DIF/SYLK/PRN/WK1, markup parsers) and align launch UI/legal text](#447-implement-remaining-unimplemented-format-decoders-wbmp-pdfa-xhtml-eml-flat-odf-dbfdifsylkprnwk1-markup-parsers-and-align-launch-uilegal-text)
 448. [Match TeX groups and trim blanks in one pass, and keep the open part of a truncated multipart mail](#448-match-tex-groups-and-trim-blanks-in-one-pass-and-keep-the-open-part-of-a-truncated-multipart-mail)
+449. [Load no remote image in the HTML page of a converted mail](#449-load-no-remote-image-in-the-html-page-of-a-converted-mail)
 
 ---
 
@@ -13133,3 +13134,23 @@ Security
   - **Dropping the unclosed part as invalid**: loses the text that is there, and the readers named above keep it.
 - **Verified by**: `tests/markup-tex-scan-bounds.test.ts` (1 MB of each hostile shape under the hang guard), `tests/trailing-blanks-linear.test.ts`, `tests/eml-reader-bounds.test.ts` (open part, 64 MiB limit), and the growth ratios in `tests/markup-tex-scan-bounds.perf.test.ts` and `tests/trailing-blanks-linear.perf.test.ts` (nightly).
 - **Revisit when**: a TeX construct needs a lookup that the pair index cannot answer (a macro that changes bracket meaning), or an `.eml` reader gains MIME repair beyond the open part.
+
+## 449. Load no remote image in the HTML page of a converted mail
+
+- **Date**: 2026-11-27
+- **Status**: Implemented (review of range 63653b2d..origin/main). Nothing is deployed.
+- **Decision**: **The HTML page made from an `.eml` loads nothing remote.** `emlMessageHtml` removes the `src` of every `http:` and `https:` image (a remote image with alt text stays as `<img alt="...">`, one without is dropped) and its content security policy reads `img-src data:` (`EML_HTML_CSP`). Images that the mail carries as `data:` PNG, GIF, JPEG or WebP URIs stay. Links are unchanged (they load only when followed). `sanitizeUntrustedHtmlFragment` takes `allowRemoteImages` (default `true`, so XHTML and Markdown pages keep their remote images, which their authors wrote on purpose); the EML page passes `false`.
+- **Why**:
+  - **A remote image in a mail is a tracking pixel.** The page tells the sender when, how often and from which address the mail was opened, and the person who opens the converted file did not choose that.
+  - **The majority of mail clients that show a message to a person block it by default.** Thunderbird blocks remote content until the reader allows it (`mailnews.message_display.disable_remote_image`, on by default), Roundcube's `show_images` default is 0 (never load), and Outlook's "Don't download pictures automatically" is on by default. Gmail loads images through its own proxy and Apple Mail loads them unless Mail Privacy Protection is on; neither is a server that opens the original address from the reader's machine. These defaults are as each client documents them; they were not re-run for this entry.
+  - **The reference service has no `eml` input.** The formats query (`filter[input_format]=eml&include=options`) returned an empty list on 2026-11-27, and its HTML to PDF options (`chrome` engine) hold no switch for remote content, so there is no reference default to match.
+  - **A converted file has no control to load images with.** In a client the reader clicks "load images" for a mail they trust; a page of this site cannot ask, so the safe default is the only one.
+- **Trade-offs**:
+  - A newsletter loses its remote pictures in the HTML output (the text, links, tables and `data:` images stay). The alt text shows where an image was.
+  - **No option to load them.** One can be added when a user asks; the sanitizer flag is the single switch it would set.
+- **Alternatives rejected**:
+  - **Keep remote images and rely on the CSP of the page**: the CSP allowed `http:` and `https:` images on purpose, so it did not stop the request.
+  - **Fetch the images on the server and inline them**: the server would then request the sender's pixel itself (an SSRF surface and a tracking signal from our address) and the output size would grow without a bound.
+  - **Change `UNTRUSTED_HTML_CSP` for every page**: Markdown and XHTML pages are written by the person who converts them, and their remote images are intended.
+- **Verified by**: `tests/eml-remote-content.test.ts`, `tests/launch-conversions-coverage.test.ts`.
+- **Revisit when**: a user asks for remote images in the mail output (add an option, default off), or the reference service lists `eml` and its default differs.

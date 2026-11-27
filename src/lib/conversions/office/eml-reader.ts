@@ -386,6 +386,13 @@ export function emlMessageText(message: EmlMessage): string {
 export const UNTRUSTED_HTML_CSP =
   "default-src 'none'; img-src http: https: data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'";
 
+/**
+ * The page of a converted mail loads no remote resource: a remote `<img>` is how a sender learns that, when and from where a mail
+ * was opened. Thunderbird, Roundcube and Outlook block remote content until the reader asks for it, and a converted page has no
+ * control to ask with, so the images stay out and `data:` images that the mail carries still show (policy 449).
+ */
+export const EML_HTML_CSP = UNTRUSTED_HTML_CSP.replace('img-src http: https: data:', 'img-src data:');
+
 const MAX_HTML_STACK_DEPTH = 512;
 
 export const SAFE_HTML_TAGS: ReadonlySet<string> = new Set([
@@ -756,12 +763,14 @@ function isSafeLinkUri(raw: string): boolean {
   return scheme === null || SAFE_LINK_SCHEMES.has(scheme);
 }
 
-function isSafeImageUri(raw: string): boolean {
+type ImageUriKind = 'embedded' | 'remote' | 'unsafe';
+
+function classifyImageUri(raw: string): ImageUriKind {
   const compact = normalizeUriCandidate(raw);
-  if (compact === '') return false;
+  if (compact === '') return 'unsafe';
   const scheme = extractSchemeBeforeDelim(compact);
-  if (scheme === 'http' || scheme === 'https') return true;
-  return DATA_RASTER_IMAGE_URI.test(compact);
+  if (scheme === 'http' || scheme === 'https') return 'remote';
+  return DATA_RASTER_IMAGE_URI.test(compact) ? 'embedded' : 'unsafe';
 }
 
 const SINGLE_PASS_URI_REF = /&(?:#[xX][0-9a-fA-F]{1,8};?|#[0-9]{1,10};?|[A-Za-z][A-Za-z0-9]{1,31};?)/g;
@@ -792,7 +801,7 @@ function cleanTextAttrForEmit(raw: string): string {
   return decodeHtmlCharacterReferences(raw, true).replace(ATTR_CONTROL_CHARS, '');
 }
 
-function serializeAllowedAttributes(tagName: string, attrs: ReadonlyMap<string, string>): string | null {
+function serializeAllowedAttributes(tagName: string, attrs: ReadonlyMap<string, string>, allowRemoteImages: boolean): string | null {
   if (tagName === 'a') {
     let out = '';
     const rawHref = attrs.get('href');
@@ -807,9 +816,14 @@ function serializeAllowedAttributes(tagName: string, attrs: ReadonlyMap<string, 
   }
   if (tagName === 'img') {
     const rawSrc = attrs.get('src');
-    if (rawSrc === undefined || !isSafeImageUri(rawSrc)) return null;
-    let out = ` src="${escapeMarkupAttribute(cleanSafeUriForEmit(rawSrc))}"`;
+    const kind = rawSrc === undefined ? 'unsafe' : classifyImageUri(rawSrc);
     const rawAlt = attrs.get('alt');
+    if (kind === 'unsafe') return null;
+    if (kind === 'remote' && !allowRemoteImages) {
+      // No src: the browser shows the alt text where the image would be, and nothing is requested.
+      return rawAlt?.trim() ? ` alt="${escapeMarkupAttribute(cleanTextAttrForEmit(rawAlt))}"` : null;
+    }
+    let out = ` src="${escapeMarkupAttribute(cleanSafeUriForEmit(rawSrc as string))}"`;
     if (rawAlt !== undefined) out += ` alt="${escapeMarkupAttribute(cleanTextAttrForEmit(rawAlt))}"`;
     const rawTitle = attrs.get('title');
     if (rawTitle !== undefined) out += ` title="${escapeMarkupAttribute(cleanTextAttrForEmit(rawTitle))}"`;
@@ -922,9 +936,10 @@ export function extractHtmlTitleText(html: string, xmlSelfClosing = false): stri
  */
 export function sanitizeUntrustedHtmlFragment(
   html: string,
-  options: { readonly xmlSelfClosing?: boolean } = {}
+  options: { readonly xmlSelfClosing?: boolean; readonly allowRemoteImages?: boolean } = {}
 ): string {
   const xmlSelfClosing = options.xmlSelfClosing === true;
+  const allowRemoteImages = options.allowRemoteImages !== false;
   const inner = extractBodyFragment(html, xmlSelfClosing);
   const out: string[] = [];
   const openStack: string[] = [];
@@ -986,7 +1001,7 @@ export function sanitizeUntrustedHtmlFragment(
       continue;
     }
     if (SAFE_HTML_TAGS.has(tagName)) {
-      const attrsStr = serializeAllowedAttributes(tagName, endInfo.attrs);
+      const attrsStr = serializeAllowedAttributes(tagName, endInfo.attrs, allowRemoteImages);
       if (attrsStr !== null) {
         if (SAFE_VOID_TAGS.has(tagName)) {
           out.push(`<${tagName}${attrsStr}>`);
@@ -1031,7 +1046,7 @@ export function emlMessageHtml(message: EmlMessage, fallbackTitle = 'Email Messa
     : '';
 
   const bodyHtml = message.htmlBody
-    ? sanitizeUntrustedHtmlFragment(message.htmlBody)
+    ? sanitizeUntrustedHtmlFragment(message.htmlBody, { allowRemoteImages: false })
     : message.textBody
         .split(/\n{2,}/)
         .filter(Boolean)
@@ -1045,7 +1060,7 @@ export function emlMessageHtml(message: EmlMessage, fallbackTitle = 'Email Messa
           .join('')}</ul></div>`
       : '';
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${UNTRUSTED_HTML_CSP}"><title>${escapeMarkupAttribute(
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${EML_HTML_CSP}"><title>${escapeMarkupAttribute(
     title
   )}</title><style>body{font-family:system-ui,-apple-system,sans-serif;line-height:1.6;padding:2rem;max-width:800px;margin:0 auto;color:#1F2340;}</style></head><body>${metaHtml}${bodyHtml}${attachHtml}</body></html>`;
 }

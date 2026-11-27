@@ -682,7 +682,7 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     ].join('');
     const resHtml = (await dispatchConversion(emlWithBody(payloadHtml), 'eml', 'html', {}, 'xss.eml')).buffer.toString('utf-8');
     expect(resHtml).toContain(
-      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src http: https: data:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'">'
+      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'">'
     );
     expect(resHtml).not.toContain('<img src=x');
     expect(resHtml).not.toContain('onerror');
