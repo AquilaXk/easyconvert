@@ -172,6 +172,10 @@ async function parseBundleRequest(
     return { response: badJsonResponse('Invalid JSON request body.') };
   }
 
+  return validateBundleBody(rawBody);
+}
+
+function validateBundleBody(rawBody: unknown): { body: BundleRequestBody } | { response: NextResponse } {
   if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
     return { response: badJsonResponse('The request must contain a non-empty "files" array.') };
   }
@@ -196,21 +200,23 @@ function hasExplicitAuthCredential(req: NextRequest): boolean {
   );
 }
 
+function authFailureResponse(auth: ApiAuthResult, defaultError: string, defaultStatus: number): NextResponse {
+  return NextResponse.json(
+    { success: false, error: auth.error ?? defaultError },
+    {
+      status: auth.status ?? defaultStatus,
+      headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(auth) },
+    }
+  );
+}
+
 async function authenticateBundleCaller(
   req: NextRequest
 ): Promise<{ auth: ApiAuthResult; user: User } | { response: NextResponse }> {
   const callerAuth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: STORAGE_DOWNLOAD_SCOPE });
   const hasExplicitCredential = hasExplicitAuthCredential(req);
   if ((hasExplicitCredential || callerAuth.user || callerAuth.status === 503) && !callerAuth.authorized) {
-    return {
-      response: NextResponse.json(
-        { success: false, error: callerAuth.error ?? 'Unauthorized' },
-        {
-          status: callerAuth.status ?? 401,
-          headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(callerAuth) },
-        }
-      ),
-    };
+    return { response: authFailureResponse(callerAuth, 'Unauthorized', 401) };
   }
   if (callerAuth.user) {
     return { auth: callerAuth, user: callerAuth.user };
@@ -218,15 +224,7 @@ async function authenticateBundleCaller(
 
   const anonAuth = await validateApiAccess(req, { requiredUnits: 0, allowAnonymous: true });
   if (!anonAuth.authorized || !anonAuth.user) {
-    return {
-      response: NextResponse.json(
-        { success: false, error: anonAuth.error ?? 'Rate limit exceeded' },
-        {
-          status: anonAuth.status ?? 429,
-          headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(anonAuth) },
-        }
-      ),
-    };
+    return { response: authFailureResponse(anonAuth, 'Rate limit exceeded', 429) };
   }
   return { auth: anonAuth, user: anonAuth.user };
 }
@@ -288,6 +286,45 @@ async function verifyBundleFiles(
   return { verifiedFiles, totalBytes };
 }
 
+/** What the zip entry generator and the stream wrapper of one bundle download share. */
+interface BundleStreamState {
+  closed: boolean;
+  timedOut: boolean;
+  activeStreams: Set<Readable>;
+}
+
+async function* generateZipEntries(
+  req: NextRequest,
+  verifiedFiles: readonly VerifiedBundleFile[],
+  state: BundleStreamState,
+  cleanup: () => void
+): AsyncGenerator<StreamingZipEntry, void, undefined> {
+  try {
+    for (const file of verifiedFiles) {
+      if (state.closed || state.timedOut || req.signal?.aborted) return;
+      const nodeStream = (await s3Storage.openReadStream(file.key)) as Readable | null;
+      if (!nodeStream) {
+        throw new Error(`Failed to read stored file "${file.key}" during bundle generation.`);
+      }
+      if (state.closed || state.timedOut || req.signal?.aborted) {
+        nodeStream.destroy();
+        return;
+      }
+      state.activeStreams.add(nodeStream);
+      const data = deliveryTrackedStream(nodeStream, file.size, async (sent) => {
+        state.activeStreams.delete(nodeStream);
+        if (!state.closed && !state.timedOut && !req.signal?.aborted && sent === file.size && isRetainedKey(file.key)) {
+          const last = file.size > 0 ? file.size - 1 : 0;
+          await recordServed(file.key, { first: 0, last, size: file.size }).catch(() => undefined);
+        }
+      });
+      yield { name: file.name, data, size: file.size };
+    }
+  } finally {
+    cleanup();
+  }
+}
+
 function createBundleZipResponse(
   req: NextRequest,
   verifiedFiles: readonly VerifiedBundleFile[],
@@ -295,9 +332,7 @@ function createBundleZipResponse(
   streamDeadlineMs: number,
   releaseSlotOnce: () => void
 ): NextResponse {
-  const activeStreams = new Set<Readable>();
-  let streamClosed = false;
-  let streamTimedOut = false;
+  const state: BundleStreamState = { closed: false, timedOut: false, activeStreams: new Set<Readable>() };
   let deadlineTimer: NodeJS.Timeout | undefined;
   let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
   let reader!: ReadableStreamDefaultReader<Uint8Array>;
@@ -309,13 +344,13 @@ function createBundleZipResponse(
     }
   };
   const destroyAllStreams = () => {
-    for (const s of activeStreams) {
+    for (const s of state.activeStreams) {
       s.destroy();
     }
-    activeStreams.clear();
+    state.activeStreams.clear();
   };
   const onRequestAbort = () => {
-    streamClosed = true;
+    state.closed = true;
     clearDeadlineTimer();
     destroyAllStreams();
     releaseSlotOnce();
@@ -329,9 +364,9 @@ function createBundleZipResponse(
     }
   };
   const failOnDeadline = () => {
-    if (streamClosed) return;
-    streamClosed = true;
-    streamTimedOut = true;
+    if (state.closed) return;
+    state.closed = true;
+    state.timedOut = true;
     clearDeadlineTimer();
     req.signal?.removeEventListener('abort', onRequestAbort);
     const err = new JobTimeoutError(streamDeadlineMs);
@@ -347,48 +382,25 @@ function createBundleZipResponse(
 
   req.signal?.addEventListener('abort', onRequestAbort, { once: true });
 
-  async function* generateZipEntries(): AsyncGenerator<StreamingZipEntry, void, undefined> {
-    try {
-      for (const file of verifiedFiles) {
-        if (streamClosed || streamTimedOut || req.signal?.aborted) return;
-        const nodeStream = (await s3Storage.openReadStream(file.key)) as Readable | null;
-        if (!nodeStream) {
-          throw new Error(`Failed to read stored file "${file.key}" during bundle generation.`);
-        }
-        if (streamClosed || streamTimedOut || req.signal?.aborted) {
-          nodeStream.destroy();
-          return;
-        }
-        activeStreams.add(nodeStream);
-        const data = deliveryTrackedStream(nodeStream, file.size, async (sent) => {
-          activeStreams.delete(nodeStream);
-          if (!streamClosed && !streamTimedOut && !req.signal?.aborted && sent === file.size && isRetainedKey(file.key)) {
-            const last = file.size > 0 ? file.size - 1 : 0;
-            await recordServed(file.key, { first: 0, last, size: file.size }).catch(() => undefined);
-          }
-        });
-        yield { name: file.name, data, size: file.size };
-      }
-    } finally {
+  const rawZipStream = streamZipReadable(
+    generateZipEntries(req, verifiedFiles, state, () => {
       clearDeadlineTimer();
       req.signal?.removeEventListener('abort', onRequestAbort);
       destroyAllStreams();
-    }
-  }
-
-  const rawZipStream = streamZipReadable(generateZipEntries());
+    })
+  );
   reader = rawZipStream.getReader();
   const guardedZipStream = new ReadableStream<Uint8Array>({
     start(controller) {
       streamController = controller;
     },
     async pull(controller) {
-      if (streamClosed || streamTimedOut) return;
+      if (state.closed || state.timedOut) return;
       try {
         const next = await reader.read();
-        if (streamClosed || streamTimedOut) return;
+        if (state.closed || state.timedOut) return;
         if (next.done) {
-          streamClosed = true;
+          state.closed = true;
           clearDeadlineTimer();
           req.signal?.removeEventListener('abort', onRequestAbort);
           releaseSlotOnce();
@@ -397,8 +409,8 @@ function createBundleZipResponse(
           controller.enqueue(next.value);
         }
       } catch (err) {
-        const wasClosed = streamClosed;
-        streamClosed = true;
+        const wasClosed = state.closed;
+        state.closed = true;
         clearDeadlineTimer();
         req.signal?.removeEventListener('abort', onRequestAbort);
         destroyAllStreams();
@@ -409,7 +421,7 @@ function createBundleZipResponse(
       }
     },
     async cancel(reason) {
-      streamClosed = true;
+      state.closed = true;
       clearDeadlineTimer();
       req.signal?.removeEventListener('abort', onRequestAbort);
       destroyAllStreams();
@@ -443,76 +455,83 @@ function invalidTicketResponse(): NextResponse {
   );
 }
 
-async function authorizeBundleTicketCaller(
+async function authorizeCredentialedTicketCaller(
   req: NextRequest,
-  callerUserId: string
+  callerUserId: string,
+  hasExplicitCredential: boolean
 ): Promise<{ auth: ApiAuthResult } | { response: NextResponse }> {
-  const hasExplicitCredential = hasExplicitAuthCredential(req);
-  if (hasExplicitCredential || !isAnonymousUserId(callerUserId)) {
-    const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: STORAGE_DOWNLOAD_SCOPE });
-    if (!auth.authorized) {
-      if (hasExplicitCredential || auth.status === 503 || Boolean(auth.user)) {
-        return {
-          response: NextResponse.json(
-            { success: false, error: auth.error ?? 'Unauthorized' },
-            {
-              status: auth.status ?? 401,
-              headers: { 'Cache-Control': PRIVATE_NO_STORE, ...authErrorHeaders(auth) },
-            }
-          ),
-        };
-      }
-      return { response: invalidTicketResponse() };
+  const auth = await validateApiAccess(req, { requiredUnits: 0, requiredScope: STORAGE_DOWNLOAD_SCOPE });
+  if (!auth.authorized) {
+    if (hasExplicitCredential || auth.status === 503 || Boolean(auth.user)) {
+      return { response: authFailureResponse(auth, 'Unauthorized', 401) };
     }
-    if (auth.user?.id !== callerUserId) {
-      return { response: invalidTicketResponse() };
-    }
-    return { auth };
+    return { response: invalidTicketResponse() };
   }
+  if (auth.user?.id !== callerUserId) {
+    return { response: invalidTicketResponse() };
+  }
+  return { auth };
+}
 
+function clientIpErrorResponse(error: ClientIpError): NextResponse {
+  const malformed = error.status === 400;
+  return NextResponse.json(
+    {
+      success: false,
+      error: malformed
+        ? 'Bad Request: malformed client address in forwarding headers.'
+        : 'Server misconfiguration: client IP trust settings are invalid.',
+    },
+    {
+      status: error.status,
+      headers: malformed
+        ? { 'Cache-Control': PRIVATE_NO_STORE }
+        : { 'Cache-Control': PRIVATE_NO_STORE, 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) },
+    }
+  );
+}
+
+function anonymousTicketAuth(anonUserId: string): ApiAuthResult {
+  return {
+    authorized: true,
+    user: {
+      id: anonUserId,
+      email: 'anonymous@easyconvert.local',
+      name: 'Anonymous Client',
+      tier: 'free',
+      provider: 'email',
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    authMethod: 'session',
+  };
+}
+
+function authorizeAnonymousTicketCaller(req: NextRequest, callerUserId: string): { auth: ApiAuthResult } | { response: NextResponse } {
   let clientIp: string;
   try {
     clientIp = extractClientIp(req);
   } catch (error) {
     if (!(error instanceof ClientIpError)) throw error;
-    const malformed = error.status === 400;
-    return {
-      response: NextResponse.json(
-        {
-          success: false,
-          error: malformed
-            ? 'Bad Request: malformed client address in forwarding headers.'
-            : 'Server misconfiguration: client IP trust settings are invalid.',
-        },
-        {
-          status: error.status,
-          headers: malformed
-            ? { 'Cache-Control': PRIVATE_NO_STORE }
-            : { 'Cache-Control': PRIVATE_NO_STORE, 'Retry-After': String(CLIENT_IP_CONFIG_RETRY_AFTER_SECONDS) },
-        }
-      ),
-    };
+    return { response: clientIpErrorResponse(error) };
   }
 
   const anonUserId = anonymousUserId(rateLimitKey(clientIp));
   if (anonUserId !== callerUserId) {
     return { response: invalidTicketResponse() };
   }
-  return {
-    auth: {
-      authorized: true,
-      user: {
-        id: anonUserId,
-        email: 'anonymous@easyconvert.local',
-        name: 'Anonymous Client',
-        tier: 'free',
-        provider: 'email',
-        createdAt: 0,
-        updatedAt: 0,
-      },
-      authMethod: 'session',
-    },
-  };
+  return { auth: anonymousTicketAuth(anonUserId) };
+}
+
+async function authorizeBundleTicketCaller(
+  req: NextRequest,
+  callerUserId: string
+): Promise<{ auth: ApiAuthResult } | { response: NextResponse }> {
+  const hasExplicitCredential = hasExplicitAuthCredential(req);
+  if (hasExplicitCredential || !isAnonymousUserId(callerUserId)) {
+    return authorizeCredentialedTicketCaller(req, callerUserId, hasExplicitCredential);
+  }
+  return authorizeAnonymousTicketCaller(req, callerUserId);
 }
 
 interface RunBundleInput {
