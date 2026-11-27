@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import { readZipEntryBytes, readZipEntryText } from '../lib/conversions/zip-entry-reader';
 import { loadPdfLibDocument } from '../lib/conversions/pdf-lib-load';
 import { extractPdfPages } from '../lib/conversions/pdf-postprocess/page-ops';
 import { ownSignatureVerdict } from '../lib/format-signatures';
@@ -71,12 +72,19 @@ const MIMETYPE_ENTRY = 'mimetype';
  * @throws ConversionFailedError for a drawing that is not an OpenDocument package.
  */
 export async function withoutPageMargins(drawing: Buffer): Promise<Buffer> {
-  const package_ = await JSZip.loadAsync(drawing).catch(() => undefined);
-  const styles = package_?.file(STYLES_ENTRY);
-  if (!package_ || !styles) throw new ConversionFailedError('The office suite wrote no drawing of the page.');
-  package_.file(STYLES_ENTRY, (await styles.async('string')).replace(PAGE_MARGIN_PATTERN, 'fo:margin-$1="0cm"'));
-  package_.file(MIMETYPE_ENTRY, await (package_.file(MIMETYPE_ENTRY)?.async('nodebuffer') ?? Buffer.alloc(0)), { compression: 'STORE' });
-  return package_.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  const source = await JSZip.loadAsync(drawing).catch(() => undefined);
+  const styles = source?.file(STYLES_ENTRY);
+  if (!source || !styles) throw new ConversionFailedError('The office suite wrote no drawing of the page.');
+  // Every entry is read through the bounded reader, the mimetype entry first and stored, as an OpenDocument package needs.
+  const rewritten = new JSZip();
+  const names = [MIMETYPE_ENTRY, ...Object.keys(source.files).filter((name) => name !== MIMETYPE_ENTRY)];
+  for (const name of names) {
+    const entry = source.file(name);
+    if (!entry) continue;
+    const bytes = name === STYLES_ENTRY ? Buffer.from((await readZipEntryText(entry)).replace(PAGE_MARGIN_PATTERN, 'fo:margin-$1="0cm"')) : await readZipEntryBytes(entry);
+    rewritten.file(name, bytes, { compression: name === MIMETYPE_ENTRY ? 'STORE' : 'DEFLATE' });
+  }
+  return rewritten.generateAsync({ type: 'nodebuffer' });
 }
 
 /** The office suite's run of one conversion, as the worker's runner answers it: the written file's bytes and where it was persisted. */

@@ -1648,7 +1648,9 @@ describe('native-engine pairs route through the dispatcher', () => {
   const BRIDGED_PDF_TARGETS = new Set(['doc', 'ppt', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
   const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
-  const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
+  /** EMF and WMF: Poppler draws each page as SVG, the in-process writer writes it, and the office suite writes a page that writer refuses (entry 453). */
+  const METAFILE_TARGETS = new Set(['emf', 'wmf']);
+  const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, ...METAFILE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
   /** The signature each encoded raster starts with (BMP, ICO, PSD, GIF, TIFF both byte orders, RIFF/WEBP, ISO BMFF 'ftyp'). */
   const ENCODED_SIGNATURES: Readonly<Record<string, readonly Buffer[]>> = {
     bmp: [Buffer.from('BM', 'latin1')],
@@ -1684,11 +1686,12 @@ describe('native-engine pairs route through the dispatcher', () => {
   const officeToImage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && IMAGE_TARGETS.has(pair[1]) && authorable(pair));
   const POSTSCRIPT_TARGETS = new Set(['eps', 'ps']);
   const officeToEncodedPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && ENCODED_PAGE_TARGETS.has(pair[1]) && authorable(pair));
+  const officeToMetafilePage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && METAFILE_TARGETS.has(pair[1]) && authorable(pair));
   const officeToPostscriptPage = pairs.filter((pair) => pair[0] !== PDF_SOURCE && POSTSCRIPT_TARGETS.has(pair[1]) && authorable(pair));
   const postscriptPairs = pairs.filter(([source]) => POSTSCRIPT_SOURCES.has(source));
   const pdfToSvg = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && target === SVG_TARGET);
   const pdfToImage = pairs.filter(([source, target]) => source === PDF_SOURCE && (IMAGE_TARGETS.has(target) || target === 'tiff'));
-  const pdfToPageFormat = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && (ENCODED_PAGE_TARGETS.has(target) || POSTSCRIPT_TARGETS.has(target) || target === 'dxf' || target === 'odd') && target !== 'tiff');
+  const pdfToPageFormat = pairs.filter(([source, target]) => PDF_SOURCES.has(source) && (ENCODED_PAGE_TARGETS.has(target) || METAFILE_TARGETS.has(target) || POSTSCRIPT_TARGETS.has(target) || target === 'dxf' || target === 'odd') && target !== 'tiff');
   const pdfToBridgedOffice = pairs.filter(([source, target]) => source === PDF_SOURCE && target === 'doc');
 
   /** Native engine (and the environment variable that points to it) that converts a pair. */
@@ -1703,7 +1706,7 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (DOCUMENT_TEXT_SOURCES.has(source) || source === TABLE_PICTURE_SOURCE) return IMAGE_TARGETS.has(target) ? { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' } : { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     // A table read from a PDF is written as .xls, and a text or slide document as Word 97 or PowerPoint 97, by the office suite, like every other source of those formats.
     if (!PDF_SOURCES.has(source) || BRIDGED_PDF_TARGETS.has(target)) return { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
-    if (target === SVG_TARGET || target === 'dxf') return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
+    if (target === SVG_TARGET || target === 'dxf' || METAFILE_TARGETS.has(target)) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     if (POSTSCRIPT_TARGETS.has(target)) return { envVar: 'PDFTOPS_PATH', engineName: 'pdftops' };
     return { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' };
   }
@@ -1950,6 +1953,11 @@ describe('native-engine pairs route through the dispatcher', () => {
       const drawing = await JSZip.loadAsync(buffer);
       expect(await drawing.file('mimetype')?.async('string')).toBe('application/vnd.oasis.opendocument.graphics');
       expect(drawing.file('content.xml')).not.toBeNull();
+    } else if (target === 'emf') {
+      expect({ record: buffer.readUInt32LE(0), signature: buffer.readUInt32LE(40) }).toEqual({ record: 1, signature: 0x464d4520 });
+    } else if (target === 'wmf') {
+      const start = buffer.readUInt32LE(0) === 0x9ac6cdd7 ? 22 : 0;
+      expect({ type: [1, 2].includes(buffer.readUInt16LE(start)), headerWords: buffer.readUInt16LE(start + 2) }).toEqual({ type: true, headerWords: 9 });
     } else if (target === 'dxf') {
       const lines = buffer.toString('utf-8').trimEnd().split('\n');
       expect(lines.slice(0, 2).map((l) => l.trim())).toEqual(['0', 'SECTION']);
@@ -2025,6 +2033,16 @@ describe('native-engine pairs route through the dispatcher', () => {
 
   it.skipIf(skipWithoutTools('soffice', 'pdftoppm')).each(officeToEncodedPage)(
     '%s -> %s writes the rendered pages with LibreOffice and the page tools (needs soffice, pdftoppm)',
+    async (source, target) => {
+      const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
+      expect(result.engineUsed).toBe('native-poppler');
+      await expectPageTargetOutput(result.buffer, target);
+    },
+    NATIVE_TIMEOUT_MS
+  );
+
+  it.skipIf(skipWithoutTools('soffice', 'pdftoppm', 'pdftocairo')).each(officeToMetafilePage)(
+    '%s -> %s writes the rendered pages with LibreOffice and the metafile writers (needs soffice, pdftoppm, pdftocairo)',
     async (source, target) => {
       const result = await dispatchConversion(realInput(source), source, target, { multiPageOutput: 'first' }, `probe.${source}`);
       expect(result.engineUsed).toBe('native-poppler');
