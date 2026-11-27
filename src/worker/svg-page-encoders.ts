@@ -3,24 +3,17 @@ import { openPdfForReading } from '../lib/conversions/pdf-access';
 import { runPdfTextJob } from '../lib/conversions/pdf-text-geometry';
 import { encodeSvgPageToDxfWithText, PicturePages } from '../lib/conversions/vector-dxf';
 import { encodeEmf, encodeWmf } from '../lib/conversions/vector-metafile';
-import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError, type ConversionOptions } from '../lib/types';
-import { officeSuiteMetafilePage, type OfficeMetafileRun } from './office-metafile-page';
+import { ConversionFailedError, type ConversionOptions } from '../lib/types';
 import { pageNumbersOf } from './worker-output';
 import type { WorkerConversionResult } from './worker-types';
-
-export { officeMetafileRun } from './office-metafile-page';
 
 /**
  * Targets written from the SVG page that Poppler draws for a page of a PDF: the in-process writers read its geometry and
  * write DXF entities or an EMF or WMF metafile. The registry offers them only for the sources whose pages these writers can
- * represent. A picture is left out of a DXF page with a warning (entry 129); a clip region that is not one convex polygon and hides
- * part of the drawing is refused by the writer (a convex one cuts the drawing). The DXF writer also writes the characters of a bitmap
- * font, which Poppler draws as pictures, as text from the PDF's text layer. An EMF or WMF page that the in-process writer refuses (a
- * picture, a dash, a clip) is written by the office suite instead (`office-metafile-page.ts`).
+ * represent. A picture is left out of a DXF page with a warning (entry 129) and refuses an EMF or WMF page; a clip region that is
+ * not one convex polygon and hides part of the drawing is refused by the writer (a convex one cuts the drawing). The DXF writer also
+ * writes the characters of a bitmap font, which Poppler draws as pictures, as text from the PDF's text layer.
  */
-
-/** The targets whose refused pages the office suite writes. */
-const OFFICE_SUITE_METAFILE_TARGETS: ReadonlySet<string> = new Set(['emf', 'wmf']);
 
 /** Reads the text layer of the PDF page an SVG page was drawn from. */
 type PageTextReader = () => Promise<PdfPageText>;
@@ -73,8 +66,7 @@ export function svgPageEncoder(
   rendered: WorkerConversionResult,
   readPdf: () => Buffer | undefined,
   access: PdfAccess,
-  leftOut: PicturePages,
-  officeSuite?: OfficeMetafileRun
+  leftOut: PicturePages
 ): (svg: Buffer, entryName: string) => Promise<Buffer> {
   const encode = SVG_PAGE_ENCODERS[target];
   const pages = pageNumbersOf(rendered);
@@ -82,13 +74,7 @@ export function svgPageEncoder(
   const zipped = rendered.filename.endsWith('.zip');
   return async (svg, entryName) => {
     const page = zipped ? Number(PAGE_ENTRY_NUMBER.exec(entryName)?.[1]) : pages[0];
-    try {
-      return await encode(svg, () => textLayers(page), leftOut, page);
-    } catch (refusal) {
-      const stored = readPdf();
-      if (!(refusal instanceof CadGeometryUnavailableError || refusal instanceof UnsupportedOptionError) || !officeSuite || !stored || !OFFICE_SUITE_METAFILE_TARGETS.has(target)) throw refusal;
-      return officeSuiteMetafilePage(stored, page, target, access, officeSuite, refusal);
-    }
+    return encode(svg, () => textLayers(page), leftOut, page);
   };
 }
 
@@ -98,11 +84,10 @@ export async function withSvgPageEncoder<T>(
   rendered: WorkerConversionResult,
   readPdf: () => Buffer | undefined,
   access: PdfAccess,
-  write: (encode: (svg: Buffer, entryName: string) => Promise<Buffer>) => Promise<T>,
-  officeSuite?: OfficeMetafileRun
+  write: (encode: (svg: Buffer, entryName: string) => Promise<Buffer>) => Promise<T>
 ): Promise<T> {
   const leftOut = new PicturePages();
-  const written = await write(svgPageEncoder(target, rendered, readPdf, access, leftOut, officeSuite));
+  const written = await write(svgPageEncoder(target, rendered, readPdf, access, leftOut));
   leftOut.report();
   return written;
 }
