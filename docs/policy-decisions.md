@@ -501,6 +501,7 @@ Security
 450. [Decode DBF text by the code page of its language driver byte](#450-decode-dbf-text-by-the-code-page-of-its-language-driver-byte)
 451. [Answer a refused redirect of a website capture as a failed load so that internal names cannot be probed](#451-answer-a-refused-redirect-of-a-website-capture-as-a-failed-load-so-that-internal-names-cannot-be-probed)
 452. [The test shards and the office rows of the pull request parity job run on the LibreOffice release the worker image ships, installed on the runner](#452-the-test-shards-and-the-office-rows-of-the-pull-request-parity-job-run-on-the-libreoffice-release-the-worker-image-ships-installed-on-the-runner)
+453. [A PDF target with no OCR request returns a document with no text as it is, and says that recognition found nothing](#453-a-pdf-target-with-no-ocr-request-returns-a-document-with-no-text-as-it-is-and-says-that-recognition-found-nothing)
 
 ---
 
@@ -13224,3 +13225,21 @@ Security
   - **Making 26.8 the suite of every CI job at once**: `conformance`, `integration` and the nightly shards were not checked against it, and `bench/baseline.json` holds their rows on 24.2.
 - **Verified by**: `tests/ci-setup-tasks.test.ts` (the task list, the switch, the pin against `Dockerfile.worker`, an archive that fails its SHA-256), `tests/ci-workflows.test.ts` (which jobs install it, the activation, the cache key), `tests/ci-parity-workflow.test.ts` (the split of the families, the office step, one verdict per run), and the probe runs named above.
 - **Revisit when**: the pin of `Dockerfile.worker` moves (the three values of `libreoffice-suite.env` move with it), the image is built for amd64, or `conformance` and `integration` move to 26.8.
+
+## 453. A PDF target with no OCR request returns a document with no text as it is, and says that recognition found nothing
+
+- **Date**: 2026-11-27
+- **Status**: Implemented. Nothing is deployed.
+- **Decision**: **When the target is PDF and OCR was not requested, recognizing a document that has no text layer is best effort, and the answer is the document.** A real scan that recognises text still becomes a searchable PDF. If no page has an image to recognise, recognition finds no text, or a page is over the pixel limit at the OCR resolution (entry 226 lists the other refusals), the PDF is returned as the no-OCR path returns it, and the conversion carries a warning line that names the reason. Requested OCR (`ocrEnabled`) and the OCR outputs (hOCR, ALTO) refuse as before. The pixel limit still refuses every other target, where an unread page would answer an empty file. An Illustrator file with PDF content is converted as a PDF, so `ai` to PDF follows the same rule.
+- **Why**:
+  - **A drawing with no text is not a scan.** Of 29 real PDF-compatible Illustrator files (logos, badges, maps), 6 were refused: three have no raster image ("no extractable raster image"), and three have artboards of 12,000 to 20,834 pixels at 300 dpi, over the 100 megapixel limit. Recognition of these pages was never asked for, and nothing in them is lost when it is skipped.
+  - **The reference converter returns the document for a PDF target with no OCR options.** Refusing a vector PDF that the same service would hand back is a failed conversion for the user, not a safeguard.
+- **Trade-offs**:
+  - **A scan too large to recognise stays unsearchable and is answered as a success with a warning.** A user who wants the text layer asks for OCR, which refuses with the limit.
+  - **The warning is the only signal.** A client that ignores `metadata.warnings` does not see that recognition was skipped.
+- **Alternatives rejected**:
+  - **Refuse as before and ask for a page range or `ocrEnabled`**: the user asked for a conversion, not for recognition.
+  - **Decide by file extension (`ai` only)**: any vector-only PDF fails the same way.
+  - **Return the document for every target**: text, HTML and Markdown of a page with no text would be empty, so they keep refusing.
+- **Verified by**: `tests/pdf-vector-only-unrequested-ocr.test.ts` (a vector-only PDF and the same bytes named `.ai`, an artboard over the pixel limit, requested OCR still refused, and the seven real Illustrator files that were refused), `tests/document-ocr.test.ts`.
+- **Revisit when**: a PDF target offers a way to report skipped steps other than the warning lines, or the pixel limit of recognition moves.

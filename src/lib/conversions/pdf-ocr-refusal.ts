@@ -1,4 +1,5 @@
 import { OcrEngineUnavailableError, OcrLanguageUnavailableError, PayloadLimitError } from '../types';
+import { InputPixelLimitError } from './image-input-limit-config';
 import { PdfPageFrameError } from './pdf-page-geometry';
 import { PdfPageRenderError, PdfPageRenderLimitError } from './pdf-page-render';
 import { pagesPhrase } from './pdf-text-types';
@@ -16,19 +17,24 @@ import { pagesPhrase } from './pdf-text-types';
  * no text would answer empty, so it is refused as damaged. Everything else, the job's own deadline or cancellation among it,
  * is not a refusal and propagates.
  *
- * The pixel limit (`InputPixelLimitError`) is not asked about here: it refuses the input whether or not OCR was asked for.
+ * The pixel limit (`InputPixelLimitError`) refuses the input whether or not OCR was asked for, so it is a refusal of OCR here
+ * only when the document itself is the answer.
  *
  * @param pages the pages OCR was to read, empty when it was to read the whole document.
  * @param textLayerEmpty whether the text layer read as no text at all.
+ * @param documentIsAnswer whether the conversion returns the document (a PDF target): an empty text layer then leaves nothing
+ * to refuse, and the size of the work and the pixel limit refuse the recovery too.
  * @returns the warning line for the conversion, or undefined when the failure must stay a failure.
  */
-export function skippedOcrWarning(err: unknown, pages: readonly number[], textLayerEmpty: boolean): string | undefined {
+export function skippedOcrWarning(err: unknown, pages: readonly number[], textLayerEmpty: boolean, documentIsAnswer = false): string | undefined {
   const isRenderFault = err instanceof PdfPageRenderLimitError || (err instanceof PdfPageRenderError && err.reason === 'timeout');
   const isEngineGone = err instanceof OcrEngineUnavailableError && !(err instanceof OcrLanguageUnavailableError);
   const isWorkSize = err instanceof PayloadLimitError && !(err instanceof PdfPageRenderLimitError);
   const isDamage = err instanceof PdfPageFrameError || (err instanceof PdfPageRenderError && err.reason === 'malformed');
-  if (!(isRenderFault || isEngineGone || ((isWorkSize || isDamage) && !textLayerEmpty))) return undefined;
+  const isPixelLimit = documentIsAnswer && err instanceof InputPixelLimitError;
+  if (!(isRenderFault || isEngineGone || isPixelLimit || ((isWorkSize || isDamage) && (documentIsAnswer || !textLayerEmpty)))) return undefined;
   const where = pages.length > 0 ? pagesPhrase(pages) : 'the document';
   const detail = (err as Error).message.replace(/\s+/g, ' ').trim();
-  return `Did not recognize ${where} with OCR, which the request did not ask for, and kept the text layer as it reads: ${detail}`;
+  const kept = documentIsAnswer ? 'kept the document as it is' : 'kept the text layer as it reads';
+  return `Did not recognize ${where} with OCR, which the request did not ask for, and ${kept}: ${detail}`;
 }
