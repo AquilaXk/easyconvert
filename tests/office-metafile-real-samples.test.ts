@@ -6,7 +6,7 @@ import path from 'node:path';
 import JSZip from 'jszip';
 import sharp from 'sharp';
 import { dispatchConversion } from '../src/lib/conversions/dispatch';
-import { PdfPermissionDeniedError, UnsupportedOptionError } from '../src/lib/types';
+import { UnsupportedOptionError } from '../src/lib/types';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { requireRealworldSample } from './helpers/realworld-sample';
 import { sofficeConvert } from './helpers/soffice-convert';
@@ -74,7 +74,7 @@ interface SampleCase {
 
 const BOTH = ['emf', 'wmf'] as const;
 const SAMPLES: readonly SampleCase[] = [
-  // A form in Japanese: text and thin rules, no picture; the in-process writer refuses the mask of a page, the office suite writes it.
+  // A form in Japanese: text and thin rules, no picture; the in-process writer draws the mask of a page as a picture (entry 459).
   { id: 'cc-0400651.pdf', extension: 'pdf', targets: BOTH, pages: 1 },
   { id: 'cc-4000041.pdf', extension: 'pdf', targets: BOTH, pages: 14 },
   { id: 'cc-6800345.pdf', extension: 'pdf', targets: BOTH, pages: 20 },
@@ -84,7 +84,7 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'lo-macro.pptm', extension: 'pptm', targets: ['emf'], pages: 1 },
   { id: 'lo-tdf96389_deftabstopecma.potx', extension: 'potx', targets: ['emf'], pages: 1 },
   // PostScript files (entry 458) go to PDF with Ghostscript first. Two pages the in-process writer writes (a Ghostscript test page, a gnuplot guide of two pages),
-  // and three it refuses that the office suite writes: a clip of a curve, a picture (a TIFF in a PostScript wrapper), a dash.
+  // and three it draws a picture for (entry 459): a clip of a curve, a picture (a TIFF in a PostScript wrapper), a dash.
   { id: 'gs-colorcir.ps', extension: 'ps', targets: BOTH, pages: 1 },
   { id: 'gnuplot-ps_guide.ps', extension: 'ps', targets: BOTH, pages: 2 },
   { id: 'tk29-test.ps', extension: 'ps', targets: BOTH, pages: 1 },
@@ -241,10 +241,11 @@ describe.skipIf(toolsMissing)('real PDF files the metafile writers refuse, with 
     }
   }, CONVERSION_TIMEOUT_MS);
 
-  it('a PDF whose permissions forbid assembling pages is refused, as every page operation refuses it', async (ctx) => {
+  it('a PDF whose permissions forbid assembling pages is written as it is for PNG and SVG: Poppler draws its pages and no page is cut out of it (entry 459)', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'govdocs1-000341.pdf');
-    const refusal = await dispatchConversion(bytes, 'pdf', 'emf', {}, 'restricted.pdf').catch((error: unknown) => error);
-    expect(refusal).toBeInstanceOf(PdfPermissionDeniedError);
-    expect((refusal as Error).message).toMatch(/permissions forbid page assembly/);
+    for (const target of BOTH) {
+      const written = await dispatchConversion(bytes, 'pdf', target, {}, 'restricted.pdf');
+      for (const page of await pagesOf(written.buffer)) expectMetafileHeader(page, target, `restricted.pdf -> ${target}`);
+    }
   }, CONVERSION_TIMEOUT_MS);
 });

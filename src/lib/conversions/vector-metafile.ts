@@ -1,4 +1,6 @@
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
+import { stretchDibRecordBytes, emfStretchDib, wmfStretchDib, type RegionBitmap } from './metafile-bitmap';
+import { coveredByRegion, elementExtent, pageRect, pageSizeFromRoot, RasterRegions, type PixelRect, type RefusalKind } from './svg-raster-regions';
 import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor, type SvgLinecap, type SvgLinejoin } from './svg-geometry';
 import { planElement, nonzeroDiffersFromEvenOdd, WorkMeter, miterRatios, strokedLines, type DrawOp, type FillOp, type PlanPen, type PlanPoint } from './metafile-draw-plan';
 
@@ -18,7 +20,7 @@ const SVG_ROOT_PATTERN = /<svg\b/i;
  * Parses the SVG input for a metafile encoder and fails closed when there is
  * nothing to encode: empty input, a non-SVG payload, or no drawable geometry.
  */
-function parseDrawableSvg(svgBuffer: Buffer, targetLabel: string): ParsedSvgVectorDocument {
+function parseDrawableSvg(svgBuffer: Buffer, targetLabel: string, regions?: RasterRegions): ParsedSvgVectorDocument {
   if (!svgBuffer || svgBuffer.length === 0) {
     throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: SVG buffer is empty.`);
   }
@@ -26,8 +28,8 @@ function parseDrawableSvg(svgBuffer: Buffer, targetLabel: string): ParsedSvgVect
   if (!SVG_ROOT_PATTERN.test(svgText)) {
     throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: input is not an SVG document.`);
   }
-  const doc = parseSvgGeometries(svgText);
-  const hasDrawable = doc.elements.some((el) => planElement(el).length > 0);
+  const doc = parseSvgGeometries(svgText, { rasterRegions: regions });
+  const hasDrawable = (regions?.rects.length ?? 0) > 0 || doc.elements.some((el) => planElement(el).length > 0);
   if (!hasDrawable) {
     throw new CadGeometryUnavailableError(`${targetLabel} encoding failed: SVG contains no drawable vector geometry.`);
   }
@@ -517,17 +519,22 @@ function assembleMetafile(headers: readonly Buffer[], records: readonly Buffer[]
  * Encodes an SVG document into a genuine Win32 Enhanced Metafile (EMF) binary buffer.
  */
 export function encodeEmf(svgBuffer: Buffer): Buffer {
-  const doc = parseDrawableSvg(svgBuffer, 'EMF');
+  return writeEmf(parseDrawableSvg(svgBuffer, 'EMF'), []);
+}
+
+function writeEmf(doc: ParsedSvgVectorDocument, bitmaps: readonly RegionBitmap[]): Buffer {
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
 
   const deviceOps = planDocument(doc);
-  assertEstimatedSize(deviceOps, 'emf');
+  assertEstimatedSize(deviceOps, 'emf', bitmapBytes(bitmaps, 'emf'));
   const space = computeLogicalSpace(deviceOps, width, height, true);
   const records: Buffer[] = [...createEmfStateRecords(space)];
 
   const state: EmfState = { fillMode: EMF_POLYFILL_WINDING, scale: space.scale };
   for (const op of scaleOps(deviceOps, space.scale)) encodeEmfOp(op, state, records);
+  // The pictures of the refused regions come last, over everything they stand for (cairo paints its fallback images after its native operations).
+  for (const bitmap of bitmaps) records.push(emfStretchDib(bitmap, space.scale));
 
   // EMR_EOF
   const eofRec = emfRecord(EMR_EOF, EMF_EOF_SIZE);
@@ -742,12 +749,15 @@ function buildAldusHeader(width: number, height: number, unitsPerInch: number): 
  * Encodes an SVG document into a genuine Windows Metafile (WMF) binary buffer.
  */
 export function encodeWmf(svgBuffer: Buffer): Buffer {
-  const doc = parseDrawableSvg(svgBuffer, 'WMF');
+  return writeWmf(parseDrawableSvg(svgBuffer, 'WMF'), []);
+}
+
+function writeWmf(doc: ParsedSvgVectorDocument, bitmaps: readonly RegionBitmap[]): Buffer {
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
 
   const deviceOps = planDocument(doc);
-  assertEstimatedSize(deviceOps, 'wmf');
+  assertEstimatedSize(deviceOps, 'wmf', bitmapBytes(bitmaps, 'wmf'));
   const space = computeLogicalSpace(deviceOps, width, height);
   const logicalOps = scaleOps(deviceOps, space.scale);
   const logicalWidth = Math.round(width * space.scale);
@@ -769,6 +779,7 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   // GDI starts with ALTERNATE; META_SETPOLYFILLMODE is written before the first shape that needs WINDING.
   const state: WmfState = { fillMode: WMF_POLYFILL_ALTERNATE };
   for (const op of logicalOps) encodeWmfOp(op, state, records);
+  for (const bitmap of bitmaps) records.push(wmfStretchDib(bitmap, space.scale));
 
   const eofRec = wmfRecord(META_EOF, WMF_EOF_RECORD_WORDS);
   records.push(eofRec);
@@ -795,6 +806,84 @@ export function encodeWmf(svgBuffer: Buffer): Buffer {
   assertOutputSize(totalBytes, 'WMF');
   const aldusHeader = buildAldusHeader(logicalWidth, logicalHeight, space.unitsPerInch);
   return assembleMetafile([aldusHeader, stdHeader], records, totalBytes);
+}
+
+// ============================================================================
+// A page with parts the writers cannot draw (a picture of those parts stands for them)
+// ============================================================================
+
+function bitmapBytes(bitmaps: readonly RegionBitmap[], format: 'emf' | 'wmf'): number {
+  return bitmaps.reduce((sum, bitmap) => sum + stretchDibRecordBytes(bitmap, format), 0);
+}
+
+/** The page of an SVG as an EMF or WMF writer reads it when the parts it cannot draw are left to pictures. */
+export interface MetafilePage {
+  /** The rectangles, in device pixels of the page, that need a picture each (none when the page is all vector). Pictures are given to `write` in this order. */
+  readonly regions: readonly PixelRect[];
+  /** What the refused parts were. */
+  readonly kinds: ReadonlySet<RefusalKind>;
+  /** Size of the page in device pixels. */
+  readonly width: number;
+  readonly height: number;
+  write(bitmaps: readonly RegionBitmap[]): Buffer;
+}
+
+/**
+ * Reads an SVG page for the writer of `format`, refusing no element the reader can measure: an element it refuses (a clip it cannot
+ * cut, a mask, a filter, a gradient, a pen the format lacks, a picture) adds its extent to the regions a picture stands for, and the
+ * vector elements that lie wholly inside a region are left out, as cairo's analysis surface leaves out an operation inside its fallback region.
+ * @throws what `encodeEmf` or `encodeWmf` throws for a page that is refused as a whole (malformed, too large, no drawing, a bitmap font).
+ */
+export function readMetafilePage(svgBuffer: Buffer, format: 'emf' | 'wmf'): MetafilePage {
+  const label = format.toUpperCase();
+  const regions = new RasterRegions();
+  const doc = parseDrawableSvg(svgBuffer, label, regions);
+  const drawable = doc.elements.filter((element) => {
+    try {
+      for (const op of planElement(element)) assertMiterCorners(op, label, GDI_DEFAULT_MITER_LIMIT);
+      return true;
+    } catch (error) {
+      if (!(error instanceof UnsupportedOptionError)) throw error;
+      regions.add(elementExtent(element), error);
+      return false;
+    }
+  });
+  const native = drawable.filter((element) => {
+    const extent = elementExtent(element);
+    return extent === undefined || !coveredByRegion(extent, regions.rects);
+  });
+  const written = { ...doc, elements: native };
+  return {
+    regions: [...regions.rects],
+    kinds: regions.kinds,
+    width: doc.width,
+    height: doc.height,
+    write(bitmaps) {
+      if (bitmaps.length !== regions.rects.length) {
+        throw new CadGeometryUnavailableError(`${label} page has ${regions.rects.length} regions to draw as pictures and was given ${bitmaps.length}.`);
+      }
+      return format === 'emf' ? writeEmf(written, bitmaps) : writeWmf(written, bitmaps);
+    },
+  };
+}
+
+/**
+ * A page with nothing but a picture of the whole page, for a page that is too large for the vector readers to read (more elements,
+ * vertices or coordinates than they hold; `isTooComplexToDraw`).
+ * @throws `refusal` again when the root of the SVG does not give the size of the page.
+ */
+export function wholePageAsPicture(svgBuffer: Buffer, format: 'emf' | 'wmf', refusal: Error): MetafilePage {
+  const size = pageSizeFromRoot(svgBuffer);
+  const rect = size && pageRect({ x0: 0, y0: 0, x1: size.width, y1: size.height }, size);
+  if (!size || !rect) throw refusal;
+  const doc: ParsedSvgVectorDocument = { width: size.width, height: size.height, unitPx: 1, elements: [] };
+  return {
+    regions: [rect],
+    kinds: new Set<RefusalKind>(['other']),
+    width: size.width,
+    height: size.height,
+    write: (bitmaps) => (format === 'emf' ? writeEmf(doc, bitmaps) : writeWmf(doc, bitmaps)),
+  };
 }
 
 // ============================================================================

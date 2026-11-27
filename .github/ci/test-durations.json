@@ -754,6 +754,8 @@
   "tests/metadata-task.test.ts": 0.6,
   "tests/metafile-logical-space.test.ts": 0,
   "tests/metafile-page-frame.test.ts": 0.1,
+  "tests/metafile-raster-fallback.test.ts": 0.1,
+  "tests/metafile-raster-real-samples.test.ts": 35.0,
   "tests/metrics-exposure.test.ts": 0,
   "tests/metrics-jobs.test.ts": 0.8,
   "tests/metrics-labels.test.ts": 0,

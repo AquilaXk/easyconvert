@@ -7,9 +7,12 @@ import { SandboxedProcessError } from '../lib/security/process-sandbox';
 import { ConversionFailedError, EngineUnavailableError, type ConversionOptions } from '../lib/types';
 
 /**
- * The metafile page writer of the office suite: the PDF page that the in-process metafile writers refuse (a picture, a dash, a clip that
- * is not one convex polygon; entries 42 and 99) is imported by the Draw application of the office suite and exported by its own EMF or WMF
- * filter, which writes bitmaps, dashes and clip regions as records. The page keeps its size: the margins the import gives it are removed first.
+ * The metafile page writer of the office suite: a PDF page that the in-process metafile writers refuse as a whole (a page with nothing
+ * to draw, one they cannot read) is imported by the Draw application of the office suite and exported by its own EMF or WMF filter. The
+ * parts of a page that the writers cannot draw (a picture, a dash, a clip, a mask, a gradient) are not sent here since entry 459: the suite
+ * draws a gradient under a clip, a mask and a cropped picture wrong on real files, and a bitmap record cut from Poppler's picture of the
+ * page stands for them in the in-process writer instead (`metafile-raster-fallback.ts`). The page keeps its size: the margins the import
+ * gives it are removed first.
  */
 
 /** Runs the office suite on a one-page PDF and returns the metafile it wrote. */

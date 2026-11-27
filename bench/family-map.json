@@ -275,11 +275,11 @@
     },
     {
       "families": ["vector"],
-      "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|openxps|xps-text-layout|odg)\\.ts$"
+      "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|metafile-bitmap|openxps|xps-text-layout|odg)\\.ts$"
     },
     {
       "families": ["vector"],
-      "match": "^src/worker/(postscript-(render|gs)|illustrator-route|(office-metafile-page|svg-(page-encoders|render)))\\.ts$"
+      "match": "^src/worker/(postscript-(render|gs)|illustrator-route|(office-metafile-page|metafile-raster-fallback|svg-(page-encoders|render)))\\.ts$"
     },
     {
       "families": ["document", "pdf-ops", "vector"],

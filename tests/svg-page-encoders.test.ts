@@ -127,9 +127,11 @@ describe('the text layer of a PDF, for the pages of one render', () => {
 });
 
 /**
- * A page that the in-process EMF and WMF writers refuse (a picture, a mask, a bitmap-font character) goes to the office suite as a
+ * A page that the in-process EMF and WMF writers refuse as a whole (nothing to draw, a bitmap-font character) goes to the office suite as a
  * one-page PDF; the pages the in-process writer writes do not, and a page with a Type 3 font is refused as before because the PDF import
  * of the office suite drops the glyphs of such a font. The office suite is a stand-in here; tests/office-metafile-real-samples.test.ts runs it.
+ * Where the worker gives it Poppler's picture of the page (`pageRaster`), a picture, a mask or a gradient is a bitmap record in the page and
+ * the office suite is not asked (entry 459).
  */
 describe.skipIf(skipWithoutTools('qpdf'))('an EMF or WMF page the in-process writer refuses', () => {
   const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==';
@@ -147,7 +149,7 @@ describe.skipIf(skipWithoutTools('qpdf'))('an EMF or WMF page the in-process wri
   }
 
   const encoder = (target: string, pdf: Buffer, pages: number, officeSuite: (page: Buffer, target: string) => Promise<Buffer>) =>
-    svgPageEncoder(target, withPageNumbers({ filename: 'doc.zip' } as WorkerConversionResult, Array.from({ length: pages }, (_, index) => index + 1)), () => pdf, {}, new PicturePages(), officeSuite);
+    svgPageEncoder(target, withPageNumbers({ filename: 'doc.zip' } as WorkerConversionResult, Array.from({ length: pages }, (_, index) => index + 1)), () => pdf, {}, new PicturePages(), { officeSuite });
 
   it('is written by the office suite from the one page of the PDF it came from', async () => {
     const run = vi.fn(async () => Buffer.from('ignored'));
@@ -179,6 +181,36 @@ describe.skipIf(skipWithoutTools('qpdf'))('an EMF or WMF page the in-process wri
     const written = await encoder('emf', pdf, 1, run)(Buffer.from(SVG), 'doc-p001.svg');
     expect(written.readUInt32LE(40)).toBe(EMF_SIGNATURE);
     await encoder('dxf', pdf, 1, run)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg').catch(() => undefined);
+    expect(run).not.toHaveBeenCalled();
+  });
+  const PNG_OF_PAGE = async (_page: number, dpi: number): Promise<Buffer> =>
+    (await import('sharp')).default({ create: { width: Math.round((100 * dpi) / 96), height: Math.round((100 * dpi) / 96), channels: 3, background: '#808080' } }).png().toBuffer();
+  const encoderWithPictures = (target: string, pdf: Buffer, officeSuite: (page: Buffer, target: string) => Promise<Buffer>, pageRaster = PNG_OF_PAGE) =>
+    svgPageEncoder(target, withPageNumbers({ filename: 'doc.zip' } as WorkerConversionResult, [1]), () => pdf, {}, new PicturePages(), { officeSuite, pageRaster });
+
+  it('is written in process with a bitmap record for the picture, and the office suite is not asked', async () => {
+    const run = vi.fn(async () => WRITTEN);
+    const pdf = await pdfOfPages(1);
+    for (const target of ['emf', 'wmf']) {
+      const written = await encoderWithPictures(target, pdf, run)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg');
+      expect(target === 'emf' ? written.readUInt32LE(40) : written.readUInt32LE(0)).toBe(target === 'emf' ? EMF_SIGNATURE : WMF_PLACEABLE_KEY);
+    }
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('still goes to the office suite when the page is refused as a whole: a page with nothing to draw', async () => {
+    const run = vi.fn(async () => Buffer.from([0x01, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, ...new Array(32).fill(0), 0x20, 0x45, 0x4d, 0x46, 0, 0, 0, 0]));
+    const pdf = await pdfOfPages(1);
+    const blank = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"></svg>';
+    await encoderWithPictures('emf', pdf, run)(Buffer.from(blank), 'doc-p001.svg');
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('is refused with a typed error that is not the office suite\'s, when the picture would pass the bounds', async () => {
+    const run = vi.fn(async () => WRITTEN);
+    const pdf = await pdfOfPages(1);
+    const poster = `<svg xmlns="http://www.w3.org/2000/svg" width="${96 * 120}" height="${96 * 120}"><image width="10" height="10" href="${PIXEL}"/></svg>`;
+    await expect(encoderWithPictures('emf', pdf, run, vi.fn())(Buffer.from(poster), 'doc-p001.svg')).rejects.toThrow(/more than 72 dpi allows/);
     expect(run).not.toHaveBeenCalled();
   });
 });

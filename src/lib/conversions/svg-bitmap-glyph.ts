@@ -52,6 +52,13 @@ function maskId(node: BitmapGlyphNode): string | undefined {
   return value === undefined ? undefined : MASK_URL_PATTERN.exec(value.trim())?.[1];
 }
 
+const BITMAP_GLYPH_REFUSAL = 'SVG bitmap glyph (a character of a bitmap font, drawn as a picture) is not supported by metafile encoders.';
+
+/** Whether an error is the refusal of a bitmap font's character: a page of such characters stays refused where other refusals are drawn as a picture. */
+export function isBitmapGlyphRefusal(error: Error): boolean {
+  return error.message === BITMAP_GLYPH_REFUSAL;
+}
+
 /** Whether the node is a bitmap glyph: a `<rect>` whose mask holds nothing but pictures. */
 function isBitmapGlyph(node: BitmapGlyphNode, ids: ReadonlyMap<string, BitmapGlyphNode>): boolean {
   if (node.name !== 'rect') return false;
@@ -107,7 +114,7 @@ export class BitmapGlyphs {
     }
     if (glyph === null) return false;
     if (!this.setAside) {
-      throw new UnsupportedOptionError('SVG bitmap glyph (a character of a bitmap font, drawn as a picture) is not supported by metafile encoders.');
+      throw new UnsupportedOptionError(BITMAP_GLYPH_REFUSAL);
     }
     this.marks.push({ glyph, ...apply(originCtm, 0, 0), ...extent(node, ctm) });
     return true;

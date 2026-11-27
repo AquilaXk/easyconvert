@@ -1,7 +1,8 @@
 import { Point3D, adaptiveTessellateCubicBezier, tessellateSvgArc } from './cad-nurbs';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import { assertValidPaintDeclarations, resolvePaint, type RgbColor } from './svg-paint';
-import { BitmapGlyphs, glyphBox } from './svg-bitmap-glyph';
+import { BitmapGlyphs, glyphBox, isBitmapGlyphRefusal } from './svg-bitmap-glyph';
+import { ExtentBox, type PixelRect, type RasterRegions } from './svg-raster-regions';
 import { isDrawnPicture, isFullyTransparent, type LeftOutPictures } from './svg-picture';
 import { ActiveClips } from './svg-clip-region';
 import { parseLength, requireFinite, rootUnitPx } from './svg-length';
@@ -53,6 +54,12 @@ export interface SvgReadOptions {
   pens?: SvgPenMode;
   /** Given, the pictures of the page are left out and counted there (a DXF holds no bitmaps); else the page is refused at its first picture. */
   pictures?: LeftOutPictures;
+  /**
+   * Given, an element the reader refuses (a clip, a mask, a filter, a paint server, a pen the target lacks, a picture) is not an error:
+   * its extent is added here, nothing of it is read as geometry, and the caller draws that rectangle as a picture of the page. A bitmap
+   * font's characters are still refused. Else the first refusal ends the read.
+   */
+  rasterRegions?: RasterRegions;
 }
 
 /**
@@ -1078,6 +1085,7 @@ interface RenderState {
   depth: number;
   pens: SvgPenMode;
   pictures: LeftOutPictures | undefined;
+  rasterRegions: RasterRegions | undefined;
   /** Whether a `clip-path` value, on an element drawn under the matrix, is a clip that covers the page and clips nothing. */
   clipsNothing: (value: string, ctm: AffineMatrix) => boolean;
   /** The other clips, measured against what is drawn under them and cut where they hide more than the tolerance of the pens. */
@@ -1191,8 +1199,76 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
 
 function renderNode(node: SvgNode, parent: StyleContext, state: RenderState): void {
   if (++state.depth > MAX_SVG_NESTING_DEPTH) throw nestingTooDeep();
-  renderNodeAtDepth(node, parent, state);
-  state.depth--;
+  try {
+    renderNodeAtDepth(node, parent, state);
+  } catch (error) {
+    if (!state.rasterRegions || !(error instanceof UnsupportedOptionError) || isBitmapGlyphRefusal(error)) throw error;
+    state.rasterRegions.add(extentOfRefused(node, parent, state), error);
+  } finally {
+    state.depth--;
+  }
+}
+
+/** How far a pen reaches past the outline it strokes, in half widths: a miter join reaches up to its limit, a square cap or a round join less. */
+const MAX_PEN_REACH = 10;
+const SQUARE_CAP_REACH = Math.SQRT2;
+
+/** The device extent a node draws, with every paint, clip, mask and filter left unjudged; the sum of its shapes, pictures and `<use>` copies. */
+function addNodeExtent(node: SvgNode, parent: StyleContext, state: RenderState, extent: ExtentBox): void {
+  if (NON_RENDERED_ELEMENTS.has(node.name) || isForeignNamespaceElement(node.name)) return;
+  if (++state.depth > MAX_SVG_NESTING_DEPTH) throw nestingTooDeep();
+  try {
+    const declared = declaredProperties(node.attrs, node.name, state.sheet);
+    if (declared.get('display') === 'none') return;
+    const ctx = deriveContext(parent, node.attrs, declared, state.pens);
+    if (SHAPE_ELEMENTS.has(node.name)) {
+      const half = (resolveStrokeWidth(ctx.strokeWidth) * matrixLengthScale(ctx.ctm)) / 2;
+      const reach = ctx.stroke.trim().toLowerCase() === 'none' ? 0 : half * (ctx.strokeLinejoin.trim() === 'miter' ? Math.min(MAX_PEN_REACH, parseSvgNumber(ctx.strokeMiterlimit, 'stroke-miterlimit')) : SQUARE_CAP_REACH);
+      for (const sub of shapeGeometry(node.name, node.attrs)?.subpaths ?? []) {
+        for (const p of sub) {
+          const d = applyMatrix(ctx.ctm, p.x, p.y);
+          extent.include(d.x, d.y, reach);
+        }
+      }
+    } else if (node.name === 'image') {
+      const [x, y, width, height] = ['x', 'y', 'width', 'height'].map((name) => numberAttr(node.attrs, name));
+      for (const [cx, cy] of [[x, y], [x + width, y], [x, y + height], [x + width, y + height]]) {
+        const d = applyMatrix(ctx.ctm, cx, cy);
+        extent.include(d.x, d.y);
+      }
+    } else if (node.name === 'use') {
+      addUseExtent(node, ctx, state, extent);
+    } else {
+      for (const child of node.children) addNodeExtent(child, ctx, state, extent);
+    }
+  } finally {
+    state.depth--;
+  }
+}
+
+function addUseExtent(node: SvgNode, ctx: StyleContext, state: RenderState, extent: ExtentBox): void {
+  const id = (node.attrs.get('href') ?? node.attrs.get('xlink:href') ?? '').trim().replace(/^#/, '');
+  const target = state.ids.get(id);
+  if (!target || state.useChain.includes(id)) return;
+  const useCtx: StyleContext = { ...ctx, ctm: multiplyMatrix(ctx.ctm, [1, 0, 0, 1, numberAttr(node.attrs, 'x'), numberAttr(node.attrs, 'y')]) };
+  state.useChain.push(id);
+  try {
+    addNodeExtent(target, useCtx, state, extent);
+  } finally {
+    state.useChain.pop();
+  }
+}
+
+/** The extent of a refused node, or `undefined` when it cannot be measured (the whole page then stands for it). */
+function extentOfRefused(node: SvgNode, parent: StyleContext, state: RenderState): PixelRect | undefined {
+  const extent = new ExtentBox();
+  try {
+    addNodeExtent(node, parent, state, extent);
+  } catch (error) {
+    if (!(error instanceof UnsupportedOptionError || error instanceof CadGeometryUnavailableError || error instanceof RangeError)) throw error;
+    return undefined;
+  }
+  return extent.box;
 }
 
 type RenderedKind = 'shape' | 'use' | 'group' | 'picture';
@@ -1230,15 +1306,18 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
     return;
   }
   let opensClip = false;
-  assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips.enter(value, ctx.ctm)));
-  if (kind === 'shape') {
-    emitShape(node, ctx, state);
-  } else if (kind === 'use') {
-    renderUse(node, ctx, state);
-  } else {
-    renderChildren(node, ctx, state);
+  try {
+    assertNoUnsupportedReferences(node.attrs, (value) => state.clipsNothing(value, ctx.ctm) || (opensClip = state.clips.enter(value, ctx.ctm)));
+    if (kind === 'shape') {
+      emitShape(node, ctx, state);
+    } else if (kind === 'use') {
+      renderUse(node, ctx, state);
+    } else {
+      renderChildren(node, ctx, state);
+    }
+  } finally {
+    if (opensClip) state.clips.leave();
   }
-  if (opensClip) state.clips.leave();
 }
 
 /**
@@ -1250,7 +1329,7 @@ function renderNodeAtDepth(node: SvgNode, parent: StyleContext, state: RenderSta
  * what the target does with the pen attributes it cannot paint (svg-pen.ts): by default they are refused. A picture is refused
  * too unless `pictures` collects it.
  */
-export function parseSvgGeometries(svgContent: string, { bitmapGlyphs = new BitmapGlyphs(), pens = 'metafile', pictures }: SvgReadOptions = {}): ParsedSvgVectorDocument {
+export function parseSvgGeometries(svgContent: string, { bitmapGlyphs = new BitmapGlyphs(), pens = 'metafile', pictures, rasterRegions }: SvgReadOptions = {}): ParsedSvgVectorDocument {
   if (svgContent.length > MAX_SVG_INPUT_CHARS) {
     throw new CadGeometryUnavailableError(`SVG input exceeds the ${MAX_SVG_INPUT_CHARS}-character limit.`);
   }
@@ -1264,6 +1343,7 @@ export function parseSvgGeometries(svgContent: string, { bitmapGlyphs = new Bitm
   assertNeutralPaintProperties(declared, pens);
   assertValidPaintDeclarations(declared);
   assertNoUnsupportedReferences(root.attrs);
+  rasterRegions?.start(viewport);
   const rootCtx = deriveContext({ ...INITIAL_STYLE, ctm: viewport.matrix }, root.attrs, declared, pens);
   const ids = new Map<string, SvgNode>();
   const parents = new Map<ClipNode, SvgNode>();
@@ -1279,7 +1359,7 @@ export function parseSvgGeometries(svgContent: string, { bitmapGlyphs = new Bitm
     },
     pens
   );
-  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, pictures, clipsNothing, clips };
+  const state: RenderState = { elements: [], ids, useChain: [], bitmapGlyphs, renderedNodes: 0, vertices, shapeCache: new Map(), sheet, depth: 0, pens, pictures, rasterRegions, clipsNothing, clips };
   indexIds(root, state.ids, parents);
   if (declared.get('display') !== 'none') renderChildren(root, rootCtx, state);
   return { width: viewport.width, height: viewport.height, unitPx: rootUnitPx(root.attrs), elements: state.elements };
