@@ -8,9 +8,10 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'docx->pages', 'docx->xps',
   // Entry 183: a Pages document has no export to a presentation.
   'pages->ppt',
-  // Entry 309: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
+  // Entry 309 and entry 454: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
   'key->doc', 'key->xls',
+  // Entry 454: the office suite has no XPS filter and Ghostscript's xpswrite writes a drawing with no Glyphs (bitmap rows by default, outlines with -dNOCACHE), so these eight stay withdrawn.
   'pot->xps',
   'potx->xps',
   'ppt->xps',
@@ -19,7 +20,7 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'numbers->doc', 'numbers->ppt',
   'xls->xps',
   'xlsx->numbers', 'xlsx->xps',
-  // Entry 187: pairs the reference offers that the product leaves out, each with the reason measured on real files. Entry 452 offers the PDF,
+  // Entry 187: pairs the reference offers that the product leaves out, each with the reason measured on real files. Entry 453 offers the PDF,
   // presentation, CorelDRAW, CGM, EMF and WMF sources as EMF and WMF through the office suite; what stays withdrawn: PostScript and EPS pages (12 of 15
   // interpretable real PostScript files draw their text with Type 3 bitmap fonts, which the in-process writers and the office suite's PDF import both
   // refuse or drop, and one of three real EPS files makes the suite's EMF export fail), Illustrator files (the only real sample draws nothing), a page that is
@@ -34,7 +35,9 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'emf->dxf',
   'sk->emf', 'sk->wmf',
   'sk1->emf', 'sk1->wmf',
+  // Entry 454: the office suite of the image has no Flash export; a raster slide show by FFmpeg is an option that waits for QA.
   'dps->swf',
+  // Entry 454: a GIF or WebP holds no audio stream, so every real file would be refused.
   'gif->aac', 'gif->aiff', 'gif->flac', 'gif->m4a', 'gif->mp3', 'gif->wav', 'gif->wma',
   'odp->swf',
   'pps->swf',
