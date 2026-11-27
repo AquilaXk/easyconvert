@@ -16,7 +16,7 @@
 //
 // This file needs no installed dependencies: the `changes` job runs it straight after checkout.
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -194,12 +194,49 @@ export function gitChangedRows(baseSha, root = ROOT, readBase = gitShow) {
   };
 }
 
+/**
+ * Classifies the unclassified paths that no longer exist (a change deleted them) by the family map of the base commit,
+ * where their rule still stood. A deleted path that the base map does not cover either has no code left to measure,
+ * so it leaves the unclassified list. Paths that exist are left as they were.
+ */
+export function classifyDeletedPaths(result, { baseSha, root = ROOT, exists = (file) => existsSync(path.join(root, file)), readBase = gitShow }) {
+  if (!baseSha) return result;
+  const atBaseCommit = (file) => {
+    try {
+      return readBase(baseSha, file, root) !== null;
+    } catch {
+      return false;
+    }
+  };
+  const deleted = result.unclassified.filter((file) => !exists(file) && atBaseCommit(file));
+  if (deleted.length === 0) return result;
+  let baseMap = null;
+  {
+    try {
+      const text = readBase(baseSha, 'bench/family-map.json', root);
+      baseMap = text === null ? null : validateFamilyMap(JSON.parse(text));
+    } catch {
+      baseMap = null;
+    }
+  }
+  const atBase = baseMap === null ? null : classifyPaths(deleted, baseMap);
+  const families = new Set([...result.benchmarked, ...(atBase?.benchmarked ?? [])]);
+  const order = baseMap === null ? result.benchmarked : [...new Set([...result.benchmarked, ...baseMap.benchmarked])];
+  return {
+    ...result,
+    benchmarked: order.filter((name) => families.has(name)),
+    unmapped: [...new Set([...result.unmapped, ...(atBase?.unmapped ?? [])])],
+    unclassified: result.unclassified.filter((file) => !deleted.includes(file)),
+  };
+}
+
 function main() {
   const paths = readFileSync(0, 'utf8')
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line !== '');
-  const result = classifyPaths(paths, loadFamilyMap(), { changedRows: gitChangedRows(process.env.PR_BASE_SHA) });
+  const baseSha = process.env.PR_BASE_SHA;
+  const result = classifyDeletedPaths(classifyPaths(paths, loadFamilyMap(), { changedRows: gitChangedRows(baseSha) }), { baseSha });
   console.log(`families=${result.benchmarked.join(',')}`);
   console.log(`unmapped=${result.unmapped.join(',')}`);
   console.log(`unclassified=${result.unclassified.join(',')}`);
