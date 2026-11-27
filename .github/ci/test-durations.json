@@ -774,6 +774,7 @@
   "tests/next-config-runtime-phase.test.ts": 0.5,
   "tests/next-config-server-externals.test.ts": 0,
   "tests/no-tier-page-limit.test.ts": 9.1,
+  "tests/node-output-filename-bytes.test.ts": 0.2,
   "tests/not-found-theme.test.ts": 0.2,
   "tests/object-header.test.ts": 0.1,
   "tests/oci-deploy.test.ts": 32.5,

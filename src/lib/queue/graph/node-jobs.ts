@@ -49,7 +49,8 @@ export function assertSealedFor(graphId: string, graph: SealedJobGraph): void {
 export type NodeOutputArea = 'intermediate' | 'results';
 
 const CONTROL_OR_SEPARATOR_CHARS = /[\0-\x1f\x7f\\/]+/g;
-const MAX_NODE_OUTPUT_FILENAME_LENGTH = 255;
+/** The longest file name that file systems and object stores take is 255 bytes, not 255 characters: a Korean letter is 3 bytes in UTF-8. */
+const MAX_NODE_OUTPUT_FILENAME_BYTES = 255;
 const MAX_PRESERVED_EXTENSION_LENGTH = 32;
 const COMPOUND_TAR_EXT_PATTERN = /\.(?:tar\.(?:gz|bz2|bz|xz|7z|lz|lzma|lzo|z))$/i;
 
@@ -65,6 +66,18 @@ function splitPreservedExtension(filename: string): { stem: string; ext: string 
   return { stem: filename, ext: '' };
 }
 
+/** The longest start of `text` that is at most `maxBytes` long in UTF-8 and ends between two code points. */
+function truncateToUtf8Bytes(text: string, maxBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  for (const codePoint of text) {
+    bytes += Buffer.byteLength(codePoint, 'utf8');
+    if (bytes > maxBytes) break;
+    end += codePoint.length;
+  }
+  return text.slice(0, end);
+}
+
 export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'output.bin'): string {
   const base = path.posix
     .basename(String(rawFilename || '').replace(/\\/g, '/'))
@@ -77,10 +90,10 @@ export function sanitizeNodeOutputFilename(rawFilename: string, fallback = 'outp
   if (!/[^\s._]/.test(stem)) {
     return fallback;
   }
-  if (base.length <= MAX_NODE_OUTPUT_FILENAME_LENGTH) {
+  if (Buffer.byteLength(base, 'utf8') <= MAX_NODE_OUTPUT_FILENAME_BYTES) {
     return base;
   }
-  const truncatedStem = stem.slice(0, MAX_NODE_OUTPUT_FILENAME_LENGTH - ext.length);
+  const truncatedStem = truncateToUtf8Bytes(stem, MAX_NODE_OUTPUT_FILENAME_BYTES - Buffer.byteLength(ext, 'utf8'));
   if (!/[^\s._]/.test(truncatedStem)) {
     return fallback;
   }
