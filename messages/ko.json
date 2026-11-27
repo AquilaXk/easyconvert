@@ -600,7 +600,7 @@
           "watermark": "PDF 워터마크 추가",
           "extractPages": "PDF 페이지 추출",
           "deletePages": "PDF 페이지 삭제",
-          "captureWebsite": "웹 페이지 캡처"
+          "captureWebsite": "웹사이트 캡처"
         },
         "pair": "{from} → {to}",
         "fromPackage": "충전 크레딧에서 {count, number}크레딧",
@@ -670,7 +670,7 @@
       "createKey": "API 키를 만들지 못했습니다. 잠시 후 다시 시도하세요.",
       "createKeyNetwork": "연결이 끊겨 API 키를 만들지 못했습니다. 다시 시도하세요.",
       "revokeKey": "API 키를 폐기하지 못했습니다. 잠시 후 다시 시도하세요.",
-      "revokeKeyGone": "이미 취소되었거나 없는 API 키입니다.",
+      "revokeKeyGone": "이미 폐기되었거나 없는 API 키입니다.",
       "revokeKeyNetwork": "연결이 끊겨 API 키를 폐기하지 못했습니다. 다시 시도하세요.",
       "signOutNetwork": "연결이 끊겨 로그아웃하지 못했습니다. 다시 시도하세요."
     },
@@ -2170,7 +2170,7 @@
       "engine_version_unavailable": "선택한 엔진 버전이 설치되어 있지 않습니다. 설치된 버전을 쓰거나 버전을 지정하지 마세요.",
       "metadata_write_unsupported": "이 형식은 다른 부분을 건드리지 않고는 새 메타데이터를 넣을 수 없습니다. JPEG/PNG/PDF 파일에 넣으세요.",
       "metadata_field_invalid": "이 파일에 넣을 수 없는 메타데이터 항목이거나 항목에 맞지 않는 값입니다. 항목 이름과 값을 확인하세요.",
-      "capture_unavailable": "이 서버에서는 웹 페이지 캡처를 쓸 수 없습니다.",
+      "capture_unavailable": "이 서버에서는 웹사이트 캡처를 쓸 수 없습니다.",
       "capture_target_blocked": "이 주소는 캡처할 수 없습니다. 일반 웹 포트의 공개 웹 페이지만 캡처할 수 있습니다.",
       "capture_failed": "페이지를 불러오거나 그리지 못했습니다. 주소를 확인하거나 나중에 다시 시도하세요.",
       "pdf_postprocess_failed": "이 파일에는 PDF 처리를 적용할 수 없습니다. 설정과 파일을 확인하세요. 예를 들어 지정한 페이지가 문서의 모든 페이지이면 안 됩니다.",

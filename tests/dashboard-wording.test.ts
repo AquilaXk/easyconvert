@@ -197,7 +197,7 @@ describe('a refused dashboard request', () => {
       await vi.waitFor(() => expect(ko.controller.state.revokingKeyId).toBe('k-1'));
       ko.controller.actions.onConfirmRevoke('k-1');
       await vi.waitFor(() => expect(ko.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
-      expect(ko.reported()).toBe('이미 취소되었거나 없는 API 키입니다.');
+      expect(ko.reported()).toBe('이미 폐기되었거나 없는 API 키입니다.');
       expect(ko.controller.state.revokingKeyId).toBeNull();
       root?.unmount();
       const en = await mountKeys('en', notFound());
