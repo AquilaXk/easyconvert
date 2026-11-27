@@ -137,6 +137,7 @@ const EXPECTED_CODES: Record<string, ConversionRefusalCode> = {
   OcrWorkLimitError: 'input_over_limit',
   PayloadLimitError: 'input_over_limit',
   PdfPageRenderLimitError: 'input_over_limit',
+  RasterFallbackTooLargeError: 'input_over_limit',
   ShapingLimitError: 'input_over_limit',
   SheetLimitError: 'input_over_limit',
   Woff2LimitError: 'input_over_limit',

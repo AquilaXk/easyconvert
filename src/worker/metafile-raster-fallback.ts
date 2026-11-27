@@ -2,7 +2,7 @@ import sharp from 'sharp';
 import type { RegionBitmap } from '../lib/conversions/metafile-bitmap';
 import { readMetafilePage, wholePageAsPicture, type MetafilePage } from '../lib/conversions/vector-metafile';
 import { isTooComplexToDraw, type PixelRect } from '../lib/conversions/svg-raster-regions';
-import { CadGeometryUnavailableError, ConversionFailedError } from '../lib/types';
+import { CadGeometryUnavailableError, ConversionFailedError, PayloadLimitError } from '../lib/types';
 
 /**
  * The pictures that stand for the parts of a PDF page an EMF or WMF writer cannot draw (`readMetafilePage`): Poppler draws the whole
@@ -50,10 +50,10 @@ const CSS_PX_PER_INCH = 96;
 const CHANNELS = 3;
 
 /**
- * A page whose regions need a density below the least, or a render that is not a picture of the page. It is not an
+ * A page whose regions need a density below the least: a size refusal like the page render's own limit. It is not an
  * `UnsupportedOptionError`: that is what sends a page to the office suite, which draws these pages wrong.
  */
-export class RasterFallbackTooLargeError extends ConversionFailedError {
+export class RasterFallbackTooLargeError extends PayloadLimitError {
   constructor(message: string) {
     super(message);
     this.name = 'RasterFallbackTooLargeError';
@@ -97,7 +97,7 @@ export async function renderRegionBitmaps(
   const dpi = rasterFallbackDpi(regions, page);
   const decoded = await sharp(await draw(pageNumber, dpi)).flatten({ background: '#ffffff' }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const render = { width: decoded.info.width, height: decoded.info.height };
-  if (decoded.info.channels !== CHANNELS) throw new RasterFallbackTooLargeError(`The page render has ${decoded.info.channels} colour channels, not ${CHANNELS}.`);
+  if (decoded.info.channels !== CHANNELS) throw new ConversionFailedError(`The page render has ${decoded.info.channels} colour channels, not ${CHANNELS}.`);
   const scaleX = render.width / page.width;
   const scaleY = render.height / page.height;
   return regions.map((rect) => {
