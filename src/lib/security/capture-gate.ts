@@ -178,17 +178,114 @@ interface DialFallbackCallbacks {
   onFailed: (error: unknown) => void;
 }
 
+/** What the attempts of one `dialWithFallback` share: the socket and timer of the attempt in flight, and whether the caller cancelled. */
+interface DialState {
+  cancelled: boolean;
+  activeSocket: net.Socket | null;
+  activeTimer: NodeJS.Timeout | null;
+}
+
+interface DialAttemptEnv {
+  state: DialState;
+  ctx: DialFallbackContext;
+  callbacks: DialFallbackCallbacks;
+  isStopped: () => boolean;
+}
+
+/** Watches one connecting socket until it connects, fails or times out; a failure that is not fatal calls `next`. */
+function superviseAttempt(env: DialAttemptEnv, socket: net.Socket, attemptTimeoutMs: number, next: (error: unknown) => void): void {
+  const { state, ctx, callbacks, isStopped } = env;
+  state.activeSocket = socket;
+  ctx.track(socket);
+  socket.setTimeout(0);
+
+  let settled = false;
+  const clearTimer = (): void => {
+    if (state.activeTimer === null) return;
+    clearTimeout(state.activeTimer);
+    state.activeTimer = null;
+  };
+
+  const failAttempt = (error: unknown, fatal: boolean): void => {
+    if (settled) return;
+    settled = true;
+    clearTimer();
+    socket.removeListener('connect', onConnect);
+    socket.removeListener('error', onError);
+    socket.removeListener('close', onClose);
+    socket.on('error', () => undefined);
+    socket.destroy();
+    if (state.activeSocket === socket) state.activeSocket = null;
+    if (fatal || isStopped()) callbacks.onFailed(error);
+    else next(error);
+  };
+
+  const onConnect = (): void => {
+    if (settled || socket.destroyed) return;
+    if (isStopped()) {
+      failAttempt(new GateError('limit'), true);
+      return;
+    }
+    settled = true;
+    clearTimer();
+    socket.removeListener('connect', onConnect);
+    socket.removeListener('close', onClose);
+    if (state.activeSocket === socket) state.activeSocket = null;
+    socket.setTimeout(ctx.idleMs);
+    callbacks.onConnected(socket);
+    socket.removeListener('error', onError);
+  };
+
+  const onError = (error: unknown): void => {
+    if (settled) return;
+    if (error instanceof GateError) {
+      ctx.recordRefusal(ctx.host, ctx.port, error.reason);
+      failAttempt(error, true);
+      return;
+    }
+    failAttempt(error, false);
+  };
+
+  const onClose = (): void => {
+    failAttempt(new Error('Connection closed before connect'), false);
+  };
+
+  state.activeTimer = setTimeout(() => {
+    failAttempt(new Error('Connect timeout'), false);
+  }, attemptTimeoutMs);
+
+  socket.once('connect', onConnect);
+  socket.on('error', onError);
+  socket.once('close', onClose);
+
+  if (!socket.connecting && socket.remoteAddress !== undefined && !socket.destroyed) {
+    onConnect();
+  }
+}
+
+function cancelDial(state: DialState): void {
+  state.cancelled = true;
+  if (state.activeTimer !== null) {
+    clearTimeout(state.activeTimer);
+    state.activeTimer = null;
+  }
+  if (state.activeSocket !== null) {
+    const sock = state.activeSocket;
+    state.activeSocket = null;
+    sock.on('error', () => undefined);
+    sock.destroy();
+  }
+}
+
 function dialWithFallback(
   targets: readonly GateTarget[],
   ctx: DialFallbackContext,
   callbacks: DialFallbackCallbacks
 ): () => void {
   const deadline = Date.now() + ctx.connectTimeoutMs;
-  let cancelled = false;
-  let activeSocket: net.Socket | null = null;
-  let activeTimer: NodeJS.Timeout | null = null;
-
-  const isStopped = (): boolean => cancelled || ctx.isStopped();
+  const state: DialState = { cancelled: false, activeSocket: null, activeTimer: null };
+  const isStopped = (): boolean => state.cancelled || ctx.isStopped();
+  const env: DialAttemptEnv = { state, ctx, callbacks, isStopped };
 
   const tryAt = (index: number, lastError?: unknown): void => {
     if (isStopped()) {
@@ -220,90 +317,186 @@ function dialWithFallback(
       tryAt(index + 1, error);
       return;
     }
-
-    activeSocket = socket;
-    ctx.track(socket);
-    socket.setTimeout(0);
-
-    let settled = false;
-    const clearTimer = (): void => {
-      if (activeTimer === null) return;
-      clearTimeout(activeTimer);
-      activeTimer = null;
-    };
-
-    const failAttempt = (error: unknown, fatal: boolean): void => {
-      if (settled) return;
-      settled = true;
-      clearTimer();
-      socket.removeListener('connect', onConnect);
-      socket.removeListener('error', onError);
-      socket.removeListener('close', onClose);
-      socket.on('error', () => undefined);
-      socket.destroy();
-      if (activeSocket === socket) activeSocket = null;
-      if (fatal || isStopped()) callbacks.onFailed(error);
-      else tryAt(index + 1, error);
-    };
-
-    const onConnect = (): void => {
-      if (settled || socket.destroyed) return;
-      if (isStopped()) {
-        failAttempt(new GateError('limit'), true);
-        return;
-      }
-      settled = true;
-      clearTimer();
-      socket.removeListener('connect', onConnect);
-      socket.removeListener('close', onClose);
-      if (activeSocket === socket) activeSocket = null;
-      socket.setTimeout(ctx.idleMs);
-      callbacks.onConnected(socket);
-      socket.removeListener('error', onError);
-    };
-
-    const onError = (error: unknown): void => {
-      if (settled) return;
-      if (error instanceof GateError) {
-        ctx.recordRefusal(ctx.host, ctx.port, error.reason);
-        failAttempt(error, true);
-        return;
-      }
-      failAttempt(error, false);
-    };
-
-    const onClose = (): void => {
-      failAttempt(new Error('Connection closed before connect'), false);
-    };
-
-    activeTimer = setTimeout(() => {
-      failAttempt(new Error('Connect timeout'), false);
-    }, attemptTimeoutMs);
-
-    socket.once('connect', onConnect);
-    socket.on('error', onError);
-    socket.once('close', onClose);
-
-    if (!socket.connecting && socket.remoteAddress !== undefined && !socket.destroyed) {
-      onConnect();
-    }
+    superviseAttempt(env, socket, attemptTimeoutMs, (error) => tryAt(index + 1, error));
   };
 
   tryAt(0);
 
-  return () => {
-    cancelled = true;
-    if (activeTimer !== null) {
-      clearTimeout(activeTimer);
-      activeTimer = null;
-    }
-    if (activeSocket !== null) {
-      const sock = activeSocket;
-      activeSocket = null;
-      sock.on('error', () => undefined);
-      sock.destroy();
-    }
+  return () => cancelDial(state);
+}
+
+/** The state and checks of one running gate that its request handlers share. */
+interface GateRuntime {
+  idleMs: number;
+  isClosed: () => boolean;
+  refuse: (host: string, port: number, reason: GateRefusalReason) => void;
+  /** All vetted candidate addresses for `host:port`, or a GateError saying why not. Resolves once. */
+  vet: (host: string, port: number) => Promise<GateTarget[]>;
+  track: (socket: net.Socket) => void;
+  dialContext: (host: string, port: number, isAborted: () => boolean) => DialFallbackContext;
+}
+
+/** Ends a tunnel the upstream failed before it answered; a client that already got bytes is only destroyed by the caller. */
+function endWithBadGateway(clientSocket: net.Socket): void {
+  if (!clientSocket.destroyed && clientSocket.writable && !clientSocket.bytesWritten) {
+    clientSocket.end(`HTTP/1.1 ${BAD_GATEWAY} Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  }
+}
+
+function openTunnel(rt: GateRuntime, host: string, port: number, targets: GateTarget[], clientSocket: net.Socket, head: Buffer): void {
+  if (rt.isClosed() || clientSocket.destroyed) return;
+  let cancelDial: (() => void) | undefined;
+  let upstreamSocket: net.Socket | undefined;
+  const onClientClose = (): void => {
+    cancelDial?.();
+    upstreamSocket?.destroy();
   };
+  clientSocket.once('close', onClientClose);
+  cancelDial = dialWithFallback(targets, rt.dialContext(host, port, () => clientSocket.destroyed), {
+    onConnected: (upstream) => {
+      if (rt.isClosed() || clientSocket.destroyed) {
+        upstream.destroy();
+        return;
+      }
+      upstreamSocket = upstream;
+      upstream.on('error', (error) => {
+        if (error instanceof GateError) rt.refuse(host, port, error.reason);
+        endWithBadGateway(clientSocket);
+        clientSocket.destroy();
+      });
+      upstream.once('close', () => clientSocket.destroy());
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length > 0) upstream.write(head);
+      upstream.pipe(clientSocket);
+      clientSocket.pipe(upstream);
+    },
+    onFailed: () => {
+      clientSocket.removeListener('close', onClientClose);
+      endWithBadGateway(clientSocket);
+      clientSocket.destroy();
+    },
+  });
+}
+
+function handleConnect(rt: GateRuntime, request: http.IncomingMessage, clientSocket: net.Socket, head: Buffer): void {
+  rt.track(clientSocket);
+  clientSocket.on('error', () => clientSocket.destroy());
+  const match = AUTHORITY.exec(request.url ?? '');
+  const host = match?.[1] ?? '';
+  const port = match ? Number(match[2]) : 0;
+  const deny = (reason: GateRefusalReason): void => {
+    rt.refuse(host || '(none)', port, reason);
+    clientSocket.end(`HTTP/1.1 ${reason === 'malformed' ? BAD_REQUEST : FORBIDDEN} Refused\r\n${REFUSAL_HEADER}: ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+  };
+  if (!match) {
+    deny('malformed');
+    return;
+  }
+  rt.vet(host, port).then(
+    (targets) => openTunnel(rt, host, port, targets, clientSocket, head),
+    (error: unknown) => deny(error instanceof GateError ? error.reason : 'unresolved')
+  );
+}
+
+function relayRequest(rt: GateRuntime, request: http.IncomingMessage, response: http.ServerResponse, url: URL, port: number, targets: GateTarget[]): void {
+  if (rt.isClosed() || response.destroyed || request.socket.destroyed) return;
+  const headers = buildForwardHeaders(request.headers, url.host);
+  let aborted = false;
+  let upstream: http.ClientRequest | undefined;
+  let cancelDial: (() => void) | undefined;
+  const cleanupAbortListeners = (): void => {
+    response.removeListener('close', abortUpstreamIfPremature);
+    response.removeListener('finish', cleanupAbortListeners);
+    request.removeListener('error', abortUpstreamIfPremature);
+    request.socket.removeListener('close', abortUpstreamIfPremature);
+  };
+  const abortUpstreamIfPremature = (): void => {
+    cleanupAbortListeners();
+    if (response.writableEnded) return;
+    aborted = true;
+    cancelDial?.();
+    if (upstream && !upstream.destroyed) upstream.destroy();
+  };
+  response.once('close', abortUpstreamIfPremature);
+  response.once('finish', cleanupAbortListeners);
+  request.on('error', abortUpstreamIfPremature);
+  request.socket.once('close', abortUpstreamIfPremature);
+
+  cancelDial = dialWithFallback(
+    targets,
+    rt.dialContext(url.hostname, port, () => aborted || response.destroyed || request.socket.destroyed),
+    {
+      onConnected: (socket) => {
+        if (aborted || rt.isClosed() || response.destroyed || request.socket.destroyed) {
+          socket.destroy();
+          return;
+        }
+        upstream = http.request({
+          method: request.method,
+          path: `${url.pathname}${url.search}`,
+          headers,
+          // No agent: the request uses the already-connected vetted socket.
+          createConnection: () => socket,
+        });
+        upstream.setTimeout(rt.idleMs, () => upstream?.destroy());
+        upstream.on('response', (answer) => {
+          response.writeHead(answer.statusCode ?? BAD_GATEWAY, buildAnswerHeaders(answer.headers));
+          answer.on('error', () => {
+            if (!response.destroyed) response.destroy();
+          });
+          answer.pipe(response);
+        });
+        upstream.on('error', (error) => {
+          cleanupAbortListeners();
+          if (error instanceof GateError) rt.refuse(url.hostname, port, error.reason);
+          if (!response.headersSent) {
+            response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
+            if (!response.destroyed) response.end();
+          } else if (!response.destroyed) {
+            response.destroy();
+          }
+        });
+        request.pipe(upstream);
+      },
+      onFailed: () => {
+        cleanupAbortListeners();
+        if (!aborted && !rt.isClosed() && !response.destroyed && !response.headersSent) {
+          response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
+          response.end();
+        } else if (!response.destroyed) {
+          response.destroy();
+        }
+      },
+    }
+  );
+}
+
+function handleProxyRequest(rt: GateRuntime, request: http.IncomingMessage, response: http.ServerResponse): void {
+  const deny = (host: string, port: number, reason: GateRefusalReason): void => {
+    rt.refuse(host || '(none)', port, reason);
+    response.writeHead(reason === 'malformed' ? BAD_REQUEST : FORBIDDEN, { [REFUSAL_HEADER]: reason, 'content-length': '0', connection: 'close' });
+    response.end();
+  };
+  let url: URL;
+  try {
+    url = new URL(request.url ?? '');
+  } catch {
+    deny('', 0, request.url?.startsWith('/') ? 'method' : 'malformed');
+    return;
+  }
+  const port = url.port === '' ? HTTP_PORT : Number(url.port);
+  if (url.protocol !== 'http:') {
+    deny(url.hostname, port, 'scheme');
+    return;
+  }
+  if (url.username !== '' || url.password !== '') {
+    deny(url.hostname, port, 'malformed');
+    return;
+  }
+  rt.vet(url.hostname, port).then(
+    (targets) => relayRequest(rt, request, response, url, port, targets),
+    (error: unknown) => deny(url.hostname, port, error instanceof GateError ? error.reason : 'unresolved')
+  );
 }
 
 export async function startCaptureGate(options: CaptureGateOptions = {}): Promise<CaptureGate> {
@@ -330,7 +523,6 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
     if (refusals.length < MAX_RECORDED_REFUSALS) refusals.push({ host, port, reason });
   };
 
-  /** All vetted candidate addresses for `host:port`, or a GateError saying why not. Resolves once. */
   async function vet(host: string, port: number): Promise<GateTarget[]> {
     if (!Number.isInteger(port) || port < 1 || port > MAX_PORT || !permitPort(port)) throw new GateError('port');
     if (clients.size > maxConnections || relayed > maxBytes) throw new GateError('limit');
@@ -351,179 +543,32 @@ export async function startCaptureGate(options: CaptureGateOptions = {}): Promis
     socket.once('close', () => open.delete(socket));
   }
 
-  const dialContext = (host: string, port: number, isAborted: () => boolean): DialFallbackContext => ({
-    host,
-    port,
-    connectTimeoutMs,
+  const runtime: GateRuntime = {
     idleMs,
-    dial,
+    isClosed: () => closed,
+    refuse,
+    vet,
     track,
-    recordPassed: (target) => passed.push(target),
-    recordRefusal: refuse,
-    isStopped: () => closed || isAborted(),
-  });
+    dialContext: (host, port, isAborted) => ({
+      host,
+      port,
+      connectTimeoutMs,
+      idleMs,
+      dial,
+      track,
+      recordPassed: (target) => passed.push(target),
+      recordRefusal: refuse,
+      isStopped: () => closed || isAborted(),
+    }),
+  };
 
   const server = http.createServer();
   server.on('connection', (socket: net.Socket) => {
     clients.add(socket);
     socket.once('close', () => clients.delete(socket));
   });
-
-  server.on('connect', (request, clientSocket: net.Socket, head: Buffer) => {
-    track(clientSocket);
-    clientSocket.on('error', () => clientSocket.destroy());
-    const match = AUTHORITY.exec(request.url ?? '');
-    const host = match?.[1] ?? '';
-    const port = match ? Number(match[2]) : 0;
-    const deny = (reason: GateRefusalReason): void => {
-      refuse(host || '(none)', port, reason);
-      clientSocket.end(`HTTP/1.1 ${reason === 'malformed' ? BAD_REQUEST : FORBIDDEN} Refused\r\n${REFUSAL_HEADER}: ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-    };
-    if (!match) {
-      deny('malformed');
-      return;
-    }
-    vet(host, port).then(
-      (targets) => {
-        if (closed || clientSocket.destroyed) return;
-        let cancelDial: (() => void) | undefined;
-        let upstreamSocket: net.Socket | undefined;
-        const onClientClose = (): void => {
-          cancelDial?.();
-          upstreamSocket?.destroy();
-        };
-        clientSocket.once('close', onClientClose);
-        cancelDial = dialWithFallback(targets, dialContext(host, port, () => clientSocket.destroyed), {
-          onConnected: (upstream) => {
-            if (closed || clientSocket.destroyed) {
-              upstream.destroy();
-              return;
-            }
-            upstreamSocket = upstream;
-            upstream.on('error', (error) => {
-              if (error instanceof GateError) refuse(host, port, error.reason);
-              if (!clientSocket.destroyed && clientSocket.writable && !clientSocket.bytesWritten) {
-                clientSocket.end(`HTTP/1.1 ${BAD_GATEWAY} Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-              }
-              clientSocket.destroy();
-            });
-            upstream.once('close', () => clientSocket.destroy());
-            clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-            if (head.length > 0) upstream.write(head);
-            upstream.pipe(clientSocket);
-            clientSocket.pipe(upstream);
-          },
-          onFailed: () => {
-            clientSocket.removeListener('close', onClientClose);
-            if (!clientSocket.destroyed && clientSocket.writable && !clientSocket.bytesWritten) {
-              clientSocket.end(`HTTP/1.1 ${BAD_GATEWAY} Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-            }
-            clientSocket.destroy();
-          },
-        });
-      },
-      (error: unknown) => deny(error instanceof GateError ? error.reason : 'unresolved')
-    );
-  });
-
-  server.on('request', (request, response) => {
-    const deny = (host: string, port: number, reason: GateRefusalReason): void => {
-      refuse(host || '(none)', port, reason);
-      response.writeHead(reason === 'malformed' ? BAD_REQUEST : FORBIDDEN, { [REFUSAL_HEADER]: reason, 'content-length': '0', connection: 'close' });
-      response.end();
-    };
-    let url: URL;
-    try {
-      url = new URL(request.url ?? '');
-    } catch {
-      deny('', 0, request.url?.startsWith('/') ? 'method' : 'malformed');
-      return;
-    }
-    const port = url.port === '' ? HTTP_PORT : Number(url.port);
-    if (url.protocol !== 'http:') {
-      deny(url.hostname, port, 'scheme');
-      return;
-    }
-    if (url.username !== '' || url.password !== '') {
-      deny(url.hostname, port, 'malformed');
-      return;
-    }
-    vet(url.hostname, port).then(
-      (targets) => {
-        if (closed || response.destroyed || request.socket.destroyed) return;
-        const headers = buildForwardHeaders(request.headers, url.host);
-        let aborted = false;
-        let upstream: http.ClientRequest | undefined;
-        let cancelDial: (() => void) | undefined;
-        const cleanupAbortListeners = (): void => {
-          response.removeListener('close', abortUpstreamIfPremature);
-          response.removeListener('finish', cleanupAbortListeners);
-          request.removeListener('error', abortUpstreamIfPremature);
-          request.socket.removeListener('close', abortUpstreamIfPremature);
-        };
-        const abortUpstreamIfPremature = (): void => {
-          cleanupAbortListeners();
-          if (response.writableEnded) return;
-          aborted = true;
-          cancelDial?.();
-          if (upstream && !upstream.destroyed) upstream.destroy();
-        };
-        response.once('close', abortUpstreamIfPremature);
-        response.once('finish', cleanupAbortListeners);
-        request.on('error', abortUpstreamIfPremature);
-        request.socket.once('close', abortUpstreamIfPremature);
-
-        cancelDial = dialWithFallback(
-          targets,
-          dialContext(url.hostname, port, () => aborted || response.destroyed || request.socket.destroyed),
-          {
-            onConnected: (socket) => {
-              if (aborted || closed || response.destroyed || request.socket.destroyed) {
-                socket.destroy();
-                return;
-              }
-              upstream = http.request({
-                method: request.method,
-                path: `${url.pathname}${url.search}`,
-                headers,
-                // No agent: the request uses the already-connected vetted socket.
-                createConnection: () => socket,
-              });
-              upstream.setTimeout(idleMs, () => upstream?.destroy());
-              upstream.on('response', (answer) => {
-                response.writeHead(answer.statusCode ?? BAD_GATEWAY, buildAnswerHeaders(answer.headers));
-                answer.on('error', () => {
-                  if (!response.destroyed) response.destroy();
-                });
-                answer.pipe(response);
-              });
-              upstream.on('error', (error) => {
-                cleanupAbortListeners();
-                if (error instanceof GateError) refuse(url.hostname, port, error.reason);
-                if (!response.headersSent) {
-                  response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
-                  if (!response.destroyed) response.end();
-                } else if (!response.destroyed) {
-                  response.destroy();
-                }
-              });
-              request.pipe(upstream);
-            },
-            onFailed: () => {
-              cleanupAbortListeners();
-              if (!aborted && !closed && !response.destroyed && !response.headersSent) {
-                response.writeHead(BAD_GATEWAY, { 'content-length': '0', connection: 'close' });
-                response.end();
-              } else if (!response.destroyed) {
-                response.destroy();
-              }
-            },
-          }
-        );
-      },
-      (error: unknown) => deny(url.hostname, port, error instanceof GateError ? error.reason : 'unresolved')
-    );
-  });
+  server.on('connect', (request, clientSocket: net.Socket, head: Buffer) => handleConnect(runtime, request, clientSocket, head));
+  server.on('request', (request, response) => handleProxyRequest(runtime, request, response));
 
   server.on('upgrade', (_request, socket: net.Socket) => {
     refuse('(upgrade)', 0, 'method');
