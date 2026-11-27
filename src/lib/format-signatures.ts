@@ -708,10 +708,17 @@ function isWindowsCursorHeader(buf: Uint8Array, count: number): boolean {
   return true;
 }
 
+/** Whether the bytes start with the BOF record of Lotus 1-2-3 release 3 and later (`.wk3`, `.wk4`, `.123`), which no in-process reader reads. */
+export function isLotusRelease3Bof(buf: Uint8Array): boolean {
+  if (buf.length < 6 || !startsWithBytes(buf, LOTUS_WK3_BOF_MAGIC)) return false;
+  const revision = dataView(buf).getUint16(4, true);
+  return revision >= 0x1000 && revision <= 0x1005;
+}
+
 function isLotusWksBof(buf: Uint8Array): boolean {
+  if (isLotusRelease3Bof(buf)) return true;
   if (buf.length < 6) return false;
   const revision = dataView(buf).getUint16(4, true);
-  if (startsWithBytes(buf, LOTUS_WK3_BOF_MAGIC)) return revision >= 0x1000 && revision <= 0x1005;
   if (!startsWithBytes(buf, LOTUS_WKS_BOF_MAGIC)) return false;
   const validRevision = (revision >= 0x0400 && revision <= 0x040f) || revision === 0x0008;
   if (!validRevision) return false;

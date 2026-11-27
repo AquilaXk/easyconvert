@@ -509,6 +509,7 @@ Security
 458. [PostScript files are written as EMF and WMF through the PDF page route, and Illustrator and EPS files stay withdrawn with the wrong drawings measured on real files](#458-postscript-files-are-written-as-emf-and-wmf-through-the-pdf-page-route-and-illustrator-and-eps-files-stay-withdrawn-with-the-wrong-drawings-measured-on-real-files)
 459. [A part of an EMF or WMF page that the in-process writers cannot draw is a bitmap record cut from Poppler's picture of the page, and the office suite no longer writes those pages](#459-a-part-of-an-emf-or-wmf-page-that-the-in-process-writers-cannot-draw-is-a-bitmap-record-cut-from-popplers-picture-of-the-page-and-the-office-suite-no-longer-writes-those-pages)
 460. [Illustrator and EPS files are written as EMF and WMF through the PDF page route, with the 2 art boards past the picture bound refused](#460-illustrator-and-eps-files-are-written-as-emf-and-wmf-through-the-pdf-page-route-with-the-2-art-boards-past-the-picture-bound-refused)
+461. [A Lotus 1-2-3 file of release 3 and later (`.wk3`, `.wk4`, `.123`) is read by the office suite, and the in-process reader refuses it as a file for the office suite](#461-a-lotus-1-2-3-file-of-release-3-and-later-wk3-wk4-123-is-read-by-the-office-suite-and-the-in-process-reader-refuses-it-as-a-file-for-the-office-suite)
 
 ---
 
@@ -13457,3 +13458,23 @@ Security
   - **Writing a picture of a lower density for the 2 large art boards**: a 69-inch page at under 72 dpi is a file a viewer shows blurred, and the bound of entry 459 is the measured limit of the 50 MB cap of a metafile.
 - **Verified by**: `tests/metafile-raster-real-samples.test.ts` (4 Illustrator and 3 EPS files converted from the file itself as EMF and WMF and redrawn by two readers, and the 69-inch art board refused for both targets), `tests/cad-metafile-registry.test.ts`, `tests/parity-audit.test.ts`, `tests/vector-pairs.test.ts`, `tests/registry-engine-conformance.test.ts`.
 - **Revisit when**: the bound of 12 million pixels refuses a real page that matters, or a viewer of the files needs the text of a refused region as text (entry 459).
+
+## 461. A Lotus 1-2-3 file of release 3 and later (`.wk3`, `.wk4`, `.123`) is read by the office suite, and the in-process reader refuses it as a file for the office suite
+
+- **Status**: Implemented, decided 2026-11-28 (QA request: close the open item on `.wk3` and `.wk4`); nothing is deployed.
+- **Decision**:
+  - **The office suite reads the file.** A file declared as `wks` or `wk1` whose first record is the BOF record of 0x1A bytes (revision 0x1000 to 0x1005, the header the signature check of the `.wks` extension already accepts) is opened by LibreOffice Calc. A target the suite writes (XLSX, PDF and the other Office formats) is written in that pass; CSV is written by the in-process converter from the XLSX the suite wrote first, the route of the formats only the suite reads. An archive target packs the file as it is.
+  - **The in-process reader refuses it with an unavailable engine, not a damaged file.** `sheet-legacy.ts` answers such a header with `EngineUnavailableError` naming `soffice`, as it does for the Works compound files, instead of "missing Lotus 1-2-3 BOF record". Release 1 and 2 files stay with the in-process reader.
+  - **No new extension is registered.** `wk3`, `wk4` and `123` are still not inputs of the registry; the file is reached by the 2 extensions the registry has. Registering them is a separate decision.
+- **Why**:
+  - **The reference service offers no Lotus format** (checked), so the bar is the mature open-source readers. LibreOffice opens these files through libwps (`lotus.cxx` of libwps, the Lotus import of `writerperfect`) and writes them as sheets with their values; the in-process reader would need the 3-D worksheet records, the per-sheet names and the formula records of a format with several generations, to be checked against the same suite.
+  - **Measured on 5 real files** (Lima VM `default`, LibreOffice 24.2): the Open Preservation Foundation corpus files `PEYTREND.WK3` (revision 0x1000, 222 rows of numbers) and `testLotus123-lotusftp.wk4` (0x1002, an employee table of 10 rows), its `.123` file (0x1003, 2 sheets) and 2 `.123` files of the LibreOffice test data (0x1003 and 0x1005, with sheet names, number formats and dates). Every one converts to CSV and XLSX, and the labels the CSV holds are bytes of the file.
+- **Trade-offs**:
+  - **Needs the office suite.** A worker without it answers 503 for these files, as for Works and Quattro Pro; the in-process engine alone cannot read them.
+  - **Formulas arrive as the suite computes them.** One sample's formula cell answers `#VALUE!` in the suite, and the CSV holds that value.
+  - **Several sheets give a CSV with `### Sheet: <name>` lines**, as any workbook of the in-process XLSX reader does.
+- **Alternatives rejected**:
+  - **Reading the 3-D worksheet records in process**: the cached value of a formula and the number formats (dates among them) are what the suite recovers, and a second reader of a format with several generations adds code that the suite already has and that the 5 samples could not cover.
+  - **A typed unsupported refusal**: the suite reads every sample right, so refusing would withhold a conversion that is faithful.
+- **Verified by**: `tests/lotus-release3.test.ts` (the BOF check, the typed refusal of the in-process reader, the route for each target, and 4 real files, by manifest id, converted to CSV and XLSX with the labels checked in the file's own bytes), `tests/lotus-bof-signature.test.ts`, `tests/launch-conversions-coverage.test.ts`.
+- **Revisit when**: a real file of release 3 or later is read wrong by the suite (compare the cell values with the values of another reader), or the registry offers `wk3`, `wk4` or `123` as inputs.

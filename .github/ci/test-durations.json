@@ -692,6 +692,7 @@
   "tests/login-global-failed-limit.test.ts": 0.2,
   "tests/login-success-keeps-ip-counter.test.ts": 0,
   "tests/lotus-bof-signature.test.ts": 0.2,
+  "tests/lotus-release3.test.ts": 8,
   "tests/lzma-decoder-fast-path.test.ts": 1.1,
   "tests/lzma-decoder.test.ts": 14,
   "tests/lzma-encoder-levels.test.ts": 15.9,

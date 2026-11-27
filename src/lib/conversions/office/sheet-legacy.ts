@@ -1,5 +1,6 @@
 import { ConversionFailedError, EngineUnavailableError } from '../../types';
 import { startsWithBytes } from '../package-access';
+import { isLotusRelease3Bof } from '../../format-signatures';
 import { decodeTextInput } from '../text-input';
 import { dbfCodePageForLdid, decodeDbfBytes } from './dbf-code-pages';
 import { decodeWindows1252 } from './windows-1252';
@@ -489,6 +490,12 @@ function parseLotusRows(input: Buffer, format: string): string[][] {
     throw new EngineUnavailableError(
       'soffice',
       `.${format} compound spreadsheets are opened by LibreOffice Calc; the in-process engine has no reader for them.`
+    );
+  }
+  if (isLotusRelease3Bof(input)) {
+    throw new EngineUnavailableError(
+      'soffice',
+      `.${format} files of Lotus 1-2-3 release 3 and later (.wk3, .wk4, .123) are opened by LibreOffice Calc; the in-process engine reads release 1 and 2 files only.`
     );
   }
   if (input.length < 6) {

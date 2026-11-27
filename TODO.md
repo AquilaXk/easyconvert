@@ -41,4 +41,3 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Rare samples: DWG before R13, WP Greek accented letters, Word Wingdings check boxes.
 - `sk`/`sk1` input through UniConvertor 2 as a separate sandboxed GPL program (behaviour only, no code copied).
 - Run the first event credit campaign on or after 2026-12-13 (terms version naming event credits takes effect).
-- Lotus 1-2-3 release 3 and later (`.wk3`, `.wk4`, BOF record of 0x1A bytes): the `.wks` signature check now accepts the header, but `sheet-legacy.ts` still refuses the file as "missing Lotus 1-2-3 BOF record"; add a reader or a typed unsupported message.

@@ -29,7 +29,7 @@ import { HWP3_SIGNATURE } from '../lib/conversions/hwp-version';
 import { ARCHIVE_TARGET_FORMATS } from './native-route-formats';
 import { metafileFrameDocument } from '../lib/conversions/office/metafile-frame-document';
 import { isEmptyMetafile, metafileLeadingBytes, readMetafilePage, type MetafileFormat } from '../lib/conversions/office/metafile-page-frame';
-import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream } from '../lib/format-signatures';
+import { CFBF_MAGIC, PRE_OLE2_WORD_SIGNATURES, isBiffStream, isLotusRelease3Bof } from '../lib/format-signatures';
 import { startsWithBytes } from '../lib/conversions/package-access';
 import { assertTextSourceHead } from '../lib/conversions/office/text-source';
 import { decodeTextInput, isLegacyText, isLegacyTextFile } from '../lib/conversions/text-input';
@@ -795,9 +795,27 @@ function hwp3Interchange(tgt: string): string | undefined {
   return TEXT_ONLY_TARGETS.has(tgt) ? HWP3_TEXT_INTERCHANGE : HWP3_INTERCHANGE;
 }
 
-/** `interchangeNeeded` of a request, which sends an HWP 3.x file through the office suite for every target that is not a packing of the file. */
+const LOTUS_SOURCES: ReadonlySet<string> = new Set(['wk1', 'wks']);
+const LOTUS_RELEASE3_INTERCHANGE = 'xlsx';
+
+/**
+ * Whether the input is a Lotus 1-2-3 file of release 3 or later (`.wk3`, `.wk4`, `.123`) declared as a Lotus source. The in-process reader reads
+ * the cell records of release 1 and 2 only; the office suite reads the later ones (LibreOffice Calc, through libwps).
+ */
+function isLotusRelease3Input(src: string, input: Buffer | WorkerVfsPayload): boolean {
+  return LOTUS_SOURCES.has(src) && isLotusRelease3Bof(leadingBytes(input));
+}
+
+/**
+ * `interchangeNeeded` of a request, which sends an HWP 3.x file through the office suite for every target that is not a packing of the file,
+ * and a Lotus release 3 or later workbook through the XLSX the suite writes for every target it does not write itself.
+ */
 export function interchangeFor(request: OfficeSuiteRequest, madeWithoutInterchange: boolean): string | undefined {
-  return isHwp3Input(request.src, request.input) ? hwp3Interchange(request.tgt) : interchangeNeeded(request.src, request.tgt, madeWithoutInterchange);
+  if (isHwp3Input(request.src, request.input)) return hwp3Interchange(request.tgt);
+  if (isLotusRelease3Input(request.src, request.input)) {
+    return madeWithoutInterchange || officeSuiteWritesTarget(request.src, request.tgt) ? undefined : LOTUS_RELEASE3_INTERCHANGE;
+  }
+  return interchangeNeeded(request.src, request.tgt, madeWithoutInterchange);
 }
 
 /** Whether the office suite reads this input: every source of its table, but not a clear-text CGM, which the in-process parser reads. */
