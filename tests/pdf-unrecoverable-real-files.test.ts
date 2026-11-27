@@ -28,12 +28,12 @@ const MISSING_HEADER = 'CorruptStreamError: Invalid PDF document: missing %PDF- 
 
 /** Each file with the targets the nightly run asked for and the refusal each gets. */
 const REFUSALS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  'qpdf-issue-263.pdf': { lrf: MISSING_HEADER, mobi: MISSING_HEADER, oeb: MISSING_HEADER },
-  'qpdf-issue-101.pdf': { docx: INVALID_STRUCTURE, html: INVALID_STRUCTURE, md: INVALID_STRUCTURE },
-  'pdfjs-bug1020226.pdf': { eps: NO_PAGE_COUNT, ps: NO_PAGE_COUNT, dxf: NO_PAGE_COUNT },
-  'qpdf-issue-99.pdf': { odd: NO_PAGE_COUNT, doc: INVALID_STRUCTURE, ppt: INVALID_STRUCTURE },
-  'qpdf-issue-120.pdf': { pdf: INVALID_ROOT, rtf: INVALID_ROOT, txt: INVALID_ROOT },
-  'qpdf-issue-141b.pdf': { epub: INVALID_ROOT, xlsx: INVALID_ROOT, png: NO_PAGE_COUNT },
+  'qpdf-issue-263.pdf': { docx: MISSING_HEADER, html: MISSING_HEADER, md: MISSING_HEADER },
+  'qpdf-issue-101.pdf': { gif: NO_PAGE_COUNT, ico: NO_PAGE_COUNT, psd: NO_PAGE_COUNT },
+  'pdfjs-bug1020226.pdf': { tiff: NO_PAGE_COUNT, xls: INVALID_STRUCTURE, hocr: INVALID_STRUCTURE },
+  'qpdf-issue-99.pdf': { alto: INVALID_STRUCTURE, avif: NO_PAGE_COUNT, bmp: NO_PAGE_COUNT },
+  'qpdf-issue-120.pdf': { webp: NO_PAGE_COUNT, eps: NO_PAGE_COUNT, ps: NO_PAGE_COUNT },
+  'qpdf-issue-141b.pdf': { dxf: NO_PAGE_COUNT, odd: NO_PAGE_COUNT, doc: INVALID_ROOT },
 };
 
 /** The e-book writers run in calibre, which a machine without it answers before the text layer is read; the worker image and the nightly run have it. */
