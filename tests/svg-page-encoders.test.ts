@@ -66,6 +66,38 @@ describe('the writers of the SVG-page targets', () => {
   });
 });
 
+describe('the size of the page that Poppler drew', () => {
+  const LETTER_MM = [(612 * 25.4) / 72, (792 * 25.4) / 72];
+  const FORMS = {
+    // Poppler 25.02 and later (and cairo before 1.17.6) write the unit of the document.
+    'points (Poppler 25.02 and later)': 'width="612pt" height="792pt"',
+    // Poppler 24 on cairo 1.17.6 and later (Ubuntu noble) writes the user units of cairo, which are points, without a unit.
+    'no unit (Poppler before 25.02)': 'width="612" height="792"',
+  };
+  const page = (size: string): Buffer =>
+    Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${size} viewBox="0 0 612 792"><path d="M 72 72 L 540 72 L 306 720 Z" fill="#ff0000"/></svg>`);
+  /** The frame of the EMF header (rclFrame, 0.01 mm), in millimetres. */
+  const emfFrame = (emf: Buffer): number[] => [(emf.readInt32LE(32) - emf.readInt32LE(24)) / 100, (emf.readInt32LE(36) - emf.readInt32LE(28)) / 100];
+
+  it.each(Object.entries(FORMS))('EMF: a page of 612 x 792 points is 215.9 x 279.4 mm with %s', async (_form, size) => {
+    const emf = await svgPageEncoder('emf', RENDERED, () => undefined, {}, new PicturePages())(page(size), RENDERED.filename);
+    const [width, height] = emfFrame(emf);
+    expect(width).toBeCloseTo(LETTER_MM[0], 0);
+    expect(height).toBeCloseTo(LETTER_MM[1], 0);
+  });
+
+  it.each(Object.entries(FORMS))('WMF: a page of 612 x 792 points has the same logical size with %s', async (_form, size) => {
+    const reference = await svgPageEncoder('wmf', RENDERED, () => undefined, {}, new PicturePages())(page(FORMS['points (Poppler 25.02 and later)']), RENDERED.filename);
+    const wmf = await svgPageEncoder('wmf', RENDERED, () => undefined, {}, new PicturePages())(page(size), RENDERED.filename);
+    expect(wmf.equals(reference)).toBe(true);
+  });
+
+  it('a page whose root names no viewBox keeps the size the SVG states', async () => {
+    const emf = await write('emf');
+    expect(emfFrame(emf)[0]).toBeCloseTo((100 * 25.4) / 96, 0);
+  });
+});
+
 describe('the text layer of a PDF, for the pages of one render', () => {
   const PAGES = 24;
   const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==';

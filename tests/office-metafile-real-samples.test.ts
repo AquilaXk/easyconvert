@@ -68,12 +68,6 @@ interface SampleCase {
   targets: readonly string[];
   /** The pages of the PDF the converter writes for the sample (the metafile output has one file for each). */
   pages: number;
-  /**
-   * Whether the office suite writes page 1 (the in-process writer refuses it), so that the frame of the file is the page of the PDF. A page the
-   * in-process writer writes has the size its SVG states, which Poppler 24 gives without a unit (pixels) and Poppler 26 in points, so its frame is
-   * not compared.
-   */
-  officeSuitePage?: boolean;
   /** Whether page 1 draws a picture, which the office suite writes as a bitmap record (the in-process writers refuse it). */
   picture?: boolean;
 }
@@ -81,12 +75,12 @@ interface SampleCase {
 const BOTH = ['emf', 'wmf'] as const;
 const SAMPLES: readonly SampleCase[] = [
   // A form in Japanese: text and thin rules, no picture; the in-process writer refuses the mask of a page, the office suite writes it.
-  { id: 'cc-0400651.pdf', extension: 'pdf', targets: BOTH, pages: 1, officeSuitePage: true },
+  { id: 'cc-0400651.pdf', extension: 'pdf', targets: BOTH, pages: 1 },
   { id: 'cc-4000041.pdf', extension: 'pdf', targets: BOTH, pages: 14 },
   { id: 'cc-6800345.pdf', extension: 'pdf', targets: BOTH, pages: 20 },
   { id: 'govdocs1-000012.pdf', extension: 'pdf', targets: BOTH, pages: 6 },
-  { id: 'office-slideshow-pictures.ppt', extension: 'ppt', targets: ['emf'], pages: 5, picture: true, officeSuitePage: true },
-  { id: 'govdocs1-000133.ppt', extension: 'ppt', targets: ['emf'], pages: 21, picture: true, officeSuitePage: true },
+  { id: 'office-slideshow-pictures.ppt', extension: 'ppt', targets: ['emf'], pages: 5, picture: true },
+  { id: 'govdocs1-000133.ppt', extension: 'ppt', targets: ['emf'], pages: 21, picture: true },
   { id: 'lo-macro.pptm', extension: 'pptm', targets: ['emf'], pages: 1 },
   { id: 'lo-tdf96389_deftabstopecma.potx', extension: 'potx', targets: ['emf'], pages: 1 },
 ];
@@ -196,8 +190,8 @@ describe.skipIf(toolsMissing)('real PDF files and presentations written as EMF a
           const outputs = await pagesOf(result.buffer);
           expect(outputs.length, `${label} pages`).toBe(sample.pages);
           outputs.forEach((metafile, index) => expectMetafileHeader(metafile, target, `${label} page ${index + 1}`));
-          if (target === 'emf' && sample.officeSuitePage) {
-            // The frame of the file (rclFrame, in 0.01 mm) is the page (a rotated page has its sides the other way round): a page the office suite writes keeps the edge of a picture that fills it.
+          if (target === 'emf') {
+            // The frame of the file (rclFrame, in 0.01 mm) is the page (a rotated page has its sides the other way round): a page the office suite writes keeps the edge of a picture that fills it, and a page the in-process writer writes has the size of Poppler's page whichever unit the SVG gives it.
             const frame = sidesOf((outputs[0].readInt32LE(32) - outputs[0].readInt32LE(24)) / 100, (outputs[0].readInt32LE(36) - outputs[0].readInt32LE(28)) / 100);
             const pageSize = firstPageSizeMm(pdf);
             const page = sidesOf(pageSize.width, pageSize.height);

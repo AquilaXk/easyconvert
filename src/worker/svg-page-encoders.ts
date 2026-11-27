@@ -38,6 +38,26 @@ export function isSvgPageTarget(target: string): boolean {
   return Object.hasOwn(SVG_PAGE_ENCODERS, target);
 }
 
+/** The root of a page that cairo wrote without a unit: `width="612" height="792" viewBox="0 0 612 792"` (cairo's order and spelling). */
+const SVG_NUMBER = String.raw`[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?`;
+const UNITLESS_ROOT = new RegExp(String.raw`(<svg\b[^>]*?)\swidth="${SVG_NUMBER}"\sheight="${SVG_NUMBER}"(\sviewBox="0 0 (${SVG_NUMBER}) (${SVG_NUMBER})")`);
+/** The root element is in the first bytes of the file (Poppler writes it on the second line). */
+const SVG_ROOT_SEARCH_BYTES = 4096;
+
+/**
+ * The page of a Poppler SVG with the size of its viewBox in points, which is the page cairo drew (the crop box, turned by /Rotate). cairo
+ * counts its user units in points and writes the viewBox in them, but the root's width and height carry a unit only in some versions:
+ * Poppler 25.02 and later write `612pt`, Poppler 24 on cairo 1.17.6 and later (Ubuntu noble) writes `612`, which the SVG reader counts
+ * as pixels and draws at 0.75 of the page. A root that names a unit, or has no viewBox, is left to the reader.
+ */
+export function pageInPoints(svg: Buffer): Buffer {
+  const root = UNITLESS_ROOT.exec(svg.toString('latin1', 0, SVG_ROOT_SEARCH_BYTES));
+  if (!root) return svg;
+  const [matched, before, viewBox, width, height] = root;
+  const sized = Buffer.from(`${before} width="${width}pt" height="${height}pt"${viewBox}`, 'latin1');
+  return Buffer.concat([svg.subarray(0, root.index), sized, svg.subarray(root.index + matched.length)]);
+}
+
 /** What opens the PDF of a request: the text layer is read in the process, and the password never reaches it. */
 type PdfAccess = Pick<ConversionOptions, 'password' | 'signal'>;
 
@@ -83,7 +103,7 @@ export function svgPageEncoder(
   return async (svg, entryName) => {
     const page = zipped ? Number(PAGE_ENTRY_NUMBER.exec(entryName)?.[1]) : pages[0];
     try {
-      return await encode(svg, () => textLayers(page), leftOut, page);
+      return await encode(pageInPoints(svg), () => textLayers(page), leftOut, page);
     } catch (refusal) {
       const stored = readPdf();
       if (!(refusal instanceof CadGeometryUnavailableError || refusal instanceof UnsupportedOptionError) || !officeSuite || !stored || !OFFICE_SUITE_METAFILE_TARGETS.has(target)) throw refusal;
