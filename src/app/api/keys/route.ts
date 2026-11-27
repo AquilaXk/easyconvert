@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { dashboardRefusal as refusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
 import { serverFault } from '@/lib/api/problem-details';
 import type { DashboardRefusalCode } from '@/lib/refusal-codes';
+import { listAccountApiKeys } from '@/lib/api-keys/account-keys';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyLimitError, ApiKeyScope, MAX_ACTIVE_API_KEYS } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
@@ -13,13 +14,13 @@ export const dynamic = 'force-dynamic';
 
 const MANAGE_KEYS = { action: 'manage API keys', adminKey: true };
 const HTTP_CONFLICT = 409;
-const KEY_LIMIT_MESSAGE = `An account holds at most ${MAX_ACTIVE_API_KEYS} active API keys. Revoke a key you no longer use, then create a new one.`;
+const KEY_LIMIT_MESSAGE = `An account holds at most ${MAX_ACTIVE_API_KEYS} active API keys. Delete a key you no longer use, then create a new one.`;
 
 export async function GET(req: NextRequest) {
   const auth = await resolveDashboardCaller(req, MANAGE_KEYS);
   if ('refused' in auth) return auth.refused;
 
-  const keys = await redisKeyStore.listApiKeys(auth.user.id, { decryptSecrets: false });
+  const keys = await listAccountApiKeys(auth.user.id);
   return NextResponse.json({
     success: true,
     keys: keys.map(toPublicApiKey),

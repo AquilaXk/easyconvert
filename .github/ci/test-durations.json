@@ -21,6 +21,7 @@
   "tests/api-docs-pages.test.ts": 3.6,
   "tests/api-key-burst-rate-limit.test.ts": 0.3,
   "tests/api-key-client-ip-allowlist.test.ts": 0.1,
+  "tests/api-key-delete.test.ts": 0,
   "tests/api-key-hash-pepper.test.ts": 0.2,
   "tests/api-key-integrity-and-rotation.test.ts": 0.1,
   "tests/api-key-limit-redis.test.ts": 0,

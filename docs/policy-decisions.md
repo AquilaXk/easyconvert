@@ -501,6 +501,7 @@ Security
 450. [Decode DBF text by the code page of its language driver byte](#450-decode-dbf-text-by-the-code-page-of-its-language-driver-byte)
 451. [Answer a refused redirect of a website capture as a failed load so that internal names cannot be probed](#451-answer-a-refused-redirect-of-a-website-capture-as-a-failed-load-so-that-internal-names-cannot-be-probed)
 452. [The test shards and the office rows of the pull request parity job run on the LibreOffice release the worker image ships, installed on the runner](#452-the-test-shards-and-the-office-rows-of-the-pull-request-parity-job-run-on-the-libreoffice-release-the-worker-image-ships-installed-on-the-runner)
+453. [Deleting an API key removes it, with its hash and signing secret, and takes it out of the list](#453-deleting-an-api-key-removes-it-with-its-hash-and-signing-secret-and-takes-it-out-of-the-list)
 
 ---
 
@@ -13224,3 +13225,25 @@ Security
   - **Making 26.8 the suite of every CI job at once**: `conformance`, `integration` and the nightly shards were not checked against it, and `bench/baseline.json` holds their rows on 24.2.
 - **Verified by**: `tests/ci-setup-tasks.test.ts` (the task list, the switch, the pin against `Dockerfile.worker`, an archive that fails its SHA-256), `tests/ci-workflows.test.ts` (which jobs install it, the activation, the cache key), `tests/ci-parity-workflow.test.ts` (the split of the families, the office step, one verdict per run), and the probe runs named above.
 - **Revisit when**: the pin of `Dockerfile.worker` moves (the three values of `libreoffice-suite.env` move with it), the image is built for amd64, or `conformance` and `integration` move to 26.8.
+
+## 453. Deleting an API key removes it, with its hash and signing secret, and takes it out of the list
+
+- **Date**: 2026-11-27
+- **Status**: Implemented (QA decision, chosen by comparing similar services). Nothing is deployed.
+- **Decision**:
+  - **The action that ends an API key is called delete.** The dashboard button, its confirmation and the messages around it say "Delete" (Korean 삭제, before 폐기) where they said "Revoke"; the intro of the section, the 401 line of the API reference, the text of `key_limit_reached` and the OpenAPI descriptions follow. The status badge "Revoked" and the row that carried it are gone.
+  - **A deleted key is removed, not marked.** `DELETE /api/keys/{id}` (the route and its scope rules are unchanged) now calls `deleteApiKey`, which removes the key record with its hash and the encrypted signing secret of its webhook, the entries of the hash index, the member of the sets of the account (`user_keys`, `user_active_keys`) and the rate bucket; the route then removes the rotated webhook secret record of the key as before. The key stops working at once on every instance, since a check reads the hash index in Redis first and a hash that is not there refuses the key as unknown. Nothing is kept of the key: the usage of an account is counted by account and day (`userId:YYYY-MM-DD`), a job and a failed delivery name a key only to find its webhook secret, which goes with the key (the id stays on an entry of the failed deliveries as an id with no record), so no history needs the record of a deleted key and the minimal record the privacy text could have allowed (id, name, dates) has no reader. Its text needs no change: the row for account, API keys and usage keeps its end at the deletion of the account, and a key is now removed earlier than that.
+  - **The list shows the keys that exist.** `GET /api/keys` and the first paint of the dashboard read the keys through `listAccountApiKeys`, which also deletes a key that an earlier version only marked `revoked` (its hash was still stored). The `status` of a listed key is always `active`; the OpenAPI enum says so (it was `active` or `revoked`).
+  - **The count of active keys needed no change.** `MAX_ACTIVE_API_KEYS` (entry 296) counted keys that were not revoked, and a deleted key leaves the record and the set the count reads. The sentence of entry 296 that the revoked ones stay in the list until deleted no longer holds.
+  - **`revokeApiKey` of the stores and its Lua script are removed**: nothing calls them. A record that is marked `revoked` (made by an earlier version) is still refused when its key is checked, until the list deletes it.
+  - **The generated operation is `deleteApiKey`** (it was `revokeApiKey`), so the clients of the SDK name the call `delete_api_key`; the HTTP method, the path and the scopes are the same.
+- **Why**:
+  - **"Revoke" is ambiguous across services and "delete" is not.** A large AI API provider deletes a key from its dashboard (a trash icon, an admin call that answers `deleted: true`), an API gateway and a cloud provider call the permanent removal of a key "delete an API key", while a third service uses "revoke" for a pause that can be undone and "deactivate" means reversible at a cloud provider's identity service. Ours cannot be undone, so the word that fits is delete.
+  - **A key marked revoked kept a hash that nobody needed.** It counted for nothing, gave the owner nothing to act on and stayed until the account was erased. Removing the record is the shorter retention, and the erasure path (`eraseAccount`, `revokeStandingAccess`) already deleted keys, so one function now ends a key everywhere.
+- **Trade-offs**:
+  - **A deleted key leaves no trace in the dashboard**, so an owner cannot see later that a key was ended or when. The usage figures do not name keys, and an entry of the failed deliveries keeps the bare id of its key.
+  - **The status column always reads "active".** It is kept so that the table does not change shape.
+  - **An SDK that calls `revoke_api_key` has to rename the call.** The SDK version is 2.0.0 and nothing is deployed.
+  - **The list of a Redis store with legacy `revoked` records deletes them on the first read**, one request per such key.
+- **Verified by**: `tests/api-key-delete.test.ts` (the route answer, the refusal of the secret, the list and the dashboard snapshot, the removed record and webhook secret, 404 for a repeated or foreign delete, the limit, the removal of a legacy revoked key; red on the previous commit), `tests/api-key-limit.test.ts`, `tests/api-key-limit-redis.test.ts`, `tests/api-key-integrity-and-rotation.test.ts` (a delete on one instance is refused on another), `tests/dashboard-wording.test.ts` and `tests/dashboard-stale-reads.test.ts` (the wording and the list after a delete), `tests/openapi-route-parity.test.ts`, `npm run sdk:check`.
+- **Revisit when**: owners ask to see the keys they ended (a log of key events would be the place for it), or a plan gives the keys a trash that can be restored.

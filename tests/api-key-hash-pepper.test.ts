@@ -133,13 +133,16 @@ describe('API key hash pepper with legacy migration (#242)', () => {
     expect(legacyLookup.error).toBe('Invalid or non-existent API key');
   });
 
-  it('does not rehash a legacy key when verification fails (revoked key)', async () => {
+  it('does not rehash a legacy key when verification fails (a key an earlier version marked revoked)', async () => {
     const { KeyStore, userStore, keysFile } = await loadIsolatedModules();
     const store = new KeyStore(true);
     const user = await userStore.createUser({ email: 'pepper-revoked@pepper.test', name: 'Pepper Revoked' });
 
     const { key, secretKey } = await store.generateApiKey(user.id, 'Revoked Legacy Key');
-    await store.revokeApiKey(user.id, key.id);
+    // Earlier versions marked a revoked key and kept its record; nothing writes that state any more.
+    const marked = store as unknown as { keys: Map<string, { status: string }>; persist(): void };
+    marked.keys.get(key.id)!.status = 'revoked';
+    marked.persist();
 
     process.env[PEPPER_ENV] = PEPPER;
     const result = await store.verifyApiKey(secretKey);

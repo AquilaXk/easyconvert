@@ -38,14 +38,14 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
 
 export function ApiKeysTable({
   apiKeys,
-  revokingKeyId,
-  onRequestRevoke,
-  onConfirmRevoke,
+  deletingKeyId,
+  onRequestDelete,
+  onConfirmDelete,
 }: Readonly<{
   apiKeys: ApiKey[];
-  revokingKeyId: string | null;
-  onRequestRevoke: (id: string | null) => void;
-  onConfirmRevoke: (id: string) => void;
+  deletingKeyId: string | null;
+  onRequestDelete: (id: string | null) => void;
+  onConfirmDelete: (id: string) => void;
 }>) {
   const t = useTranslations('dashboard.keys.table');
   const format = useFormatter();
@@ -96,8 +96,7 @@ export function ApiKeysTable({
         </thead>
         <tbody className="divide-y divide-rule">
           {apiKeys.map((key) => {
-            const isActive = key.status === 'active';
-            const isConfirming = revokingKeyId === key.id;
+            const isConfirming = deletingKeyId === key.id;
             return (
               <tr
                 key={key.id}
@@ -135,25 +134,16 @@ export function ApiKeysTable({
                   {key.lastUsedAt ? format.dateTime(new Date(key.lastUsedAt), DATE_FORMAT) : t('neverUsed')}
                 </td>
                 <td className="py-3.5 pr-4 whitespace-nowrap">
-                  <span
-                    className={`inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-semibold border ${
-                      isActive
-                        ? 'bg-success-soft text-success border-success-edge'
-                        : 'bg-danger-soft text-danger border-danger-edge'
-                    }`}
-                  >
-                    {t(isActive ? 'status.active' : 'status.revoked')}
+                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-semibold border bg-success-soft text-success border-success-edge">
+                    {t('status.active')}
                   </span>
                 </td>
                 <td className="py-3.5 text-right whitespace-nowrap">
-                  {!isActive && (
-                    <span className="text-xs text-ink-3">{t('revoked')}</span>
-                  )}
-                  {isActive && isConfirming && (
+                  {isConfirming && (
                     <div className="inline-flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => onConfirmRevoke(key.id)}
+                        onClick={() => onConfirmDelete(key.id)}
                         aria-label={t('confirmLabel', { name: key.name })}
                         className="min-h-[44px] px-3 rounded-sm bg-danger hover:bg-danger/90 text-canvas text-xs font-semibold transition-colors"
                       >
@@ -161,7 +151,7 @@ export function ApiKeysTable({
                       </button>
                       <button
                         type="button"
-                        onClick={() => onRequestRevoke(null)}
+                        onClick={() => onRequestDelete(null)}
                         aria-label={t('cancelLabel', { name: key.name })}
                         className="min-h-[44px] px-3 rounded-sm border border-rule text-xs font-semibold text-ink-2"
                       >
@@ -169,14 +159,14 @@ export function ApiKeysTable({
                       </button>
                     </div>
                   )}
-                  {isActive && !isConfirming && (
+                  {!isConfirming && (
                     <button
                       type="button"
-                      onClick={() => onRequestRevoke(key.id)}
-                      aria-label={t('revokeLabel', { name: key.name })}
+                      onClick={() => onRequestDelete(key.id)}
+                      aria-label={t('deleteLabel', { name: key.name })}
                       className="min-w-[44px] min-h-[44px] px-3 rounded-sm border border-rule text-xs text-danger hover:bg-danger-soft font-semibold transition-colors"
                     >
-                      {t('revoke')}
+                      {t('delete')}
                     </button>
                   )}
                 </td>

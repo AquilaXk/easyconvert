@@ -661,27 +661,6 @@ end
 return 1
 `;
 
-export const REVOKE_API_KEY_LUA_SCRIPT = `
--- KEYS[1]: apikeys:<keyId>  KEYS[2]: user_active_keys:<userId> (optional)
--- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: revokedDataJson  ARGV[4]: keyId
-if redis.call('EXISTS', KEYS[1]) == 0 then
-  return 'MISSING'
-end
-local ownerId = redis.call('HGET', KEYS[1], 'userId')
-if ownerId and ownerId ~= ARGV[1] then
-  return 'FORBIDDEN'
-end
-if ARGV[3] ~= '' and redis.call('HGET', KEYS[1], 'keyHash') == ARGV[2] then
-  redis.call('HSET', KEYS[1], 'status', 'revoked', 'data', ARGV[3])
-else
-  redis.call('HSET', KEYS[1], 'status', 'revoked')
-end
-if KEYS[2] and ARGV[4] and ARGV[4] ~= '' then
-  redis.call('SREM', KEYS[2], ARGV[4])
-end
-return 'REVOKED'
-`;
-
 export const UPDATE_API_KEY_LUA_SCRIPT = `
 -- KEYS[1]: apikeys:<keyId>
 -- ARGV[1]: userId  ARGV[2]: expectedKeyHash  ARGV[3]: updatedDataJson

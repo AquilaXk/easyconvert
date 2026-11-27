@@ -54,6 +54,8 @@ function createFakeRedis() {
       return 1;
     }),
     smembers: vi.fn(async (key: string) => Array.from(sets.get(key) ?? [])),
+    srem: vi.fn(async (key: string, member: string) => (sets.get(key)?.delete(member) ? 1 : 0)),
+    del: vi.fn(async (...keys: string[]) => keys.filter((key) => hashes.delete(key) || sets.delete(key)).length),
     eval: vi.fn(async (script: string, numKeys: number, ...args: string[]) => {
       if (script === RECORD_VERIFIED_KEY_LUA_SCRIPT && numKeys === 2) {
         const [keyRecordName, hashIndexName, lastUsedAt, data, newHash, oldHash, keyId, hashField] = args;
@@ -303,7 +305,7 @@ describe('Zero-downtime KEY_HASH_PEPPER rotation with KEY_HASH_PEPPER_PREVIOUS',
     const listed = await restartedStore.listApiKeys(testUser.id);
     expect(listed.find((item) => item.id === key.id)?.webhookSecret).toBe(WEBHOOK_SECRET);
 
-    await peerStore.revokeApiKey(testUser.id, key.id);
+    await peerStore.deleteApiKey(testUser.id, key.id);
     await fakeRedis.hset(`${prefix}apikey_hashes`, hmacSha256(PEPPER_V2, oldSecretKey), key.id);
     const staleRevokedVerify = await restartedStore.verifyApiKey(oldSecretKey);
     expect(staleRevokedVerify.valid).toBe(false);

@@ -55,9 +55,11 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
 ) -> Response[Any]:
-    """Revoke API Key
+    """Delete API Key
 
-     Revokes an active API key by ID. Requires admin wildcard (*) scope.
+     Deletes an API key by ID. The key stops working at once, its record and its webhook signing secret
+    are removed, and it is no longer listed by `GET /api/keys`. Deleting cannot be undone. Requires
+    admin wildcard (*) scope.
 
     Args:
         id (str):
@@ -86,9 +88,11 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
 ) -> Response[Any]:
-    """Revoke API Key
+    """Delete API Key
 
-     Revokes an active API key by ID. Requires admin wildcard (*) scope.
+     Deletes an API key by ID. The key stops working at once, its record and its webhook signing secret
+    are removed, and it is no longer listed by `GET /api/keys`. Deleting cannot be undone. Requires
+    admin wildcard (*) scope.
 
     Args:
         id (str):

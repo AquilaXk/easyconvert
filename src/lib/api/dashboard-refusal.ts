@@ -17,7 +17,7 @@ export const dashboardRefusal = codedRefusal<DashboardRefusalCode>;
 export const notFoundRefusal = (message: string) => dashboardRefusal(HTTP_NOT_FOUND, undefined, message);
 
 export interface DashboardAccess {
-  /** What the caller does, as the English refusals of the route name it ("revoke API keys"). */
+  /** What the caller does, as the English refusals of the route name it ("delete API keys"). */
   action: string;
   /** Whether a key needs the `*` scope, as for changing keys and failed webhooks; a signed-in person always may. */
   adminKey?: boolean;

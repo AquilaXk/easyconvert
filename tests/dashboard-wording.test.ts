@@ -24,11 +24,11 @@ const noop = () => undefined;
 
 const keysPanelState = {
   apiKeys: [], quota: null, charges: [], newKeyName: '', generatedSecret: null, isGeneratingKey: false, showGenerateForm: false,
-  copiedKey: false, revokingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const, acceptedTerms: false,
+  copiedKey: false, deletingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const, acceptedTerms: false,
 };
 const keysPanelActions = {
   onOpenGenerateForm: noop, onCloseGenerateForm: noop, onDismissGeneratedSecret: noop, onNameChange: noop, onToggleScope: noop,
-  onExpiryChange: noop, onAcceptedTermsChange: noop, onGenerateKey: noop, onRequestRevoke: noop, onConfirmRevoke: noop, onCopy: noop,
+  onExpiryChange: noop, onAcceptedTermsChange: noop, onGenerateKey: noop, onRequestDelete: noop, onConfirmDelete: noop, onCopy: noop,
 };
 
 function fileWithSecondsLeft(remainingSeconds: number): FileWithRemaining {
@@ -175,68 +175,68 @@ describe('a refused dashboard request', () => {
   describe('an API key', () => {
     const KEY = { id: 'k-1', userId: 'u-1', name: 'build server', prefix: 'ec_live_ab', status: 'active', createdAt: 0 };
     const OTHER_KEY = { ...KEY, id: 'k-2', name: 'staging' };
-    /** The key routes: the list holds two keys until a revocation reaches the server, which drops `k-1` from it. */
-    const keysAnswer = (revoke: Response | Promise<Response>) => {
-      let revoked = false;
+    /** The key routes: the list holds two keys until a deletion reaches the server, which drops `k-1` from it. */
+    const keysAnswer = (remove: Response | Promise<Response>) => {
+      let removed = false;
       return (url: string, method: string) => {
         if (method === 'DELETE') {
-          revoked = true;
-          return revoke;
+          removed = true;
+          return remove;
         }
         if (url === '/api/keys/usage') return new Response(JSON.stringify({ success: true, usage: {} }), { status: 200 });
-        return new Response(JSON.stringify({ success: true, keys: revoked ? [OTHER_KEY] : [KEY, OTHER_KEY] }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, keys: removed ? [OTHER_KEY] : [KEY, OTHER_KEY] }), { status: 200 });
       };
     };
-    const mountKeys = (locale: TestLocale, revoke: Response | Promise<Response>) =>
-      mountController(locale, keysAnswer(revoke), (report) => useApiKeysController(true, report), (c) => c.state.apiKeys.length === 2);
+    const mountKeys = (locale: TestLocale, remove: Response | Promise<Response>) =>
+      mountController(locale, keysAnswer(remove), (report) => useApiKeysController(true, report), (c) => c.state.apiKeys.length === 2);
     const notFound = () => new Response(JSON.stringify(routeBody('API key not found.')), { status: 404 });
 
-    it('that the server no longer knows is said not to exist, not to be revoked, and its row leaves the list', async () => {
+    it('that the server no longer knows is said not to exist, not to be deleted, and its row leaves the list', async () => {
       const ko = await mountKeys('ko', notFound());
-      ko.controller.actions.onRequestRevoke('k-1');
-      await vi.waitFor(() => expect(ko.controller.state.revokingKeyId).toBe('k-1'));
-      ko.controller.actions.onConfirmRevoke('k-1');
+      ko.controller.actions.onRequestDelete('k-1');
+      await vi.waitFor(() => expect(ko.controller.state.deletingKeyId).toBe('k-1'));
+      ko.controller.actions.onConfirmDelete('k-1');
       await vi.waitFor(() => expect(ko.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
-      expect(ko.reported()).toBe('이미 폐기되었거나 없는 API 키입니다.');
-      expect(ko.controller.state.revokingKeyId).toBeNull();
+      expect(ko.reported()).toBe('이미 삭제되었거나 없는 API 키입니다.');
+      expect(ko.controller.state.deletingKeyId).toBeNull();
       root?.unmount();
       const en = await mountKeys('en', notFound());
-      en.controller.actions.onConfirmRevoke('k-1');
+      en.controller.actions.onConfirmDelete('k-1');
       await vi.waitFor(() => expect(en.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
       expect(en.reported()).toBe('That API key no longer exists.');
     });
 
-    it('closes only its own confirmation when its revocation ends, not one opened for another key meanwhile', async () => {
+    it('closes only its own confirmation when its deletion ends, not one opened for another key meanwhile', async () => {
       let finish: (res: Response) => void = () => undefined;
-      const revoke = new Promise<Response>((resolve) => { finish = resolve; });
-      const keys = await mountKeys('en', revoke);
-      keys.controller.actions.onConfirmRevoke('k-1');
-      keys.controller.actions.onRequestRevoke('k-2');
-      await vi.waitFor(() => expect(keys.controller.state.revokingKeyId).toBe('k-2'));
+      const remove = new Promise<Response>((resolve) => { finish = resolve; });
+      const keys = await mountKeys('en', remove);
+      keys.controller.actions.onConfirmDelete('k-1');
+      keys.controller.actions.onRequestDelete('k-2');
+      await vi.waitFor(() => expect(keys.controller.state.deletingKeyId).toBe('k-2'));
       finish(new Response(JSON.stringify({ success: true }), { status: 200 }));
       await vi.waitFor(() => expect(keys.controller.state.apiKeys.map((key) => key.id)).toEqual(['k-2']));
-      expect(keys.controller.state.revokingKeyId).toBe('k-2');
+      expect(keys.controller.state.deletingKeyId).toBe('k-2');
     });
 
-    it('is revoked by one request however often its confirmation is pressed while the first is running', async () => {
+    it('is deleted by one request however often its confirmation is pressed while the first is running', async () => {
       let finish: (res: Response) => void = () => undefined;
-      const revoke = new Promise<Response>((resolve) => { finish = resolve; });
-      const keys = await mountKeys('en', revoke);
+      const remove = new Promise<Response>((resolve) => { finish = resolve; });
+      const keys = await mountKeys('en', remove);
       const fetchMock = vi.mocked(fetch);
-      keys.controller.actions.onConfirmRevoke('k-1');
-      keys.controller.actions.onConfirmRevoke('k-1');
+      keys.controller.actions.onConfirmDelete('k-1');
+      keys.controller.actions.onConfirmDelete('k-1');
       finish(new Response(JSON.stringify({ success: true }), { status: 200 }));
       await vi.waitFor(() => expect(keys.controller.state.apiKeys).toHaveLength(1));
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
     });
 
-    it('whose revocation fails with a 500 stays listed with its confirmation open', async () => {
-      const ko = await mountKeys('ko', new Response(JSON.stringify(routeBody('Failed to revoke.')), { status: 500 }));
-      ko.controller.actions.onRequestRevoke('k-1');
-      ko.controller.actions.onConfirmRevoke('k-1');
-      await vi.waitFor(() => expect(ko.reported()).toBe('API 키를 폐기하지 못했습니다. 잠시 후 다시 시도하세요.'));
+    it('whose deletion fails with a 500 stays listed with its confirmation open', async () => {
+      const ko = await mountKeys('ko', new Response(JSON.stringify(routeBody('Failed to delete.')), { status: 500 }));
+      ko.controller.actions.onRequestDelete('k-1');
+      ko.controller.actions.onConfirmDelete('k-1');
+      await vi.waitFor(() => expect(ko.reported()).toBe('API 키를 삭제하지 못했습니다. 잠시 후 다시 시도하세요.'));
       expect(ko.controller.state.apiKeys).toHaveLength(2);
-      expect(ko.controller.state.revokingKeyId).toBe('k-1');
+      expect(ko.controller.state.deletingKeyId).toBe('k-1');
     });
 
     const answerKeyRoutes = (keysList: Response, create: Response) => (url: string, method: string) => {

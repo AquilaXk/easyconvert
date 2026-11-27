@@ -171,7 +171,7 @@ export const components = {
         createdAt: { type: 'number' },
         lastUsedAt: { type: 'number' },
         expiresAt: { type: 'number' },
-        status: { type: 'string', enum: ['active', 'revoked'] },
+        status: { type: 'string', enum: ['active'], description: 'Always `active`: a deleted key is no longer listed.' },
         allowedIps: { type: 'array', items: { type: 'string' } },
         webhookUrl: { type: 'string' },
         hasWebhookSecret: { type: 'boolean', description: 'Whether a webhook signing secret is configured; the secret itself is never returned.' },

@@ -274,7 +274,7 @@ describe('Auth & API Key Infrastructure', () => {
       expect(verification.key?.id).toBe(key.id);
     });
 
-    it('rejects revoked API keys immediately', async () => {
+    it('rejects deleted API keys immediately', async () => {
       const userRecord = await userStore.createUser({
         emailVerified: true,
         email: 'revoker@example.com',
@@ -282,8 +282,8 @@ describe('Auth & API Key Infrastructure', () => {
       });
 
       const { key, secretKey } = await keyStore.generateApiKey(userRecord.id, 'Temporary Key');
-      const revoked = await keyStore.revokeApiKey(userRecord.id, key.id);
-      expect(revoked).toBe(true);
+      const deleted = await keyStore.deleteApiKey(userRecord.id, key.id);
+      expect(deleted).toBe(true);
 
       const verification = await keyStore.verifyApiKey(secretKey);
       expect(verification.valid).toBe(false);
@@ -423,7 +423,7 @@ describe('Auth & API Key Infrastructure', () => {
       expect(logoutRes.headers.get('set-cookie')).toContain('Max-Age=0');
     });
 
-    it('manages API keys, checks usage, and revokes keys via REST endpoints', async () => {
+    it('manages API keys, checks usage, and deletes keys via REST endpoints', async () => {
       // Create user and token
       const user = userStore.sanitizeUser(
         await userStore.createUser({
@@ -467,7 +467,7 @@ describe('Auth & API Key Infrastructure', () => {
       expect(usageData.usage.dailyLimit).toBe(FREE_DAILY_CREDITS);
       expect(usageData.usage.remaining).toBe(FREE_DAILY_CREDITS);
 
-      // 4. Revoke key
+      // 4. Delete key
       const deleteKeyReq = new NextRequest(`http://localhost:3000/api/keys/${generatedKeyId}`, {
         method: 'DELETE',
         headers: { Cookie: cookieHeader },
@@ -475,10 +475,10 @@ describe('Auth & API Key Infrastructure', () => {
       const deleteKeyRes = await keyDeleteHandler(deleteKeyReq, { params: Promise.resolve({ id: generatedKeyId }) });
       expect(deleteKeyRes.status).toBe(200);
 
-      // List again and check status is revoked
+      // The deleted key is gone from the list
       const getKeysRes2 = await keysGetHandler(getKeysReq);
       const listData2 = await getKeysRes2.json();
-      expect(listData2.keys[0].status).toBe('revoked');
+      expect(listData2.keys).toEqual([]);
     });
 
     it('processes programmatic file conversion via /api/v1/convert using API Key', async () => {

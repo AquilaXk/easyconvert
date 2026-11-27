@@ -87,7 +87,7 @@
       "authentication": "요청에 API 키를 담습니다. 키가 필요 없는 엔드포인트는 해당 페이지에 적혀 있습니다.",
       "apiKeys1": "로그인한 뒤 대시보드의 <keys>API 키</keys> 페이지에서 키를 만듭니다. 키는 <code>ec_live_</code>로 시작하고 만들 때 한 번만 표시됩니다.",
       "apiKeys2": "키는 <code>x-api-key</code> 헤더에 담거나, <code>Authorization</code> 헤더에 bearer 토큰으로 담습니다.",
-      "apiKeys3": "키는 IP 주소나 CIDR 범위로 제한할 수 있고, 만료일을 둘 수 있습니다. 다른 주소에서 온 요청이나 만료되거나 폐기된 키로 보낸 요청은 거절됩니다.",
+      "apiKeys3": "키는 IP 주소나 CIDR 범위로 제한할 수 있고, 만료일을 둘 수 있습니다. 다른 주소에서 온 요청이나 만료되거나 삭제된 키로 보낸 요청은 거절됩니다.",
       "scopes": "키에는 권한 범위가 하나 이상 있습니다. 엔드포인트마다 필요한 권한 범위가 적혀 있고, 그 권한이 없는 키는 403으로 거절됩니다.",
       "scopeColumn": "권한 범위",
       "allowsColumn": "할 수 있는 일",
@@ -111,7 +111,7 @@
       "errors2": "<code>type</code>이 원인을 알려 주고, 원인에 따라 필드가 더 붙습니다. 크레딧을 다 사용했을 때의 <code>dailyLimit</code>와 <code>remaining</code>이 그 예입니다. <downloads>다운로드</downloads>와 <usage>사용량</usage>은 대신 <code>success</code>가 false이고 <code>error</code> 문장이 담긴 JSON으로 응답합니다. 상태 코드의 의미는 다음과 같습니다.",
       "statuses": {
         "400": "요청 형식이 잘못됐습니다. 필드가 누락됐거나, 모르는 형식이거나, 제공하지 않는 변환입니다.",
-        "401": "API 키가 없거나, 모르는 키이거나, 만료되거나 폐기된 키입니다.",
+        "401": "API 키가 없거나, 모르는 키이거나, 만료되거나 삭제된 키입니다.",
         "403": "키에 그 권한 범위가 없거나, 키가 허용하지 않는 주소에서 온 요청입니다.",
         "404": "작업, 업로드, 파일이 없거나 다른 계정의 것입니다.",
         "409": "같은 <code>Idempotency-Key</code>의 요청이 아직 진행 중이거나, 이미 취소할 수 없는 작업입니다.",
@@ -444,7 +444,7 @@
     },
     "keys": {
       "heading": "API 비밀 키",
-      "intro": "백엔드 스크립트와 웹훅에 쓸 키를 권한 범위별로 만들고 폐기할 수 있습니다.",
+      "intro": "백엔드 스크립트와 웹훅에 쓸 키를 권한 범위별로 만들고 삭제할 수 있습니다.",
       "generate": "새 키 만들기",
       "defaultName": "운영용 API 키",
       "createHeading": "새 API 키 만들기",
@@ -499,16 +499,14 @@
         },
         "allScopes": "모든 권한 범위(*)",
         "status": {
-          "active": "사용 중",
-          "revoked": "폐기됨"
+          "active": "사용 중"
         },
-        "revoked": "폐기됨",
-        "confirmLabel": "API 키 {name} 폐기 확인",
+        "confirmLabel": "API 키 {name} 삭제 확인",
         "confirm": "확인",
-        "cancelLabel": "API 키 {name} 폐기 취소",
+        "cancelLabel": "API 키 {name} 삭제 취소",
         "cancel": "취소",
-        "revokeLabel": "API 키 {name} 폐기",
-        "revoke": "폐기"
+        "deleteLabel": "API 키 {name} 삭제",
+        "delete": "삭제"
       }
     },
     "dlq": {
@@ -669,9 +667,9 @@
       "noScopes": "API 키를 만들려면 권한 범위를 하나 이상 선택하세요.",
       "createKey": "API 키를 만들지 못했습니다. 잠시 후 다시 시도하세요.",
       "createKeyNetwork": "연결이 끊겨 API 키를 만들지 못했습니다. 다시 시도하세요.",
-      "revokeKey": "API 키를 폐기하지 못했습니다. 잠시 후 다시 시도하세요.",
-      "revokeKeyGone": "이미 폐기되었거나 없는 API 키입니다.",
-      "revokeKeyNetwork": "연결이 끊겨 API 키를 폐기하지 못했습니다. 다시 시도하세요.",
+      "deleteKey": "API 키를 삭제하지 못했습니다. 잠시 후 다시 시도하세요.",
+      "deleteKeyGone": "이미 삭제되었거나 없는 API 키입니다.",
+      "deleteKeyNetwork": "연결이 끊겨 API 키를 삭제하지 못했습니다. 다시 시도하세요.",
       "signOutNetwork": "연결이 끊겨 로그아웃하지 못했습니다. 다시 시도하세요."
     },
     "emailNotice": {
@@ -2231,7 +2229,7 @@
       "terms_outdated": "이 페이지를 연 뒤에 이용약관이 바뀌었습니다. 페이지를 새로 고친 뒤 다시 동의하세요.",
       "invalid_key_settings": "API 키 설정을 확인하세요. 이름, 권한 범위, 주소 목록, 만료일 중 맞지 않는 값이 있습니다.",
       "invalid_grace_period": "유예 시간은 0초에서 7일 사이로 정하세요.",
-      "key_limit_reached": "활성 API 키를 더 만들 수 없습니다. 쓰지 않는 키를 폐기한 뒤 다시 만드세요.",
+      "key_limit_reached": "활성 API 키를 더 만들 수 없습니다. 쓰지 않는 키를 삭제한 뒤 다시 만드세요.",
       "key_create_failed": "API 키를 만들지 못했습니다. 잠시 후 다시 시도하세요."
     },
     "billing": {

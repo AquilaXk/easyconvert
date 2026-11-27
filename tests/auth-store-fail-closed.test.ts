@@ -146,7 +146,6 @@ describe('the key store with a Redis client', () => {
 
   it.each([
     ['listApiKeys', (store: RedisKeyStore, userId: string) => store.listApiKeys(userId)],
-    ['revokeApiKey', (store: RedisKeyStore, userId: string, keyId: string) => store.revokeApiKey(userId, keyId)],
     ['updateApiKey', (store: RedisKeyStore, userId: string, keyId: string) => store.updateApiKey(userId, keyId, { name: 'x' })],
     ['deleteApiKey', (store: RedisKeyStore, userId: string, keyId: string) => store.deleteApiKey(userId, keyId)],
     ['generateApiKey', (store: RedisKeyStore, userId: string) => store.generateApiKey(userId, 'never issued', {})],

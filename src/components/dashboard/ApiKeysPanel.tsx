@@ -85,7 +85,7 @@ export interface ApiKeysPanelState {
   isGeneratingKey: boolean;
   showGenerateForm: boolean;
   copiedKey: boolean;
-  revokingKeyId: string | null;
+  deletingKeyId: string | null;
   selectedScopes: ApiKeyScope[];
   keyExpiry: KeyExpiryOption;
   acceptedTerms: boolean;
@@ -100,8 +100,8 @@ export interface ApiKeysPanelActions {
   onExpiryChange: (expiry: KeyExpiryOption) => void;
   onAcceptedTermsChange: (value: boolean) => void;
   onGenerateKey: (e: React.FormEvent) => void;
-  onRequestRevoke: (id: string | null) => void;
-  onConfirmRevoke: (id: string) => void;
+  onRequestDelete: (id: string | null) => void;
+  onConfirmDelete: (id: string) => void;
   onCopy: (text: string) => void;
 }
 
@@ -128,7 +128,7 @@ export function ApiKeysPanel({ state, actions, quotaUnavailable = false }: Reado
     isGeneratingKey,
     showGenerateForm,
     copiedKey,
-    revokingKeyId,
+    deletingKeyId,
     selectedScopes,
     keyExpiry,
     acceptedTerms,
@@ -192,9 +192,9 @@ export function ApiKeysPanel({ state, actions, quotaUnavailable = false }: Reado
 
         <ApiKeysTable
           apiKeys={apiKeys}
-          revokingKeyId={revokingKeyId}
-          onRequestRevoke={actions.onRequestRevoke}
-          onConfirmRevoke={actions.onConfirmRevoke}
+          deletingKeyId={deletingKeyId}
+          onRequestDelete={actions.onRequestDelete}
+          onConfirmDelete={actions.onConfirmDelete}
         />
       </div>
 

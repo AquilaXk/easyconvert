@@ -605,18 +605,6 @@ export class KeyStore {
     };
   }
 
-  public async revokeApiKey(userId: string, keyId: string): Promise<boolean> {
-    this.ensureInitialized();
-    const key = this.keys.get(keyId);
-    if (key?.userId !== userId) {
-      return false;
-    }
-
-    key.status = 'revoked';
-    this.persist();
-    return true;
-  }
-
   public async deleteApiKey(userId: string, keyId: string): Promise<boolean> {
     this.ensureInitialized();
     const key = this.keys.get(keyId);

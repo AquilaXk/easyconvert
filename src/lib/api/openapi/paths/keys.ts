@@ -52,7 +52,7 @@ export const keyPaths = {
           ['terms_not_accepted', 'terms_outdated', 'invalid_key_settings']
         ),
         '409': createCodedErrorResponse(
-          'The account holds the most active API keys it may (`key_limit_reached`); revoke one and create the key again.',
+          'The account holds the most active API keys it may (`key_limit_reached`); delete one and create the key again.',
           ['key_limit_reached']
         ),
       },
@@ -60,16 +60,17 @@ export const keyPaths = {
   },
   '/api/keys/{id}': {
     delete: {
-      summary: 'Revoke API Key',
-      description: 'Revokes an active API key by ID. Requires admin wildcard (*) scope.',
-      operationId: 'revokeApiKey',
+      summary: 'Delete API Key',
+      description:
+        'Deletes an API key by ID. The key stops working at once, its record and its webhook signing secret are removed, and it is no longer listed by `GET /api/keys`. Deleting cannot be undone. Requires admin wildcard (*) scope.',
+      operationId: 'deleteApiKey',
       security: requireScope('*'),
       parameters: [
-        createPathParameter('id', 'API key ID to revoke.'),
+        createPathParameter('id', 'API key ID to delete.'),
       ],
       responses: {
-        '200': { description: 'API key successfully revoked.' },
-        '404': { description: 'API key not found.' },
+        '200': { description: 'API key successfully deleted.' },
+        '404': { description: 'API key not found, already deleted, or not owned by the caller.' },
       },
     },
     patch: {

@@ -126,10 +126,10 @@ describe('what a named key must be', () => {
     expect(await getWebhookSecretStore().getSecretRecord(other.id, foreign.key.id)).toBeNull();
   });
 
-  it('answers 404 for a revoked key', async () => {
+  it('answers 404 for a deleted key', async () => {
     const admin = await redisKeyStore.generateApiKey(owner.id, 'Admin key', { scopes: ['*'] });
     const old = await redisKeyStore.generateApiKey(owner.id, 'Old key', { scopes: ['convert:write'] });
-    await redisKeyStore.revokeApiKey(owner.id, old.key.id);
+    await redisKeyStore.deleteApiKey(owner.id, old.key.id);
 
     expect((await rotateAs({ bearer: admin.secretKey }, { apiKeyId: old.key.id })).status).toBe(HTTP_NOT_FOUND);
   });

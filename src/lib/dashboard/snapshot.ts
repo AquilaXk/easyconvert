@@ -1,3 +1,4 @@
+import { listAccountApiKeys } from '@/lib/api-keys/account-keys';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { toPublicApiKey, toPublicDlqEntry } from '@/lib/api-keys/public-views';
 import { webhookDispatcher } from '@/lib/api-keys/webhook-dispatcher';
@@ -14,7 +15,7 @@ import type { DashboardSnapshot } from './snapshot-types';
  */
 export async function loadDashboardSnapshot(user: User): Promise<DashboardSnapshot> {
   const [keys, quota, charges, files, dlqEntries] = await Promise.allSettled([
-    redisKeyStore.listApiKeys(user.id, { decryptSecrets: false }),
+    listAccountApiKeys(user.id),
     redisKeyStore.getQuotaUsage(user.id),
     redisKeyStore.recentCharges(user.id),
     listAccountFiles(user.id),

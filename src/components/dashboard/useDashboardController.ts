@@ -96,7 +96,7 @@ export function useApiKeysController(
   const [generatedSecret, setGeneratedSecret] = useState<string | null>(null);
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [showGenerateForm, setShowGenerateForm] = useState(false);
-  const [revokingKeyId, setRevokingKeyId] = useState<string | null>(null);
+  const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<ApiKeyScope[]>([
     'convert:write',
     'convert:read',
@@ -181,18 +181,18 @@ export function useApiKeysController(
     }
   };
 
-  // A revoked key stays in the list as revoked; one the server no longer knows leaves it. Either way only its own
+  // A deleted key leaves the list with the read that follows; one the server no longer knows leaves it at once. Either way only its own
   // confirmation closes, so the confirmation of another key opened meanwhile stays open.
-  const keyRevoke = useRecordDelete({
+  const keyDelete = useRecordDelete({
     url: (id) => `/api/keys/${id}`,
-    goneSentence: t('revokeKeyGone'),
-    failedSentence: t('revokeKey'),
-    networkSentence: t('revokeKeyNetwork'),
-    warnNetworkFailure: (error) => warnBrowserFailure('Revoking an API key failed', error),
+    goneSentence: t('deleteKeyGone'),
+    failedSentence: t('deleteKey'),
+    networkSentence: t('deleteKeyNetwork'),
+    warnNetworkFailure: (error) => warnBrowserFailure('Deleting an API key failed', error),
     onReportError,
     onRemoved: (id, wasGone) => {
       if (wasGone) setApiKeys((prev) => prev.filter((key) => key.id !== id));
-      setRevokingKeyId((current) => (current === id ? null : current));
+      setDeletingKeyId((current) => (current === id ? null : current));
     },
     refetch: fetchKeysAndQuota,
   });
@@ -206,7 +206,7 @@ export function useApiKeysController(
 
   const state: ApiKeysPanelState = {
     apiKeys, quota, charges, newKeyName, generatedSecret, isGeneratingKey,
-    showGenerateForm, copiedKey, revokingKeyId, selectedScopes, keyExpiry, acceptedTerms,
+    showGenerateForm, copiedKey, deletingKeyId, selectedScopes, keyExpiry, acceptedTerms,
   };
 
   const actions: ApiKeysPanelActions = {
@@ -218,8 +218,8 @@ export function useApiKeysController(
     onExpiryChange: setKeyExpiry,
     onAcceptedTermsChange: setAcceptedTerms,
     onGenerateKey: (event) => { void handleGenerateKey(event); },
-    onRequestRevoke: setRevokingKeyId,
-    onConfirmRevoke: (id) => { void keyRevoke.remove(id); },
+    onRequestDelete: setDeletingKeyId,
+    onConfirmDelete: (id) => { void keyDelete.remove(id); },
     onCopy: copyToClipboard,
   };
 

@@ -74,19 +74,19 @@ describe('a dashboard list whose older read answers last', () => {
     expect(dashboard.current.dlqLoading).toBe(false);
   });
 
-  it('shows a revoked key as revoked', async () => {
+  it('shows a deleted key as gone', async () => {
     const key = { id: 'k-1', name: 'CI', prefix: 'ec_live_', scopes: ['convert:write'], createdAt: 0 };
     const server = serverHoldingFirstRead(
       '/api/keys',
       { success: true, keys: [key] },
-      { success: true, keys: [{ ...key, revokedAt: 1 }] },
+      { success: true, keys: [] },
       { '/api/keys/usage': { success: true, usage: { used: 0, limit: 50 } } }
     );
     const keys = await mount(server.answer, () => useApiKeysController(true, () => undefined));
-    keys.current.actions.onConfirmRevoke('k-1');
-    await vi.waitFor(() => expect(keys.current.state.apiKeys).toEqual([{ ...key, revokedAt: 1 }]));
+    keys.current.actions.onConfirmDelete('k-1');
+    await vi.waitFor(() => expect(keys.current.state.apiKeys).toEqual([]));
     server.release();
     await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(keys.current.state.apiKeys).toEqual([{ ...key, revokedAt: 1 }]);
+    expect(keys.current.state.apiKeys).toEqual([]);
   });
 });

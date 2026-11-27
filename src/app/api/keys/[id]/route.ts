@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dashboardRefusal as refusal, notFoundRefusal, resolveDashboardCaller } from '@/lib/api/dashboard-refusal';
+import { deleteAccountApiKey } from '@/lib/api-keys/account-keys';
 import { redisKeyStore } from '@/lib/api-keys/redis-key-store';
 import { ALL_API_KEY_SCOPES, ApiKeyScope, ApiKeyUpdateOptions } from '@/lib/api-keys/types';
 import { toPublicApiKey } from '@/lib/api-keys/public-views';
@@ -14,21 +15,18 @@ interface RouteContext {
 }
 
 export async function DELETE(req: NextRequest, context: RouteContext) {
-  const caller = await resolveDashboardCaller(req, { action: 'revoke API keys', adminKey: true });
+  const caller = await resolveDashboardCaller(req, { action: 'delete API keys', adminKey: true });
   if ('refused' in caller) return caller.refused;
   const { user } = caller;
   const { id: keyId } = await context.params;
 
-  const revoked = await redisKeyStore.revokeApiKey(user.id, keyId);
-  if (!revoked) {
+  if (!(await deleteAccountApiKey(user.id, keyId))) {
     return notFoundRefusal('API key not found or not owned by the current user.');
   }
-  // The rotated secret of the key ends with it: a record left behind would be read for the key's deliveries for good.
-  await getWebhookSecretStore().deleteSecretRecord(user.id, keyId);
 
   return NextResponse.json({
     success: true,
-    message: 'API key successfully revoked.',
+    message: 'API key successfully deleted.',
   });
 }
 

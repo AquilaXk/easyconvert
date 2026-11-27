@@ -40,7 +40,6 @@ import {
   DEDUCT_QUOTA_LUA_SCRIPT,
   DELETE_API_KEY_LUA_SCRIPT,
   RECORD_VERIFIED_KEY_LUA_SCRIPT,
-  REVOKE_API_KEY_LUA_SCRIPT,
   ROTATE_API_KEY_LUA_SCRIPT,
   SYNC_ACTIVE_API_KEYS_LUA_SCRIPT,
   TOKEN_BUCKET_RATE_LIMIT_LUA_SCRIPT,
@@ -915,73 +914,6 @@ export class RedisKeyStore extends KeyStore {
       console.error('[RedisKeyStore] Redis verifyApiKey failed; the key is neither accepted nor refused as unknown:', err);
       return { valid: false, error: 'Service Unavailable: the key store is temporarily unavailable', serviceUnavailable: true };
     }
-  }
-
-  public override async revokeApiKey(userId: string, keyId: string): Promise<boolean> {
-    await this.syncKeyFromRedis(keyId);
-    if (this.redisClient) {
-      try {
-        const localBefore = this.keys.get(keyId);
-        const expectedHash = localBefore?.keyHash ?? '';
-        const revokedJson =
-          localBefore && localBefore.userId === userId
-            ? JSON.stringify({ ...localBefore, status: 'revoked' })
-            : '';
-        if (typeof (this.redisClient as { eval?: unknown }).eval === 'function') {
-          const canMulti = this.canEvalMultiKey();
-          const luaRes = canMulti
-            ? await this.redisClient.eval(
-                REVOKE_API_KEY_LUA_SCRIPT,
-                2,
-                `${this.keyPrefix}apikeys:${keyId}`,
-                `${this.keyPrefix}user_active_keys:${userId}`,
-                userId,
-                expectedHash,
-                revokedJson,
-                keyId
-              )
-            : await this.redisClient.eval(
-                REVOKE_API_KEY_LUA_SCRIPT,
-                1,
-                `${this.keyPrefix}apikeys:${keyId}`,
-                userId,
-                expectedHash,
-                revokedJson,
-                keyId
-              );
-          if (luaRes === 'FORBIDDEN') return false;
-          if (luaRes === 'MISSING') return super.revokeApiKey(userId, keyId);
-          if (luaRes === 'REVOKED') {
-            if (!canMulti && typeof (this.redisClient as { srem?: unknown }).srem === 'function') {
-              await this.redisClient.srem(`${this.keyPrefix}user_active_keys:${userId}`, keyId);
-            }
-            await super.revokeApiKey(userId, keyId);
-            return true;
-          }
-        }
-        const exists = await this.redisClient.hexists(`${this.keyPrefix}apikeys:${keyId}`, 'userId');
-        if (exists) {
-          const ownerId = await this.redisClient.hget(`${this.keyPrefix}apikeys:${keyId}`, 'userId');
-          if (ownerId && ownerId !== userId) {
-            return false;
-          }
-          if (revokedJson) {
-            await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, {
-              status: 'revoked',
-              data: revokedJson,
-            });
-          } else {
-            await this.redisClient.hset(`${this.keyPrefix}apikeys:${keyId}`, 'status', 'revoked');
-          }
-          if (typeof (this.redisClient as { srem?: unknown }).srem === 'function') {
-            await this.redisClient.srem(`${this.keyPrefix}user_active_keys:${userId}`, keyId);
-          }
-        }
-      } catch (err) {
-        return failClosed('RedisKeyStore', 'revokeApiKey', err);
-      }
-    }
-    return super.revokeApiKey(userId, keyId);
   }
 
   private async syncKeyFromRedis(keyId: string): Promise<void> {

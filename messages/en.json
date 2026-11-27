@@ -87,7 +87,7 @@
       "authentication": "A request carries an API key. The few endpoints that need none say so on their page.",
       "apiKeys1": "Sign in and create a key on the <keys>API keys</keys> page of the dashboard. A key starts with <code>ec_live_</code> and is shown once, when it is created.",
       "apiKeys2": "Send the key in the <code>x-api-key</code> header, or as a bearer token in the <code>Authorization</code> header:",
-      "apiKeys3": "A key can be limited to IP addresses or CIDR ranges and can expire. A request from another address, or with an expired or revoked key, is refused.",
+      "apiKeys3": "A key can be limited to IP addresses or CIDR ranges and can expire. A request from another address, or with an expired or deleted key, is refused.",
       "scopes": "A key holds one or more scopes. Each endpoint names the scope it needs, and a key without it is answered 403.",
       "scopeColumn": "Scope",
       "allowsColumn": "Allows",
@@ -111,7 +111,7 @@
       "errors2": "The <code>type</code> names the cause, and some causes add fields of their own, such as <code>dailyLimit</code> and <code>remaining</code> for a used-up allowance. A few routes, <downloads>Downloads</downloads> and <usage>Usage</usage>, answer JSON with <code>success</code> set to false and an <code>error</code> sentence instead. The statuses mean:",
       "statuses": {
         "400": "The request is malformed: a missing field, an unknown format or a conversion between two formats that is not offered.",
-        "401": "No API key, or a key that is unknown, expired or revoked.",
+        "401": "No API key, or a key that is unknown, expired or deleted.",
         "403": "The key lacks the scope, or the request comes from an address the key does not allow.",
         "404": "The job, upload or file does not exist, or belongs to another account.",
         "409": "A request with the same <code>Idempotency-Key</code> is still running, or the job cannot be cancelled any more.",
@@ -444,7 +444,7 @@
     },
     "keys": {
       "heading": "API keys",
-      "intro": "Create and revoke keys for scripts and webhooks, each with its own scopes.",
+      "intro": "Create and delete keys for scripts and webhooks, each with its own scopes.",
       "generate": "New key",
       "defaultName": "Production API Key",
       "createHeading": "New API key",
@@ -499,16 +499,14 @@
         },
         "allScopes": "all scopes (*)",
         "status": {
-          "active": "ACTIVE",
-          "revoked": "REVOKED"
+          "active": "ACTIVE"
         },
-        "revoked": "Revoked",
-        "confirmLabel": "Confirm revoking API key {name}",
+        "confirmLabel": "Confirm deleting API key {name}",
         "confirm": "Confirm",
-        "cancelLabel": "Cancel revoking API key {name}",
+        "cancelLabel": "Cancel deleting API key {name}",
         "cancel": "Cancel",
-        "revokeLabel": "Revoke API key {name}",
-        "revoke": "Revoke"
+        "deleteLabel": "Delete API key {name}",
+        "delete": "Delete"
       }
     },
     "dlq": {
@@ -669,9 +667,9 @@
       "noScopes": "Select at least one permission scope before creating an API key.",
       "createKey": "Could not create the API key. Try again in a moment.",
       "createKeyNetwork": "The connection dropped and the API key was not created. Try again.",
-      "revokeKey": "Could not revoke the API key. Try again in a moment.",
-      "revokeKeyGone": "That API key no longer exists.",
-      "revokeKeyNetwork": "The connection dropped and the API key was not revoked. Try again.",
+      "deleteKey": "Could not delete the API key. Try again in a moment.",
+      "deleteKeyGone": "That API key no longer exists.",
+      "deleteKeyNetwork": "The connection dropped and the API key was not deleted. Try again.",
       "signOutNetwork": "The connection dropped and you were not signed out. Try again."
     },
     "emailNotice": {
@@ -1906,7 +1904,7 @@
       "terms_outdated": "The terms of service changed after this page was opened. Reload the page, then accept them again.",
       "invalid_key_settings": "Check the key's settings: a name, scope, address list or expiry date is not valid.",
       "invalid_grace_period": "Choose a grace period between 0 seconds and 7 days.",
-      "key_limit_reached": "Your account already holds the most active API keys it may. Revoke a key you no longer use, then create a new one.",
+      "key_limit_reached": "Your account already holds the most active API keys it may. Delete a key you no longer use, then create a new one.",
       "key_create_failed": "Could not create the API key. Try again in a moment."
     },
     "billing": {

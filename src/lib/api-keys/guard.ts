@@ -286,7 +286,7 @@ async function verifyKeyAccess(
     const isIpDenied = verification.error?.includes('IP');
     return {
       authorized: false,
-      error: verification.error || 'Invalid, revoked, or non-existent API key provided',
+      error: verification.error || 'Invalid or non-existent API key provided',
       status: isIpDenied ? 403 : 401,
     };
   }

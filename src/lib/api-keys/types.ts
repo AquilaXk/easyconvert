@@ -3,7 +3,7 @@ import type { QuotaPeriod } from '../plan-limits';
 
 export type ApiKeyScope = 'convert:read' | 'convert:write' | 'storage:download' | '*';
 
-/** The most active (not revoked) API keys an account holds at once (docs/policy-decisions.md, entry 296). */
+/** The most active API keys an account holds at once (docs/policy-decisions.md, entry 296). */
 export const MAX_ACTIVE_API_KEYS = 20;
 
 /** The account already holds the most active API keys it may (`MAX_ACTIVE_API_KEYS`). */
@@ -11,7 +11,7 @@ export class ApiKeyLimitError extends Error {
   readonly code = 'key_limit_reached' as const;
 
   constructor(readonly limit: number = MAX_ACTIVE_API_KEYS) {
-    super(`An account holds at most ${limit} active API keys. Revoke a key you no longer use, then create a new one.`);
+    super(`An account holds at most ${limit} active API keys. Delete a key you no longer use, then create a new one.`);
     this.name = 'ApiKeyLimitError';
   }
 }
@@ -33,6 +33,7 @@ export interface ApiKey {
   createdAt: number;
   lastUsedAt?: number;
   expiresAt?: number;
+  /** `revoked` is left on records of an earlier version, which marked a key instead of deleting it; the key is refused and the list deletes it. */
   status: 'active' | 'revoked';
   allowedIps?: string[];
   webhookUrl?: string;

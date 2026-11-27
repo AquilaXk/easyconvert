@@ -342,6 +342,11 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
           const s = memorySetMap.get(key);
           return s ? Array.from(s) : [];
         }),
+        srem: vi.fn(async (key: string, member: string) => (memorySetMap.get(key)?.delete(member) ? 1 : 0)),
+        hdel: vi.fn(async (key: string, ...fields: string[]) =>
+          key.endsWith('apikey_hashes') ? fields.filter((field) => memoryHashMap.delete(field)).length : 0
+        ),
+        del: vi.fn(async (...keys: string[]) => keys.filter((key) => memoryRedisMap.delete(key) || memorySetMap.delete(key)).length),
         // The only script a key check runs is the package standing of its owner (balance, credits held): this owner has bought none.
         eval: vi.fn(async () => [0, 0]),
       } as any;
@@ -360,14 +365,14 @@ describe('Phase 1-A: API Key Scope Integrity, Redis Revocation Sync & Rotation',
       expect(verifyOnB1.valid).toBe(true);
       expect(verifyOnB1.key?.id).toBe(key.id);
 
-      // Instance A revokes the key
-      const revoked = await instanceA.revokeApiKey(testUser.id, key.id);
-      expect(revoked).toBe(true);
+      // Instance A deletes the key
+      const deleted = await instanceA.deleteApiKey(testUser.id, key.id);
+      expect(deleted).toBe(true);
 
-      // Instance B immediately attempts to verify: MUST be rejected with revoked status without server reload
+      // Instance B immediately attempts to verify: MUST be rejected as unknown without server reload
       const verifyOnB2 = await instanceB.verifyApiKey(secretKey);
       expect(verifyOnB2.valid).toBe(false);
-      expect(verifyOnB2.error).toBe('API key has been revoked');
+      expect(verifyOnB2.error).toBe('Invalid or non-existent API key');
     });
   });
 });

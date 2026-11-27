@@ -25,7 +25,7 @@ class ApiKey:
         created_at (float | Unset):
         last_used_at (float | Unset):
         expires_at (float | Unset):
-        status (ApiKeyStatus | Unset):
+        status (ApiKeyStatus | Unset): Always `active`: a deleted key is no longer listed.
         allowed_ips (list[str] | Unset):
         webhook_url (str | Unset):
         has_webhook_secret (bool | Unset): Whether a webhook signing secret is configured; the secret itself is never

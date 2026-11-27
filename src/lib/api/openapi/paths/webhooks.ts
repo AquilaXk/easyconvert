@@ -162,7 +162,7 @@ export const webhookPaths = {
         '400': createProblemResponse('Malformed JSON payload, or neither `endpointId` nor `apiKeyId` was given.'),
         '401': createProblemResponse('Unauthorized'),
         '403': createProblemResponse('The caller is a key without the admin scope that names another key or an endpoint.'),
-        '404': createProblemResponse('`apiKeyId` is not an active key of the caller\'s account (unknown, revoked or another account\'s).'),
+        '404': createProblemResponse('`apiKeyId` is not an active key of the caller\'s account (unknown, deleted or another account\'s).'),
         '409': createProblemResponse('The account already holds the most endpoint secrets and `endpointId` is a new one.'),
         '422': createProblemResponse('Unprocessable Entity (schema validation failure)'),
         '503': createProblemResponse('The key and account store could not be reached; retry after the `Retry-After` delay.'),

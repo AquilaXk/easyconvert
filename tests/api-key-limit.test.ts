@@ -206,23 +206,12 @@ describe('the number of active API keys of an account', () => {
     expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT);
 
     // listApiKeys must avoid pipeline() on Cluster and succeed across slots
-    const listedBeforeRevoke = await store.listApiKeys('u_notag', { decryptSecrets: false });
-    expect(listedBeforeRevoke).toHaveLength(EXPECTED_LIMIT);
-    expect(listedBeforeRevoke.every((entry) => entry.status === 'active')).toBe(true);
-
-    // revokeApiKey uses single-key Lua + srem on active index without multi-key eval
-    const firstKeyId = listedBeforeRevoke[0]!.id;
-    expect(await store.revokeApiKey('u_notag', firstKeyId)).toBe(true);
-    expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT - 1);
-    const listedAfterRevoke = await store.listApiKeys('u_notag', { decryptSecrets: false });
-    expect(listedAfterRevoke.find((entry) => entry.id === firstKeyId)?.status).toBe('revoked');
-
-    const replacementAfterRevoke = await store.generateApiKey('u_notag', 'k_after_revoke');
-    expect(replacementAfterRevoke.key.status).toBe('active');
-    expect(sets.get('nohashtag:user_active_keys:u_notag')?.size).toBe(EXPECTED_LIMIT);
+    const listedBefore = await store.listApiKeys('u_notag', { decryptSecrets: false });
+    expect(listedBefore).toHaveLength(EXPECTED_LIMIT);
+    expect(listedBefore.every((entry) => entry.status === 'active')).toBe(true);
 
     // deleteApiKey falls back to single-key deletes and srem without calling multi-key Lua
-    const secondKeyId = listedBeforeRevoke[1]!.id;
+    const secondKeyId = listedBefore[1]!.id;
     expect(await store.deleteApiKey('u_notag', secondKeyId)).toBe(true);
     expect(multiKeyDelCalls).toHaveLength(0);
     expect(evalCalls.filter((call) => call.numKeys > 1)).toHaveLength(0);
@@ -310,7 +299,7 @@ describe('the number of active API keys of an account', () => {
     }
   });
 
-  it('places every key passed to CREATE, SYNC, REVOKE, and DELETE scripts in one Redis Cluster hash slot', async () => {
+  it('places every key passed to CREATE, SYNC and DELETE scripts in one Redis Cluster hash slot', async () => {
     const keySets: string[][] = [];
     let needsSync = true;
     const clusterClient = {
@@ -332,11 +321,10 @@ describe('the number of active API keys of an account', () => {
 
     const store = new RedisKeyStore({ keyPrefix: 'easyconvert:{keys}:', isolated: true, redisClient: clusterClient });
     const created = await store.generateApiKey('u_slot', 'slot-key', { maxActiveKeys: EXPECTED_LIMIT });
-    await store.revokeApiKey('u_slot', created.key.id);
     await store.deleteApiKey('u_slot', created.key.id);
 
-    expect(keySets).toHaveLength(5);
-    expect(keySets.map((keys) => keys.length)).toEqual([5, 4, 5, 2, 5]);
+    expect(keySets).toHaveLength(4);
+    expect(keySets.map((keys) => keys.length)).toEqual([5, 4, 5, 5]);
     for (const keys of keySets) {
       expect(new Set(keys.map(clusterKeySlot)).size).toBe(1);
     }

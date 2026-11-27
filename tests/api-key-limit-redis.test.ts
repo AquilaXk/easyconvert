@@ -3,7 +3,7 @@ import Redis from 'ioredis';
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST as createKeyRoute } from '../src/app/api/keys/route';
-import { DELETE as revokeKeyRoute } from '../src/app/api/keys/[id]/route';
+import { DELETE as deleteKeyRoute } from '../src/app/api/keys/[id]/route';
 import { ApiKeyLimitError, MAX_ACTIVE_API_KEYS } from '../src/lib/api-keys/types';
 import { RedisKeyStore, redisKeyStore } from '../src/lib/api-keys/redis-key-store';
 import { setWebhookSecretStore } from '../src/lib/api-keys/webhook-secret-store';
@@ -84,23 +84,23 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
     expect((await stores[0]!.listApiKeys(userId)).filter((k) => k.status === 'active')).toHaveLength(EXPECTED_LIMIT);
   });
 
-  it('reclaims active slots atomically on revokeApiKey and deleteApiKey while leaving revoked keys in user_keys', async () => {
+  it('reclaims active slots atomically on deleteApiKey and takes the deleted key out of user_keys', async () => {
     const store = storeOf(clients[0]!);
     const createdIds: string[] = [];
     for (let i = 0; i < EXPECTED_LIMIT; i++) {
       createdIds.push((await store.generateApiKey(userId, `k-${i}`)).key.id);
     }
 
-    expect(await store.revokeApiKey(userId, createdIds[0]!)).toBe(true);
-    expect(await store.revokeApiKey(userId, createdIds[1]!)).toBe(true);
+    expect(await store.deleteApiKey(userId, createdIds[0]!)).toBe(true);
+    expect(await store.deleteApiKey(userId, createdIds[1]!)).toBe(true);
     expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT - 2);
-    expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(EXPECTED_LIMIT);
+    expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(EXPECTED_LIMIT - 2);
 
     const r1 = await store.generateApiKey(userId, 'replacement-1');
     const r2 = await store.generateApiKey(userId, 'replacement-2');
     await expect(store.generateApiKey(userId, 'over-limit')).rejects.toBeInstanceOf(ApiKeyLimitError);
     expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT);
-    expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(EXPECTED_LIMIT + 2);
+    expect(await admin.scard(`${keyPrefix}user_keys:${userId}`)).toBe(EXPECTED_LIMIT);
 
     expect(await store.deleteApiKey(userId, r1.key.id)).toBe(true);
     expect(await admin.scard(`${keyPrefix}user_active_keys:${userId}`)).toBe(EXPECTED_LIMIT - 1);
@@ -158,7 +158,6 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
     vi.spyOn(redisKeyStore, 'getPrefix').mockReturnValue(routePrefix);
     vi.spyOn(redisKeyStore, 'getRedisClient').mockReturnValue(keyStoreClient);
     vi.spyOn(redisKeyStore, 'generateApiKey').mockImplementation((...args) => routeKeyStore.generateApiKey(...args));
-    vi.spyOn(redisKeyStore, 'revokeApiKey').mockImplementation((...args) => routeKeyStore.revokeApiKey(...args));
     vi.spyOn(redisKeyStore, 'deleteApiKey').mockImplementation((...args) => routeKeyStore.deleteApiKey(...args));
     vi.spyOn(redisKeyStore, 'listApiKeys').mockImplementation((...args) => routeKeyStore.listApiKeys(...args));
     vi.spyOn(redisKeyStore, 'listUserFiles').mockImplementation((...args) => routeKeyStore.listUserFiles(...args));
@@ -197,7 +196,7 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
       }
       createdKeysToClean.push(firstBody.key.id);
 
-      const delRes = await revokeKeyRoute(
+      const delRes = await deleteKeyRoute(
         new NextRequest(`${ORIGIN}/api/keys/${firstBody.key.id}`, {
           method: 'DELETE',
           headers: { Origin: ORIGIN, Cookie: cookie },
@@ -206,9 +205,9 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
       );
       expect(delRes.status).toBe(200);
 
-      const postAfterRevoke = await createKeyRoute(postReq());
-      expect(postAfterRevoke.status).toBe(200);
-      const postAfterBody = (await postAfterRevoke.json()) as { key: { id: string } };
+      const postAfterDelete = await createKeyRoute(postReq());
+      expect(postAfterDelete.status).toBe(200);
+      const postAfterBody = (await postAfterDelete.json()) as { key: { id: string } };
       createdKeysToClean.push(postAfterBody.key.id);
 
       expect((await createKeyRoute(postReq())).status).toBe(409);
@@ -217,7 +216,7 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
       for (const entry of listed) {
         if (entry.keyHash) createdHashesToClean.push(entry.keyHash);
       }
-      expect(await admin.hlen(`${routePrefix}apikey_hashes`)).toBe(EXPECTED_LIMIT + 1);
+      expect(await admin.hlen(`${routePrefix}apikey_hashes`)).toBe(EXPECTED_LIMIT);
       expect(
         await admin.exists(
           `easyconvert:user_active_keys:${user.id}`,
@@ -291,14 +290,14 @@ describe.skipIf(!REDIS_URL)('the active API key limit in Redis', () => {
     }
   }
 
-  it('handles 40 concurrent creates across 4 clients racing revokeApiKey during legacy backfill', async () => {
+  it('handles 40 concurrent creates across 4 clients racing deleteApiKey during legacy backfill', async () => {
     await seedLegacyUnindexedKeys(19, 5);
     const stores = clients.map((client) => storeOf(client));
 
     const createPromises = Array.from({ length: 40 }, (_, i) =>
       stores[i % stores.length]!.generateApiKey(userId, `race-${i}`)
     );
-    const revokePromise = stores[0]!.revokeApiKey(userId, 'legacy-0');
+    const revokePromise = stores[0]!.deleteApiKey(userId, 'legacy-0');
     const [createSettled, revokeSettled] = await Promise.all([
       Promise.allSettled(createPromises),
       revokePromise,

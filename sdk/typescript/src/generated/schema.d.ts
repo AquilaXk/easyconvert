@@ -364,10 +364,10 @@ export interface paths {
         put?: never;
         post?: never;
         /**
-         * Revoke API Key
-         * @description Revokes an active API key by ID. Requires admin wildcard (*) scope.
+         * Delete API Key
+         * @description Deletes an API key by ID. The key stops working at once, its record and its webhook signing secret are removed, and it is no longer listed by `GET /api/keys`. Deleting cannot be undone. Requires admin wildcard (*) scope.
          */
-        delete: operations["revokeApiKey"];
+        delete: operations["deleteApiKey"];
         options?: never;
         head?: never;
         /**
@@ -1714,8 +1714,11 @@ export interface components {
             createdAt?: number;
             lastUsedAt?: number;
             expiresAt?: number;
-            /** @enum {string} */
-            status?: "active" | "revoked";
+            /**
+             * @description Always `active`: a deleted key is no longer listed.
+             * @enum {string}
+             */
+            status?: "active";
             allowedIps?: string[];
             webhookUrl?: string;
             /** @description Whether a webhook signing secret is configured; the secret itself is never returned. */
@@ -4240,7 +4243,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description The account holds the most active API keys it may (`key_limit_reached`); revoke one and create the key again. */
+            /** @description The account holds the most active API keys it may (`key_limit_reached`); delete one and create the key again. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4257,26 +4260,26 @@ export interface operations {
             };
         };
     };
-    revokeApiKey: {
+    deleteApiKey: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                /** @description API key ID to revoke. */
+                /** @description API key ID to delete. */
                 id: string;
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description API key successfully revoked. */
+            /** @description API key successfully deleted. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description API key not found. */
+            /** @description API key not found, already deleted, or not owned by the caller. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -4687,7 +4690,7 @@ export interface operations {
                     "application/json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description `apiKeyId` is not an active key of the caller's account (unknown, revoked or another account's). */
+            /** @description `apiKeyId` is not an active key of the caller's account (unknown, deleted or another account's). */
             404: {
                 headers: {
                     [name: string]: unknown;
