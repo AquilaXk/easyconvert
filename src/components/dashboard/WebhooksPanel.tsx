@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useFormatter, useTranslations } from 'next-intl';
 import { Eye, Inbox, Loader2, Play, RefreshCw, Trash2, X } from 'lucide-react';
 import type { WebhookDlqEntry } from '@/lib/api-keys/types';
+import { ConfirmDialog } from './ConfirmDialog';
 import { DlqPayloadDialog } from './DlqPayloadDialog';
 
 interface WebhooksPanelProps {
@@ -33,6 +34,10 @@ export function WebhooksPanel({
 }: Readonly<WebhooksPanelProps>) {
   const t = useTranslations('dashboard.dlq');
   const format = useFormatter();
+  const deleteText = useTranslations('dashboard.dlq.deleteDialog');
+  const clearText = useTranslations('dashboard.dlq.clearDialog');
+  const [confirming, setConfirming] = useState<{ kind: 'clear' } | { kind: 'delete'; id: string } | null>(null);
+  const closeConfirmation = () => setConfirming(null);
   return (
     <div
       id="dashboard-panel-dlq"
@@ -71,7 +76,7 @@ export function WebhooksPanel({
             {entries.length > 0 && (
               <button
                 type="button"
-                onClick={onClearAll}
+                onClick={() => setConfirming({ kind: 'clear' })}
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-sm border border-danger-edge text-danger text-xs font-medium hover:bg-danger-soft transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -180,7 +185,7 @@ export function WebhooksPanel({
                           </button>
                           <button
                             type="button"
-                            onClick={() => onDelete(entry.id)}
+                            onClick={() => setConfirming({ kind: 'delete', id: entry.id })}
                             aria-label={t('deleteLabel', { id: entry.id })}
                             className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule hover:bg-danger-soft text-danger transition-colors"
                           >
@@ -201,6 +206,45 @@ export function WebhooksPanel({
         entry={inspectingEntry}
         onClose={() => onInspect(null)}
         onReplay={onReplay}
+      />
+
+      <ConfirmDialog
+        open={confirming?.kind === 'delete'}
+        title={deleteText('title')}
+        warning={deleteText('warning')}
+        details={
+          confirming?.kind === 'delete' && (
+            <dl className="px-3.5 py-3 rounded-sm bg-sunken border border-rule text-sm">
+              <div className="flex gap-2">
+                <dt className="text-ink-3 shrink-0">{deleteText('id')}</dt>
+                <dd className="font-mono text-xs text-ink-2 break-all pt-0.5">{confirming.id}</dd>
+              </div>
+            </dl>
+          )
+        }
+        confirmLabel={deleteText('confirm')}
+        cancelLabel={deleteText('cancel')}
+        closeLabel={deleteText('close')}
+        confirmIcon={<Trash2 aria-hidden="true" className="w-4 h-4" />}
+        onConfirm={() => {
+          if (confirming?.kind === 'delete') onDelete(confirming.id);
+          closeConfirmation();
+        }}
+        onClose={closeConfirmation}
+      />
+      <ConfirmDialog
+        open={confirming?.kind === 'clear'}
+        title={clearText('title')}
+        warning={clearText('warning', { count: entries.length })}
+        confirmLabel={clearText('confirm')}
+        cancelLabel={clearText('cancel')}
+        closeLabel={clearText('close')}
+        confirmIcon={<Trash2 aria-hidden="true" className="w-4 h-4" />}
+        onConfirm={() => {
+          onClearAll();
+          closeConfirmation();
+        }}
+        onClose={closeConfirmation}
       />
     </div>
   );

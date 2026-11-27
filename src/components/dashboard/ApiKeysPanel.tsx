@@ -4,6 +4,7 @@ import { Clock, Plus } from 'lucide-react';
 import type { ApiKey, ApiKeyScope, ChargeEntry, QuotaUsage } from '@/lib/api-keys/types';
 import { CreateApiKeyForm, GeneratedSecretBanner } from './ApiKeyCreateCard';
 import { ApiKeysTable } from './ApiKeysTable';
+import { DeleteApiKeyDialog } from './DeleteApiKeyDialog';
 import { IntegrationGuide } from './IntegrationGuide';
 import { displayedUsage, type KeyExpiryOption } from './dashboard-types';
 
@@ -86,6 +87,9 @@ export interface ApiKeysPanelState {
   showGenerateForm: boolean;
   copiedKey: boolean;
   deletingKeyId: string | null;
+  /** Why the last attempt to delete that key failed; its dialog shows it. */
+  deleteKeyError: string | null;
+  deleteKeyPending: boolean;
   selectedScopes: ApiKeyScope[];
   keyExpiry: KeyExpiryOption;
   acceptedTerms: boolean;
@@ -129,6 +133,8 @@ export function ApiKeysPanel({ state, actions, quotaUnavailable = false }: Reado
     showGenerateForm,
     copiedKey,
     deletingKeyId,
+    deleteKeyError,
+    deleteKeyPending,
     selectedScopes,
     keyExpiry,
     acceptedTerms,
@@ -190,11 +196,13 @@ export function ApiKeysPanel({ state, actions, quotaUnavailable = false }: Reado
           />
         )}
 
-        <ApiKeysTable
-          apiKeys={apiKeys}
-          deletingKeyId={deletingKeyId}
-          onRequestDelete={actions.onRequestDelete}
-          onConfirmDelete={actions.onConfirmDelete}
+        <ApiKeysTable apiKeys={apiKeys} onRequestDelete={actions.onRequestDelete} />
+        <DeleteApiKeyDialog
+          apiKey={apiKeys.find((key) => key.id === deletingKeyId)}
+          pending={deleteKeyPending}
+          error={deleteKeyError}
+          onConfirm={actions.onConfirmDelete}
+          onClose={() => actions.onRequestDelete(null)}
         />
       </div>
 

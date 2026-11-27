@@ -97,6 +97,7 @@ export function useApiKeysController(
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [showGenerateForm, setShowGenerateForm] = useState(false);
   const [deletingKeyId, setDeletingKeyId] = useState<string | null>(null);
+  const [deleteKeyError, setDeleteKeyError] = useState<string | null>(null);
   const [selectedScopes, setSelectedScopes] = useState<ApiKeyScope[]>([
     'convert:write',
     'convert:read',
@@ -181,8 +182,8 @@ export function useApiKeysController(
     }
   };
 
-  // A deleted key leaves the list with the read that follows; one the server no longer knows leaves it at once. Either way only its own
-  // confirmation closes, so the confirmation of another key opened meanwhile stays open.
+  // A deleted key leaves the list with the read that follows; one the server no longer knows leaves it at once. Either way the dialog
+  // of that key closes; a failure stays in it, worded there, so that the person can try again.
   const keyDelete = useRecordDelete({
     url: (id) => `/api/keys/${id}`,
     goneSentence: t('deleteKeyGone'),
@@ -206,7 +207,8 @@ export function useApiKeysController(
 
   const state: ApiKeysPanelState = {
     apiKeys, quota, charges, newKeyName, generatedSecret, isGeneratingKey,
-    showGenerateForm, copiedKey, deletingKeyId, selectedScopes, keyExpiry, acceptedTerms,
+    showGenerateForm, copiedKey, deletingKeyId, deleteKeyError, selectedScopes, keyExpiry, acceptedTerms,
+    deleteKeyPending: deletingKeyId !== null && keyDelete.pendingIds.includes(deletingKeyId),
   };
 
   const actions: ApiKeysPanelActions = {
@@ -218,8 +220,8 @@ export function useApiKeysController(
     onExpiryChange: setKeyExpiry,
     onAcceptedTermsChange: setAcceptedTerms,
     onGenerateKey: (event) => { void handleGenerateKey(event); },
-    onRequestDelete: setDeletingKeyId,
-    onConfirmDelete: (id) => { void keyDelete.remove(id); },
+    onRequestDelete: (id) => { setDeleteKeyError(null); setDeletingKeyId(id); },
+    onConfirmDelete: (id) => { void keyDelete.remove(id, false).then(setDeleteKeyError); },
     onCopy: copyToClipboard,
   };
 

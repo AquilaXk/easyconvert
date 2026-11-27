@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { Clock, Download, FileText, RefreshCw, Trash2 } from 'lucide-react';
 import { Link } from '@/i18n/navigation';
 import type { FileWithRemaining } from './dashboard-types';
 import { useFormatBytes } from '../i18n/format';
 import { useRetentionLabel } from './useRetentionLabel';
+import { ConfirmDialog } from './ConfirmDialog';
 
 interface JobsHistoryPanelProps {
   files: FileWithRemaining[];
@@ -25,6 +26,8 @@ export function JobsHistoryPanel({
   const t = useTranslations('dashboard.files');
   const formatBytes = useFormatBytes();
   const retentionLabel = useRetentionLabel();
+  const dialogText = useTranslations('dashboard.files.deleteDialog');
+  const [fileToDelete, setFileToDelete] = useState<FileWithRemaining | null>(null);
   return (
     <div
       id="dashboard-panel-files"
@@ -109,7 +112,7 @@ export function JobsHistoryPanel({
                       </a>
                       <button
                         type="button"
-                        onClick={() => onDeleteFile(file.id)}
+                        onClick={() => setFileToDelete(file)}
                         disabled={deletingFileIds.includes(file.id)}
                         aria-label={t('deleteLabel', { name: file.fileName })}
                         className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule text-ink-3 hover:text-danger transition-colors disabled:opacity-60"
@@ -124,6 +127,31 @@ export function JobsHistoryPanel({
           </table>
         </div>
       )}
+
+      <ConfirmDialog
+        open={fileToDelete !== null}
+        title={dialogText('title')}
+        warning={dialogText('warning')}
+        details={
+          fileToDelete && (
+            <dl className="px-3.5 py-3 rounded-sm bg-sunken border border-rule text-sm">
+              <div className="flex gap-2">
+                <dt className="text-ink-3 shrink-0">{dialogText('name')}</dt>
+                <dd className="font-semibold text-ink break-all">{fileToDelete.fileName}</dd>
+              </div>
+            </dl>
+          )
+        }
+        confirmLabel={dialogText('confirm')}
+        cancelLabel={dialogText('cancel')}
+        closeLabel={dialogText('close')}
+        confirmIcon={<Trash2 aria-hidden="true" className="w-4 h-4" />}
+        onConfirm={() => {
+          if (fileToDelete) onDeleteFile(fileToDelete.id);
+          setFileToDelete(null);
+        }}
+        onClose={() => setFileToDelete(null)}
+      />
     </div>
   );
 }

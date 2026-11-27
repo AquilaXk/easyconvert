@@ -1,6 +1,6 @@
 import React from 'react';
 import { useFormatter, useNow, useTranslations } from 'next-intl';
-import { Key } from 'lucide-react';
+import { Key, Trash2 } from 'lucide-react';
 import type { ApiKey } from '@/lib/api-keys/types';
 
 const DATE_FORMAT = { dateStyle: 'medium' } as const;
@@ -38,14 +38,10 @@ function KeyExpirationBadge({ expiresAt }: Readonly<{ expiresAt?: number }>) {
 
 export function ApiKeysTable({
   apiKeys,
-  deletingKeyId,
   onRequestDelete,
-  onConfirmDelete,
 }: Readonly<{
   apiKeys: ApiKey[];
-  deletingKeyId: string | null;
-  onRequestDelete: (id: string | null) => void;
-  onConfirmDelete: (id: string) => void;
+  onRequestDelete: (id: string) => void;
 }>) {
   const t = useTranslations('dashboard.keys.table');
   const format = useFormatter();
@@ -96,7 +92,6 @@ export function ApiKeysTable({
         </thead>
         <tbody className="divide-y divide-rule">
           {apiKeys.map((key) => {
-            const isConfirming = deletingKeyId === key.id;
             return (
               <tr
                 key={key.id}
@@ -139,36 +134,14 @@ export function ApiKeysTable({
                   </span>
                 </td>
                 <td className="py-3.5 text-right whitespace-nowrap">
-                  {isConfirming && (
-                    <div className="inline-flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => onConfirmDelete(key.id)}
-                        aria-label={t('confirmLabel', { name: key.name })}
-                        className="min-h-[44px] px-3 rounded-sm bg-danger hover:bg-danger/90 text-canvas text-xs font-semibold transition-colors"
-                      >
-                        {t('confirm')}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onRequestDelete(null)}
-                        aria-label={t('cancelLabel', { name: key.name })}
-                        className="min-h-[44px] px-3 rounded-sm border border-rule text-xs font-semibold text-ink-2"
-                      >
-                        {t('cancel')}
-                      </button>
-                    </div>
-                  )}
-                  {!isConfirming && (
-                    <button
-                      type="button"
-                      onClick={() => onRequestDelete(key.id)}
-                      aria-label={t('deleteLabel', { name: key.name })}
-                      className="min-w-[44px] min-h-[44px] px-3 rounded-sm border border-rule text-xs text-danger hover:bg-danger-soft font-semibold transition-colors"
-                    >
-                      {t('delete')}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => onRequestDelete(key.id)}
+                    aria-label={t('deleteLabel', { name: key.name })}
+                    className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm border border-rule text-ink-3 hover:text-danger hover:bg-danger-soft transition-colors"
+                  >
+                    <Trash2 aria-hidden="true" className="w-4 h-4" />
+                  </button>
                 </td>
               </tr>
             );

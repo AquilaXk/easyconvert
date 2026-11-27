@@ -24,7 +24,8 @@ export interface RecordDeleteOptions {
 /**
  * The deletion of a dashboard record (a converted file, a failed webhook, an API key): one request per record at a time, a
  * 404 read as "already gone" with the row dropped, any other refusal worded by its code, and the list read again after an
- * answer that removed the record.
+ * answer that removed the record. `remove` answers the sentence of a failure, or null; with `reportFailure` false the failure is
+ * only answered, for a dialog that shows it itself (a page-level message would sit behind the modal).
  */
 export function useRecordDelete({
   url, goneSentence, failedSentence, networkSentence, warnNetworkFailure, onReportError, onRemoved, refetch,
@@ -39,8 +40,8 @@ export function useRecordDelete({
     setPendingIds([...pending.current]);
   }, []);
 
-  const remove = async (id: string): Promise<void> => {
-    if (pending.current.has(id)) return;
+  const remove = async (id: string, reportFailure = true): Promise<string | null> => {
+    if (pending.current.has(id)) return null;
     setPending(id, true);
     onReportError(null);
     try {
@@ -50,13 +51,16 @@ export function useRecordDelete({
         if (wasGone) onReportError(goneSentence);
         onRemoved(id, wasGone);
         await refetch();
-        return;
+        return null;
       }
       const data: unknown = await res.json().catch(() => null);
-      onReportError(errorWording(data, res.status, failedSentence));
+      const sentence = errorWording(data, res.status, failedSentence);
+      if (reportFailure) onReportError(sentence);
+      return sentence;
     } catch (error) {
       warnNetworkFailure(error);
-      onReportError(networkSentence);
+      if (reportFailure) onReportError(networkSentence);
+      return networkSentence;
     } finally {
       setPending(id, false);
     }

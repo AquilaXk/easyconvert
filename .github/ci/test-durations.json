@@ -256,6 +256,7 @@
   "tests/config-schema.test.ts": 0.2,
   "tests/config-startup.test.ts": 3.6,
   "tests/confirm-account-email.test.ts": 0,
+  "tests/confirm-dialog.test.ts": 0.2,
   "tests/container-ci-job.test.ts": 0.2,
   "tests/content-disposition-header.test.ts": 0,
   "tests/conversion-concurrency.test.ts": 2.9,

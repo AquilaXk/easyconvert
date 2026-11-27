@@ -24,7 +24,7 @@ const noop = () => undefined;
 
 const keysPanelState = {
   apiKeys: [], quota: null, charges: [], newKeyName: '', generatedSecret: null, isGeneratingKey: false, showGenerateForm: false,
-  copiedKey: false, deletingKeyId: null, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const, acceptedTerms: false,
+  copiedKey: false, deletingKeyId: null, deleteKeyError: null, deleteKeyPending: false, selectedScopes: ['convert:write' as const], keyExpiry: '30d' as const, acceptedTerms: false,
 };
 const keysPanelActions = {
   onOpenGenerateForm: noop, onCloseGenerateForm: noop, onDismissGeneratedSecret: noop, onNameChange: noop, onToggleScope: noop,
@@ -230,13 +230,42 @@ describe('a refused dashboard request', () => {
       expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
     });
 
-    it('whose deletion fails with a 500 stays listed with its confirmation open', async () => {
+    it('whose deletion fails with a 500 stays listed with its dialog open and the error in the dialog, not on the page, and a retry deletes it', async () => {
+      let attempts = 0;
+      const answer = keysAnswer(new Response());
+      const ko = await mountController(
+        'ko',
+        (url, method) => {
+          if (method !== 'DELETE') return answer(url, method);
+          attempts += 1;
+          return attempts === 1 ? new Response(JSON.stringify(routeBody('Failed to delete.')), { status: 500 }) : new Response(JSON.stringify({ success: true }), { status: 200 });
+        },
+        (report) => useApiKeysController(true, report),
+        (c) => c.state.apiKeys.length === 2
+      );
+      ko.controller.actions.onRequestDelete('k-1');
+      ko.controller.actions.onConfirmDelete('k-1');
+      await vi.waitFor(() => expect(ko.controller.state.deleteKeyError).toBe('API 키를 삭제하지 못했습니다. 잠시 후 다시 시도하세요.'));
+      expect(ko.reported()).toBeNull();
+      expect(ko.controller.state.apiKeys).toHaveLength(2);
+      expect(ko.controller.state.deletingKeyId).toBe('k-1');
+      expect(ko.controller.state.deleteKeyPending).toBe(false);
+
+      ko.controller.actions.onConfirmDelete('k-1');
+      await vi.waitFor(() => expect(ko.controller.state.deletingKeyId).toBeNull());
+      expect(ko.controller.state.deleteKeyError).toBeNull();
+      expect(attempts).toBe(2);
+    });
+
+    it('clears the error of an earlier attempt when its dialog is opened again', async () => {
       const ko = await mountKeys('ko', new Response(JSON.stringify(routeBody('Failed to delete.')), { status: 500 }));
       ko.controller.actions.onRequestDelete('k-1');
       ko.controller.actions.onConfirmDelete('k-1');
-      await vi.waitFor(() => expect(ko.reported()).toBe('API 키를 삭제하지 못했습니다. 잠시 후 다시 시도하세요.'));
-      expect(ko.controller.state.apiKeys).toHaveLength(2);
-      expect(ko.controller.state.deletingKeyId).toBe('k-1');
+      await vi.waitFor(() => expect(ko.controller.state.deleteKeyError).not.toBeNull());
+      ko.controller.actions.onRequestDelete(null);
+      await vi.waitFor(() => expect(ko.controller.state.deletingKeyId).toBeNull());
+      ko.controller.actions.onRequestDelete('k-1');
+      await vi.waitFor(() => expect(ko.controller.state.deleteKeyError).toBeNull());
     });
 
     const answerKeyRoutes = (keysList: Response, create: Response) => (url: string, method: string) => {
@@ -303,6 +332,9 @@ describe('a refused dashboard request', () => {
     const button = () => host.querySelector<HTMLButtonElement>('button[aria-label^="Delete"]');
     await vi.waitFor(() => expect(button()).not.toBeNull());
     button()!.click();
+    const confirmButton = () => [...host.querySelectorAll<HTMLButtonElement>('dialog button')].find((candidate) => candidate.textContent === 'Delete file');
+    await vi.waitFor(() => expect(confirmButton()).toBeDefined());
+    confirmButton()!.click();
     await vi.waitFor(() => expect(button()!.disabled).toBe(true));
     button()!.click();
     const deletes = () => fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE');

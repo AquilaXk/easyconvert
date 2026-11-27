@@ -1,14 +1,14 @@
 'use client';
 
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { Lock, Trash2, X } from 'lucide-react';
-import { useModalDialog } from '@/hooks/useModalDialog';
+import { Lock, Trash2 } from 'lucide-react';
 import { useRouter } from '@/i18n/navigation';
 import type { User } from '@/lib/auth/types';
 import { BILLING_REFUSAL_CODES, isCodeOf } from '@/lib/refusal-codes';
 import { applySessionChange } from '@/lib/viewer-plan';
 import { useAuthErrorWording, useBillingErrorWording } from '../i18n/error-wording';
+import { ConfirmDialog } from './ConfirmDialog';
 
 const FIELD_CLASS =
   'mt-1.5 w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-canvas border border-rule-strong text-base sm:text-sm text-ink';
@@ -16,8 +16,6 @@ const PRIMARY_BTN_CLASS =
   'btn-primary min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 const DANGER_BTN_CLASS =
   'min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm bg-danger-soft text-danger border border-danger-edge text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
-const SECONDARY_BTN_CLASS =
-  'min-h-[44px] inline-flex items-center justify-center px-4 py-2 rounded-sm border border-rule text-ink text-sm font-medium hover:bg-sunken disabled:opacity-50 cursor-pointer';
 const LABEL_CLASS = 'block text-sm font-medium leading-snug text-ink';
 const MIN_NEW_PASSWORD_LENGTH = 8;
 const CONFIRM_DELETE_TOKEN = 'DELETE';
@@ -167,21 +165,12 @@ function DeleteAccountDialog({
   const authWording = useAuthErrorWording();
   const billingWording = useBillingErrorWording();
   const router = useRouter();
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
   const isGoogle = user.provider === 'google';
   const [credential, setCredential] = useState('');
-  const [confirmPhrase, setConfirmPhrase] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useModalDialog(dialogRef, open, onClose);
-  if (!open) return null;
-
-  const ready = confirmPhrase.trim() === CONFIRM_DELETE_TOKEN && credential.trim().length > 0 && !busy;
-
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!ready) return;
+  async function submit() {
     setBusy(true);
     setError(null);
     const body = isGoogle
@@ -209,75 +198,41 @@ function DeleteAccountDialog({
   }
 
   return (
-    <dialog
-      ref={dialogRef}
-      aria-labelledby="account-delete-dialog-title"
-      className="m-auto bg-surface rounded-md border border-rule shadow-elev-2 text-ink max-w-md w-[calc(100%-2rem)] p-0"
+    <ConfirmDialog
+      open={open}
+      title={t('heading')}
+      description={t('intro')}
+      phrase={{
+        value: CONFIRM_DELETE_TOKEN,
+        inputId: 'account-delete-phrase',
+        label: t.rich('confirmPhraseLabel', { code: (chunks) => <code className="font-mono font-semibold text-ink">{chunks}</code> }),
+      }}
+      confirmLabel={t('confirm')}
+      pendingLabel={t('confirming')}
+      cancelLabel={t('cancel')}
+      closeLabel={t('close')}
+      confirmIcon={<Trash2 aria-hidden="true" className="w-4 h-4" />}
+      pending={busy}
+      error={error}
+      confirmBlocked={credential.trim().length === 0}
+      onConfirm={() => void submit()}
+      onClose={onClose}
     >
-      <div className="p-6 space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 id="account-delete-dialog-title" className="text-lg font-semibold leading-snug text-ink">
-              {t('heading')}
-            </h2>
-            <p className="mt-1 text-sm font-normal leading-relaxed text-ink-3">{t('intro')}</p>
-          </div>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={onClose}
-            aria-label={t('close')}
-            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors shrink-0"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <form onSubmit={(e) => void submit(e)} className="space-y-4">
-          <div>
-            <label htmlFor="account-delete-credential" className={LABEL_CLASS}>
-              {isGoogle ? t('confirmEmailLabel', { email: user.email }) : t('passwordLabel')}
-            </label>
-            <input
-              id="account-delete-credential"
-              type={isGoogle ? 'email' : 'password'}
-              autoComplete={isGoogle ? 'email' : 'current-password'}
-              value={credential}
-              onChange={(e) => setCredential(e.target.value)}
-              className={FIELD_CLASS}
-            />
-          </div>
-          <div>
-            <label htmlFor="account-delete-phrase" className={LABEL_CLASS}>
-              {t.rich('confirmPhraseLabel', { code: (chunks) => <code className="font-mono font-semibold text-ink">{chunks}</code> })}
-            </label>
-            <input
-              id="account-delete-phrase"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={confirmPhrase}
-              onChange={(e) => setConfirmPhrase(e.target.value)}
-              className={FIELD_CLASS}
-            />
-          </div>
-          {error && (
-            <p role="alert" className="text-sm text-danger">
-              {error}
-            </p>
-          )}
-          <div className="flex flex-wrap justify-end gap-2.5 pt-1">
-            <button type="button" disabled={busy} onClick={onClose} className={SECONDARY_BTN_CLASS}>
-              {t('cancel')}
-            </button>
-            <button type="submit" disabled={!ready} className={DANGER_BTN_CLASS}>
-              <Trash2 aria-hidden="true" className="w-4 h-4" />
-              <span>{busy ? t('confirming') : t('confirm')}</span>
-            </button>
-          </div>
-        </form>
+      <div>
+        <label htmlFor="account-delete-credential" className={LABEL_CLASS}>
+          {isGoogle ? t('confirmEmailLabel', { email: user.email }) : t('passwordLabel')}
+        </label>
+        <input
+          id="account-delete-credential"
+          type={isGoogle ? 'email' : 'password'}
+          autoComplete={isGoogle ? 'email' : 'current-password'}
+          value={credential}
+          disabled={busy}
+          onChange={(e) => setCredential(e.target.value)}
+          className={FIELD_CLASS}
+        />
       </div>
-    </dialog>
+    </ConfirmDialog>
   );
 }
 

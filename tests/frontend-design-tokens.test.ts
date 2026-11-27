@@ -176,6 +176,8 @@ describe('design tokens', () => {
       ['success', 'success-soft'],
       ['warning', 'warning-soft'],
       ['danger', 'danger-soft'],
+      ['ink', 'danger-soft'],
+      ['canvas', 'danger'],
       ['info', 'info-soft'],
     ];
     const lightFocus = /:root:not\(\[data-input-modality='pointer'\]\) :focus-visible\s*\{[^}]*outline:\s*1px solid rgb\(var\(--c-([a-z0-9-]+)\)\)/.exec(globalsCss)?.[1];

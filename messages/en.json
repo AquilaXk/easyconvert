@@ -427,7 +427,15 @@
       "downloadLabel": "Download {name}",
       "expiresIn": "Deleted {when}",
       "expiresSoon": "Deleted soon",
-      "deleteLabel": "Delete {name}"
+      "deleteLabel": "Delete {name}",
+      "deleteDialog": {
+        "title": "Delete file",
+        "warning": "A deleted file can no longer be downloaded.",
+        "name": "File name",
+        "confirm": "Delete file",
+        "cancel": "Cancel",
+        "close": "Close delete file dialog"
+      }
     },
     "quota": {
       "unavailable": "Shown once your email address is confirmed.",
@@ -501,12 +509,18 @@
         "status": {
           "active": "ACTIVE"
         },
-        "confirmLabel": "Confirm deleting API key {name}",
-        "confirm": "Confirm",
-        "cancelLabel": "Cancel deleting API key {name}",
+        "deleteLabel": "Delete API key {name}"
+      },
+      "deleteDialog": {
+        "title": "Delete API key",
+        "warning": "Requests sent with this key are refused at once. A deleted key cannot be restored.",
+        "name": "Name",
+        "prefix": "Key prefix",
+        "phraseLabel": "To confirm the deletion, type the key name: <code>{name}</code>",
+        "confirm": "Delete key",
+        "pending": "Deleting",
         "cancel": "Cancel",
-        "deleteLabel": "Delete API key {name}",
-        "delete": "Delete"
+        "close": "Close delete API key dialog"
       }
     },
     "dlq": {
@@ -532,6 +546,21 @@
       "replayLabel": "Replay webhook {id}",
       "replay": "Replay",
       "deleteLabel": "Delete failed webhook {id}",
+      "deleteDialog": {
+        "title": "Delete failed webhook",
+        "warning": "A deleted webhook cannot be sent again.",
+        "id": "Webhook ID",
+        "confirm": "Delete webhook",
+        "cancel": "Cancel",
+        "close": "Close delete webhook dialog"
+      },
+      "clearDialog": {
+        "title": "Clear failed webhooks",
+        "warning": "{count, plural, one {This deletes the failed webhook.} other {This deletes all # failed webhooks.}} A deleted webhook cannot be sent again.",
+        "confirm": "Clear all",
+        "cancel": "Cancel",
+        "close": "Close clear webhooks dialog"
+      },
       "dialog": {
         "heading": "Webhook payload",
         "close": "Close payload viewer",
