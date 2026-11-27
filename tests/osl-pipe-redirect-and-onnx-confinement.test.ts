@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -113,6 +114,22 @@ const confines = prepareConfinementHarness();
 afterAll(() => {
   if (scratch !== '') fs.rmSync(scratch, { recursive: true, force: true });
 });
+
+/**
+ * The single-instance pipes a LibreOffice with the profile at `profileDir` would leave in /tmp. LibreOffice names the pipe
+ * `OSL_PIPE_<uid>_SingleOfficeIPC_<digest>`, the digest being the MD5 of the profile location in UTF-16LE with each byte in
+ * hexadecimal without a leading zero (desktop/source/app/officeipcthread.cxx, CreateMD5FromString). LibreOffice 24.2 on
+ * Linux hashes the `file://` URL and the macOS build hashes the path, so both are looked for. Other tests of the same shard
+ * run LibreOffice outside the sandbox with their own profiles, so only the pipe of this profile says anything here.
+ */
+function tmpPipesOfProfile(profileDir: string): string[] {
+  const digest = (location: string) => [...createHash('md5').update(Buffer.from(location, 'utf16le')).digest()].map((byte) => byte.toString(16)).join('');
+  const suffixes = [profileDir, `file://${profileDir}`].map((location) => `_SingleOfficeIPC_${digest(location)}`);
+  return fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('OSL_PIPE_') && suffixes.some((suffix) => name.endsWith(suffix)));
+}
+
+/** The pipe name the probe binds, as a name under /tmp. */
+const PROBE_PIPE = 'OSL_PIPE_0_SingleOfficeIPC_0123456789abcdef0123456789abcdef';
 
 describe('LibreOffice OSL_PIPE and ONNX OCR readDirs confinement scope', () => {
   it('removes OFFICE_PIPE_DIR from process-sandbox and passes zero socketDirs from LibreOfficePoolManager', async () => {
@@ -234,7 +251,7 @@ describe.skipIf(skipUnless('a C compiler, unprivileged namespaces and Landlock v
         });
         expect(fs.readFileSync(victim, 'utf8')).toBe('protected');
         expect(fs.readdirSync(deepJob)).toEqual([]);
-        expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('OSL_PIPE_'))).toEqual([]);
+        expect(fs.existsSync(path.join(os.tmpdir(), PROBE_PIPE))).toBe(false);
       } finally {
         fs.rmSync(victim, { force: true });
       }
@@ -281,7 +298,7 @@ describe.skipIf(skipUnless('a C compiler, unprivileged namespaces and Landlock v
           );
           const outPdf = fs.readFileSync(path.join(jobDir, 'hello.pdf'));
           expect(outPdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
-          expect(fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith('OSL_PIPE_'))).toEqual([]);
+          expect(tmpPipesOfProfile(profileDir)).toEqual([]);
           expect(fs.readFileSync(victim, 'utf8')).toBe('safe');
         } finally {
           fs.rmSync(victim, { force: true });
