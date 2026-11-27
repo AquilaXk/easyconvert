@@ -28,6 +28,7 @@ A conversion that your browser supports runs on your device: its file is not upl
 | Files | The files you upload, the links you import and the pages you capture, the options you choose, and the converted results | When a conversion runs on our servers |
 | Conversion jobs | Job id, file name, formats, file size, the options you chose (passwords encrypted), webhook URL and signing secret, your account or, without an account, your IP address (for IPv6, the /64 network), status, times, progress, the link, size and type of the result, and the reason of a failure | When a conversion is queued on our servers |
 | Edge server log | IP address, time, request method and path, response status, bytes sent | Only for requests that fail (status 400 to 599) |
+| Browser error report | The kind and name of the error, its message with credentials, links, email addresses, file names, long tokens and long numbers removed, the frames of the stack (function name, script path of the site, line and column), the path of the page without its query string, the release of the site and the browser family. No IP address, cookie, user agent text or account | When a page of the converter crashes in your browser, at most 5 reports for one page load |
 | Allowance and request counters | Your account or, without an account, your IP address (for IPv6, the /64 network), and a count | When you convert or call the API |
 | Account | Email address, display name, password hash, sign-in method, plan, the accepted version of the terms, creation and update times, the time the address was first confirmed, number of conversions | When you create an account |
 | Sign in with Google | Name, email address and profile picture, received from Google | Only if you sign in with Google |
@@ -55,13 +56,14 @@ We do not ask for sensitive data or unique identification numbers. We do not sel
 | File list entry of an account | Expires with its file. |
 | Daily allowance counters | Until the end of the day (UTC). |
 | Monthly allowance counters of a paid plan | Until the end of the month of the subscription, so for at most a month after the first conversion in it. |
-| Subscription record | Until you ask us to delete your account. Paddle keeps the payment data under its own privacy notice. |
-| Event credit record | Until you ask us to delete your account. Deleting the account also removes its entry from the account list of each event. The totals of an event (credits granted, number of accounts) hold no personal data and stay. A backup can still hold the record until that backup is deleted, at most 7 days after it was made |
+| Subscription record | Until the account is deleted, by you in the dashboard or at your request. Paddle keeps the payment data under its own privacy notice. |
+| Event credit record | Until the account is deleted, by you in the dashboard or at your request. Deleting the account also removes its entry from the account list of each event. The totals of an event (credits granted, number of accounts) hold no personal data and stay. A backup can still hold the record until that backup is deleted, at most 7 days after it was made |
 | Request burst counters | 1 hour after the last request. |
 | Upload allowance records | 2 days. |
 | Sign-in attempt limits | 5 minutes. |
 | Edge server log | Up to 15 days. The log is rotated daily and 14 earlier files are kept. |
-| Account, API keys and usage | Until you ask us to delete your account. An account whose email address is not confirmed within 30 days of its creation is deleted automatically, with its API keys, saved storage credentials, files and usage records. An account that holds a purchase is not deleted. |
+| Browser error report | One line in the server log, kept as long as the server log: up to 15 days, rotated daily with 14 earlier files kept. |
+| Account, API keys and usage | Until the account is deleted, by you in the dashboard or at your request. An account whose email address is not confirmed within 30 days of its creation is deleted automatically, with its API keys, saved storage credentials, files and usage records. An account that holds a purchase is not deleted. |
 | Backup of the account and job records | A backup is made every 6 hours, kept on the same server and not copied elsewhere, and deleted at the latest 7 days after it was made. It holds the account, API key and job records as they were at that time. A job sent through the API with the file in the request body keeps that file in its record until the job ends, so a backup made while such a job runs keeps the file until the backup is deleted, at most 7 days. Uploaded files and converted results are not backed up. |
 | Contact messages | Kept in the operator's mailbox. We delete them on request. |
 
