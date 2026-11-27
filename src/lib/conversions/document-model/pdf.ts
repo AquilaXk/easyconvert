@@ -12,7 +12,8 @@ import { blockText, listMarkers } from './text';
 /**
  * Draws the document model with the in-process PDF writer: headings with their numbers, list items with the markers
  * the document shows ("1.", "a.", "III)"), tables with merged cells, links, pictures (a JPEG goes in byte for byte),
- * page and section breaks, footnotes below the block that cites them and endnotes on a last page. Text is drawn in
+ * page and section breaks, footnotes below the block that cites them and endnotes after the last text or on a last page
+ * (`continuousEndnotes`). Text is drawn in
  * the regular face of an installed font that covers it; bold and italic are not drawn. Every anchor of the document is a
  * named destination, and a link to one is a link annotation over each line of its text (a link to a name no anchor has is
  * text).
@@ -275,10 +276,7 @@ export async function documentToPdf(model: DocumentModel, options: ConversionOpt
     blocks.push(...(await builder.blocks(section.blocks, model)));
   }
   const endnotes = model.endnotes ?? [];
-  if (endnotes.length > 0) {
-    blocks.push({ kind: 'pageBreak' });
-    blocks.push(noteList(endnotes));
-  }
+  if (endnotes.length > 0) blocks.push(model.continuousEndnotes ? { kind: 'rule' } : { kind: 'pageBreak' }, noteList(endnotes));
   return renderPdfBlocks(tidyPageBreaks(blocks), {
     orientation: options.orientation,
     title: documentTitle,

@@ -908,6 +908,7 @@ export async function readDocxModel(zip: JSZip): Promise<DocxReadResult> {
     author: core.author,
     language: core.language ?? (stylesRoot ? styles.language : undefined),
   });
+  if (model.endnotes) model.continuousEndnotes = true;
   normalizeBodySize(model);
   return { model, drawsShapes: reader.drawsShapes };
 }

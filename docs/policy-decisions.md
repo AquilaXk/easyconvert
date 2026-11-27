@@ -512,6 +512,7 @@ Security
 461. [A Lotus 1-2-3 file of release 3 and later (`.wk3`, `.wk4`, `.123`) is read by the office suite, and the in-process reader refuses it as a file for the office suite](#461-a-lotus-1-2-3-file-of-release-3-and-later-wk3-wk4-123-is-read-by-the-office-suite-and-the-in-process-reader-refuses-it-as-a-file-for-the-office-suite)
 462. [`.wk3`, `.wk4` and `.123` are inputs of the registry with the targets of `.wks`, and each accepts only the BOF record of release 3 and later](#462-wk3-wk4-and-123-are-inputs-of-the-registry-with-the-targets-of-wks-and-each-accepts-only-the-bof-record-of-release-3-and-later)
 463. [A bitmap record of an EMF or WMF page is written with the least colour table that holds its pixels, uncompressed, and as 24 bits when it has more than 256 colours](#463-a-bitmap-record-of-an-emf-or-wmf-page-is-written-with-the-least-colour-table-that-holds-its-pixels-uncompressed-and-as-24-bits-when-it-has-more-than-256-colours)
+464. [The in-process PDF renderer sets the endnotes of a DOCX after the last text, and those of any other source on a page of their own](#464-the-in-process-pdf-renderer-sets-the-endnotes-of-a-docx-after-the-last-text-and-those-of-any-other-source-on-a-page-of-their-own)
 
 ---
 
@@ -13545,6 +13546,25 @@ Security
   - **`BI_RLE8` for flat 8-bit regions**: smaller, drawn right by the office suite, drawn as a placeholder by Inkscape (measured above), which the QA's readers include.
   - **`BI_PNG` or `BI_JPEG` bitmaps**: Inkscape would draw them, the office suite does not, and the specified use is a printer.
   - **Reducing a region of more than 256 colours to 256**: smaller, but the pixels change; no star repository does it in these writers, and the QA's bar is a faithful file.
-  - **Cutting a region into pieces that are each flat or not** (the estimate above, 2 to 3 times smaller): not done without a measurement in the readers of the seams that adjacent bitmaps can show at a fractional scale, and of the time a reader takes for tens of thousands of records. It is the one step that would shrink the pages that remain large (follow-up in `TODO.md`).
+  - **Cutting a region into pieces that are each flat or not** (the estimate above, 2 to 3 times smaller): not done without a measurement in the readers of the seams that adjacent bitmaps can show at a fractional scale, and of the time a reader takes for tens of thousands of records. It is the one step that would shrink the pages that remain large; not planned (QA 2026-11-28: decided by the reference and the star repositories, and the reference writes one 32-bit bitmap a picture).
 - **Verified by**: `tests/metafile-bitmap-encodings.test.ts` (the depth chosen for 1, 2, 3 to 16, 17 to 256 and 257 colours; the bytes of the info header, the table, the row order and padding, and the record offsets of both formats checked against the layout rules and read back by a separate decoder; no run-length coding; the record never longer than the 24-bit bound; the 1, 4, 8 and 24-bit pictures drawn by Inkscape and the office suite as EMF and WMF with each quadrant's mean colour within 12 levels), `tests/metafile-raster-fallback.test.ts` (the 24-bit record layout and the picture cut from a render), `tests/metafile-raster-real-samples.test.ts` (the 12 real pages and the typed refusals, unchanged), `tests/ci-parity-families.test.ts` (the new file is in the `vector` family).
 - **Revisit when**: a reader of the files is found that draws `BI_RLE8` (then code a flat region, an 8-bit one first), a viewer of the files shows a palette bitmap wrong, or the size of the pages that stay at 24 bits matters (cut a region into pieces after measuring the seams and the record counts in the readers).
+
+## 464. The in-process PDF renderer sets the endnotes of a DOCX after the last text, and those of any other source on a page of their own
+
+- **Status**: Implemented, decided 2026-11-28 (QA rule of 2026-11-27: behaviour is decided by the reference service and the star repositories); nothing is deployed. It closes the open item of entry 452 on `tests/docx-pdf-structure.test.ts`.
+- **Decision**:
+  - **A model read from a DOCX carries `continuousEndnotes`**, and `documentToPdf` draws its endnotes after the last block of the document below a separator rule (the rule the footnotes already have), on the page that block ends on.
+  - **Any other model starts a page for its endnotes**, as before. The HWP reader is the other reader that fills endnotes.
+- **Why**:
+  - **The reference converts `docx` and `hwp` to `pdf` with the office suite** (formats API `filter[input_format]=docx|hwp&filter[output_format]=pdf`, 2026-11-28: engine `office` for both).
+  - **The office suite sets continuous endnotes on a DOCX only.** Its DOCX import sets the document setting `ContinuousEndnotes` to true (`sw/source/writerfilter/filter/WriterFilter.cxx` line 341 at `56dcb0c9`, MPL, behaviour only), so 26.8 sets the endnote of `rich-structure.docx` on the page of the last text (entry 452). Its HWP import writes `text:endnote` elements (`hwpfilter/source/hwpreader.cxx` lines 4928 to 4939 at the same commit) and never sets that setting, and the office suite's default for an ODF text is a page of its own: 26.8.0.3 draws a flat ODF text of two lines and one endnote as two pages, the endnote alone on the second.
+  - **Word places endnotes at the end of the document after its text by default** (`w:endnotePr/w:pos` `docEnd`), which is the behaviour the DOCX import copies.
+- **Trade-offs**:
+  - **The separator is the footnote rule**, not a measured copy of the office suite's endnote separator; its length and spacing may differ.
+  - **A DOCX whose endnotes are set to the end of each section** (`w:pos` `sectEnd`) still has them at the end of the document; the reader does not read `w:endnotePr`.
+- **Alternatives rejected**:
+  - **Continuous endnotes for every source**: an HWP converted by the reference has them on a page of their own.
+  - **A page of their own for every source** (the old rule): one page more than the reference for every DOCX with endnotes.
+- **Verified by**: `tests/docx-pdf-structure.test.ts` (the page count of `rich-structure.docx` equals the office suite's and its last page holds the last text and the endnote; a model with the flag draws one page, one without it two; the DOCX reader sets the flag).
+- **Revisit when**: the HWP or HWPX import of the office suite sets continuous endnotes, or a DOCX with `w:pos` `sectEnd` turns up in the corpus.

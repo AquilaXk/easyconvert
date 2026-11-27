@@ -335,6 +335,8 @@ export interface DocumentModel {
   pageFooter?: Inline[][];
   footnotes?: NoteDefinition[];
   endnotes?: NoteDefinition[];
+  /** The endnotes follow the last text of the document below a separator rule, as Word and the office suite set a DOCX; without it they start a page of their own, the office suite's default for an ODF text (entry 464). */
+  continuousEndnotes?: true;
   title?: string;
   author?: string;
   /** The picture that is the book's cover (an ebook source states one); an EPUB writer marks it as the cover image. */

@@ -1,9 +1,15 @@
-import { describe, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import JSZip from 'jszip';
+import { PDFDocument } from 'pdf-lib';
 import { convertFile } from '../src/lib/conversions';
+import { readDocxModel } from '../src/lib/conversions/docx-model';
+import { blankDocument } from '../src/lib/conversions/document-model/build';
+import type { DocumentModel, ParagraphBlock } from '../src/lib/conversions/document-model/model';
+import { documentToPdf } from '../src/lib/conversions/document-model/pdf';
 import { oracleTest } from './helpers/oracle-test';
 import { requireOracleTool } from './helpers/differential-oracle';
 import { fixtureBytes, richStructureImageHashes, sha256 } from './helpers/document-fixtures';
@@ -64,7 +70,7 @@ describe('docx to pdf keeps list numbers, pictures and page breaks', () => {
     }
   });
 
-  oracleTest('the page count equals the LibreOffice rendering, plus the page of the endnotes', ['pdfinfo', 'pdftotext', 'soffice'], async () => {
+  oracleTest('the page count equals the LibreOffice rendering, whose last page holds the last text and the endnote', ['pdfinfo', 'pdftotext', 'soffice'], async () => {
     const pdf = (await convertFile(RICH, 'docx', 'pdf', {}, 'rich-structure.docx')).buffer;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-pages-'));
     try {
@@ -75,15 +81,41 @@ describe('docx to pdf keeps list numbers, pictures and page breaks', () => {
       const referencePdf = path.join(dir, 'ref', 'rich-structure.pdf');
       const lastPage = pages(referencePdf);
       const lastPageText = execFileSync(requireOracleTool('pdftotext'), ['-f', String(lastPage), '-l', String(lastPage), referencePdf, '-'], { encoding: 'utf-8' });
-      // LibreOffice 26.8 sets the endnote after the last text of the document, on the page that text ends on (24.2 started a page for it). The
-      // in-process renderer keeps its rule of the endnotes on a last page of their own (documentToPdf), so the one page more is that page, and
-      // every other page break agrees.
+      // LibreOffice 26.8 sets the endnote of a DOCX after the last text of the document, on the page that text ends on (24.2 started a page
+      // for it), and so does the in-process renderer (entry 464).
       expect(lastPageText).toContain('Second section text.');
       expect(lastPageText).toContain('Calibration certificates are on file.');
-      expect(pages(path.join(dir, 'ours.pdf'))).toBe(lastPage + 1);
+      expect(pages(path.join(dir, 'ours.pdf'))).toBe(lastPage);
+      const ourLastPage = execFileSync(requireOracleTool('pdftotext'), ['-f', String(lastPage), '-l', String(lastPage), path.join(dir, 'ours.pdf'), '-'], { encoding: 'utf-8' });
+      expect(ourLastPage).toMatch(/Second section text\.[\s\S]*Calibration certificates are on file\./);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   }, 180_000);
 });
 
+
+function paragraphOf(text: string): ParagraphBlock {
+  return { type: 'paragraph', runs: [{ text, bold: false, italic: false, monospace: false }], rtl: false, align: 'left' };
+}
+
+function noteModel(continuous: boolean): DocumentModel {
+  const model = blankDocument([{ columns: 1, blocks: [paragraphOf('Body text.')] }]);
+  model.endnotes = [{ id: 1, label: '1', blocks: [paragraphOf('Endnote text.')] }];
+  if (continuous) model.continuousEndnotes = true;
+  return model;
+}
+
+describe('endnotes follow the source (entry 464)', () => {
+  it('a DOCX model sets its endnotes after the last text, any other model starts a page for them', async () => {
+    const pageCount = async (continuous: boolean): Promise<number> => (await PDFDocument.load(await documentToPdf(noteModel(continuous), {}, 'notes'))).getPageCount();
+    expect(await pageCount(true)).toBe(1);
+    expect(await pageCount(false)).toBe(2);
+  });
+
+  it('the DOCX reader marks its endnotes as continuous', async () => {
+    const { model } = await readDocxModel(await JSZip.loadAsync(RICH));
+    expect(model.endnotes).toHaveLength(1);
+    expect(model.continuousEndnotes).toBe(true);
+  });
+});
