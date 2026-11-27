@@ -325,7 +325,7 @@ describe.skipIf(skipWithoutTools('gs', 'pdftocairo', 'soffice', 'rsvg-convert') 
   }, TIMEOUT_MS);
 });
 
-/** Entry 452 offers EMF and WMF for CorelDRAW, CGM, EMF and WMF sources: what entry 187 left out and entry 452 kept out is listed. */
+/** Entry 453 offers EMF and WMF for CorelDRAW, CGM, EMF and WMF sources: what entry 187 left out and entry 453 kept out is listed. */
 describe('the pairs left out of entry 187 stay out of the registry', () => {
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     ai: ['emf', 'wmf'],
