@@ -83,8 +83,8 @@ describe('the dialog that deletes an API key', () => {
     expect(document.getElementById(modal.getAttribute('aria-labelledby')!)?.textContent).toBe('Delete API key');
     expect(modal.textContent).toContain('build server');
     expect(modal.textContent).toContain('ec_live_ab12...');
-    expect(modal.textContent).toContain('Requests sent with this key are refused at once. A deleted key cannot be restored.');
-    expect(button('Delete key')).toBeDefined();
+    expect(modal.textContent).toContain('The key stops working as soon as it is deleted. This cannot be undone.');
+    expect(button('Delete')).toBeDefined();
     expect(button('Cancel')).toBeDefined();
 
     act(() => root?.unmount());
@@ -92,8 +92,8 @@ describe('the dialog that deletes an API key', () => {
     keyDialog({}, 'ko');
     const ko = dialog()!;
     expect(document.getElementById(ko.getAttribute('aria-labelledby')!)?.textContent).toBe('API 키 삭제');
-    expect(ko.textContent).toContain('이 키로 보내는 요청은 즉시 거부됩니다. 삭제한 키는 되돌릴 수 없습니다.');
-    expect(button('키 삭제')).toBeDefined();
+    expect(ko.textContent).toContain('삭제 후 키는 즉시 무효화됩니다. 이 작업은 되돌릴 수 없습니다.');
+    expect(button('삭제')).toBeDefined();
     expect(button('취소')).toBeDefined();
   });
 
@@ -101,18 +101,18 @@ describe('the dialog that deletes an API key', () => {
     keyDialog();
     expect(document.activeElement).toBe(field());
     const buttons = [...host.querySelectorAll('dialog form button')].map((candidate) => candidate.textContent?.trim());
-    expect(buttons).toEqual(['Cancel', 'Delete key']);
+    expect(buttons).toEqual(['Cancel', 'Delete']);
   });
 
   it('keeps a tab order of close, name field, cancel and the red action, with the action last', () => {
     keyDialog();
     const order = [...host.querySelectorAll<HTMLElement>('dialog button, dialog input')].map((element) => element.getAttribute('aria-label') || element.textContent?.trim() || element.tagName);
-    expect(order).toEqual(['Close delete API key dialog', 'INPUT', 'Cancel', 'Delete key']);
+    expect(order).toEqual(['Close delete API key dialog', 'INPUT', 'Cancel', 'Delete']);
   });
 
   it('keeps the action off until the typed text, trimmed, is the name of the key, and sends no request for a wrong name', () => {
     const { onConfirm } = keyDialog();
-    const action = button('Delete key')!;
+    const action = button('Delete')!;
     expect(action.disabled).toBe(true);
 
     typeInto(field(), 'build serve');
@@ -179,7 +179,7 @@ describe('the dialog that deletes an API key', () => {
     root = null;
     keyDialog();
     expect(field().value).toBe('');
-    expect(button('Delete key')!.disabled).toBe(true);
+    expect(button('Delete')!.disabled).toBe(true);
   });
 });
 

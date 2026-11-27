@@ -509,11 +509,11 @@
       },
       "deleteDialog": {
         "title": "API 키 삭제",
-        "warning": "이 키로 보내는 요청은 즉시 거부됩니다. 삭제한 키는 되돌릴 수 없습니다.",
+        "warning": "삭제 후 키는 즉시 무효화됩니다. 이 작업은 되돌릴 수 없습니다.",
         "name": "이름",
         "prefix": "키 접두사",
-        "phraseLabel": "삭제를 확인하려면 키 이름을 입력하세요: <code>{name}</code>",
-        "confirm": "키 삭제",
+        "phraseLabel": "확인하려면 API 키 이름을 입력하세요: <code>{name}</code>",
+        "confirm": "삭제",
         "pending": "삭제하는 중",
         "cancel": "취소",
         "close": "닫기"

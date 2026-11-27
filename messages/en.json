@@ -509,11 +509,11 @@
       },
       "deleteDialog": {
         "title": "Delete API key",
-        "warning": "Requests sent with this key are refused at once. A deleted key cannot be restored.",
+        "warning": "The key stops working as soon as it is deleted. This cannot be undone.",
         "name": "Name",
         "prefix": "Key prefix",
-        "phraseLabel": "To confirm the deletion, type the key name: <code>{name}</code>",
-        "confirm": "Delete key",
+        "phraseLabel": "Type the name of the API key to confirm: <code>{name}</code>",
+        "confirm": "Delete",
         "pending": "Deleting",
         "cancel": "Cancel",
         "close": "Close delete API key dialog"
