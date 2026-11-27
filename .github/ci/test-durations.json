@@ -754,6 +754,7 @@
   "tests/media-wav-packet-size.test.ts": 10.9,
   "tests/metadata-exif.test.ts": 0,
   "tests/metadata-task.test.ts": 0.6,
+  "tests/metafile-bitmap-encodings.test.ts": 4.6,
   "tests/metafile-logical-space.test.ts": 0,
   "tests/metafile-page-frame.test.ts": 0.1,
   "tests/metafile-raster-fallback.test.ts": 0.1,

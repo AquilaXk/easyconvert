@@ -275,7 +275,7 @@
     },
     {
       "families": ["vector"],
-      "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|metafile-bitmap|openxps|xps-text-layout|odg)\\.ts$"
+      "match": "^src/lib/conversions/(svg-[^/]*|vector-metafile|metafile-draw-plan|metafile-(bitmap|dib)|openxps|xps-text-layout|odg)\\.ts$"
     },
     {
       "families": ["vector"],

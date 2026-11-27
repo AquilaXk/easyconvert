@@ -88,7 +88,9 @@ describe('a page with a part the writers cannot draw', () => {
   it('writes the picture as EMR_STRETCHDIBITS last, with rows from the bottom up as BGR on the region', () => {
     const read = readMetafilePage(svg, 'emf');
     const { rect, width, height } = solidBitmaps(read.regions)[0];
+    // More than 256 colours, so that the picture is written as 24 bits (a picture of fewer has a colour table, `metafile-bitmap-encodings.test.ts`).
     const rgb = Buffer.alloc(width * height * 3);
+    for (let pixel = 1; pixel < width * height; pixel++) rgb.writeUIntBE(pixel % 1024, pixel * 3, 3);
     rgb.writeUIntBE(0x102030, 0, 3); // the first pixel, the top left one
     const written = read.write([{ rect, width, height, rgb }]);
     const record = emfRecords(written).at(-2) as Buffer; // the last record is EMR_EOF
