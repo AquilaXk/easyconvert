@@ -37,7 +37,7 @@ const COLOURS: readonly Rgb[] = [
   [0, 0, 255],
 ];
 const COLOUR_TOLERANCE = 12;
-/** 500 decoded and encoded pages take longer than the 5 s default on a loaded shard. */
+/** 500 decoded and encoded pages take longer than the 5 s default on a loaded shard; 51 pages of a 501-page file took 5.0 s on one. */
 const LIMIT_DOCUMENT_TIMEOUT_MS = 60_000;
 const HTTP_PAYLOAD_TOO_LARGE = 413;
 const FIVE_HUNDRED_PAGES = 500;
@@ -195,7 +195,7 @@ describe('page limits', () => {
     expect(result.sourceFrameCount).toBe(FIVE_HUNDRED_AND_ONE_PAGES);
   });
 
-  it.skipIf(SKIP_WITHOUT_MAGICK)('a selection within the limit of a longer document is accepted', async () => {
+  it.skipIf(SKIP_WITHOUT_MAGICK)('a selection within the limit of a longer document is accepted', { timeout: LIMIT_DOCUMENT_TIMEOUT_MS }, async () => {
     const result = await convertImage(pagesOf(FIVE_HUNDRED_AND_ONE_PAGES), 'png', { pages: `1-${FIFTY_ONE_PAGES}` }, 'many.tif', 'tiff');
     const zip = await JSZip.loadAsync(result.buffer);
     expect(Object.keys(zip.files)).toHaveLength(FIFTY_ONE_PAGES);
