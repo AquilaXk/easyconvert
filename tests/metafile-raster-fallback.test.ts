@@ -326,6 +326,8 @@ describe('a page that is more than the vector writers hold', () => {
 
   it('is refused as before when the root does not give the size', async () => {
     const unsized = Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg"><!--${'x'.repeat(5_300_000)}--></svg>`);
-    await expect(writeMetafilePageWithPictures(unsized, 'emf', 1, vi.fn())).rejects.toBeInstanceOf(CadGeometryUnavailableError);
+    const draw = vi.fn();
+    await expect(writeMetafilePageWithPictures(unsized, 'emf', 1, draw)).rejects.toBeInstanceOf(CadGeometryUnavailableError);
+    expect(draw).not.toHaveBeenCalled();
   });
 });

@@ -90,6 +90,8 @@ describe.skipIf(toolsMissing)('real pages written with a picture for what the in
   it('refuses a page whose picture would need more than the bounds, with a typed error and no file', async (ctx) => {
     const { bytes } = await requireRealworldSample(ctx, 'asf-apache-20th-badge-1-cmyk.ai');
     const pdf = (await dispatchConversion(bytes, 'ai', 'pdf', {}, 'asf-apache-20th-badge-1-cmyk.ai')).buffer;
-    await expect(dispatchConversion(pdf, 'pdf', 'emf', { pages: '1' }, 'asf-apache-20th-badge-1-cmyk.pdf')).rejects.toBeInstanceOf(RasterFallbackTooLargeError);
+    const refusal = dispatchConversion(pdf, 'pdf', 'emf', { pages: '1' }, 'asf-apache-20th-badge-1-cmyk.pdf');
+    await expect(refusal).rejects.toBeInstanceOf(RasterFallbackTooLargeError);
+    await expect(refusal).rejects.toThrow(/more than 72 dpi allows within 12000000 pixels/);
   }, CONVERSION_TIMEOUT_MS);
 });
