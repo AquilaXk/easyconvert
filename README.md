@@ -1,24 +1,41 @@
-# EasyConvert
+<p align="center">
+  <img src="https://raw.githubusercontent.com/AquilaXk/easyconvert/main/src/app/icon.svg" width="80" alt="EasyConvert">
+</p>
 
-[![CI](https://github.com/AquilaXk/easyconvert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AquilaXk/easyconvert/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<h1 align="center">EasyConvert</h1>
 
-[English](README.md) | [한국어](README.ko.md)
+<p align="center">
+  The open-source file conversion service with a web app and an HTTP API.
+  <br>
+  <a href="https://convert.aquilaxk.site"><b>Try it at convert.aquilaxk.site ↗</b></a>
+</p>
 
-EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts files across **311 file formats** and **2,842 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
+<p align="center">
+  <a href="https://github.com/AquilaXk/easyconvert/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/AquilaXk/easyconvert/actions/workflows/ci.yml/badge.svg?branch=main&style=flat-square"></a>
+  <a href="https://github.com/AquilaXk/easyconvert/releases"><img alt="Release" src="https://img.shields.io/github/v/release/AquilaXk/easyconvert?include_prereleases&style=flat-square"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square"></a>
+  <a href="https://github.com/sponsors/AquilaXk"><img alt="GitHub Sponsors" src="https://img.shields.io/github/sponsors/AquilaXk?style=flat-square&logo=githubsponsors&label=Sponsors"></a>
+</p>
 
-[Live service](https://convert.aquilaxk.site) · [API reference](https://convert.aquilaxk.site/api-docs) · [Configuration](docs/configuration.md) · [Security policy](SECURITY.md)
+<p align="center">
+  <a href="https://convert.aquilaxk.site"><b>Live service</b></a> ·
+  <a href="https://convert.aquilaxk.site/api-docs"><b>API reference</b></a> ·
+  <a href="#documentation"><b>Docs</b></a> ·
+  English | <a href="README.ko.md">한국어</a>
+</p>
 
-## Features
+EasyConvert converts files across **311 file formats** and **2,842 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
 
-- **311 Formats Across 13 Categories** (`2,842` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
+## Highlights
+
+- **311 Formats Across 13 Categories** (`2,842` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D. See the [format matrix](#supported-format-matrix-13-categories).
 - **Sandboxed engines.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, and veraPDF run as external tools inside a per-job sandbox. Some formats use in-process TypeScript engines: HWP 5.0 (OLE2 CFBF), BZip2, TrueType/OpenType font tables, B-spline and Bézier path flattening, and Oklab and NeuQuant palette quantization.
 - **Searchable OCR.** Scanned input becomes a PDF with a searchable text layer.
 - **PDF/A output.** Every PDF/A result is validated with veraPDF against the requested level.
 - **Synchronous and queued conversion.** `POST /api/v1/convert` answers in the request. `POST /api/v1/jobs` queues single conversions, `tasks` pipelines, and `graph` DAGs on a Redis-backed queue with retries, progress, and HMAC-SHA256 signed webhooks.
 - **Large uploads.** tus 1.0.0 resumable uploads and presigned direct multipart uploads, with S3, OCI, or local storage behind them.
 - **Fails closed.** Zero-byte files, spoofed magic bytes, corrupt headers, and unsupported pairs are refused with HTTP 400 or 422. There is no silent fallback.
-- **Scheduled deletion.** A result is deleted 10 minutes after its first complete download or 1 hour after conversion. An upload is deleted 10 minutes after the last job that reads it (policy decision 125).
+- **Scheduled deletion.** A result is deleted 10 minutes after its first complete download or 1 hour after conversion. An upload is deleted 10 minutes after the last job that reads it (policy decision 125 in [docs/policy-decisions.md](docs/policy-decisions.md)).
 - **Localized UI and pair pages.** Pages such as `/pdf-to-docx`, `/png-to-webp`, and `/mp4-to-mp3`, and API reference pages generated from the OpenAPI 3.1 document.
 
 ## Supported Format Matrix (13 Categories)
@@ -65,20 +82,6 @@ npm run dev            # web app at http://localhost:3000
 
 The production stack (web, worker, Redis, hard limits) is `docker-compose.prod.yml`. See [docs/deploy-oci.md](docs/deploy-oci.md).
 
-## Configuration
-
-The server and the worker validate the whole environment at start-up and refuse to run on a malformed value. [docs/configuration.md](docs/configuration.md) lists all variables, and [docs/configuration.example.env](docs/configuration.example.env) is a starting file. The settings below matter most in production.
-
-- `KEY_HASH_PEPPER`: server-side secret that stores API key hashes as HMAC-SHA256 instead of plain SHA-256. Use a random value of at least 32 bytes. To rotate without downtime, set the new value and put the old one in `KEY_HASH_PEPPER_PREVIOUS`. A key that matches only the old value is verified and rehashed on first use. Rotating without `KEY_HASH_PEPPER_PREVIOUS` invalidates the existing keys.
-- `JOB_SECRET_KEK`: secret that seals the signed URLs and request headers stored in queued job data (AES-256-GCM, bound to the job id). It is required in production for the web app and every worker. Use a value such as `openssl rand -hex 32`, and do not reuse the JWT, vault, or encryption secrets. `docker-compose.prod.yml` refuses to start the workers until it is set. Outside production, a development key is used when it is unset.
-- `JOB_SECRET_KEK_PREVIOUS`: optional. During a rotation, set it to the old `JOB_SECRET_KEK` so jobs queued before the change can still be opened, and remove it when those jobs finish. A job sealed under a key that is not configured fails with an unknown-key error.
-- `EASYCONVERT_MAX_INPUT_PIXELS`: most pixels a still image (or an image inside a document) may declare. Larger pictures are refused with HTTP 413 from the container header, before any pixel is decoded. The default is 100000000 (100 megapixels), a plain decimal number, and a larger value is lowered to 268402689 (16383 x 16383). A malformed value is reported once in the log and ignored. Tighter built-in budgets apply to in-process per-pixel paths (Oklab and Riemersma palette quantization, camera RAW sensors, Ultra HDR).
-- `TRUSTED_PROXIES`: client-IP trust mode, required when `NODE_ENV=production`. Set it to the CIDR list of the proxy hops in front of the server, or to `none` when the server is exposed directly (every client then shares one rate-limit bucket). Without it the edge answers API routes with 503.
-- `TRUSTED_CDN`: set to `cloudflare` to honour `CF-Connecting-IP` from verified Cloudflare edge hops.
-- `TRUSTED_PROXY_HEADER`: the single forwarding header your proxy maintains, `x-forwarded-for` (default) or `forwarded`.
-
-See also [docs/client-ip-trust.md](docs/client-ip-trust.md).
-
 ## API
 
 The written reference is served at `/api-docs`, starting at [`/api-docs/quickstart`](https://convert.aquilaxk.site/api-docs/quickstart) (topic pages `quickstart`, `convert`, `jobs`, `uploads`, `downloads`, `formats`, `ocr-languages`, `archives`, `usage`, `errors`). The OpenAPI 3.1 document is at `GET /api/v1/openapi.json` (alias `GET /api/openapi.json`). TypeScript and Python clients are in [sdk/](sdk).
@@ -103,7 +106,8 @@ curl -X POST "https://convert.aquilaxk.site/api/v1/convert?raw=true" \
 
 Callers without an account have a daily limit (policy decision 16 in [docs/policy-decisions.md](docs/policy-decisions.md)).
 
-### Public v1 (`/api/v1/*`)
+<details>
+<summary>Public v1 endpoints (<code>/api/v1/*</code>)</summary>
 
 - **Synchronous conversion**: `POST /api/v1/convert` (`multipart/form-data` with `file`, `targetFormat`, optional `options`, and an optional `Idempotency-Key` header).
   - `layout` (PDF to TXT): `true` keeps the physical page layout so table rows stay on one line. The default reads text in reading order, column after column.
@@ -115,7 +119,10 @@ Callers without an account have a daily limit (policy decision 16 in [docs/polic
 - **Archive inspection**: `POST /api/v1/archives/inspect` lists entries and encryption status without extracting payloads.
 - **OCR languages**: `GET /api/v1/ocr/languages` lists installed language packs and script metadata.
 
-### Web application endpoints
+</details>
+
+<details>
+<summary>Web application endpoints</summary>
 
 - `POST /api/convert` and `POST /api/convert/batch` (ZIP bundling): synchronous conversion.
 - `GET /api/formats`: format registry, with optional `category` and `search` query parameters.
@@ -129,9 +136,33 @@ Callers without an account have a daily limit (policy decision 16 in [docs/polic
   - `GET /api/storage/file/[...key]` downloads the stored file.
 - `GET /api/health`: `{"status": "healthy" | "unhealthy"}` with HTTP `200` or `503`, from live `redis` (when configured) and `storage` probes. The native binaries (`soffice`, `ffmpeg`, `ffprobe`, `pdftoppm`, `pdftotext`, `tesseract`, `7z`, `dcraw_emu`, `ebook-convert`) are advisory components. A request with a wildcard (`*`) scope API key also gets `components`.
 
+</details>
+
+## Configuration
+
+The server and the worker validate the whole environment at start-up and refuse to run on a malformed value. [docs/configuration.md](docs/configuration.md) lists all variables, and [docs/configuration.example.env](docs/configuration.example.env) is a starting file.
+
+<details>
+<summary>Settings that matter most in production</summary>
+
+- `KEY_HASH_PEPPER`: server-side secret that stores API key hashes as HMAC-SHA256 instead of plain SHA-256. Use a random value of at least 32 bytes. To rotate without downtime, set the new value and put the old one in `KEY_HASH_PEPPER_PREVIOUS`. A key that matches only the old value is verified and rehashed on first use. Rotating without `KEY_HASH_PEPPER_PREVIOUS` invalidates the existing keys.
+- `JOB_SECRET_KEK`: secret that seals the signed URLs and request headers stored in queued job data (AES-256-GCM, bound to the job id). It is required in production for the web app and every worker. Use a value such as `openssl rand -hex 32`, and do not reuse the JWT, vault, or encryption secrets. `docker-compose.prod.yml` refuses to start the workers until it is set. Outside production, a development key is used when it is unset.
+- `JOB_SECRET_KEK_PREVIOUS`: optional. During a rotation, set it to the old `JOB_SECRET_KEK` so jobs queued before the change can still be opened, and remove it when those jobs finish. A job sealed under a key that is not configured fails with an unknown-key error.
+- `EASYCONVERT_MAX_INPUT_PIXELS`: most pixels a still image (or an image inside a document) may declare. Larger pictures are refused with HTTP 413 from the container header, before any pixel is decoded. The default is 100000000 (100 megapixels), a plain decimal number, and a larger value is lowered to 268402689 (16383 x 16383). A malformed value is reported once in the log and ignored. Tighter built-in budgets apply to in-process per-pixel paths (Oklab and Riemersma palette quantization, camera RAW sensors, Ultra HDR).
+- `TRUSTED_PROXIES`: client-IP trust mode, required when `NODE_ENV=production`. Set it to the CIDR list of the proxy hops in front of the server, or to `none` when the server is exposed directly (every client then shares one rate-limit bucket). Without it the edge answers API routes with 503.
+- `TRUSTED_CDN`: set to `cloudflare` to honour `CF-Connecting-IP` from verified Cloudflare edge hops.
+- `TRUSTED_PROXY_HEADER`: the single forwarding header your proxy maintains, `x-forwarded-for` (default) or `forwarded`.
+
+See also [docs/client-ip-trust.md](docs/client-ip-trust.md).
+
+</details>
+
 ## Architecture
 
 The web app (Next.js 15 App Router, TypeScript) accepts a request and checks quota. Work is queued in Redis (Lua scripts), and workers run each conversion in a sandboxed child process. Objects live on local disk, S3, or OCI object storage.
+
+<details>
+<summary>Repository layout</summary>
 
 ```
 easyconvert/
@@ -157,6 +188,8 @@ easyconvert/
 └── docker-compose.yml, docker-compose.prod.yml
 ```
 
+</details>
+
 ## Development
 
 ```bash
@@ -172,6 +205,31 @@ npm run bench:quality      # conversion quality benchmark
 - **Static analysis.** SonarCloud, configured in `.sonarcloud.properties`.
 
 One maintainer works on this project. Changes go straight to `main` and CI runs on every push. Remaining work is listed in [TODO.md](TODO.md). A release is tagged per deploy with a short hand-written note (see [docs/deploy-oci.md](docs/deploy-oci.md), "Releases", and [CHANGELOG.md](CHANGELOG.md)).
+
+## Documentation
+
+- [Configuration](docs/configuration.md)
+- [Deploy on OCI](docs/deploy-oci.md)
+- [Policy decisions](docs/policy-decisions.md)
+- [Client IP trust](docs/client-ip-trust.md)
+- [Operations](docs/operations/README.md)
+- [SLO](docs/slo.md)
+- [Licensing](docs/licensing.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+- [Remaining work (TODO)](TODO.md)
+
+## Feedback
+
+Found a bug or missing a format? [Open an issue](https://github.com/AquilaXk/easyconvert/issues). If EasyConvert saves you time, a star helps others find it.
+
+## Sponsor
+
+EasyConvert is free and open source. Sponsorship pays for development time and the servers that run the conversions: [github.com/sponsors/AquilaXk](https://github.com/sponsors/AquilaXk).
+
+### Supporters
+
+Your name here — [become a sponsor](https://github.com/sponsors/AquilaXk).
 
 ## Security
 
