@@ -1,9 +1,12 @@
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { describe, expect, it, vi } from 'vitest';
 import { runPdfTextJob } from '../src/lib/conversions/pdf-text-geometry';
 import { readDxf } from './helpers/dxf-reader';
 import { PicturePages } from '../src/lib/conversions/vector-dxf';
 import { isSvgPageTarget, svgPageEncoder } from '../src/worker/svg-page-encoders';
 import { withPageNumbers } from '../src/worker/worker-output';
+import { skipWithoutTools } from './helpers/strict-skip';
+import { UnsupportedOptionError } from '../src/lib/types';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
 
 vi.mock('../src/lib/conversions/pdf-text-geometry', async (importOriginal) => ({
@@ -88,5 +91,62 @@ describe('the text layer of a PDF, for the pages of one render', () => {
     expect(job).toHaveBeenCalledTimes(1);
     expect(readPdf).toHaveBeenCalledTimes(1);
     expect(job.mock.calls[0][1]).toMatchObject({ geometry: 'none', content: Array.from({ length: PAGES }, (_, index) => index + 1) });
+  });
+});
+
+/**
+ * A page that the in-process EMF and WMF writers refuse (a picture, a mask, a bitmap-font character) goes to the office suite as a
+ * one-page PDF; the pages the in-process writer writes do not, and a page with a Type 3 font is refused as before because the PDF import
+ * of the office suite drops the glyphs of such a font. The office suite is a stand-in here; tests/office-metafile-real-samples.test.ts runs it.
+ */
+describe.skipIf(skipWithoutTools('qpdf'))('an EMF or WMF page the in-process writer refuses', () => {
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==';
+  const PICTURE_PAGE = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><image width="10" height="10" href="${PIXEL}"/></svg>`;
+  const WRITTEN = Buffer.from('written by the office suite');
+
+  async function pdfOfPages(pages: number, type3 = false): Promise<Buffer> {
+    const document = await PDFDocument.create();
+    for (let page = 0; page < pages; page++) document.addPage([200, 200]);
+    if (type3) {
+      const font = document.context.register(document.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type3') }));
+      document.getPage(0).node.set(PDFName.of('Resources'), document.context.obj({ Font: { F1: font } }));
+    }
+    return Buffer.from(await document.save());
+  }
+
+  const encoder = (target: string, pdf: Buffer, pages: number, officeSuite: (page: Buffer, target: string) => Promise<Buffer>) =>
+    svgPageEncoder(target, withPageNumbers({ filename: 'doc.zip' } as WorkerConversionResult, Array.from({ length: pages }, (_, index) => index + 1)), () => pdf, {}, new PicturePages(), officeSuite);
+
+  it('is written by the office suite from the one page of the PDF it came from', async () => {
+    const run = vi.fn(async () => Buffer.from('ignored'));
+    run.mockResolvedValue(Buffer.from([0x01, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, ...new Array(32).fill(0), 0x20, 0x45, 0x4d, 0x46, 0, 0, 0, 0]));
+    const pdf = await pdfOfPages(3);
+    const written = await encoder('emf', pdf, 3, run)(Buffer.from(PICTURE_PAGE), 'doc-p002.svg');
+    expect(written.readUInt32LE(40)).toBe(EMF_SIGNATURE);
+    expect(run).toHaveBeenCalledTimes(1);
+    const [handed, target] = run.mock.calls[0] as unknown as [Buffer, string];
+    expect(target).toBe('emf');
+    expect((await PDFDocument.load(handed)).getPageCount()).toBe(1);
+  });
+
+  it('is refused when the office suite writes no file of the target format', async () => {
+    const pdf = await pdfOfPages(1);
+    await expect(encoder('wmf', pdf, 1, async () => WRITTEN)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg')).rejects.toThrow(/wrote no \.wmf file/);
+  });
+
+  it('is refused as before when the page holds a Type 3 font, and the office suite is not asked', async () => {
+    const run = vi.fn(async () => WRITTEN);
+    const pdf = await pdfOfPages(1, true);
+    await expect(encoder('emf', pdf, 1, run)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg')).rejects.toBeInstanceOf(UnsupportedOptionError);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('is not asked for a page the in-process writer writes, nor for a DXF page', async () => {
+    const run = vi.fn(async () => WRITTEN);
+    const pdf = await pdfOfPages(1);
+    const written = await encoder('emf', pdf, 1, run)(Buffer.from(SVG), 'doc-p001.svg');
+    expect(written.readUInt32LE(40)).toBe(EMF_SIGNATURE);
+    await encoder('dxf', pdf, 1, run)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg').catch(() => undefined);
+    expect(run).not.toHaveBeenCalled();
   });
 });

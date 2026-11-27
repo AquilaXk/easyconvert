@@ -65,15 +65,16 @@ const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
 /**
  * The registry offers DXF, EMF and WMF for Visio drawings. DXF is also offered for CorelDRAW, CGM and WMF files (entry 187: every real file of
  * them converts, a picture being left out with a warning and a clip cut; `tika-testwmf.wmf` is a picture alone on the office suite of the Linux image,
- * which the DXF writer refuses, and is checked on its own below). EMF and WMF are not offered for them, nor DXF for EMF: the pages of
- * these samples hold pictures, a curved clip, a dash or nothing but a picture, which the metafile writers and the DXF writer refuse.
+ * which the DXF writer refuses, and is checked on its own below), and EMF and WMF for CorelDRAW, CGM, EMF and WMF files (entry 452: a page the
+ * in-process writers refuse, which holds a picture, a dash or a curved clip, is written by the office suite). DXF is not offered for EMF: its pages
+ * hold pictures, a curved clip or nothing but a picture, which the DXF writer refuses.
  */
 const VISIO_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
-const DXF_TARGETS = [...PAGE_TARGETS, 'dxf'] as const;
-const METAFILE_DXF_TARGETS = [...METAFILE_PAGE_TARGETS, 'dxf'] as const;
+const DXF_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
+const METAFILE_DXF_TARGETS = [...METAFILE_PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 /** The raster pictures an EMF file is written as (entry 187): converted and read back by tests/vector-pairs.test.ts. */
 const EMF_RASTER_TARGETS = ['avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp'] as const;
-const EMF_TARGETS = [...METAFILE_PAGE_TARGETS, ...EMF_RASTER_TARGETS] as const;
+const EMF_TARGETS = [...METAFILE_PAGE_TARGETS, 'emf', 'wmf', ...EMF_RASTER_TARGETS] as const;
 const NO_PHRASE: readonly string[] = [];
 /** The DXF extents may differ from the inked pixels by this many points: a stroke has a width the outline does not. */
 const DXF_EXTENT_TOLERANCE_POINTS = 2;
@@ -133,7 +134,7 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'tika-testemf.emf', extension: 'emf', targets: EMF_TARGETS, pageSize: { width: 154.91, height: 95.98 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
   { id: 'lo-testroundrect.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 90.23, height: 66.15 }, pages: 1, pagePhrases: [], inkscape: 'alike' },
   { id: 'lo-visio_import_source.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 255.2, height: 106.45 }, pages: 1, pagePhrases: [['dgps rsxx2', 'each input output has individual dcdc converter']], inkscape: 'alike' },
-  { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_PAGE_TARGETS, pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
+  { id: 'tika-testwmf.wmf', extension: 'wmf', targets: [...METAFILE_PAGE_TARGETS, 'emf', 'wmf'], pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
   { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
   { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
   // The file's axis labels share one spot on the page, so the text check below reads the characters, not the order an
@@ -247,6 +248,16 @@ async function ssim(actual: Buffer, reference: Buffer): Promise<number> {
   const size = await sharp(reference).metadata();
   const resized = await sharp(actual).resize(size.width, size.height, { fit: 'fill' }).png().toBuffer();
   return (await compareImages(resized, reference, { includeDiffImage: false })).ssim;
+}
+
+/** The SSIM of two pictures cut to what they draw and set to one size. */
+async function ssimOfDrawings(actual: Buffer, reference: Buffer): Promise<number> {
+  const cut = async (image: Buffer): Promise<Buffer> => {
+    const flat = await sharp(image).flatten({ background: '#ffffff' }).png().toBuffer();
+    const trimmed = await sharp(flat).trim({ background: '#ffffff', threshold: 24 }).png().toBuffer().catch(() => flat);
+    return sharp(trimmed).resize(300, 300, { fit: 'fill' }).png().toBuffer();
+  };
+  return (await compareImages(await cut(actual), await cut(reference), { includeDiffImage: false })).ssim;
 }
 
 function expectClose(actual: Point, expected: Point, label: string): void {
@@ -630,7 +641,10 @@ async function expectMetafileDrawsThePage(metafile: Buffer, target: string, pdfP
   }
   const redrawn = sofficeConvert(metafile, `out.${target}`, 'png', (output) => output.read());
   await expectDrawnPicture(redrawn, label);
-  expect(await ssim(redrawn, pdfPage), `${label} drawn again by the office suite`).toBeGreaterThan(MIN_METAFILE_REIMPORT_SSIM);
+  // The office suite draws a metafile on an A4 canvas, so a page of another shape (a CGM picture is 16 to 9) is compared as it is drawn and
+  // cut to its drawing as well; a drawing that matches either way is the page.
+  const drawn = Math.max(await ssim(redrawn, pdfPage), await ssimOfDrawings(redrawn, pdfPage));
+  expect(drawn, `${label} drawn again by the office suite`).toBeGreaterThan(MIN_METAFILE_REIMPORT_SSIM);
 }
 
 /**

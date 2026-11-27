@@ -29,7 +29,7 @@ import { findBrcmTrailer } from '../lib/conversions/raw-brcm';
 import { isX3f } from '../lib/conversions/raw-x3f';
 import { decodeRawInThread } from './raw-decode-host';
 import { encode16BitTiff } from '../lib/conversions/raw-hdr';
-import { isSvgPageTarget, withSvgPageEncoder } from './svg-page-encoders';
+import { isSvgPageTarget, officeMetafileRun, withSvgPageEncoder } from './svg-page-encoders';
 import { isCalibreOnlyPair } from '../lib/conversions/calibre-ebook-targets';
 import { isPandocPair } from '../lib/conversions/pandoc-pairs';
 import { runWithImageFetchSession } from '../lib/conversions/html-image-fetch';
@@ -1525,7 +1525,7 @@ async function convertPdfToSvgPageFormat(
 ): Promise<WorkerConversionResult | null> {
   const rendered = await convertWithNativePoppler(input, 'pdf', SVG_FORMAT, intermediateOptions(options), originalFilename);
   if (!rendered) return null;
-  return withConversionWarnings(() => withSvgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options, (encode) => reencodeRenderedPages(rendered, SVG_FORMAT, tgt, encode, context)));
+  return withConversionWarnings(() => withSvgPageEncoder(tgt, rendered, () => loadPdfInputBuffer(input), options, (encode) => withPageRenderLanes((lanes) => reencodeRenderedPages(rendered, SVG_FORMAT, tgt, encode, context, lanes)), officeMetafileRun((page, source, to) => convertWithHeadlessOffice(page, source, to, { ...intermediateOptions(options), throwOnUnavailable: true, password: undefined, page: undefined, pages: undefined }, 'page.pdf'), (filePath) => discardPersistedOutput(filePath, input, options))));
 }
 
 /**
