@@ -119,7 +119,7 @@ export function itLeasesHandedOffWork(controls: Omit<LeaseCaseControls, 'store'>
   }
 
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+    vi.useFakeTimers({ toFake: ['Date'], now: BEFORE_MIDNIGHT - 60 * MINUTE_MS });
   });
 
   afterEach(() => {
