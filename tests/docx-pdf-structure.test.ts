@@ -64,7 +64,7 @@ describe('docx to pdf keeps list numbers, pictures and page breaks', () => {
     }
   });
 
-  oracleTest('the page count equals the LibreOffice rendering', ['pdfinfo', 'soffice'], async () => {
+  oracleTest('the page count equals the LibreOffice rendering, plus the page of the endnotes', ['pdfinfo', 'pdftotext', 'soffice'], async () => {
     const pdf = (await convertFile(RICH, 'docx', 'pdf', {}, 'rich-structure.docx')).buffer;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'docx-pages-'));
     try {
@@ -72,7 +72,15 @@ describe('docx to pdf keeps list numbers, pictures and page breaks', () => {
       fs.writeFileSync(path.join(dir, 'rich-structure.docx'), RICH);
       execFileSync(requireOracleTool('soffice'), ['--headless', `-env:UserInstallation=file://${dir}/profile`, '--convert-to', 'pdf', '--outdir', path.join(dir, 'ref'), path.join(dir, 'rich-structure.docx')], { stdio: 'ignore', timeout: 120_000 });
       const pages = (file: string): number => Number(/Pages:\s+(\d+)/.exec(execFileSync(requireOracleTool('pdfinfo'), [file], { encoding: 'utf-8' }))?.[1]);
-      expect(pages(path.join(dir, 'ours.pdf'))).toBe(pages(path.join(dir, 'ref', 'rich-structure.pdf')));
+      const referencePdf = path.join(dir, 'ref', 'rich-structure.pdf');
+      const lastPage = pages(referencePdf);
+      const lastPageText = execFileSync(requireOracleTool('pdftotext'), ['-f', String(lastPage), '-l', String(lastPage), referencePdf, '-'], { encoding: 'utf-8' });
+      // LibreOffice 26.8 sets the endnote after the last text of the document, on the page that text ends on (24.2 started a page for it). The
+      // in-process renderer keeps its rule of the endnotes on a last page of their own (documentToPdf), so the one page more is that page, and
+      // every other page break agrees.
+      expect(lastPageText).toContain('Second section text.');
+      expect(lastPageText).toContain('Calibration certificates are on file.');
+      expect(pages(path.join(dir, 'ours.pdf'))).toBe(lastPage + 1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -18,6 +18,8 @@
 #   quantizr the palette quantiser of the compress page, built from the pinned source with the pinned Rust toolchain (scripts/install-quantizr-pixels.sh)
 #   avifenc  the AVIF encoder, built from the pinned libavif and libaom sources (scripts/install-avifenc.sh), or the cached build when its digest still matches
 #   onnxocr  the models of the ONNX Korean OCR engine (scripts/install-onnx-ocr-models.sh), each file checked against a pinned SHA-256
+#   libreoffice the office suite the worker image ships (LibreOffice 26.8.2.2, entry 383), from the project's release archive checked against a pinned
+#            SHA-256, only for a job that asks for it (LIBREOFFICE_SUITE=true); the runner's own 24.2 stays for every other job
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests
 # One part needs what another installs and runs once they are all done:
@@ -27,7 +29,7 @@
 # passed, long before the job timeout. Each part logs to its own file; the logs are printed in groups afterwards, a
 # failed or stopped part is printed in full outside a group, and a cancelled job prints them as well.
 #
-# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, LIBRAW_HE_CACHE_HIT, GHOSTXPS_CACHE_HIT, DJVULIBRE_CACHE_HIT and S3_TEST_SERVER (true or false). With
+# Environment: ACTION_PATH, APT_DEBS, PIP_WHEELS (the directory of the cached wheels), APT_CACHE_HIT, VERAPDF_CACHE_HIT, LIBREDWG_CACHE_HIT, LIBRAW_HE_CACHE_HIT, GHOSTXPS_CACHE_HIT, DJVULIBRE_CACHE_HIT, LIBREOFFICE_SUITE and LIBREOFFICE_CACHE_HIT (true or false) and S3_TEST_SERVER (true or false). With
 # S3_TEST_SERVER=true also S3_IMAGE_CACHE_DIR and the STORAGE_TEST_S3_* variables of the job.
 #
 # Sourcing the file defines the functions and runs nothing, which is how the tests exercise the limits.
@@ -53,6 +55,9 @@ EPUBCHECK_VERSION=5.2.1
 EPUBCHECK_SHA256=0532f6291faa2bb729dd253f958868a2a57dbd2c32f881a97c7c980c5940309e
 CALIBRE_VERSION=9.15.0
 CALIBRE_SHA256=3f5301c0aa51e5fb2d5f6dcd04024ba4e86501ab328ce5d9d6760efccb887990
+# LIBREOFFICE_VERSION, LIBREOFFICE_URL and LIBREOFFICE_SHA256: the pin of the office suite, in a file of its own because it is also the key of the cache of the install.
+# shellcheck source=libreoffice-suite.env
+source "$(dirname "${BASH_SOURCE[0]}")/libreoffice-suite.env"
 set +a
 
 # Seconds each task may run. The whole step of a job took 119 s at most over the last 64 successful runs, with the
@@ -78,6 +83,7 @@ declare -A task_limit_seconds=(
   [quantizr]=300
   [avifenc]=360
   [onnxocr]=120
+  [libreoffice]=240
   [raw]=240
   [s3]=360
 )
@@ -101,7 +107,17 @@ configure() {
   export avifenc_dir=/opt/avifenc
   export djvulibre_cache_hit="${DJVULIBRE_CACHE_HIT:-false}"
   export djvulibre_dir=/opt/djvulibre
+  export libreoffice_cache_hit="${LIBREOFFICE_CACHE_HIT:-false}"
+  export libreoffice_dir=/opt/libreoffice26.8
   export pip_wheels="${PIP_WHEELS:?PIP_WHEELS}"
+  libreoffice_suite="${LIBREOFFICE_SUITE-false}"
+  case "$libreoffice_suite" in
+    true | false) ;;
+    *)
+      echo "LIBREOFFICE_SUITE must be true or false, got '$libreoffice_suite'" >&2
+      exit 1
+      ;;
+  esac
   s3_test_server="${S3_TEST_SERVER-}"
   case "$s3_test_server" in
     false) ;;
@@ -129,6 +145,9 @@ configure() {
 # The tasks of this job; the S3 test server only when the job runs tests that read it.
 select_tasks() {
   tasks=(apt pip verapdf epubcheck calibre libredwg libraw ghostxps vtracer oxipng pandoc vmaf quantizr avifenc onnxocr raw)
+  if [ "$libreoffice_suite" = true ]; then
+    tasks+=(libreoffice)
+  fi
   if [ "$s3_test_server" = true ]; then
     tasks+=(s3)
   fi
@@ -227,6 +246,36 @@ task_calibre() {
   rm -f "$archive"
   sudo ln -sf "$dir/ebook-convert" /usr/local/bin/ebook-convert
   ebook-convert --version
+}
+
+# The office suite of the worker image is LibreOffice 26.8 from Debian trixie-backports, which the runner (Ubuntu 24.04, 24.2) cannot install: its
+# packages need the libraries of Debian 13. The project's own release of the same version (the archive of the release, same build number) installs
+# under /opt and runs on the runner's libraries. Only the packages of the applications the worker uses are unpacked (no Base, Math, scripting or desktop
+# integration), as the image installs only Writer, Calc, Impress and Draw; `dpkg-deb -x` unpacks them without running their maintainer scripts. A restored
+# install is used only when it still reports the pinned version. Which jobs meet it is the action's business (it links `soffice` and sets SOFFICE_PATH).
+task_libreoffice() {
+  local archive staging deb package
+  local -a wanted=(libreoffice26.8 libreoffice26.8-ure libreoffice26.8-en-us libobasis26.8-core libobasis26.8-images libobasis26.8-ooofonts
+    libobasis26.8-ooolinguistic libobasis26.8-en-us libobasis26.8-graphicfilter libobasis26.8-xsltfilter libobasis26.8-ogltrans
+    libobasis26.8-extension-pdf-import libobasis26.8-writer libobasis26.8-calc libobasis26.8-impress libobasis26.8-draw)
+  if [ "$libreoffice_cache_hit" = true ] && [[ "$("$libreoffice_dir/program/soffice" --headless --version 2> /dev/null)" == "LibreOffice $LIBREOFFICE_VERSION "* ]]; then
+    echo "using the cached LibreOffice install"
+  else
+    archive="$(mktemp)"
+    staging="$(mktemp -d)"
+    curl -fsSL --proto =https --proto-redir =https --retry 6 --retry-delay 10 -o "$archive" "$LIBREOFFICE_URL" || return 1
+    echo "$LIBREOFFICE_SHA256  $archive" | sha256sum -c - || return 1
+    tar -xzf "$archive" -C "$staging" --strip-components=2 || return 1
+    rm -f "$archive"
+    sudo rm -rf "$libreoffice_dir" || return 1
+    for package in "${wanted[@]}"; do
+      deb="$(compgen -G "$staging/${package}_${LIBREOFFICE_VERSION}-*_*.deb")" || { echo "the archive has no package $package" >&2; return 1; }
+      sudo dpkg-deb -x "$deb" / || return 1
+    done
+    rm -rf "$staging"
+  fi
+  [[ "$("$libreoffice_dir/program/soffice" --headless --version)" == "LibreOffice $LIBREOFFICE_VERSION "* ]] || { echo "$libreoffice_dir/program/soffice is not LibreOffice $LIBREOFFICE_VERSION" >&2; return 1; }
+  "$libreoffice_dir/program/soffice" --headless --version
 }
 
 task_raw() {
@@ -428,7 +477,7 @@ task_s3() {
 
 # Each task runs in a `bash -c` of its own under `timeout`, which signals the whole process group of the task when
 # the limit passes and kills what is left after the grace period. The task functions are exported for that shell.
-export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_libraw task_ghostxps task_vtracer task_oxipng task_pandoc task_vmaf task_quantizr task_avifenc task_onnxocr task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
+export -f task_pip task_apt task_djvulibre task_verapdf task_epubcheck task_calibre task_libredwg task_libraw task_ghostxps task_vtracer task_oxipng task_pandoc task_vmaf task_quantizr task_avifenc task_onnxocr task_libreoffice task_raw task_s3 s3_pull_image s3_obtain_image s3_wait_live s3_sign s3_check_signatures
 
 # Runs one task and ends its log with what happened to it and how long it took.
 run_bounded() {

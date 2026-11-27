@@ -494,6 +494,53 @@ describe('the tool setup', () => {
   });
 });
 
+describe('the office suite of the worker image', () => {
+  const SETUP_USE = './.github/actions/ci-setup';
+  const jobsWithSuite = (workflow: Workflow): Array<[string, Step]> =>
+    Object.entries(workflow.jobs).flatMap(([name, job]) =>
+      (job.steps ?? []).filter((step) => step.uses === SETUP_USE && step.with?.libreoffice === 'true').map((step): [string, Step] => [name, step])
+    );
+  const setupStep = (name: string): Step => {
+    const found = setup.runs.steps.find((step) => step.name === name);
+    if (!found) throw new Error(`no step ${name} in the setup action`);
+    return found;
+  };
+
+  it('is off unless a job asks for it, and the activation is on unless a job declines it', () => {
+    expect(setup.inputs?.libreoffice?.default).toBe('false');
+    expect(setup.inputs?.libreoffice?.required).toBe(false);
+    expect(setup.inputs?.['libreoffice-activate']?.default).toBe('true');
+    expect(setupStep('Install the tools and start the S3 test server').env?.LIBREOFFICE_SUITE).toBe('${{ inputs.libreoffice }}');
+  });
+
+  it('is installed by the test shards and by the parity quality job of the pull request workflow, and by no other job of any workflow', () => {
+    expect(jobsWithSuite(ci).map(([name]) => name).sort()).toEqual(['parity-quality', 'tests']);
+    expect(jobsWithSuite(nightly)).toEqual([]);
+    expect(jobsWithSuite(regression)).toEqual([]);
+  });
+
+  it('makes the shards meet it (activation left on), so the worker, the tests and their oracles run the one suite', () => {
+    const [, step] = jobsWithSuite(ci).find(([name]) => name === 'tests') as [string, Step];
+    expect(step.with).toEqual({ libreoffice: 'true' });
+    const use = setupStep('Use the office suite of the worker image');
+    expect(use.if).toBe("inputs.libreoffice == 'true' && inputs.libreoffice-activate == 'true'");
+    expect(use.run).toContain('sudo ln -sf /opt/libreoffice26.8/program/soffice /usr/local/bin/soffice');
+    expect(use.run).toContain('echo "SOFFICE_PATH=/opt/libreoffice26.8/program/soffice" >> "$GITHUB_ENV"');
+    // It is the last step: every step of the job after the action meets the suite, and the installs before it are done.
+    expect(setup.runs.steps[setup.runs.steps.length - 1]).toBe(use);
+  });
+
+  it('caches the unpacked install keyed on the pin file, only for the jobs that install it', () => {
+    const cache = setupStep('Restore the cached office suite');
+    expect(cache.if).toBe("inputs.libreoffice == 'true'");
+    expect(String(cache.uses)).toMatch(/^actions\/cache@[0-9a-f]{40}$/);
+    expect(cache.with?.path).toBe('/opt/libreoffice26.8');
+    expect(cache.with?.key).toBe("libreoffice-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/libreoffice-suite.env') }}");
+    expect(setupStep('Prepare the office suite directory').if).toBe("inputs.libreoffice == 'true'");
+    expect(setupStep('Install the tools and start the S3 test server').env?.LIBREOFFICE_CACHE_HIT).toBe('${{ steps.libreoffice-cache.outputs.cache-hit }}');
+  });
+});
+
 describe('the S3 test server', () => {
   const SETUP_USE = './.github/actions/ci-setup';
   const S3_VARIABLES = ['STORAGE_TEST_S3_ENDPOINT', 'STORAGE_TEST_S3_ACCESS_KEY_ID', 'STORAGE_TEST_S3_SECRET_ACCESS_KEY', 'STORAGE_TEST_S3_BUCKET'];

@@ -3,7 +3,7 @@ import { convertFile } from '../src/lib/conversions/index';
 import { analyzePdfPagesInProcess, extractPdfTextLayerPages, PdfTextGeometryError } from '../src/lib/conversions/pdf-text-geometry';
 import { oracleTest } from './helpers/oracle-test';
 import type { OcrResult } from '../src/lib/conversions/ocr-pdf-combiner';
-import { hocrWords, matchedIou, ocrWords, popplerWords } from './helpers/poppler-words';
+import { hocrWords, matchedIou, ocrWords, popplerWords, type WordBox } from './helpers/poppler-words';
 import { rawPdf, run } from './helpers/raw-pdf';
 import { htmlToPdf } from './helpers/soffice-pdf';
 
@@ -16,6 +16,18 @@ import { htmlToPdf } from './helpers/soffice-pdf';
 const TEST_TIMEOUT_MS = 120_000;
 const OCR_OPTIONS = { ocrEnabled: true, ocrMode: 'skip_text' } as const;
 const STRICT_IOU = 0.9;
+
+/**
+ * The box of a word at the resolution of hOCR, whose `bbox` is whole units: the corner and the size are rounded as the writer rounds them
+ * (`fillBox` and `wholeNumber` of src/lib/conversions/ocr-export.ts: `Math.round` of the corner and of the width, at least one unit). The reference
+ * extractor reports fractions of a point, and an overlap against those measures the rounding of a 26 x 16 point word (0.04 point of an edge moves it
+ * by 0.003) and not the layout; at the same resolution a word that sits where the reference puts it overlaps at 0.9 or more.
+ */
+function atHocrResolution(word: WordBox): WordBox {
+  const x0 = Math.round(word.x0);
+  const y0 = Math.round(word.y0);
+  return { ...word, x0, y0, x1: x0 + Math.max(1, Math.round(word.x1 - word.x0)), y1: y0 + Math.max(1, Math.round(word.y1 - word.y0)) };
+}
 
 async function hocrOf(pdf: Buffer): Promise<string> {
   return (await convertFile(pdf, 'pdf', 'hocr', OCR_OPTIONS, 'layout.pdf')).buffer.toString('utf-8');
@@ -60,7 +72,7 @@ describe('ligatures', () => {
     async () => {
       const pdf = htmlToPdf('<p>ﬁnal oﬃce ﬂow and more words</p><p>final office flow and more words</p>');
       const hocr = await hocrOf(pdf);
-      const reference = popplerWords(pdf);
+      const reference = popplerWords(pdf).map(atHocrResolution);
       const mine = hocrWords(hocr);
       expect(mine).toHaveLength(reference.length);
       const ious = matchedIou(reference, mine);

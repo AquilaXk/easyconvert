@@ -13,6 +13,21 @@ inputs:
     required: false
     default: 'false'
 
+  libreoffice:
+    description: >-
+      'true' also installs the LibreOffice release the worker image ships (26.8.2.2, entry 383, pinned in libreoffice-suite.env) under
+      /opt/libreoffice26.8 and, unless `libreoffice-activate` is 'false', links it as `soffice` in /usr/local/bin and names it in SOFFICE_PATH, so the
+      job's tests and benchmark meet that suite and not the runner's 24.2; 'false' (the default) leaves the runner's. The jobs whose results are
+      recorded on 24.2 (the nightly shards of bench/baseline.json) keep the default.
+    required: false
+    default: 'false'
+  libreoffice-activate:
+    description: >-
+      'false' installs the suite without making it the one of the job: a job that measures some families on it and others on the runner's (the
+      reference measurements of the others are keyed by the version of every tool, soffice included) puts it on the PATH for its own steps.
+    required: false
+    default: 'true'
+
 runs:
   using: composite
   steps:
@@ -139,6 +154,21 @@ runs:
         path: /opt/djvulibre
         key: djvulibre-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('scripts/install-djvulibre.sh', 'scripts/lib/djvulibre-gates.sh', 'scripts/djvulibre-patches/*') }}
 
+    # The unpacked install of the suite is the cache (the archive is 221 MB, from one host), keyed by its pin file. The directory must be writable by the
+    # runner user for the cache to extract into it.
+    - name: Prepare the office suite directory
+      if: inputs.libreoffice == 'true'
+      shell: bash
+      run: sudo install -d -o "$(id -u)" -g "$(id -g)" /opt/libreoffice26.8
+
+    - name: Restore the cached office suite
+      id: libreoffice-cache
+      if: inputs.libreoffice == 'true'
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: /opt/libreoffice26.8
+        key: libreoffice-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/ci-setup/libreoffice-suite.env') }}
+
     - name: Restore RAW sample cache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
@@ -182,7 +212,18 @@ runs:
         GHOSTXPS_CACHE_HIT: ${{ steps.ghostxps-cache.outputs.cache-hit }}
         AVIFENC_CACHE_HIT: ${{ steps.avifenc-cache.outputs.cache-hit }}
         DJVULIBRE_CACHE_HIT: ${{ steps.djvulibre-cache.outputs.cache-hit }}
+        LIBREOFFICE_SUITE: ${{ inputs.libreoffice }}
+        LIBREOFFICE_CACHE_HIT: ${{ steps.libreoffice-cache.outputs.cache-hit }}
         RELEASE_DOWNLOADS: ${{ runner.temp }}/release-downloads
         S3_TEST_SERVER: ${{ inputs.s3-test-server }}
         S3_IMAGE_CACHE_DIR: ${{ runner.temp }}/s3-test-server-image
       run: bash "$ACTION_PATH/install-tools.sh"
+
+    # After the tools: the worker reads SOFFICE_PATH before its fixed locations, and the tests and the benchmark find `soffice` on the PATH
+    # (/usr/local/bin, linked by the install), so every later step of the job meets the same suite.
+    - name: Use the office suite of the worker image
+      if: inputs.libreoffice == 'true' && inputs.libreoffice-activate == 'true'
+      shell: bash
+      run: |
+        sudo ln -sf /opt/libreoffice26.8/program/soffice /usr/local/bin/soffice
+        echo "SOFFICE_PATH=/opt/libreoffice26.8/program/soffice" >> "$GITHUB_ENV"
