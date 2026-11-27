@@ -1648,7 +1648,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   const BRIDGED_PDF_TARGETS = new Set(['doc', 'ppt', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
   const ENCODED_PAGE_TARGETS = new Set(['avif', 'bmp', 'gif', 'ico', 'psd', 'tiff', 'webp']);
-  /** EMF and WMF: Poppler draws each page as SVG, the in-process writer writes it, and the office suite writes a page that writer refuses (entry 453). */
+  /** EMF and WMF: Poppler draws each page as SVG, the in-process writer writes it, and the office suite writes a page that writer refuses (entry 454). */
   const METAFILE_TARGETS = new Set(['emf', 'wmf']);
   const PAGE_TARGETS = new Set([...IMAGE_TARGETS, ...ENCODED_PAGE_TARGETS, ...METAFILE_TARGETS, 'eps', 'ps', 'dxf', 'svg']);
   /** The signature each encoded raster starts with (BMP, ICO, PSD, GIF, TIFF both byte orders, RIFF/WEBP, ISO BMFF 'ftyp'). */

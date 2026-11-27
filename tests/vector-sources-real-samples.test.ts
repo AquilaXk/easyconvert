@@ -65,7 +65,7 @@ const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
 /**
  * The registry offers DXF, EMF and WMF for Visio drawings. DXF is also offered for CorelDRAW, CGM and WMF files (entry 187: every real file of
  * them converts, a picture being left out with a warning and a clip cut; `tika-testwmf.wmf` is a picture alone on the office suite of the Linux image,
- * which the DXF writer refuses, and is checked on its own below), and EMF and WMF for CorelDRAW, CGM, EMF and WMF files (entry 453: a page the
+ * which the DXF writer refuses, and is checked on its own below), and EMF and WMF for CorelDRAW, CGM, EMF and WMF files (entry 454: a page the
  * in-process writers refuse, which holds a picture, a dash or a curved clip, is written by the office suite). DXF is not offered for EMF: its pages
  * hold pictures, a curved clip or nothing but a picture, which the DXF writer refuses.
  */

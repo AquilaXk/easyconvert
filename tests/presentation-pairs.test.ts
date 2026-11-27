@@ -364,7 +364,7 @@ describe('the pairs of entry 185 in the registry', () => {
     pptx: ['eps', 'md'],
     xlsm: ['jpg', 'png'],
   };
-  /** Entry 185 leaves these out: no engine of the worker writes them (XPS, SWF; EMF until entry 453), or the source's application cannot export them (Word, Excel, PowerPoint across applications). */
+  /** Entry 185 leaves these out: no engine of the worker writes them (XPS, SWF; EMF until entry 454), or the source's application cannot export them (Word, Excel, PowerPoint across applications). */
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     dps: ['swf'],
     key: ['doc', 'xls'],

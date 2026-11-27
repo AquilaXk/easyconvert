@@ -14,7 +14,7 @@ import { skipWithoutTools } from './helpers/strict-skip';
 import { compareImages } from './helpers/vrt-engine';
 
 /**
- * Real PDF files and presentations written as EMF and WMF (entry 453). The in-process writers write the pages made of paths and fills;
+ * Real PDF files and presentations written as EMF and WMF (entry 454). The in-process writers write the pages made of paths and fills;
  * a page they refuse (a picture, a mask, a dash, a clip that is not one convex polygon) is written by the office suite from the one-page
  * PDF. Readers other than the writer judge the output: the office suite reading the metafile back with its own import filter, and
  * Inkscape (the reference's tool) where it reads the file. Each is compared with the page that Poppler draws from the PDF of the same

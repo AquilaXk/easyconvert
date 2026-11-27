@@ -501,8 +501,9 @@ Security
 450. [Decode DBF text by the code page of its language driver byte](#450-decode-dbf-text-by-the-code-page-of-its-language-driver-byte)
 451. [Answer a refused redirect of a website capture as a failed load so that internal names cannot be probed](#451-answer-a-refused-redirect-of-a-website-capture-as-a-failed-load-so-that-internal-names-cannot-be-probed)
 452. [The test shards and the office rows of the pull request parity job run on the LibreOffice release the worker image ships, installed on the runner](#452-the-test-shards-and-the-office-rows-of-the-pull-request-parity-job-run-on-the-libreoffice-release-the-worker-image-ships-installed-on-the-runner)
-453. [A page the in-process metafile writers refuse is written as EMF or WMF by the office suite, which offers 15 pairs from PDF, presentation, CorelDRAW, CGM, EMF and WMF sources](#453-a-page-the-in-process-metafile-writers-refuse-is-written-as-emf-or-wmf-by-the-office-suite-which-offers-15-pairs-from-pdf-presentation-coreldraw-cgm-emf-and-wmf-sources)
-454. [The XPS, SWF, SNB and GIF or WebP to audio pairs stay withdrawn after the review against the reference, with the measurements and the options that need a decision](#454-the-xps-swf-snb-and-gif-or-webp-to-audio-pairs-stay-withdrawn-after-the-review-against-the-reference-with-the-measurements-and-the-options-that-need-a-decision)
+453. [A PDF target with no OCR request returns a document with no text as it is, and says that recognition found nothing](#453-a-pdf-target-with-no-ocr-request-returns-a-document-with-no-text-as-it-is-and-says-that-recognition-found-nothing)
+454. [A page the in-process metafile writers refuse is written as EMF or WMF by the office suite, which offers 15 pairs from PDF, presentation, CorelDRAW, CGM, EMF and WMF sources](#454-a-page-the-in-process-metafile-writers-refuse-is-written-as-emf-or-wmf-by-the-office-suite-which-offers-15-pairs-from-pdf-presentation-coreldraw-cgm-emf-and-wmf-sources)
+455. [The XPS, SWF, SNB and GIF or WebP to audio pairs stay withdrawn after the review against the reference, with the measurements and the options that need a decision](#455-the-xps-swf-snb-and-gif-or-webp-to-audio-pairs-stay-withdrawn-after-the-review-against-the-reference-with-the-measurements-and-the-options-that-need-a-decision)
 
 ---
 
@@ -13227,7 +13228,24 @@ Security
 - **Verified by**: `tests/ci-setup-tasks.test.ts` (the task list, the switch, the pin against `Dockerfile.worker`, an archive that fails its SHA-256), `tests/ci-workflows.test.ts` (which jobs install it, the activation, the cache key), `tests/ci-parity-workflow.test.ts` (the split of the families, the office step, one verdict per run), and the probe runs named above.
 - **Revisit when**: the pin of `Dockerfile.worker` moves (the three values of `libreoffice-suite.env` move with it), the image is built for amd64, or `conformance` and `integration` move to 26.8.
 
-## 453. A page the in-process metafile writers refuse is written as EMF or WMF by the office suite, which offers 15 pairs from PDF, presentation, CorelDRAW, CGM, EMF and WMF sources
+## 453. A PDF target with no OCR request returns a document with no text as it is, and says that recognition found nothing
+
+- **Date**: 2026-11-27
+- **Status**: Implemented. Nothing is deployed.
+- **Decision**: **When the target is PDF and OCR was not requested, recognizing a document that has no text layer is best effort, and the answer is the document.** A real scan that recognises text still becomes a searchable PDF. If no page has an image to recognise, recognition finds no text, or a page is over the pixel limit at the OCR resolution (entry 226 lists the other refusals), the PDF is returned as the no-OCR path returns it, and the conversion carries a warning line that names the reason. Requested OCR (`ocrEnabled`) and the OCR outputs (hOCR, ALTO) refuse as before. The pixel limit still refuses every other target, where an unread page would answer an empty file. An Illustrator file with PDF content is converted as a PDF, so `ai` to PDF follows the same rule.
+- **Why**:
+  - **A drawing with no text is not a scan.** Of 29 real PDF-compatible Illustrator files (logos, badges, maps), 6 were refused: three have no raster image ("no extractable raster image"), and three have artboards of 12,000 to 20,834 pixels at 300 dpi, over the 100 megapixel limit. Recognition of these pages was never asked for, and nothing in them is lost when it is skipped.
+  - **The reference converter returns the document for a PDF target with no OCR options.** Refusing a vector PDF that the same service would hand back is a failed conversion for the user, not a safeguard.
+- **Trade-offs**:
+  - **A scan too large to recognise stays unsearchable and is answered as a success with a warning.** A user who wants the text layer asks for OCR, which refuses with the limit.
+  - **The warning is the only signal.** A client that ignores `metadata.warnings` does not see that recognition was skipped.
+- **Alternatives rejected**:
+  - **Refuse as before and ask for a page range or `ocrEnabled`**: the user asked for a conversion, not for recognition.
+  - **Decide by file extension (`ai` only)**: any vector-only PDF fails the same way.
+  - **Return the document for every target**: text, HTML and Markdown of a page with no text would be empty, so they keep refusing.
+- **Verified by**: `tests/pdf-vector-only-unrequested-ocr.test.ts` (a vector-only PDF and the same bytes named `.ai`, an artboard over the pixel limit, requested OCR still refused, and the seven real Illustrator files that were refused), `tests/document-ocr.test.ts`.
+- **Revisit when**: a PDF target offers a way to report skipped steps other than the warning lines, or the pixel limit of recognition moves.
+## 454. A page the in-process metafile writers refuse is written as EMF or WMF by the office suite, which offers 15 pairs from PDF, presentation, CorelDRAW, CGM, EMF and WMF sources
 
 - **Status**: Implemented, decided 2026-11-27 (QA request: review the withdrawn pairs against the reference, EMF and WMF targets first); nothing is deployed. It settles the "Revisit when" of entries 42 and 99 for the sources below and narrows the withdrawals of entries 183 and 187.
 - **Decision**:
@@ -13247,7 +13265,7 @@ Security
   | --- | --- | --- | --- | --- |
   | LibreOffice (`LibreOffice/core`, Draw PDF import and EMF/WMF export) | 4,706 | MPL-2.0 (`docs/licensing.md` 2.4; GitHub shows GPL-3.0 for the repository) | 26.8.2, `4:26.8.2.2-2~bpo13+1` of `Dockerfile.worker` | adopted, already in the image, run as a separate sandboxed process |
   | Inkscape (the reference's engine) | about 4,100 (GitHub mirror, last push 2022) | GPL-3.0 | 1.4.4 at the reference, 1.2.2 on the Linux testbed | rejected as an engine: a GTK distribution for importers the image has; kept as a test reader |
-  | Ghostscript / GhostPDL (`ArtifexSoftware/ghostpdl`) | 310 | AGPL-3.0 | 10.05 in the image | rejected: no EMF or WMF device (its `xpswrite` is entry 454) |
+  | Ghostscript / GhostPDL (`ArtifexSoftware/ghostpdl`) | 310 | AGPL-3.0 | 10.05 in the image | rejected: no EMF or WMF device (its `xpswrite` is entry 455) |
   | MuPDF (`ArtifexSoftware/mupdf`) | 3,074 | AGPL-3.0 | none | rejected: reads PDF and XPS, writes no metafile |
   | libwmf (`caolanm/libwmf`) | 27 | LGPL-2.1 | none | rejected: converts WMF to other formats, writes none |
 
@@ -13266,7 +13284,7 @@ Security
 - **Verified by**: `tests/office-metafile-real-samples.test.ts` (four real PDFs of one, six, fourteen and twenty pages and four presentations, each page written as EMF and WMF, headers by the layouts of MS-EMF and MS-WMF, bitmap records in the pages that hold pictures, and the page redrawn by the office suite and by Inkscape and compared with Poppler's page of the same PDF after both are cut to the drawing; the Type 3 and the restricted PDF refused), `tests/svg-page-encoders.test.ts` (the suite is asked for the one page of a refused page only, never for a written page or a DXF, a Type 3 page is refused, a file of the wrong format is refused), `tests/vector-sources-real-samples.test.ts` (the CorelDRAW, CGM, EMF and WMF real files to EMF and WMF, read back), `tests/parity-audit.test.ts`, `tests/cad-metafile-registry.test.ts`, `tests/document-pairs.test.ts`, `tests/presentation-pairs.test.ts`, `tests/registry-engine-conformance.test.ts`, `tests/readme-registry-drift.test.ts` (2,812 to 2,827 pairs).
 - **Revisit when**: the in-process writers write bitmaps, dashes and clips (the suite is then needed for none of the pages), a Type 3 font is drawn by the suite's import or turned into outlines before it (offer `eps` and `ps`), a real Illustrator drawing joins the corpus (offer `ai`), or the reference's engine for these pairs changes.
 
-## 454. The XPS, SWF, SNB and GIF or WebP to audio pairs stay withdrawn after the review against the reference, with the measurements and the options that need a decision
+## 455. The XPS, SWF, SNB and GIF or WebP to audio pairs stay withdrawn after the review against the reference, with the measurements and the options that need a decision
 
 - **Status**: Decided 2026-11-27 (QA request: review the withdrawn pairs against the reference); nothing is deployed. It narrows nothing: it records why 38 pairs of the list in `tests/parity-audit.test.ts` stay out, and what each would need.
 - **Decision**: the formats API of the reference lists all of them (queried per pair on 2026-11-27, `include=options,engine_versions`), and none is offered, because no engine of the image writes or reads the file well.

@@ -1035,6 +1035,7 @@
   "tests/pdf-type3-tounicode.test.ts": 1.3,
   "tests/pdf-unicode-text-writers.test.ts": 39.5,
   "tests/pdf-unrecoverable-real-files.test.ts": 1.5,
+  "tests/pdf-vector-only-unrequested-ocr.test.ts": 12,
   "tests/pdf-vector-ops-fidelity.test.ts": 1.7,
   "tests/pdf-wasm-fallback.test.ts": 0.2,
   "tests/pdf-watermark-centring.test.ts": 0.6,

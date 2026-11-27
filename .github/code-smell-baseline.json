@@ -360,7 +360,7 @@
     "rule": "complexity",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 123
+    "maxValue": 112
   },
   {
     "file": "src/lib/conversions/document.ts",
@@ -374,7 +374,7 @@
     "rule": "max-lines-per-function",
     "function": "convertDocument",
     "count": 1,
-    "maxValue": 412
+    "maxValue": 380
   },
   {
     "file": "src/lib/conversions/docx-model.ts",

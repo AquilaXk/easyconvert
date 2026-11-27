@@ -184,6 +184,59 @@ async function synthesizeSearchablePdf(
 }
 
 
+interface PdfTargetSources {
+  inputBuffer: Buffer;
+  pdfBytes: Buffer;
+  pageAnalyses: PdfPageAnalysis[];
+  pageOcrResults: Map<number, OcrResult>;
+  pagesNeedingOcr: number[];
+  isScanned: boolean;
+  /** Whether the conversion already warned that recognition was skipped. */
+  ocrSkippedWarned: boolean;
+  ocrMode: string;
+  ocrText: string | undefined;
+  ocrConfidence: number | null | undefined;
+  ocrMetadata: Record<string, unknown> | undefined;
+}
+
+/**
+ * PDF from a PDF. A document that recognition read becomes a searchable PDF; a document it read nothing on is refused when OCR
+ * was requested and, when it was not (a drawing with no text is no scan), is returned as it is with a warning.
+ */
+async function pdfTargetResult(sources: PdfTargetSources, options: ConversionOptions, baseName: string): Promise<ConversionResult> {
+  const { inputBuffer, pageOcrResults, pagesNeedingOcr, isScanned } = sources;
+  const unchanged = { buffer: inputBuffer, mimeType: 'application/pdf', filename: `${baseName}.pdf`, size: inputBuffer.length };
+  if (options.ocrEnabled || isScanned) {
+    if (pageOcrResults.size === 0 && pagesNeedingOcr.length > 0 && options.ocrEnabled) {
+      throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
+    }
+    if (pageOcrResults.size > 0) {
+      const searchablePdf = await synthesizeSearchablePdf(await openPdfForRebuild(inputBuffer, sources.pdfBytes, options), pageOcrResults, sources.ocrMode, options.ocrDeskew);
+      return {
+        buffer: searchablePdf,
+        mimeType: 'application/pdf',
+        filename: `${baseName}.pdf`,
+        size: searchablePdf.length,
+        ocrExtractedText: sources.ocrText,
+        ocrConfidence: sources.ocrConfidence,
+        ...(sources.ocrMetadata ? { metadata: sources.ocrMetadata } : {}),
+      };
+    }
+    // OCR recognised nothing. That is only acceptable when it had nothing to do: skip_text and every page already has text.
+    if (sources.pageAnalyses.length > 0 && pagesNeedingOcr.length === 0 && !isScanned) return { ...unchanged, ocrSkipped: true };
+    if (options.ocrEnabled) throw new ConversionFailedError('PDF OCR failed: no text was recognised on any page.');
+    if (!sources.ocrSkippedWarned) {
+      reportConversionWarning('Recognized no text with OCR, which the request did not ask for, and kept the document as it is.');
+    }
+  }
+  return {
+    ...unchanged,
+    ocrExtractedText: sources.ocrText,
+    ocrConfidence: sources.ocrConfidence,
+    ...(sources.ocrMetadata ? { metadata: sources.ocrMetadata } : {}),
+  };
+}
+
 interface PdfOcrMarkupSources {
   pdfBytes: Buffer;
   pageAnalyses: PdfPageAnalysis[];
@@ -374,7 +427,6 @@ export async function convertDocument(
     // request's password (the empty one when there is none). A result that is the PDF itself still returns `inputBuffer`.
     const pdfBytes = await openPdfForConversion(inputBuffer, tgt, options);
     let ocrInfo: { text?: string; confidence?: number | null } = {};
-    let lastOcrResult: OcrResult | null = null;
     const pageOcrResults = new Map<number, OcrResult>();
 
     // The text layer, its structure, the per-page density (Smart Multi-Page OCR) and, for hOCR and ALTO, the word
@@ -405,6 +457,9 @@ export async function convertDocument(
     // If scanned document or OCR is requested or target is hocr/alto
     const isScanned = extractedText.trim() === '';
     const shouldRunOcr = options.ocrEnabled || isScanned || tgt === 'hocr' || tgt === 'alto';
+    // A PDF that no OCR was asked for is the answer as it is; a drawing with no text is not a scan to be recovered.
+    const documentIsAnswer = tgt === 'pdf' && !options.ocrEnabled;
+    let ocrSkippedWarned = false;
 
     if (shouldRunOcr && (pagesNeedingOcr.length > 0 || (pageAnalyses.length === 0 && (options.ocrEnabled || isScanned)))) {
       // The pages are recognized as displayed (rendered by Poppler), not read from the images they contain.
@@ -420,18 +475,20 @@ export async function convertDocument(
           signal: options.signal,
         });
       } catch (err: unknown) {
-        // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty.
-        rethrowInputPixelLimit(err);
+        // An input over the pixel limit is refused whether or not OCR was asked for, never answered empty. A PDF target
+        // that did not ask for OCR answers with the document itself, so there the limit is a refusal of the recovery only.
+        if (!documentIsAnswer) rethrowInputPixelLimit(err);
         // OCR that nobody asked for (a scanned page converted to text) is best effort: when it is refused, or no engine can
         // render the pages, the text stays as extracted and the conversion says so. A requested OCR, or a target that is
         // OCR output, never is (see skippedOcrWarning for what counts as a refusal).
-        const skipped = options.ocrEnabled || STRUCTURED_OCR_TARGETS.has(tgt) ? undefined : skippedOcrWarning(err, pagesNeedingOcr, isScanned);
+        const skipped = options.ocrEnabled || STRUCTURED_OCR_TARGETS.has(tgt) ? undefined : skippedOcrWarning(err, pagesNeedingOcr, isScanned, documentIsAnswer);
         if (skipped === undefined) {
           if (err instanceof ConversionFailedError) throw err;
           const rawMsg = err instanceof Error ? err.message : String(err);
           throw new ConversionFailedError(`PDF OCR failed: ${rawMsg.startsWith('PDF OCR failed: ') ? rawMsg.replace('PDF OCR failed: ', '') : rawMsg}`);
         }
         reportConversionWarning(skipped);
+        ocrSkippedWarned = true;
       }
 
       if (recognizedPages.size > 0) {
@@ -445,7 +502,6 @@ export async function convertDocument(
             ocrTexts.push(ocr.text);
             ocrTextPages.push({ pageNumber, text: ocr.text });
             pageOcrResults.set(pageNumber, ocr);
-            lastOcrResult = ocr;
             if (ocr.confidence !== null) {
               totalConfidence += ocr.confidence;
               count++;
@@ -596,46 +652,11 @@ export async function convertDocument(
     }
 
     if (tgt === 'pdf') {
-      if (options.ocrEnabled || isScanned) {
-        if (pageOcrResults.size === 0 && !lastOcrResult && pagesNeedingOcr.length > 0) {
-          throw new ConversionFailedError('PDF OCR failed: Unsupported compression filter or no extractable raster image found in document.');
-        }
-
-        if (pageOcrResults.size > 0) {
-          const searchablePdf = await synthesizeSearchablePdf(await openPdfForRebuild(inputBuffer, pdfBytes, options), pageOcrResults, ocrMode, options.ocrDeskew);
-          return {
-            buffer: searchablePdf,
-            mimeType: 'application/pdf',
-            filename: `${baseName}.pdf`,
-            size: searchablePdf.length,
-            ocrExtractedText: ocrInfo.text,
-            ocrConfidence: ocrInfo.confidence,
-            ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
-          };
-        }
-      }
-      if (options.ocrEnabled || isScanned) {
-        // OCR recognised nothing. That is only acceptable when it had nothing to do: skip_text and every page already has text.
-        if (pageAnalyses.length > 0 && pagesNeedingOcr.length === 0 && !isScanned) {
-          return {
-            buffer: inputBuffer,
-            mimeType: 'application/pdf',
-            filename: `${baseName}.pdf`,
-            size: inputBuffer.length,
-            ocrSkipped: true,
-          };
-        }
-        throw new ConversionFailedError('PDF OCR failed: no text was recognised on any page.');
-      }
-      return {
-        buffer: inputBuffer,
-        mimeType: 'application/pdf',
-        filename: `${baseName}.pdf`,
-        size: inputBuffer.length,
-        ocrExtractedText: ocrInfo.text,
-        ocrConfidence: ocrInfo.confidence,
-        ...(ocrMetadata ? { metadata: ocrMetadata } : {}),
-      };
+      return pdfTargetResult(
+        { inputBuffer, pdfBytes, pageAnalyses, pageOcrResults, pagesNeedingOcr, isScanned, ocrSkippedWarned, ocrMode, ocrText: ocrInfo.text, ocrConfidence: ocrInfo.confidence, ocrMetadata },
+        options,
+        baseName
+      );
     }
 
     if (tgt === 'hocr' || tgt === 'alto') {
