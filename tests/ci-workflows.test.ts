@@ -513,15 +513,17 @@ describe('the office suite of the worker image', () => {
     expect(setupStep('Install the tools and start the S3 test server').env?.LIBREOFFICE_SUITE).toBe('${{ inputs.libreoffice }}');
   });
 
-  it('is installed by the test shards and by the parity quality job of the pull request workflow, and by no other job of any workflow', () => {
-    expect(jobsWithSuite(ci).map(([name]) => name).sort()).toEqual(['parity-quality', 'tests']);
+  it('is installed by the test shards, the conformance parts, the integration job and the parity quality job of the pull request workflow, and by no other job of any workflow', () => {
+    expect(jobsWithSuite(ci).map(([name]) => name).sort()).toEqual(['conformance', 'integration', 'parity-quality', 'tests']);
     expect(jobsWithSuite(nightly)).toEqual([]);
     expect(jobsWithSuite(regression)).toEqual([]);
   });
 
-  it('makes the shards meet it (activation left on), so the worker, the tests and their oracles run the one suite', () => {
-    const [, step] = jobsWithSuite(ci).find(([name]) => name === 'tests') as [string, Step];
-    expect(step.with).toEqual({ libreoffice: 'true' });
+  it('makes the shards, the conformance parts and the integration job meet it (activation left on), so the worker, the tests and their oracles run the one suite', () => {
+    const withs = (job: string) => (jobsWithSuite(ci).find(([name]) => name === job) as [string, Step])[1].with;
+    expect(withs('tests')).toEqual({ libreoffice: 'true' });
+    expect(withs('conformance')).toEqual({ libreoffice: 'true' });
+    expect(withs('integration')).toEqual({ 's3-test-server': 'true', libreoffice: 'true' });
     const use = setupStep('Use the office suite of the worker image');
     expect(use.if).toBe("inputs.libreoffice == 'true' && inputs.libreoffice-activate == 'true'");
     expect(use.run).toContain('sudo ln -sf /opt/libreoffice26.8/program/soffice /usr/local/bin/soffice');

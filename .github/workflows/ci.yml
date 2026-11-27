@@ -326,6 +326,8 @@ jobs:
 
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+        with:
+          libreoffice: 'true'
 
       # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
       - name: Fetch the corpus files the tests read
@@ -396,6 +398,7 @@ jobs:
         uses: ./.github/actions/ci-setup
         with:
           s3-test-server: 'true'
+          libreoffice: 'true'
 
       # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
       - name: Fetch the corpus files the tests read
