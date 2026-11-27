@@ -364,19 +364,19 @@ describe('the pairs of entry 185 in the registry', () => {
     pptx: ['eps', 'md'],
     xlsm: ['jpg', 'png'],
   };
-  /** Entry 185 leaves these out: no engine of the worker writes them (XPS, SWF), the metafile encoders refuse a page (EMF), or the source's application cannot export them (Word, Excel, PowerPoint across applications). */
+  /** Entry 185 leaves these out: no engine of the worker writes them (XPS, SWF; EMF until entry 453), or the source's application cannot export them (Word, Excel, PowerPoint across applications). */
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     dps: ['swf'],
     key: ['doc', 'xls'],
     numbers: ['doc', 'ppt'],
     odp: ['swf'],
-    pot: ['emf', 'xps'],
-    potx: ['emf', 'xps'],
+    pot: ['xps'],
+    potx: ['xps'],
     pps: ['swf'],
     ppsx: ['swf'],
-    ppt: ['emf', 'swf', 'xps'],
-    pptm: ['emf', 'swf', 'xps'],
-    pptx: ['emf', 'swf', 'xps'],
+    ppt: ['swf', 'xps'],
+    pptm: ['swf', 'xps'],
+    pptx: ['swf', 'xps'],
     xls: ['xps'],
     xlsx: ['xps'],
   };

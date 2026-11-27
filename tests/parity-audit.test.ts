@@ -6,38 +6,38 @@ import { FORMAT_REGISTRY, getAllFormats } from '../src/lib/registry';
 const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   // Entry 183 leaves out the XPS of a Word document (the XPS writer holds text only).
   'docx->pages', 'docx->xps',
-  // Entry 183: a Pages document has no export to a presentation, and the metafile writers refuse the pictures that real PDF pages hold.
+  // Entry 183: a Pages document has no export to a presentation.
   'pages->ppt',
-  'pdf->emf', 'pdf->wmf',
-  // Entry 309: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
+  // Entry 309 and entry 454: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
   'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
   'key->doc', 'key->xls',
-  'pot->emf', 'pot->xps',
-  'potx->emf', 'potx->xps',
-  'ppt->emf', 'ppt->xps',
-  'pptm->emf', 'pptm->xps',
-  'pptx->emf', 'pptx->key', 'pptx->xps',
+  // Entry 454: the office suite has no XPS filter and Ghostscript's xpswrite writes a drawing with no Glyphs (bitmap rows by default, outlines with -dNOCACHE), so these eight stay withdrawn.
+  'pot->xps',
+  'potx->xps',
+  'ppt->xps',
+  'pptm->xps',
+  'pptx->key', 'pptx->xps',
   'numbers->doc', 'numbers->ppt',
   'xls->xps',
   'xlsx->numbers', 'xlsx->xps',
-  // Entry 187: pairs the reference offers that the product leaves out, each with the reason measured on real files. The metafile writers refuse a
-  // picture, a mask, a dash and a clip that is not one convex polygon (entries 42 and 99), so EMF and WMF are not written from PostScript pages (19 of 82 real files
-  // convert), CorelDRAW, CGM and metafile pages, or Illustrator files; a page that is only a picture or has a curved clip is not written as DXF from EMF (1 of 3);
-  // the SVG a DXF is drawn as holds text and round line caps that the CGM and WMF writers refuse (WMF 7 of 14 public drawings, CGM 0 of 14); and no reader of DWF,
-  // Sketch or sK1 files is included (entry 42).
+  // Entry 187: pairs the reference offers that the product leaves out, each with the reason measured on real files. Entry 453 offers the PDF,
+  // presentation, CorelDRAW, CGM, EMF and WMF sources as EMF and WMF through the office suite; what stays withdrawn: PostScript and EPS pages (12 of 15
+  // interpretable real PostScript files draw their text with Type 3 bitmap fonts, which the in-process writers and the office suite's PDF import both
+  // refuse or drop, and one of three real EPS files makes the suite's EMF export fail), Illustrator files (the only real sample draws nothing), a page that is
+  // only a picture or has a curved clip is not written as DXF from EMF (1 of 3), the SVG a DXF is drawn as holds text and round line caps that the CGM
+  // and WMF writers refuse (WMF 7 of 14 public drawings, CGM 0 of 14), and no reader of DWF, Sketch or sK1 files is included (entry 42).
   'ai->emf', 'ai->wmf',
   'dxf->cgm', 'dxf->dwg', 'dxf->wmf',
   'eps->emf', 'eps->wmf',
   'ps->emf', 'ps->wmf',
-  'cdr->emf', 'cdr->wmf',
-  'cgm->emf', 'cgm->wmf',
   'dwf->cgm', 'dwf->dwg', 'dwf->wmf',
   'dwg->cgm', 'dwg->dwg', 'dwg->wmf',
-  'emf->dxf', 'emf->emf', 'emf->wmf',
+  'emf->dxf',
   'sk->emf', 'sk->wmf',
   'sk1->emf', 'sk1->wmf',
-  'wmf->emf', 'wmf->wmf',
+  // Entry 454: the office suite of the image has no Flash export; a raster slide show by FFmpeg is an option that waits for QA.
   'dps->swf',
+  // Entry 454: a GIF or WebP holds no audio stream, so every real file would be refused.
   'gif->aac', 'gif->aiff', 'gif->flac', 'gif->m4a', 'gif->mp3', 'gif->wav', 'gif->wma',
   'odp->swf',
   'pps->swf',

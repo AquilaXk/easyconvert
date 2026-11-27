@@ -76,15 +76,18 @@ describe('Metafile registry advertises only working conversion pairs', () => {
       }
     }
     const sorted = [...advertised].sort((a, b) => a.localeCompare(b));
-    // A Visio drawing reaches EMF and WMF through the SVG that Poppler draws from the office suite's PDF; the other pairs are
-    // written from SVG by the in-process encoders. Pairs that the office suite's sources cannot give (their pages hold pictures
-    // or clip regions the encoders cannot write) are withdrawn; tests/vector-sources-real-samples.test.ts converts real files.
-    // SVG to CGM is withdrawn (entry 357): the reference offers CGM only from DWF, DWG and DXF.
-    expect(sorted).toEqual(['svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf']);
+    // A PDF, a Visio, CorelDRAW, CGM, EMF or WMF drawing and a presentation (EMF only) reach EMF and WMF through the SVG that Poppler
+    // draws from the office suite's PDF, and a page the in-process writers refuse through the office suite (entry 453); the SVG pairs
+    // are written from SVG by the in-process encoders. tests/vector-sources-real-samples.test.ts and
+    // tests/office-metafile-real-samples.test.ts convert real files. SVG to CGM is withdrawn (entry 357): the reference offers CGM only from DWF, DWG and DXF.
+    expect(sorted).toEqual([
+      'cdr->emf', 'cdr->wmf', 'cgm->emf', 'cgm->wmf', 'emf->emf', 'emf->wmf', 'pdf->emf', 'pdf->wmf', 'pot->emf', 'potx->emf', 'ppt->emf', 'pptm->emf', 'pptx->emf',
+      'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf', 'wmf->emf', 'wmf->wmf',
+    ]);
   });
 
   const metafilePairs = Object.entries(FORMAT_REGISTRY).flatMap(([sourceId, def]) =>
-    def.targetFormats.filter((t) => METAFILE_TARGETS.includes(t) && !isOfficeSuiteOnlySource(sourceId)).map((t) => [sourceId, t] as const)
+    def.targetFormats.filter((t) => METAFILE_TARGETS.includes(t) && sourceId in SOURCE_SAMPLES).map((t) => [sourceId, t] as const)
   );
   for (const [source, target] of metafilePairs) {
     it(`converts advertised pair ${source} -> ${target} through convertFile`, async () => {
