@@ -3,6 +3,10 @@ import { ConversionFailedError } from '../../types';
 /**
  * Clean, linear-time converters turning LaTeX/TeX, reStructuredText (RST), and troff/groff man pages
  * into structured Markdown or clean plain text without leaking preamble/macro directives.
+ *
+ * Linear-time claim: the closing `{` / `[` of every TeX argument comes from one stack pass per text (`PairIndex`) and a missing
+ * `\end{verbatim}` is searched for once, so unclosed brackets cost the same per character as closed ones. A text is rescanned only
+ * for the argument it contains (nesting is capped at MAX_BRACE_DEPTH), so the work is at most MAX_BRACE_DEPTH times the input.
  */
 
 const MAX_MARKUP_CHARS = 32 * 1024 * 1024;
@@ -95,39 +99,103 @@ function stripTexComments(tex: string): string {
     .join('\n');
 }
 
-function skipOptionalBrackets(text: string, from: number): number {
+/**
+ * Where each `open` character of a text closes, found by one stack pass. A backslash escapes the next character, as in
+ * the scans this replaces. `opens` is ascending, `closes[k]` is the position that closes `opens[k]`, or -1 when it never closes.
+ * Searching to the end of the text for every opener took time proportional to the square of the input for a text of
+ * unclosed `{` or `[`; TeX itself reads a group the same way, each token once, and reports the group still open at the end of file.
+ */
+interface PairIndex {
+  opens: Int32Array;
+  closes: Int32Array;
+}
+
+function buildPairIndex(text: string, open: string, close: string): PairIndex {
+  let capacity = 0;
+  for (let at = text.indexOf(open); at !== -1; at = text.indexOf(open, at + 1)) capacity += 1;
+  const opens = new Int32Array(capacity);
+  const closes = new Int32Array(capacity).fill(-1);
+  const stack = new Int32Array(capacity);
+  let count = 0;
+  let top = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '\\') {
+      i += 1;
+    } else if (ch === open) {
+      opens[count] = i;
+      stack[top] = count;
+      count += 1;
+      top += 1;
+    } else if (ch === close && top > 0) {
+      top -= 1;
+      closes[stack[top]] = i;
+    }
+  }
+  return { opens, closes };
+}
+
+/** One TeX text with the bracket pairs found once for all the arguments that are read from it. */
+class TexSource {
+  private braces: PairIndex | undefined;
+  private brackets: PairIndex | undefined;
+  /** Per environment: the position from which no `\end{env}` exists, so a second search from there is skipped. */
+  private readonly missingEndFrom = new Map<string, number>();
+
+  constructor(readonly text: string) {}
+
+  /** The position of the `}` that closes the `{` at `at`, or -1. */
+  closingBrace(at: number): number {
+    this.braces ??= buildPairIndex(this.text, '{', '}');
+    return closingOf(this.braces, at);
+  }
+
+  /** The position of the `]` that closes the `[` at `at`, or -1. */
+  closingBracket(at: number): number {
+    this.brackets ??= buildPairIndex(this.text, '[', ']');
+    return closingOf(this.brackets, at);
+  }
+
+  /** The position of `\end{env}` after `from`, or -1; a miss is remembered so an unclosed environment is searched for once. */
+  indexOfEnd(envName: string, endTag: string, from: number): number {
+    const missing = this.missingEndFrom.get(envName);
+    if (missing !== undefined && from >= missing) return -1;
+    const found = this.text.indexOf(endTag, from);
+    if (found === -1) this.missingEndFrom.set(envName, from);
+    return found;
+  }
+}
+
+function closingOf(index: PairIndex, at: number): number {
+  let lo = 0;
+  let hi = index.opens.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const value = index.opens[mid];
+    if (value === at) return index.closes[mid];
+    if (value < at) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+function skipOptionalBrackets(src: TexSource, from: number): number {
+  const { text } = src;
   let i = from;
   while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i += 1;
   if (text[i] !== '[') return i;
-  let depth = 0;
-  while (i < text.length) {
-    if (text[i] === '\\' && i + 1 < text.length) { i += 2; continue; }
-    if (text[i] === '[') depth += 1;
-    else if (text[i] === ']') {
-      depth -= 1;
-      if (depth === 0) return i + 1;
-    }
-    i += 1;
-  }
-  return from;
+  const close = src.closingBracket(i);
+  return close === -1 ? from : close + 1;
 }
 
-function readBracedArg(text: string, from: number): { content: string; next: number } | null {
+function readBracedArg(src: TexSource, from: number): { content: string; next: number } | null {
+  const { text } = src;
   let i = from;
   while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i += 1;
   if (text[i] !== '{') return null;
-  let depth = 0;
-  const start = i + 1;
-  while (i < text.length) {
-    if (text[i] === '\\' && i + 1 < text.length) { i += 2; continue; }
-    if (text[i] === '{') depth += 1;
-    else if (text[i] === '}') {
-      depth -= 1;
-      if (depth === 0) return { content: text.slice(start, i), next: i + 1 };
-    }
-    i += 1;
-  }
-  return null;
+  const close = src.closingBrace(i);
+  if (close === -1) return null;
+  return { content: text.slice(i + 1, close), next: close + 1 };
 }
 
 function unescapeTexChars(text: string): string {
@@ -148,7 +216,8 @@ function skipEmptyTrailingGroup(text: string, from: number): number {
 const TEX_CONTROL_TOKEN_AT = /\\[A-Za-z@*]+/y;
 const TEX_COMMAND_AT = /([A-Za-z]+)\*?/y;
 
-function skipMacroControlArgs(text: string, from: number, count: number): number {
+function skipMacroControlArgs(src: TexSource, from: number, count: number): number {
+  const { text } = src;
   let cursor = from;
   // Handle unbraced control sequence name token like \newcommand\foo[1]{bar}
   while (cursor < text.length && (text[cursor] === ' ' || text[cursor] === '\t')) cursor += 1;
@@ -158,11 +227,11 @@ function skipMacroControlArgs(text: string, from: number, count: number): number
     if (token) cursor += token[0].length;
   }
   for (let pass = 0; pass < count + 2; pass += 1) {
-    cursor = skipOptionalBrackets(text, cursor);
-    const braced = readBracedArg(text, cursor);
+    cursor = skipOptionalBrackets(src, cursor);
+    const braced = readBracedArg(src, cursor);
     if (!braced) break;
     cursor = braced.next;
-    cursor = skipOptionalBrackets(text, cursor);
+    cursor = skipOptionalBrackets(src, cursor);
   }
   return cursor;
 }
@@ -183,21 +252,21 @@ const TEX_INLINE_FORMATS: Readonly<Record<string, (rendered: string) => string>>
 };
 
 function readTexBracedPair(
-  text: string,
+  src: TexSource,
   cursor: number
 ): { first: { content: string; next: number }; second: { content: string; next: number } } | null {
-  const first = readBracedArg(text, cursor);
+  const first = readBracedArg(src, cursor);
   if (!first) return null;
-  const second = readBracedArg(text, first.next);
+  const second = readBracedArg(src, first.next);
   if (!second) return null;
   return { first, second };
 }
 
-function consumeTexSimpleEscape(tex: string, i: number, out: string[]): number | null {
-  const nextChar = tex[i + 1];
+function consumeTexSimpleEscape(src: TexSource, i: number, out: string[]): number | null {
+  const nextChar = src.text[i + 1];
   if (nextChar === '\\') {
     out.push('\n');
-    return skipOptionalBrackets(tex, i + 2);
+    return skipOptionalBrackets(src, i + 2);
   }
   if (nextChar === ' ') {
     out.push(' ');
@@ -210,29 +279,29 @@ function consumeTexSimpleEscape(tex: string, i: number, out: string[]): number |
   return null;
 }
 
-function skipTexEnvMandatorySpecs(tex: string, envName: string, cursor: number): number {
+function skipTexEnvMandatorySpecs(src: TexSource, envName: string, cursor: number): number {
   let nextCursor = cursor;
   const specCount = ENV_MANDATORY_SPEC_COUNTS[envName] ?? 0;
   for (let s = 0; s < specCount; s += 1) {
-    const specArg = readBracedArg(tex, nextCursor);
+    const specArg = readBracedArg(src, nextCursor);
     if (!specArg) break;
-    nextCursor = skipOptionalBrackets(tex, specArg.next);
+    nextCursor = skipOptionalBrackets(src, specArg.next);
   }
   return nextCursor;
 }
 
-function consumeTexEnvironment(tex: string, cmd: 'begin' | 'end', cursor: number, out: string[]): number | null {
-  const envArg = readBracedArg(tex, cursor);
+function consumeTexEnvironment(src: TexSource, cmd: 'begin' | 'end', cursor: number, out: string[]): number | null {
+  const envArg = readBracedArg(src, cursor);
   if (!envArg) return null;
   const envName = envArg.content.trim();
-  let nextCursor = skipOptionalBrackets(tex, envArg.next);
+  let nextCursor = skipOptionalBrackets(src, envArg.next);
   if (cmd === 'begin') {
-    nextCursor = skipTexEnvMandatorySpecs(tex, envName, nextCursor);
+    nextCursor = skipTexEnvMandatorySpecs(src, envName, nextCursor);
     if (VERBATIM_TEX_ENVS.has(envName)) {
       const endTag = `\\end{${envName}}`;
-      const endIdx = tex.indexOf(endTag, nextCursor);
+      const endIdx = src.indexOfEnd(envName, endTag, nextCursor);
       if (endIdx !== -1) {
-        const body = tex.slice(nextCursor, endIdx).replace(/^\n+|\n+$/g, '');
+        const body = src.text.slice(nextCursor, endIdx).replace(/^\n+|\n+$/g, '');
         out.push(`\n\`\`\`\n${body}\n\`\`\`\n`);
         return endIdx + endTag.length;
       }
@@ -243,14 +312,14 @@ function consumeTexEnvironment(tex: string, cmd: 'begin' | 'end', cursor: number
 }
 
 function consumeTexSingleArgCommand(
-  tex: string,
+  src: TexSource,
   cmd: string,
   cursor: number,
   depth: number,
   unescapeProse: boolean,
   out: string[]
 ): number {
-  const firstArg = readBracedArg(tex, cursor);
+  const firstArg = readBracedArg(src, cursor);
   if (!firstArg) return cursor;
   if (Object.hasOwn(HEADING_COMMANDS, cmd)) {
     const hashes = '#'.repeat(HEADING_COMMANDS[cmd]);
@@ -273,24 +342,24 @@ function consumeTexSingleArgCommand(
   return firstArg.next;
 }
 
-function consumeTexCommand(tex: string, i: number, depth: number, unescapeProse: boolean, out: string[]): number {
-  const simpleNext = consumeTexSimpleEscape(tex, i, out);
+function consumeTexCommand(src: TexSource, i: number, depth: number, unescapeProse: boolean, out: string[]): number {
+  const simpleNext = consumeTexSimpleEscape(src, i, out);
   if (simpleNext !== null) return simpleNext;
   TEX_COMMAND_AT.lastIndex = i + 1;
-  const cmdMatch = TEX_COMMAND_AT.exec(tex);
+  const cmdMatch = TEX_COMMAND_AT.exec(src.text);
   if (!cmdMatch) {
-    out.push(tex.slice(i, i + 2));
+    out.push(src.text.slice(i, i + 2));
     return i + 2;
   }
   const cmd = cmdMatch[1];
   const cmdLower = cmd.toLowerCase();
-  const cursor = skipOptionalBrackets(tex, i + 1 + cmdMatch[0].length);
+  const cursor = skipOptionalBrackets(src, i + 1 + cmdMatch[0].length);
   if (Object.hasOwn(TEX_SPECIAL_SYMBOLS, cmdLower)) {
     out.push(TEX_SPECIAL_SYMBOLS[cmdLower]);
-    return skipEmptyTrailingGroup(tex, cursor);
+    return skipEmptyTrailingGroup(src.text, cursor);
   }
   if (cmd === 'begin' || cmd === 'end') {
-    const envNext = consumeTexEnvironment(tex, cmd, cursor, out);
+    const envNext = consumeTexEnvironment(src, cmd, cursor, out);
     if (envNext !== null) return envNext;
   }
   if (cmd === 'item') {
@@ -298,22 +367,22 @@ function consumeTexCommand(tex: string, i: number, depth: number, unescapeProse:
     return cursor;
   }
   if (cmd === 'href') {
-    const pair = readTexBracedPair(tex, cursor);
+    const pair = readTexBracedPair(src, cursor);
     if (pair) {
       out.push(`[${transformTexRecursive(pair.second.content, depth + 1, unescapeProse)}](${pair.first.content.trim()})`);
       return pair.second.next;
     }
   }
   if (cmdLower === 'textcolor' || cmdLower === 'colorbox') {
-    const pair = readTexBracedPair(tex, cursor);
+    const pair = readTexBracedPair(src, cursor);
     if (pair) {
       out.push(transformTexRecursive(pair.second.content, depth + 1, unescapeProse));
       return pair.second.next;
     }
   }
-  if (MULTI_ARG_SUPPRESSED_COMMANDS.has(cmdLower)) return skipMacroControlArgs(tex, cursor, 2);
-  if (cmdLower === 'newenvironment' || cmdLower === 'renewenvironment') return skipMacroControlArgs(tex, cursor, 3);
-  return consumeTexSingleArgCommand(tex, cmd, cursor, depth, unescapeProse, out);
+  if (MULTI_ARG_SUPPRESSED_COMMANDS.has(cmdLower)) return skipMacroControlArgs(src, cursor, 2);
+  if (cmdLower === 'newenvironment' || cmdLower === 'renewenvironment') return skipMacroControlArgs(src, cursor, 3);
+  return consumeTexSingleArgCommand(src, cmd, cursor, depth, unescapeProse, out);
 }
 
 function pushTexProseSlice(tex: string, from: number, to: number, unescapeProse: boolean, out: string[]): void {
@@ -324,6 +393,7 @@ function pushTexProseSlice(tex: string, from: number, to: number, unescapeProse:
 
 function transformTexRecursive(tex: string, depth: number, unescapeProse = true): string {
   if (depth > MAX_BRACE_DEPTH) return unescapeProse ? unescapeTexChars(tex) : tex;
+  const src = new TexSource(tex);
   const out: string[] = [];
   let i = 0;
   let proseStart = 0;
@@ -339,7 +409,7 @@ function transformTexRecursive(tex: string, depth: number, unescapeProse = true)
     }
     if (ch === '\\' && i + 1 < tex.length) {
       pushTexProseSlice(tex, proseStart, i, unescapeProse, out);
-      i = consumeTexCommand(tex, i, depth, unescapeProse, out);
+      i = consumeTexCommand(src, i, depth, unescapeProse, out);
       proseStart = i;
       continue;
     }
