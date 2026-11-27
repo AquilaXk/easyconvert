@@ -502,13 +502,9 @@
           "created": "만든 날짜",
           "expires": "만료일",
           "lastUsed": "마지막 사용",
-          "status": "상태",
           "actions": "작업"
         },
         "allScopes": "모든 권한 범위(*)",
-        "status": {
-          "active": "사용 중"
-        },
         "deleteLabel": "API 키 {name} 삭제"
       },
       "deleteDialog": {

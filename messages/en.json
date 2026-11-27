@@ -502,13 +502,9 @@
           "created": "Created",
           "expires": "Expires",
           "lastUsed": "Last used",
-          "status": "Status",
           "actions": "Actions"
         },
         "allScopes": "all scopes (*)",
-        "status": {
-          "active": "ACTIVE"
-        },
         "deleteLabel": "Delete API key {name}"
       },
       "deleteDialog": {

@@ -19,11 +19,11 @@ import { useModalDialog } from '@/hooks/useModalDialog';
  */
 
 const FIELD_CLASS =
-  'mt-1.5 w-full min-h-[44px] px-3.5 py-2 rounded-sm bg-canvas border border-rule-strong text-base sm:text-sm text-ink';
+  'mt-1.5 w-full h-9 px-3 rounded-sm bg-canvas border border-rule-strong text-base sm:text-sm text-ink';
 const CANCEL_CLASS =
-  'min-h-[44px] inline-flex items-center justify-center px-4 py-2 rounded-sm border border-rule text-ink text-sm font-medium hover:bg-sunken disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  'h-9 inline-flex items-center justify-center px-4 rounded-sm border border-rule text-ink text-sm font-medium hover:bg-sunken disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 const CONFIRM_CLASS =
-  'min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2 rounded-sm bg-danger text-canvas border border-danger text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
+  'h-9 inline-flex items-center justify-center gap-2 px-4 rounded-sm bg-danger text-canvas border border-danger text-sm font-medium hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer';
 const LABEL_CLASS = 'block text-sm font-medium leading-snug text-ink';
 
 export interface ConfirmPhrase {
@@ -115,9 +115,9 @@ export function ConfirmDialog({
             disabled={pending}
             onClick={closeUnlessPending}
             aria-label={closeLabel}
-            className="min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors shrink-0 disabled:opacity-50"
+            className="w-8 h-8 -mr-1 -mt-1 inline-flex items-center justify-center rounded-sm text-ink-2 hover:text-ink hover:bg-sunken transition-colors shrink-0 disabled:opacity-50"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -155,7 +155,7 @@ export function ConfirmDialog({
             </div>
           )}
           {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-          <div className="flex flex-wrap justify-end gap-2.5 pt-1">
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:justify-end">
             <button ref={cancelRef} type="button" disabled={pending} onClick={closeUnlessPending} className={CANCEL_CLASS}>
               {cancelLabel}
             </button>

@@ -82,9 +82,6 @@ export function ApiKeysTable({
             <th scope="col" className="pb-3 pr-4 font-medium">
               {t('columns.lastUsed')}
             </th>
-            <th scope="col" className="pb-3 pr-4 font-medium">
-              {t('columns.status')}
-            </th>
             <th scope="col" className="pb-3 font-medium text-right">
               {t('columns.actions')}
             </th>
@@ -127,11 +124,6 @@ export function ApiKeysTable({
                 </td>
                 <td className="py-3.5 pr-4 text-xs text-ink-2 whitespace-nowrap">
                   {key.lastUsedAt ? format.dateTime(new Date(key.lastUsedAt), DATE_FORMAT) : t('neverUsed')}
-                </td>
-                <td className="py-3.5 pr-4 whitespace-nowrap">
-                  <span className="inline-flex items-center px-2.5 py-0.5 rounded-sm text-xs font-semibold border bg-success-soft text-success border-success-edge">
-                    {t('status.active')}
-                  </span>
                 </td>
                 <td className="py-3.5 text-right whitespace-nowrap">
                   <button
