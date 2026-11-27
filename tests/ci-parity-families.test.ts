@@ -494,3 +494,31 @@ describe('a map with a rule over the rows of a file', () => {
     expect(() => validateFamilyMap({ ...map, rules: [{ families: ['image'], match: '^src/', rows: 'other' }] })).toThrow(/rows must be/);
   });
 });
+
+describe('a change that deletes a conversion file', () => {
+  const deleted = 'src/worker/office-metafile-page.ts';
+  const currentMap = readFileSync(path.join(process.cwd(), 'bench', 'family-map.json'), 'utf8');
+  const baseMapWithRule = () => {
+    const parsed = JSON.parse(currentMap);
+    parsed.rules.unshift({ families: ['vector'], match: '^src/worker/office-metafile-page\\.ts$' });
+    return JSON.stringify(parsed);
+  };
+  const readBase = (_sha: string, file: string) => (file === 'bench/family-map.json' ? baseMapWithRule() : 'export {};\n');
+
+  it('classifies the deleted path by the family map of the base commit, where its rule still stood', async () => {
+    const { classifyDeletedPaths } = await import('../scripts/ci-parity-families.mjs');
+    const result = classifyDeletedPaths({ benchmarked: [], unmapped: [], unclassified: [deleted] }, { baseSha: 'base', exists: () => false, readBase });
+    expect(result.unclassified).toEqual([]);
+    expect(result.benchmarked).toEqual(['vector']);
+  });
+
+  it('keeps an unclassified path that exists, or that the base commit did not hold, and does nothing without a base', async () => {
+    const { classifyDeletedPaths } = await import('../scripts/ci-parity-families.mjs');
+    const kept = 'src/worker/new-file.ts';
+    const input = { benchmarked: [], unmapped: [], unclassified: [deleted, kept] };
+    const notAtBase = (_sha: string, file: string) => (file === 'bench/family-map.json' ? baseMapWithRule() : null);
+    expect(classifyDeletedPaths(input, { baseSha: 'base', exists: (file: string) => file === kept, readBase }).unclassified).toEqual([kept]);
+    expect(classifyDeletedPaths(input, { baseSha: 'base', exists: () => false, readBase: notAtBase }).unclassified).toEqual([deleted, kept]);
+    expect(classifyDeletedPaths(input, { baseSha: undefined, exists: () => false, readBase }).unclassified).toEqual([deleted, kept]);
+  });
+});
