@@ -57,6 +57,13 @@ interface SampleCase {
    * by neither the office suite nor the converter.
    */
   phrasesInSourceBytes?: true;
+  /**
+   * The phrases are found with the spaces left out of both sides. LibreOffice 26.8 sets this file's Liberation Serif text with uneven advances
+   * (the pages show `Exam ple Bullet Problem s`), so a PDF of it reads back with a space inside a word, in the reference's words (`llet`) as in the
+   * output's; the letters and their order are what the phrase pins, and a word of the reference may be a piece of the unspaced text. 24.2 set it with
+   * even advances.
+   */
+  phrasesWithoutSpaces?: true;
 }
 
 const SAMPLES: readonly SampleCase[] = [
@@ -137,6 +144,7 @@ const SAMPLES: readonly SampleCase[] = [
     extension: 'sxi',
     targets: ['odp', 'pptx', 'pdf', 'zip'],
     phrases: ['example bullet problems', 'level 2 looks ok', 'level 1 no bullet symbol'],
+    phrasesWithoutSpaces: true,
   },
   { id: 'tika-teststaroffice-6.0-draw.sxd', extension: 'sxd', targets: ['pdf', 'png', 'jpg', 'bmp', 'zip'], phrases: [] },
   {
@@ -412,13 +420,13 @@ function expectWordsOf(reference: ReadonlySet<string>, produced: readonly string
   });
 }
 
-function expectPhrases(phrases: readonly string[], text: string, label: string): void {
-  const normalized = normalizedText(text);
-  expect({ label, missing: phrases.filter((phrase) => !normalized.includes(phrase)) }).toEqual({ label, missing: [] });
+function expectPhrases(phrases: readonly string[], text: string, label: string, withoutSpaces = false): void {
+  const normalized = withoutSpaces ? normalizedText(text).replaceAll(' ', '') : normalizedText(text);
+  expect({ label, missing: phrases.filter((phrase) => !normalized.includes(withoutSpaces ? phrase.replaceAll(' ', '') : phrase)) }).toEqual({ label, missing: [] });
 }
 
 describe.skipIf(toolsMissing)('real files of the formats the office suite reads', () => {
-  for (const { id, extension, targets, phrases, phrasesInSourceBytes, resaveAs } of SAMPLES) {
+  for (const { id, extension, targets, phrases, phrasesInSourceBytes, phrasesWithoutSpaces, resaveAs } of SAMPLES) {
     it(
       `${id} as .${extension}: converts to ${targets.join(', ')} with the words the office suite shows`,
       async (ctx) => {
@@ -457,8 +465,8 @@ describe.skipIf(toolsMissing)('real files of the formats the office suite reads'
           const text = await outputText(result.buffer, target);
           expect(text, label).toBeDefined();
           const produced = wordsOfOutput(text ?? '', target);
-          expectWordsOf(reference, produced, label, target === 'txt' ? normalizedText(text ?? '').replaceAll(' ', '') : '');
-          expectPhrases(phrases, text ?? '', `${label} (pinned phrases)`);
+          expectWordsOf(reference, produced, label, target === 'txt' || phrasesWithoutSpaces === true ? normalizedText(text ?? '').replaceAll(' ', '') : '');
+          expectPhrases(phrases, text ?? '', `${label} (pinned phrases)`, phrasesWithoutSpaces === true);
           if (calibre && (target === 'txt' || target === 'epub')) expectWordsOf(calibre, produced, `${label} (calibre)`);
         }
       },

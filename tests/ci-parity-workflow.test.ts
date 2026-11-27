@@ -80,8 +80,57 @@ describe('parity-quality', () => {
   it('measures the quality rows of the changed families on the quick subset, in strict oracle mode', () => {
     expect(quality.env?.ORACLE_STRICT_MODE).toBe('1');
     expect(quality.env?.BENCH_FAMILIES).toBe('${{ needs.changes.outputs.bench_families }}');
-    expect(runOf(quality, 'bench')).toContain('npm run bench:quality -- --parity --quality-only --quick --family "$BENCH_FAMILIES"');
+    expect(runOf(quality, 'bench')).toContain('npm run bench:quality -- --parity --quality-only --quick --family "$REST_FAMILIES"');
     expect(runOf(quality, 'bench')).not.toContain('--speed-only');
+    expect(runOf(quality, 'bench-office')).toContain('npm run bench:quality -- --parity --quality-only --quick --family "$OFFICE_SELECTED"');
+    expect(runOf(quality, 'bench-office')).not.toContain('--speed-only');
+  });
+
+  it('measures the families that start the office suite on the suite of the worker image, against the office baseline and gap file, and the others as before', () => {
+    expect(quality.env?.OFFICE_FAMILIES).toBe('document,data,cad');
+    const setup = quality.steps.find((step) => step.uses === './.github/actions/ci-setup');
+    // Installed for its own step: the others keep the runner's soffice, so the fingerprint of the reference tools is the nightly run's.
+    expect(setup?.with).toEqual({ libreoffice: 'true', 'libreoffice-activate': 'false' });
+    const office = runOf(quality, 'bench-office');
+    expect(office).toContain('export PATH="/opt/libreoffice26.8/program:$PATH" SOFFICE_PATH=/opt/libreoffice26.8/program/soffice');
+    expect(office).toContain('--baseline bench/baseline-office-image.json --gaps bench/parity-gaps-office-image.json');
+    expect(office).toContain('--base-gaps ab-base-files/parity-gaps-office-image.json --base-baseline ab-base-files/baseline-office-image.json');
+    expect(office).toContain('--out bench-results/office-image');
+    expect(office).toContain('set +e');
+    expect(office).toContain('exit 0');
+    const rest = runOf(quality, 'bench');
+    expect(rest).toContain('--out bench-results/runner');
+    expect(rest).not.toContain('office-image');
+    expect(rest).not.toContain('libreoffice26.8');
+    expect(stepNamed(quality, 'bench').if).toBe("steps.split.outputs.rest != ''");
+    expect(stepNamed(quality, 'bench-office').if).toBe("steps.split.outputs.office != ''");
+    // The split decides before either measures, and the fingerprint is read before the office suite is anywhere on the PATH.
+    const order = (id: string): number => quality.steps.findIndex((step) => step.id === id);
+    expect(order('split')).toBeLessThan(order('bench'));
+    expect(order('split')).toBeLessThan(order('bench-office'));
+    expect(order('tools')).toBeLessThan(order('bench-office'));
+  });
+
+  it('splits the families of a change into the office ones and the rest', () => {
+    const script = runOf(quality, 'split');
+    const run = (families: string): { office: string; rest: string } => {
+      const output = mkdtempSync(path.join(tmpdir(), 'ci-split-'));
+      const outputFile = path.join(output, 'out');
+      writeFileSync(outputFile, '');
+      try {
+        const result = spawnSync('bash', ['-c', script], { encoding: 'utf-8', env: { ...process.env, BENCH_FAMILIES: families, OFFICE_FAMILIES: 'document,data,cad', GITHUB_OUTPUT: outputFile } });
+        expect(result.status).toBe(0);
+        const lines = Object.fromEntries(readFileSync(outputFile, 'utf-8').trim().split('\n').map((line) => line.split('=') as [string, string]));
+        return { office: lines.office, rest: lines.rest };
+      } finally {
+        rmSync(output, { recursive: true, force: true });
+      }
+    };
+    expect(run('image,document,pdf-ops,cad,vector')).toEqual({ office: 'document,cad', rest: 'image,pdf-ops,vector' });
+    expect(run('data')).toEqual({ office: 'data', rest: '' });
+    expect(run('image,raw')).toEqual({ office: '', rest: 'image,raw' });
+    // A family whose name only contains an office family is not one.
+    expect(run('document-colour')).toEqual({ office: '', rest: 'document-colour' });
   });
 
   it('measures with the heap bound the service runs with, so a photograph is encoded on the threads the worker leases', () => {
@@ -95,6 +144,8 @@ describe('parity-quality', () => {
     expect(base.run).toContain('git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json');
     expect(base.run).toContain('git show "$parent:bench/baseline.json" > ab-base-files/baseline.json');
     expect(base.env?.EVENT_BASE_SHA).toBe('${{ github.event.pull_request.base.sha }}');
+    expect(base.run).toContain('git show "$parent:bench/parity-gaps-office-image.json" > ab-base-files/parity-gaps-office-image.json');
+    expect(base.run).toContain('git show "$parent:bench/baseline-office-image.json" > ab-base-files/baseline-office-image.json');
     expect(runOf(quality, 'bench')).toContain('--base-gaps ab-base-files/parity-gaps.json --base-baseline ab-base-files/baseline.json');
     // Read before the measurement, from git alone: no checkout of the base and no dependency of it.
     expect(quality.steps.findIndex((s) => s.id === 'base')).toBeLessThan(quality.steps.findIndex((s) => s.id === 'bench'));
@@ -134,7 +185,10 @@ describe('parity-quality', () => {
     const policy = quality.steps.find((step) => step.uses?.startsWith('actions/github-script@'));
     expect(policy?.if).toBeUndefined();
     expect(String(policy?.with?.script)).toContain('applyParityVerdict');
-    expect(String(policy?.with?.script)).toContain('bench-results/parity-verdict.json');
+    // One verdict per run the job made, each named by the run that was started; a run that left no file fails the step.
+    expect(String(policy?.with?.script)).toContain("bench-results/runner/parity-verdict.json");
+    expect(String(policy?.with?.script)).toContain("bench-results/office-image/parity-verdict.json");
+    expect(policy?.env).toEqual({ REST_FAMILIES: '${{ steps.split.outputs.rest }}', OFFICE_SELECTED: '${{ steps.split.outputs.office }}' });
   });
 
   it('only reads the repository: it opens no issue and posts no comment', () => {

@@ -650,7 +650,9 @@ describe('a damaged drawing is a typed 400 error', () => {
     for (const [source, target] of [['odg', 'bmp'], ['odd', 'ps'], ['odg', 'pdf']] as const) {
       const run = dispatchConversion(await drawingPackage('this is not xml at all'), source, target, {}, `broken.${source}`);
       await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(`LibreOffice could not read the .${source} file: it is damaged or not a valid ${source.toUpperCase()} document.`);
+      // LibreOffice 26.8 prints `source file could not be loaded` and exits 1 for a package it cannot read (24.2 printed it and exited 0 with no
+      // output), so the failure arrives as the load failure of the process, whose message also names an encrypted package (asUnreadableDocument).
+      await expect(run).rejects.toThrow(`LibreOffice could not read the .${source} file: it is damaged, encrypted or not a valid ${source.toUpperCase()} document.`);
     }
   }, NATIVE_TIMEOUT_MS);
 });

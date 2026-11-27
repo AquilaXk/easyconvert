@@ -190,7 +190,9 @@ const SLIDES = `<?xml version="1.0" encoding="UTF-8"?>
 <office:body><office:presentation><draw:page draw:name="one"><draw:frame svg:x="1cm" svg:y="1cm" svg:width="10cm" svg:height="3cm"><draw:text-box><text:p>legacy slide words</text:p></draw:text-box></draw:frame></draw:page></office:presentation></office:body></office:document>`;
 
 describe('the filter names this module chooses', () => {
-  const registryDirectories = ['/Applications/LibreOffice.app/Contents/Resources/registry', '/usr/lib/libreoffice/share/registry', '/usr/lib64/libreoffice/share/registry', '/opt/libreoffice/share/registry'];
+  // The suite the job names (SOFFICE_PATH: the release of the worker image on a CI runner that also has the distribution's) is read before the fixed places.
+  const fromBinary = process.env.SOFFICE_PATH ? [path.join(path.dirname(fs.realpathSync(process.env.SOFFICE_PATH)), '..', 'share', 'registry')] : [];
+  const registryDirectories = [...fromBinary, '/Applications/LibreOffice.app/Contents/Resources/registry', '/usr/lib/libreoffice/share/registry', '/usr/lib64/libreoffice/share/registry', '/opt/libreoffice/share/registry'];
   const registryDirectory = registryDirectories.find((candidate) => fs.existsSync(path.join(candidate, 'main.xcd')));
   const registryMissing = skipUnless('the registry of the installed office suite (share/registry/main.xcd)', registryDirectory !== undefined);
 

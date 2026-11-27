@@ -34,6 +34,9 @@ const MAX_TASK_LIMIT_SECONDS = 600;
 const EXPECTED_TASKS = ['apt', 'pip', 'verapdf', 'epubcheck', 'calibre', 'libredwg', 'libraw', 'ghostxps', 'vtracer', 'oxipng', 'pandoc', 'vmaf', 'quantizr', 'avifenc', 'onnxocr', 'raw'];
 /** The tasks that need what the others install, run once those are done. */
 const DEPENDENT_TASKS = ['djvulibre'];
+/** The tasks only a job that asks for them runs: the S3 test server, and the office suite of the worker image. */
+const OPT_IN_TASKS = ['s3', 'libreoffice'];
+const SUITE_PIN = path.join(ACTION_DIR, 'libreoffice-suite.env');
 
 const temps: string[] = [];
 afterAll(() => {
@@ -179,7 +182,7 @@ run_tasks slow
 
 describe('the task list and its limits', () => {
   it.skipIf(skipUnless(NEEDS, canRunSetup))('hands every task to the shell that runs it: each task function is exported', () => {
-    const tasks = [...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS];
+    const tasks = [...EXPECTED_TASKS, ...OPT_IN_TASKS, ...DEPENDENT_TASKS];
     const outcome = runSourced(`for task in ${tasks.join(' ')}; do bash -c "declare -F task_$task > /dev/null" || echo "missing $task"; done`);
     expect(outcome.status, outcome.stderr).toBe(0);
     expect(outcome.stdout.trim()).toBe('');
@@ -205,6 +208,54 @@ describe('the task list and its limits', () => {
     });
     expect(withServer.status, withServer.stderr).toBe(0);
     expect(withServer.stdout.trim()).toBe([...EXPECTED_TASKS, 's3'].join(' '));
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('installs the office suite of the worker image only in a job that asked for it, after the other tasks and before the optional S3 server', () => {
+    const without = runSourced('configure; select_tasks; echo "${tasks[*]}"', { S3_TEST_SERVER: 'false', LIBREOFFICE_SUITE: 'false' });
+    expect(without.status, without.stderr).toBe(0);
+    expect(without.stdout.trim()).toBe(EXPECTED_TASKS.join(' '));
+    const unset = runSourced('configure; select_tasks; echo "${tasks[*]}"', { S3_TEST_SERVER: 'false' });
+    expect(unset.stdout.trim()).toBe(EXPECTED_TASKS.join(' '));
+    const withSuite = runSourced('configure; select_tasks; echo "${tasks[*]}"', { S3_TEST_SERVER: 'false', LIBREOFFICE_SUITE: 'true' });
+    expect(withSuite.status, withSuite.stderr).toBe(0);
+    expect(withSuite.stdout.trim()).toBe([...EXPECTED_TASKS, 'libreoffice'].join(' '));
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('refuses an office suite switch that is neither true nor false, before any task starts', () => {
+    for (const value of ['', 'yes', 'TRUE', '1']) {
+      const outcome = runSourced('configure', { S3_TEST_SERVER: 'false', LIBREOFFICE_SUITE: value });
+      expect(outcome.status, value).not.toBe(0);
+      expect(outcome.stderr, value).toContain('LIBREOFFICE_SUITE must be true or false');
+    }
+  });
+
+  it('pins the release of the version the worker image installs, by a permanent archive URL and a SHA-256', () => {
+    const pins = Object.fromEntries(
+      readFileSync(SUITE_PIN, 'utf-8').split('\n').filter((line) => /^[A-Z_0-9]+=/.test(line)).map((line) => line.split('=') as [string, string])
+    );
+    expect(Object.keys(pins).sort()).toEqual(['LIBREOFFICE_SHA256', 'LIBREOFFICE_URL', 'LIBREOFFICE_VERSION']);
+    expect(pins.LIBREOFFICE_SHA256).toMatch(/^[0-9a-f]{64}$/);
+    // The version of Dockerfile.worker (`4:26.8.2.2-2~bpo13+1`, entry 383) without the Debian epoch and revision.
+    const dockerfile = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8');
+    const image = /ARG LIBREOFFICE_VERSION=\d+:([0-9.]+)-/.exec(dockerfile)?.[1];
+    expect(pins.LIBREOFFICE_VERSION).toBe(image);
+    // The `old/` archive keeps every release; the `stable/` mirror drops one when the next is out.
+    expect(pins.LIBREOFFICE_URL).toBe(`https://downloadarchive.documentfoundation.org/libreoffice/old/${image}/deb/x86_64/LibreOffice_${image}_Linux_x86-64_deb.tar.gz`);
+  });
+
+  it.skipIf(skipUnless(NEEDS, canRunSetup))('refuses an archive whose SHA-256 is not the pinned one, before anything is unpacked or installed', () => {
+    const dir = scratch();
+    const bin = path.join(dir, 'bin');
+    mkdirSync(bin);
+    writeFileSync(path.join(bin, 'curl'), '#!/usr/bin/env bash\nwhile [ "$#" -gt 0 ]; do if [ "$1" = -o ]; then printf "not the archive" > "$2"; fi; shift; done\n');
+    chmodSync(path.join(bin, 'curl'), 0o755);
+    // A `sudo` that records its use makes an install before the check visible.
+    writeFileSync(path.join(bin, 'sudo'), `#!/usr/bin/env bash\necho "sudo $*" >> "${dir}/sudo.log"\n`);
+    chmodSync(path.join(bin, 'sudo'), 0o755);
+    const outcome = runSourced('configure; libreoffice_dir="$SUITE_DIR"; task_libreoffice', { S3_TEST_SERVER: 'false', SUITE_DIR: path.join(dir, 'suite') }, bin);
+    expect(outcome.status).not.toBe(0);
+    expect(outcome.stdout + outcome.stderr).toContain('FAILED');
+    expect(existsSync(path.join(dir, 'sudo.log'))).toBe(false);
   });
 
   it.skipIf(skipUnless(NEEDS, canRunSetup))('refuses an S3 switch that is neither true nor false, before any task starts', () => {
@@ -234,10 +285,10 @@ describe('the task list and its limits', () => {
   });
 
   it.skipIf(skipUnless(NEEDS, canRunSetup))('gives every task a limit that is positive and below ten minutes', () => {
-    const outcome = runSourced(`for task in ${[...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS].join(' ')}; do echo "$task=\${task_limit_seconds[$task]:-missing}"; done`);
+    const outcome = runSourced(`for task in ${[...EXPECTED_TASKS, ...OPT_IN_TASKS, ...DEPENDENT_TASKS].join(' ')}; do echo "$task=\${task_limit_seconds[$task]:-missing}"; done`);
     expect(outcome.status, outcome.stderr).toBe(0);
     const limits = Object.fromEntries(outcome.stdout.trim().split('\n').map((line) => line.split('=')));
-    expect(Object.keys(limits).sort()).toEqual([...EXPECTED_TASKS, 's3', ...DEPENDENT_TASKS].sort());
+    expect(Object.keys(limits).sort()).toEqual([...EXPECTED_TASKS, ...OPT_IN_TASKS, ...DEPENDENT_TASKS].sort());
     for (const [task, value] of Object.entries(limits)) {
       const seconds = Number(value);
       expect(Number.isInteger(seconds), `${task}: ${value}`).toBe(true);

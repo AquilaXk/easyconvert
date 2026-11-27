@@ -263,8 +263,11 @@ jobs:
       - name: Use the libvips of the worker image
         uses: ./.github/actions/sharp-libvips
 
+      # The suite of the 169 test files that start LibreOffice is the one the worker image ships (26.8.2.2, entry 383), not the runner's 24.2.
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+        with:
+          libreoffice: 'true'
 
       # Test files read real-world corpus files; fetch them here, not inside a test's timeout (scripts/prefetch-test-samples.ts).
       - name: Fetch the corpus files the tests read
@@ -628,6 +631,8 @@ jobs:
       ORACLE_STRICT_MODE: "1"
       BENCH_FAMILIES: ${{ needs.changes.outputs.bench_families }}
       BENCH_UNMAPPED: ${{ needs.changes.outputs.bench_unmapped }}
+      # The families whose rows start the office suite (docs/policy-decisions.md, entry 386).
+      OFFICE_FAMILIES: document,data,cad
       # Measured with the heap bound the service runs with (docker-compose.yml), so a photograph's AVIF is encoded on the threads
       # the worker leases (src/lib/conversions/image-threads.ts), as in the nightly speed job.
       MALLOC_ARENA_MAX: "2"
@@ -659,8 +664,13 @@ jobs:
       - name: Use the libvips of the worker image
         uses: ./.github/actions/sharp-libvips
 
+      # Installed, not made the suite of the job: the office families run on it in their own step, and the other families keep the runner's, so the
+      # fingerprint of the reference tools below (every tool's version, soffice included) stays the one the nightly run saved its cache under.
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
+        with:
+          libreoffice: 'true'
+          libreoffice-activate: 'false'
 
       - name: Fingerprint the reference tools
         id: tools
@@ -681,7 +691,7 @@ jobs:
 
       # A quality entry the change adds or edits in bench/parity-gaps.json is backed by the baseline of the base: it may not
       # record a value worse than the baseline held the row to. The base is the first parent of the merge commit this job
-      # tested; only its two files are read, from git.
+      # tested; only its files are read, from git: the two of the runner's rows and the two of the office rows (entry 386).
       - name: Read the gap file and the baseline of the base
         id: base
         env:
@@ -702,15 +712,54 @@ jobs:
           mkdir -p ab-base-files
           git show "$parent:bench/parity-gaps.json" > ab-base-files/parity-gaps.json
           git show "$parent:bench/baseline.json" > ab-base-files/baseline.json
+          git show "$parent:bench/parity-gaps-office-image.json" > ab-base-files/parity-gaps-office-image.json
+          git show "$parent:bench/baseline-office-image.json" > ab-base-files/baseline-office-image.json
           echo "the base is $parent"
+
+      # The families that start the office suite (OFFICE_FAMILIES) are measured on the suite the worker image ships, against the baseline and the gap
+      # file recorded there; the others keep the runner's tools and bench/baseline.json.
+      - name: Split the changed families by the suite they run on
+        id: split
+        run: |
+          office=() ; rest=()
+          for family in ${BENCH_FAMILIES//,/ }; do
+            case ",$OFFICE_FAMILIES," in
+              *",$family,"*) office+=("$family") ;;
+              *) rest+=("$family") ;;
+            esac
+          done
+          echo "office=$(IFS=,; echo "${office[*]}")" >> "$GITHUB_OUTPUT"
+          echo "rest=$(IFS=,; echo "${rest[*]}")" >> "$GITHUB_OUTPUT"
+          echo "office families: ${office[*]:-none}; other families: ${rest[*]:-none}"
 
       # The run exits 1 for a regression against our own baseline and 3 for a row below the reference; the verdict
       # file it leaves is what the policy step below reads, so this step never fails the job by itself.
       - name: Measure quality against the reference tools
         id: bench
+        if: steps.split.outputs.rest != ''
+        env:
+          REST_FAMILIES: ${{ steps.split.outputs.rest }}
         run: |
           set +e
-          npm run bench:quality -- --parity --quality-only --quick --family "$BENCH_FAMILIES" --base-gaps ab-base-files/parity-gaps.json --base-baseline ab-base-files/baseline.json
+          npm run bench:quality -- --parity --quality-only --quick --family "$REST_FAMILIES" --out bench-results/runner --base-gaps ab-base-files/parity-gaps.json --base-baseline ab-base-files/baseline.json
+          code=$?
+          echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+          echo "benchmark exit code: $code"
+          exit 0
+
+      # The office suite of the worker image first on the PATH and in SOFFICE_PATH, for this step only: both sides of a row meet it. No
+      # reference measurement of the nightly run is read for these rows (the version line of soffice is part of the key of each one), so the
+      # reference side is measured here.
+      - name: Measure quality of the office families on the suite of the worker image
+        id: bench-office
+        if: steps.split.outputs.office != ''
+        env:
+          OFFICE_SELECTED: ${{ steps.split.outputs.office }}
+        run: |
+          set +e
+          export PATH="/opt/libreoffice26.8/program:$PATH" SOFFICE_PATH=/opt/libreoffice26.8/program/soffice
+          soffice --headless --version
+          npm run bench:quality -- --parity --quality-only --quick --family "$OFFICE_SELECTED" --out bench-results/office-image --baseline bench/baseline-office-image.json --gaps bench/parity-gaps-office-image.json --base-gaps ab-base-files/parity-gaps-office-image.json --base-baseline ab-base-files/baseline-office-image.json
           code=$?
           echo "exit-code=$code" >> "$GITHUB_OUTPUT"
           echo "benchmark exit code: $code"
@@ -719,9 +768,11 @@ jobs:
       - name: Publish the parity table
         if: always()
         run: |
-          if [ -f bench-results/parity-verdict.md ]; then
-            { echo '### Reference parity: quality'; cat bench-results/parity-verdict.md; } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          for part in runner office-image; do
+            if [ -f "bench-results/$part/parity-verdict.md" ]; then
+              { echo "### Reference parity: quality ($part)"; cat "bench-results/$part/parity-verdict.md"; } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
 
       - name: Upload the benchmark report
         if: always()
@@ -732,16 +783,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+      # One verdict per run the job made: a run that left no file fails here.
       - name: Apply the parity verdict
+        env:
+          REST_FAMILIES: ${{ steps.split.outputs.rest }}
+          OFFICE_SELECTED: ${{ steps.split.outputs.office }}
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             const policy = await import(`${process.env.GITHUB_WORKSPACE}/scripts/ci-parity-policy.mjs`);
-            policy.applyParityVerdict({
-              core,
-              fs: require('node:fs'),
-              runFilePath: 'bench-results/parity-verdict.json',
-            });
+            const runs = [];
+            if (process.env.REST_FAMILIES) runs.push('bench-results/runner/parity-verdict.json');
+            if (process.env.OFFICE_SELECTED) runs.push('bench-results/office-image/parity-verdict.json');
+            for (const runFilePath of runs) {
+              core.info(`verdict of ${runFilePath}`);
+              policy.applyParityVerdict({ core, fs: require('node:fs'), runFilePath });
+            }
 
   # The libvips the worker image ships, built when its cache key is not in the cache (.github/workflows/sharp-libvips.yml). It
   # runs on every event: a key in the cache costs a lookup, and the jobs that convert pictures wait for it.

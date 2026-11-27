@@ -197,7 +197,7 @@ The patched package library still does not judge the speed of a photograph AVIF 
 
 ## Office rows in the worker image
 
-The shards of the nightly run and the pull request job install the runner's LibreOffice (Ubuntu 24.04, 24.2). The worker image carries 26.8 from
+The shards of the nightly run install the runner's LibreOffice (Ubuntu 24.04, 24.2). The worker image carries 26.8 from
 `trixie-backports` (entry 383 of `docs/policy-decisions.md`), whose Debian packages cannot be installed on an Ubuntu runner, so the nightly job
 `bench-parity-office-image` runs the families that use the suite (`document`, `data`, `cad`) inside the image that `main` names, with
 `scripts/bench-in-worker-image.sh` (entry 386). Both sides of every row meet 26.8 and the image's fonts, and the worker's sandbox runs in the
@@ -215,6 +215,15 @@ npm run bench:quality -- --baseline-from-report <report.json> --baseline bench/b
 (the report names the commit, the branch and the event of the run, which the command requires) and record any speed row below 0.9 in the gap file. To run it by hand on a Linux host with Docker or rootless Podman:
 `bash scripts/bench-in-worker-image.sh <image> --parity --family document,data,cad --baseline bench/baseline-office-image.json --gaps bench/parity-gaps-office-image.json`
 (on rootless Podman set `CONTAINER_ENGINE=podman BENCH_IMAGE_RUN_FLAGS=--userns=keep-id`).
+
+The pull request job meets the same suite and the same two files, on the runner (entry 452). `parity-quality` installs the project's release of
+26.8.2.2 (`.github/actions/ci-setup/libreoffice-suite.env`, the same version as the image) without making it the suite of the job, splits the families of
+the change into the office ones (`OFFICE_FAMILIES` in `ci.yml`) and the rest, and runs the office ones with the release first on the `PATH` against
+`bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json`; the rest run as before against `bench/baseline.json`. The runner's fonts
+are not the image's, so a row whose reference is the suite can read another reference value there: two rows did on the first run (`document/complex-script txt->pdf/cer`
+with the reference at 0.86 % where the image had 2.79 %, and `cad/cad-text-alignments.dxf->svg/ink_recall` with the reference at 0.611 where the image had 0.583; ours did not move),
+and `bench/baseline-office-image.json` holds the worse of the two environments for them. The reference side of the office rows is measured in the job (the
+version line of `soffice` is part of the key of each cached measurement, and no nightly run saves one for 26.8 on the runner).
 
 ## Reference parity
 
