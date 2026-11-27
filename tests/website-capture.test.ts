@@ -49,6 +49,12 @@ if path.startswith('timeout'):
 if path.startswith('redirect-private'):
     status = through_proxy('169.254.169.254:80')
     say({'ok': False, 'code': 'load_failed', 'detail': status}); sys.exit(0)
+if path.startswith('redirect-internal-name'):
+    status = through_proxy('internal.example:80')
+    say({'ok': False, 'code': 'load_failed', 'detail': status}); sys.exit(0)
+if path.startswith('redirect-unresolved-name'):
+    status = through_proxy('nowhere.example:80')
+    say({'ok': False, 'code': 'load_failed', 'detail': status}); sys.exit(0)
 if path.startswith('subresource-private'):
     status = through_proxy('10.0.0.5:443')
     status2 = through_proxy('localhost:80')
@@ -253,7 +259,7 @@ sys.stdout.write(json.dumps({'ok': True, 'output': request['output'], 'finalUrl'
     const result = await captureWebsite({ url: 'https://site.example/subresource-private', format: 'png' });
     expect(result.title).toBe('HTTP/1.1 403 Refused / HTTP/1.1 403 Refused');
     expect(result.warnings).toEqual([
-      '2 request(s) of the page to addresses that are not public were refused and left out.',
+      '2 request(s) of the page to addresses that are not public or do not resolve were refused and left out.',
       '1 request(s) of the page for a resource that is not on the web (file, ftp, ...) were refused.',
     ]);
   });
@@ -297,11 +303,41 @@ sys.stdout.write(json.dumps({'ok': True, 'output': request['output'], 'finalUrl'
     }
   });
 
-  it('answers a navigation that was refused at a hop as blocked, not as a failed load', async () => {
+  it('answers a navigation that was refused at a hop as a failed load, without the address it led to', async () => {
     useStandIn();
     const run = captureWebsite({ url: 'https://site.example/redirect-private', format: 'png' });
-    await expect(run).rejects.toBeInstanceOf(CaptureTargetBlockedError);
-    await expect(run).rejects.toThrow(/169\.254\.169\.254:80.*not a public web address/);
+    await expect(run).rejects.toBeInstanceOf(CaptureFailedError);
+    await expect(run).rejects.toThrow('The page at https://site.example could not be loaded.');
+    await expect(run).rejects.not.toThrow(/169\.254/);
+  });
+
+  it('answers a redirect to a name that resolves to a private address and one to a name that does not resolve in the same words', async () => {
+    useStandIn();
+    vi.spyOn(dns, 'lookup').mockImplementation(((name: string, _options: unknown, callback: (error: NodeJS.ErrnoException | null, list: LookupAddress[]) => void) =>
+      process.nextTick(() => {
+        if (name === 'internal.example') callback(null, [{ address: '10.0.0.5', family: 4 }]);
+        else if (name === 'nowhere.example') callback(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }), []);
+        else callback(null, PUBLIC);
+      })) as never);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const answer = async (page: string) => {
+      const error = await captureWebsite({ url: `https://site.example/${page}?token=secret`, format: 'png' }).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(CaptureFailedError);
+      const failure = error as CaptureFailedError;
+      return { name: failure.name, message: failure.message, code: failure.refusalCode, status: failure.status };
+    };
+    const internal = await answer('redirect-internal-name');
+    const unresolved = await answer('redirect-unresolved-name');
+    expect(internal).toEqual(unresolved);
+    expect(internal.message).not.toMatch(/internal\.example|nowhere\.example|10\.0\.0\.5/);
+
+    // The difference is for the operator: the log names the hop and the reason, and the page address without its path and query.
+    const lines = warn.mock.calls.map(([line]) => JSON.parse(String(line)) as Record<string, unknown>);
+    expect(lines).toEqual([
+      { event: 'capture-navigation-refused', origin: 'https://site.example', host: 'internal.example', port: 80, reason: 'blocked' },
+      { event: 'capture-navigation-refused', origin: 'https://site.example', host: 'nowhere.example', port: 80, reason: 'unresolved' },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain('secret');
   });
 
   it('answers the browser that stops, the file that is not the format, and the timeout of the driver with their own errors', async () => {

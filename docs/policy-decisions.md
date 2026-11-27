@@ -499,6 +499,7 @@ Security
 448. [Match TeX groups and trim blanks in one pass, and keep the open part of a truncated multipart mail](#448-match-tex-groups-and-trim-blanks-in-one-pass-and-keep-the-open-part-of-a-truncated-multipart-mail)
 449. [Load no remote image in the HTML page of a converted mail](#449-load-no-remote-image-in-the-html-page-of-a-converted-mail)
 450. [Decode DBF text by the code page of its language driver byte](#450-decode-dbf-text-by-the-code-page-of-its-language-driver-byte)
+451. [Answer a refused redirect of a website capture as a failed load so that internal names cannot be probed](#451-answer-a-refused-redirect-of-a-website-capture-as-a-failed-load-so-that-internal-names-cannot-be-probed)
 
 ---
 
@@ -13172,3 +13173,20 @@ Security
   - **`TextDecoder` for the pages**: it does not name every page of the table (CP437, CP850, CP865 and the Mac pages among them); iconv-lite is already a dependency and has all of them.
 - **Verified by**: `tests/dbf-code-pages.test.ts` (CP949, CP437 and CP1252 tables, the fallback for `0x00`, `0x68` and `0x20`, the table), `tests/launch-conversions-coverage.test.ts`, `tests/office-import-filters.test.ts`.
 - **Revisit when**: a table with a `.cpg` file arrives next to its conversion (a multi-file upload), or a driver byte outside the table shows up in real files.
+
+## 451. Answer a refused redirect of a website capture as a failed load so that internal names cannot be probed
+
+- **Date**: 2026-11-27
+- **Status**: Implemented (review of range 63653b2d..origin/main). Nothing is deployed.
+- **Decision**: **A website capture whose navigation is refused at a hop answers like any other page that fails to load.** The first address of a request is still checked before the browser starts (`assertCaptureUrl`, `capture_target_blocked`, 422), and that check already treats a name that resolves to a private address and a name that does not resolve alike. A redirect that the page follows to an internal name or address, or to a name that does not resolve, now ends in `CaptureFailedError` (`capture_failed`, 422, "The page at <origin> could not be loaded.") whatever the reason of the gate. The old answer named the hop (`host:port ... is not a public web address`) and used `capture_target_blocked` only for a private target, so a caller who controlled a redirect could tell a private host name from a name that does not exist. The warning of a successful capture counts the requests of the page to addresses that are not public and those to names that do not resolve in one number (`N request(s) of the page to addresses that are not public or do not resolve were refused and left out.`). The worker logs the distinction as one line, `{"event":"capture-navigation-refused","origin":...,"host":...,"port":...,"reason":"blocked"|"port"|"unresolved"}`, with the origin of the requested page and no path or query.
+- **Why**:
+  - **Two different public answers for two internal states is an oracle.** A page on a server the caller owns can answer 302 to `http://payments.corp.internal/`. With two answers the caller learns whether that name resolves inside the network, one request at a time, which is the map of the internal DNS that the gate exists to keep out of reach.
+  - **The reason is still useful to the operator.** It stays in the log of the worker, where a person who runs the service reads it, and leaves the response.
+- **Trade-offs**:
+  - **A person who captures a page that redirects to an internal address sees a failed load, not a refusal.** The page they asked for is public, and the message says that it could not be loaded; the log line says why.
+  - **A literal address in a redirect (`169.254.169.254`) is answered the same way,** although a literal reveals nothing about DNS: one rule is easier to hold than two, and a literal probe answers nothing a caller could not read from the address.
+- **Alternatives rejected**:
+  - **Answer both as `capture_target_blocked`**: a redirect to a public name that is down would then read as a refusal of the page.
+  - **Resolve the name at the first check only**: the redirect target is chosen by the page after that check, and DNS can change between the check and the hop.
+- **Verified by**: `tests/website-capture.test.ts` (a redirect to a name that resolves to 10.0.0.5 and one to a name that does not resolve give equal errors, and the log lines carry the reason and no query), `tests/capture-gate-ssrf.test.ts`, `tests/website-capture-web-route.test.ts`.
+- **Revisit when**: the gate reports which request of a page failed (so a UI can say more without telling the reason), or capture is offered to callers who run their own resolver.

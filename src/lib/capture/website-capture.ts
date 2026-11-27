@@ -157,8 +157,9 @@ function createGateSocketDir(): { gateDir: string; socketPath: string } {
 }
 
 /**
- * Captures `request.url` as `request.format`. Throws CaptureTargetBlockedError (422) for an address that is not public (the first one, or
- * a hop of the navigation), CaptureFailedError (422) for a page that cannot be loaded or drawn, CpuTaskTimeoutError (422) past the time
+ * Captures `request.url` as `request.format`. Throws CaptureTargetBlockedError (422) for a first address that is not public, CaptureFailedError
+ * (422) for a page that cannot be loaded or drawn (a redirect to an internal name or address is one: it is not told apart from a name that
+ * does not resolve), CpuTaskTimeoutError (422) past the time
  * limit, and EngineUnavailableError (503) on a worker without the browser.
  */
 export async function captureWebsite(request: WebsiteCaptureRequest): Promise<WebsiteCaptureResult> {
@@ -248,26 +249,34 @@ function readCapturedFile(file: string): Buffer {
   }
 }
 
-/** Whether the gate refused the address or the port of a request, as against a limit or a failure to connect. */
+/**
+ * Whether the gate refused the address, the port or the name of a request, as against a limit or a failure to connect. A name that does
+ * not resolve counts with one that resolves to a private address: told apart, a page that redirects to a name of its choice would
+ * show which internal host names exist.
+ */
 function isAddressRefusal(refusal: { reason: string }): boolean {
-  return refusal.reason === 'blocked' || refusal.reason === 'port';
+  return refusal.reason === 'blocked' || refusal.reason === 'port' || refusal.reason === 'unresolved';
+}
+
+/** One line for the operator: the host of the hop that the gate refused and why. The address asked for is its origin; its path and query are not logged. */
+function logNavigationRefusal(url: URL, refusal: { host: string; port: number; reason: string }): void {
+  console.warn(JSON.stringify({ event: 'capture-navigation-refused', origin: url.origin, host: refusal.host, port: refusal.port, reason: refusal.reason }));
 }
 
 function finish(report: DriverReport, dir: string, format: string, refusals: ReadonlyArray<{ host: string; port: number; reason: string }>, url: URL, timeoutMs: number): WebsiteCaptureResult {
   if (!report.ok) {
     if (report.code === 'timeout') throw new CpuTaskTimeoutError('website capture', timeoutMs);
-    // A page whose own navigation was refused at a hop (a redirect to an internal address) did not fail to load: it was blocked.
-    const navigation = refusals.find(isAddressRefusal);
-    if (report.code === 'load_failed' && navigation) {
-      throw new CaptureTargetBlockedError(`The page, or a redirect of it, points at ${navigation.host}:${navigation.port}, which is not a public web address.`);
-    }
+    // A refusal at a hop of the page's own navigation (a redirect to an internal name or address) answers like any other load that
+    // fails: the reason for it (a private address, a name that does not resolve) stays in the log of the worker.
+    const navigation = report.code === 'load_failed' ? refusals.find(isAddressRefusal) : undefined;
+    if (navigation) logNavigationRefusal(url, navigation);
     throw new CaptureFailedError(report.code === 'load_failed' ? `The page at ${url.origin} could not be loaded.` : `The page at ${url.origin} could not be drawn.`);
   }
   const buffer = readCapturedFile(path.join(dir, `capture.${format}`));
   if (!hasMagic(buffer, format)) throw new CaptureFailedError(`The browser wrote a file that is not a ${format.toUpperCase()}.`);
   const warnings: string[] = [];
   const blocked = refusals.filter(isAddressRefusal);
-  if (blocked.length > 0) warnings.push(`${blocked.length} request(s) of the page to addresses that are not public were refused and left out.`);
+  if (blocked.length > 0) warnings.push(`${blocked.length} request(s) of the page to addresses that are not public or do not resolve were refused and left out.`);
   if (report.blocked && report.blocked.length > 0) warnings.push(`${report.blocked.length} request(s) of the page for a resource that is not on the web (file, ftp, ...) were refused.`);
   return {
     buffer,
