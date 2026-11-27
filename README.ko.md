@@ -5,13 +5,13 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert는 웹 앱과 HTTP API를 함께 제공하는 오픈소스 파일 변환 서비스예요. **13개 카테고리**, **308개 포맷**, **2,833개 변환 쌍**을 지원해요. 운영 중인 서비스는 <https://convert.aquilaxk.site>에서 쓸 수 있어요.
+EasyConvert는 웹 앱과 HTTP API를 함께 제공하는 오픈소스 파일 변환 서비스예요. **13개 카테고리**, **311개 포맷**, **2,842개 변환 쌍**을 지원해요. 운영 중인 서비스는 <https://convert.aquilaxk.site>에서 쓸 수 있어요.
 
 [서비스 바로가기](https://convert.aquilaxk.site) · [API 문서](https://convert.aquilaxk.site/api-docs) · [설정](docs/configuration.md) · [보안 정책](SECURITY.md)
 
 ## 주요 기능
 
-- **13개 카테고리 308개 포맷 지원**. 하나의 API로 이미지(카메라 RAW 포함), 문서, 압축 파일, 영상, 오디오, 자막, 전자책, 스프레드시트, 프레젠테이션, 데이터 파일, 벡터 그래픽, 폰트, CAD·3D 사이의 `2,833`개 변환 쌍을 지원해요.
+- **13개 카테고리 311개 포맷 지원**. 하나의 API로 이미지(카메라 RAW 포함), 문서, 압축 파일, 영상, 오디오, 자막, 전자책, 스프레드시트, 프레젠테이션, 데이터 파일, 벡터 그래픽, 폰트, CAD·3D 사이의 `2,842`개 변환 쌍을 지원해요.
 - **샌드박스 엔진.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, veraPDF는 작업마다 격리된 샌드박스에서 외부 도구로 실행해요. 일부 포맷은 프로세스 안의 TypeScript 엔진이 처리해요. HWP 5.0(OLE2 CFBF), BZip2, TrueType/OpenType 폰트 테이블, B-스플라인·베지에 경로 평탄화, Oklab·NeuQuant 팔레트 양자화가 여기에 들어가요.
 - **검색 가능한 OCR.** 스캔한 입력을 텍스트 레이어가 있는 PDF로 바꿔요.
 - **PDF/A 출력.** 모든 PDF/A 결과를 요청한 수준에 맞춰 veraPDF로 검증해요.
@@ -35,7 +35,7 @@ EasyConvert는 웹 앱과 HTTP API를 함께 제공하는 오픈소스 파일 �
 | **Audio** (`audio`) | 29 | AAC, AC3, AIF, AIFC, AIFF, ALAC, AMR, APE, AU, CAF, DSS, DTS, FLAC, M4A, M4B, MID, MIDI, MKA, MP3, MPC, OGA, OGG, OPUS, RA, SPX, VOC, WAV, WEBA, WMA |
 | **Subtitles** (`subtitle`) | 5 | ASS, SRT, SSA, SUB, VTT |
 | **Ebooks** (`ebook`) | 24 | AZW, AZW3, AZW4, CB7, CBC, CBR, CBT, CBZ, CHM, DJV, EPUB, FB2, HTMLZ, IBOOKS, LIT, LRF, MOBI, OEB, PML, PRC, RB, SNB, TCR, TXTZ |
-| **Spreadsheets** (`spreadsheet`) | 18 | DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WKS, XLS, XLSM, XLSX, XLT, XLTX |
+| **Spreadsheets** (`spreadsheet`) | 21 | 123, DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WK3, WK4, WKS, XLS, XLSM, XLSX, XLT, XLTX |
 | **Presentations** (`presentation`) | 18 | DPS, FODP, KEY, KEYNOTES, ODP, OTP, POT, POTX, PPS, PPSX, PPT, PPTM, PPTX, PRESENTATION, SDA, SHW, SXD, SXI |
 | **Data & Tables** (`data`) | 11 | CSV, JSON, JSONL, NDJSON, PARQUET, TAB, TOML, TSV, XML, YAML, YML |
 | **Vector** (`vector`) | 10 | CDR, CGM, EMF, PS, SK, SK1, SVG, SVGZ, VSD, WMF |
@@ -145,7 +145,7 @@ easyconvert/
 │   │   ├── conversions/     # 변환 엔진과 디스패처
 │   │   ├── queue/           # Redis 큐 (bullmq-engine.ts, conversion-queue.ts)
 │   │   ├── storage/         # 로컬, S3, OCI 스토리지 백엔드
-│   │   ├── registry.ts      # 308개 표준 포맷 정의 및 옵션 스키마
+│   │   ├── registry.ts      # 311개 표준 포맷 정의 및 옵션 스키마
 │   │   └── slug-parser.ts   # [source]-to-[target] 라우트 파서
 │   └── worker/              # 큐 워커 진입점
 ├── sdk/                     # TypeScript, Python 클라이언트

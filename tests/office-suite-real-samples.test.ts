@@ -194,6 +194,27 @@ const SAMPLES: readonly SampleCase[] = [
     targets: ['xlsx', 'csv', 'zip'],
     phrases: ['this is an example spreadsheet made with quattro pro x3'],
   },
+  // Lotus 1-2-3 release 3 and later, read by the suite's libwps importer; the in-process reader reads release 1 and 2 only (entries 461 and 462).
+  {
+    id: 'lo-solve.wk3',
+    extension: 'wk3',
+    targets: ['xlsx', 'csv', 'zip'],
+    phrases: ['introducing solver', 'table of contents', 'backsolver example'],
+  },
+  {
+    id: 'opf-testlotus123-lotusftp.wk4',
+    extension: 'wk4',
+    targets: ['xlsx', 'csv', 'zip'],
+    phrases: ['mordocs arthur', 'kaplan', 'donovan'],
+    phrasesInSourceBytes: true,
+  },
+  {
+    id: 'lo-lotus123_3.123',
+    extension: '123',
+    targets: ['xlsx', 'csv', 'zip'],
+    phrases: ['italic underline', 'align across column'],
+    phrasesInSourceBytes: true,
+  },
   {
     id: 'tika-teststaroffice-5.2-draw.sda',
     extension: 'sda',
@@ -259,7 +280,7 @@ function stripMarkup(markup: string): string {
 }
 
 /** Spreadsheet formats: their words are the cells, which the office suite's CSV export holds without the headers and page numbers of a printed page. */
-const SPREADSHEET_EXTENSIONS: ReadonlySet<string> = new Set(['xlt', 'ots', 'numbers', 'sdc', 'qpw']);
+const SPREADSHEET_EXTENSIONS: ReadonlySet<string> = new Set(['xlt', 'ots', 'numbers', 'sdc', 'qpw', 'wk3', 'wk4', '123']);
 /** The office suite's CSV export of the first sheet with every cell as it is shown (UTF-8, comma, double quote): the text of a CSV that Excel saves. */
 const CSV_AS_SHOWN = 'csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true';
 const SPREADSHEET_TARGETS: ReadonlySet<string> = new Set(['xlsx', 'xls', 'ods']);

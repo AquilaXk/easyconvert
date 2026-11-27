@@ -1,4 +1,5 @@
 import { FormatCategory, FormatDefinition, ConversionFailedError, FileExtensionSpoofError } from './types';
+import { LOTUS_RELEASE3_DEFINITIONS } from './registry-lotus';
 import { SUBTITLE_DEFINITIONS } from './registry-subtitles';
 import { CFBF_MAGIC, COMPOUND_FILE_ONLY_EXTENSIONS, GZIP_EXTENSIONS, ID3_MAGIC, id3v2Payload, isGzipFamilyCompatible, isMpegAudioSync, isPostScriptCompatible, lacksOwnSignature, ownSignatureVerdict, refusedWithoutSignature, sniffAacContainer, sniffFixedSignature, sniffZipPackage, startsWithBytes, signatureFormatOf } from './format-signatures';
 
@@ -2874,7 +2875,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     targetFormats: ['html', 'pdf', 'jpg', 'png', 'csv', 'ods', 'xls', 'xlsx'],
     optionsSchema: {delimiter:true,hasHeaders:true,sheetIndex:true},
   },
-}, SUBTITLE_DEFINITIONS);
+}, SUBTITLE_DEFINITIONS, LOTUS_RELEASE3_DEFINITIONS);
 
 export const CATEGORY_LABELS: Record<FormatCategory, string> = {
   image: 'Images', document: 'Documents', archive: 'Archives', video: 'Video', audio: 'Audio', subtitle: 'Subtitles', ebook: 'Ebooks',
@@ -3268,5 +3269,4 @@ export function assertNotSpoofedFile(
     );
   }
 }
-
 

@@ -539,6 +539,18 @@
       "searched": [
         "file lists of pythonocc-core, Open CASCADE Technology data, CadQuery and trimesh at pinned commits"
       ]
+    },
+    "wk3": {
+      "reason": "Two Lotus 1-2-3 release 3 worksheets are published (the Open Preservation Foundation PEYTREND.WK3 and the LibreOffice import test SOLVE.WK3); no other project ships a .wk3 file.",
+      "searched": [
+        "file lists of the Open Preservation Foundation format corpus, LibreOffice core, Apache Tika, Gnumeric, file(1) and pandoc at pinned commits"
+      ]
+    },
+    "wk4": {
+      "reason": "One Lotus 1-2-3 release 4 worksheet is published (the Open Preservation Foundation testLotus123-lotusftp.wk4, which Apache Tika ships as a copy); the .wk4 file of the LibreOffice test data is a Microsoft Works for Macintosh sheet, a different format.",
+      "searched": [
+        "file lists of the Open Preservation Foundation format corpus, LibreOffice core, Apache Tika, Gnumeric, file(1) and pandoc at pinned commits"
+      ]
     }
   }
 }

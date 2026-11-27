@@ -70,6 +70,10 @@ const OFFICE_SUITE_ONLY_SOURCES: Readonly<Record<string, OfficeSuiteOnlySource>>
   pages: { application: 'writer', interchange: 'docx' },
   sdc: { application: 'calc', interchange: 'xlsx' },
   qpw: { application: 'calc', interchange: 'xlsx' },
+  // Lotus 1-2-3 release 3 and later: the in-process reader reads the records of release 1 and 2 only (entries 461 and 462), the suite opens them through libwps.
+  wk3: { application: 'calc', interchange: 'xlsx' },
+  wk4: { application: 'calc', interchange: 'xlsx' },
+  '123': { application: 'calc', interchange: 'xlsx' },
 };
 
 /** Targets the in-process engine writes from plain text only: XPS and the Hangul formats. */

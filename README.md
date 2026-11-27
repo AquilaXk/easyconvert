@@ -5,13 +5,13 @@
 
 [English](README.md) | [한국어](README.ko.md)
 
-EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts files across **308 file formats** and **2,833 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
+EasyConvert is an open-source file conversion service with a web app and an HTTP API. It converts files across **311 file formats** and **2,842 conversion pairs** in **13 categories**. Production runs at <https://convert.aquilaxk.site>.
 
 [Live service](https://convert.aquilaxk.site) · [API reference](https://convert.aquilaxk.site/api-docs) · [Configuration](docs/configuration.md) · [Security policy](SECURITY.md)
 
 ## Features
 
-- **308 Formats Across 13 Categories** (`2,833` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
+- **311 Formats Across 13 Categories** (`2,842` source-to-target pairs), one API. Images (including camera RAW), documents, archives, video, audio, subtitles, ebooks, spreadsheets, presentations, data files, vector graphics, fonts, and CAD and 3D.
 - **Sandboxed engines.** LibreOffice, FFmpeg, libvips, Poppler, Tesseract, 7-Zip, Calibre, and veraPDF run as external tools inside a per-job sandbox. Some formats use in-process TypeScript engines: HWP 5.0 (OLE2 CFBF), BZip2, TrueType/OpenType font tables, B-spline and Bézier path flattening, and Oklab and NeuQuant palette quantization.
 - **Searchable OCR.** Scanned input becomes a PDF with a searchable text layer.
 - **PDF/A output.** Every PDF/A result is validated with veraPDF against the requested level.
@@ -35,7 +35,7 @@ EasyConvert reads and writes the formats below. The `GET /api/formats` endpoint 
 | **Audio** (`audio`) | 29 | AAC, AC3, AIF, AIFC, AIFF, ALAC, AMR, APE, AU, CAF, DSS, DTS, FLAC, M4A, M4B, MID, MIDI, MKA, MP3, MPC, OGA, OGG, OPUS, RA, SPX, VOC, WAV, WEBA, WMA |
 | **Subtitles** (`subtitle`) | 5 | ASS, SRT, SSA, SUB, VTT |
 | **Ebooks** (`ebook`) | 24 | AZW, AZW3, AZW4, CB7, CBC, CBR, CBT, CBZ, CHM, DJV, EPUB, FB2, HTMLZ, IBOOKS, LIT, LRF, MOBI, OEB, PML, PRC, RB, SNB, TCR, TXTZ |
-| **Spreadsheets** (`spreadsheet`) | 18 | DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WKS, XLS, XLSM, XLSX, XLT, XLTX |
+| **Spreadsheets** (`spreadsheet`) | 21 | 123, DBF, DIF, ET, FODS, NUMBERS, ODS, OTS, PRN, QPW, SDC, SLK, WK1, WK3, WK4, WKS, XLS, XLSM, XLSX, XLT, XLTX |
 | **Presentations** (`presentation`) | 18 | DPS, FODP, KEY, KEYNOTES, ODP, OTP, POT, POTX, PPS, PPSX, PPT, PPTM, PPTX, PRESENTATION, SDA, SHW, SXD, SXI |
 | **Data & Tables** (`data`) | 11 | CSV, JSON, JSONL, NDJSON, PARQUET, TAB, TOML, TSV, XML, YAML, YML |
 | **Vector** (`vector`) | 10 | CDR, CGM, EMF, PS, SK, SK1, SVG, SVGZ, VSD, WMF |
@@ -145,7 +145,7 @@ easyconvert/
 │   │   ├── conversions/     # Conversion engines and dispatchers
 │   │   ├── queue/           # Redis queue (bullmq-engine.ts, conversion-queue.ts)
 │   │   ├── storage/         # Local, S3, and OCI storage backends
-│   │   ├── registry.ts      # 308 canonical format definitions & options
+│   │   ├── registry.ts      # 311 canonical format definitions & options
 │   │   └── slug-parser.ts   # [source]-to-[target] route parser
 │   └── worker/              # Queue worker entry point
 ├── sdk/                     # TypeScript and Python clients

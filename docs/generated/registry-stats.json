@@ -1,7 +1,7 @@
 {
-  "formatCount": 308,
+  "formatCount": 311,
   "categoryCount": 13,
-  "pairCount": 2833,
+  "pairCount": 2842,
   "categories": [
     {
       "id": "image",
@@ -532,8 +532,9 @@
     {
       "id": "spreadsheet",
       "label": "Spreadsheets",
-      "count": 18,
+      "count": 21,
       "formats": [
+        "123",
         "dbf",
         "dif",
         "et",
@@ -546,6 +547,8 @@
         "sdc",
         "slk",
         "wk1",
+        "wk3",
+        "wk4",
         "wks",
         "xls",
         "xlsm",
@@ -554,6 +557,7 @@
         "xltx"
       ],
       "extensions": [
+        "123",
         "dbf",
         "dif",
         "et",
@@ -566,6 +570,8 @@
         "sdc",
         "slk",
         "wk1",
+        "wk3",
+        "wk4",
         "wks",
         "xls",
         "xlsm",

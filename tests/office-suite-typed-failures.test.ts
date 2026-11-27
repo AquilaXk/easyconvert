@@ -57,7 +57,7 @@ describe('formats only the office suite reads, without the office suite', () => 
   });
 
   it('lists the formats the registry advertises with a source the in-process engine cannot read', () => {
-    expect(sources.sort()).toEqual(['abw', 'cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pages', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wmf', 'wpd', 'wps', 'zabw']);
+    expect(sources.sort()).toEqual(['123', 'abw', 'cdr', 'cgm', 'dps', 'emf', 'lrf', 'lwp', 'numbers', 'pages', 'pdb', 'pub', 'qpw', 'sda', 'sdc', 'sdw', 'sxd', 'sxi', 'sxw', 'vsd', 'wk3', 'wk4', 'wmf', 'wpd', 'wps', 'zabw']);
   });
 });
 
@@ -216,6 +216,9 @@ describe('how the office suite reaches the targets it does not write', () => {
     ['zabw', 'md', 'docx'],
     ['sdc', 'csv', 'xlsx'],
     ['qpw', 'csv', 'xlsx'],
+    ['wk3', 'csv', 'xlsx'],
+    ['wk4', 'csv', 'xlsx'],
+    ['123', 'csv', 'xlsx'],
   ])('.%s to .%s is written from the %s the suite exports', (source, target, interchange) => {
     expect(officeSuiteInterchange(source, target)).toBe(interchange);
   });
