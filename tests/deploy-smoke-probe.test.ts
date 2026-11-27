@@ -51,6 +51,7 @@ const HTTP_CLIENT_CLOSED_REQUEST = 499;
 const VERDICT_REUSED_WITHIN_MS = 1_000;
 const VERDICT_GONE_AFTER_MS = 60_000;
 const CONCURRENT_CALLERS = 3;
+const EARLY_IN_A_UTC_DAY = new Date('2026-11-02T00:00:05.000Z');
 
 /** The probe runs ImageMagick in the conversion sandbox, which on Linux needs unprivileged namespaces (unshare -r -n). */
 const sandboxMissing =
@@ -100,7 +101,7 @@ async function expectOnePixelPng(res: Response): Promise<void> {
 let keysClient: Redis | null;
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
   resetSmokeVerdict();
   keysClient = redisKeyStore.getRedisClient();
   redisKeyStore.setRedisClient(null);
@@ -223,7 +224,7 @@ describe('a smoke conversion that does not stop at its deadline', () => {
   };
 
   it('is aborted at the deadline, and keeps its place until it ends: no second conversion starts on top of it', async () => {
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], now: EARLY_IN_A_UTC_DAY });
     let signal!: AbortSignal;
     let end!: () => void;
     vi.mocked(dispatchConversion).mockImplementationOnce((_input, _source, _target, options) => {
@@ -309,7 +310,7 @@ describe('a failed smoke conversion', () => {
   });
 
   it('answers 504 when the conversion does not finish within its 30 seconds', async () => {
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'], now: EARLY_IN_A_UTC_DAY });
     vi.mocked(dispatchConversion).mockImplementationOnce(() => new Promise(() => undefined));
     const pending = smokeProbe(smokeRequest());
     await vi.advanceTimersByTimeAsync(SMOKE_DEADLINE_MS);

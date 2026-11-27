@@ -539,7 +539,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     itLeasesHandedOffWork({ owner: () => client.userId, advance: advanceQuotaClock });
 
     it('counts a live lease for a caller whose clock runs two minutes ahead, as the clock of Redis decides when it ends', async () => {
-      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
       const unit = await redisKeyStore.reserveQuota(client.userId, 1);
 
       vi.setSystemTime(Date.now() + 120_000);
@@ -550,7 +550,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
 
     it('keeps what an extension holds for as long as the renewed lease, so the same extension never holds twice', async () => {
-      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
       const unit = await redisKeyStore.reserveQuota(client.userId, 1);
       expect(await redisKeyStore.extendQuota(unit.reservationId as string, 'conv', 2)).toEqual({ status: 'extended' });
       expect(await redisKeyStore.renewReservation(unit.reservationId as string, RESERVATION_LEASE.handedOffMs)).toBe(true);
@@ -815,7 +815,7 @@ describe.skipIf(!REDIS_URL)('what a request is charged, on a real Redis server',
     });
 
     it('settles a graph that ends after the provisional lease of its reservation would have', async () => {
-      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
       const scheduler = new RedisGraphScheduler({ redisClient: admin, keyPrefix, enqueueNode: async () => undefined });
       const unit = await redisKeyStore.reserveQuota(client.userId, 1);
       const graphId = `graph_end_${crypto.randomBytes(6).toString('hex')}`;

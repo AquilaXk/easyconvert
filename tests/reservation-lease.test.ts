@@ -36,6 +36,7 @@ afterAll(() => {
 });
 
 const HOUR_MS = 60 * 60 * 1000;
+const EARLY_IN_A_UTC_DAY = new Date('2026-11-02T00:00:05.000Z');
 
 const freshOwner = () => anonymousUserId(`203.0.113.${crypto.randomInt(1, 255)}-${crypto.randomBytes(4).toString('hex')}`);
 
@@ -129,7 +130,7 @@ describe('a reservation a request hands to queued work', () => {
       },
     ],
   ])('keeps the unit on the provisional lease when the lookup after a failed start %s, and gives it back when that lease ends', async (_label, recover) => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
     const owner = freshOwner();
     const reservationId = await reservedUnit(owner);
 
@@ -152,7 +153,7 @@ describe('a reservation a request hands to queued work', () => {
   });
 
   it('leaves the unit on the provisional lease after a start whose outcome is unknown, writing nothing to the store that failed', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
     const owner = freshOwner();
     const reservationId = await reservedUnit(owner);
     const renew = vi.spyOn(MemoryReservationLedger.prototype, 'renew');
@@ -240,7 +241,7 @@ describe('a reservation a request hands to queued work', () => {
   });
 
   it('renews the lease while the request runs, so a long conversion is still charged', async () => {
-    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: EARLY_IN_A_UTC_DAY });
     const owner = freshOwner();
     const reservationId = await reservedUnit(owner);
 
@@ -264,7 +265,7 @@ describe('queued work that takes a reservation', () => {
   });
 
   it('charges a job that a worker takes while its reservation is on the provisional lease, when it ends after that lease would have', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
     const owner = freshOwner();
     const unit = await redisKeyStore.reserveQuota(owner, 1);
     const reservationId = unit.reservationId as string;
@@ -284,7 +285,7 @@ describe('queued work that takes a reservation', () => {
   });
 
   it('charges a graph that ends after the provisional lease of its reservation would have', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.useFakeTimers({ toFake: ['Date'], now: EARLY_IN_A_UTC_DAY });
     vi.spyOn(webhookDispatcher, 'enqueueDelivery').mockResolvedValue({ id: 'job_spy' } as never);
     const owner = freshOwner();
     const unit = await redisKeyStore.reserveQuota(owner, 1);
