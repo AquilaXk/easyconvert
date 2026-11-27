@@ -1071,7 +1071,9 @@ describe('Launch audit: newly supported and repaired conversions', () => {
     lotusRev0404.writeUInt16LE(0x0404, 4);
     expect(() => assertNotSpoofedFile(lotusRev0404, 'wks', 'r1a.wks')).not.toThrow();
 
-    const lotusRev1000 = buildWk1Sample();
+    // Release 3 and later: a BOF record of 0x1A bytes (opcode 0, length 0x1A, revision 0x1000..0x1005).
+    const lotusRev1000 = Buffer.alloc(30);
+    lotusRev1000.writeUInt16LE(0x1a, 2);
     lotusRev1000.writeUInt16LE(0x1000, 4);
     expect(() => assertNotSpoofedFile(lotusRev1000, 'wks', 'r3.wks')).not.toThrow();
 

@@ -687,7 +687,10 @@ function isLotusWordPro(buf: Uint8Array): boolean {
   return LOTUS_WORD_PRO_MAGICS.some((magic) => startsWithBytes(buf, magic));
 }
 
+/** Lotus 1-2-3 BOF record (opcode 0) of release 1 and 2 (`.wks`, `.wk1`): 2 bytes of revision. */
 const LOTUS_WKS_BOF_MAGIC = [0x00, 0x00, 0x02, 0x00] as const;
+/** The BOF record of release 3 and later (`.wk3`, `.wk4`, `.123`) is 0x1A bytes long, so its revision sits behind another length. */
+const LOTUS_WK3_BOF_MAGIC = [0x00, 0x00, 0x1a, 0x00] as const;
 
 function isWindowsCursorHeader(buf: Uint8Array, count: number): boolean {
   const dirEnd = 6 + count * 16;
@@ -706,15 +709,13 @@ function isWindowsCursorHeader(buf: Uint8Array, count: number): boolean {
 }
 
 function isLotusWksBof(buf: Uint8Array): boolean {
-  if (buf.length < 6 || !startsWithBytes(buf, LOTUS_WKS_BOF_MAGIC)) return false;
+  if (buf.length < 6) return false;
   const revision = dataView(buf).getUint16(4, true);
-  const validRevision =
-    (revision >= 0x0400 && revision <= 0x040f) ||
-    (revision >= 0x1000 && revision <= 0x1005) ||
-    revision === 0x0008;
+  if (startsWithBytes(buf, LOTUS_WK3_BOF_MAGIC)) return revision >= 0x1000 && revision <= 0x1005;
+  if (!startsWithBytes(buf, LOTUS_WKS_BOF_MAGIC)) return false;
+  const validRevision = (revision >= 0x0400 && revision <= 0x040f) || revision === 0x0008;
   if (!validRevision) return false;
-  if (revision <= 0x040f && isWindowsCursorHeader(buf, revision)) return false;
-  return true;
+  return !(revision <= 0x040f && isWindowsCursorHeader(buf, revision));
 }
 
 function isWordPerfect(buf: Uint8Array): boolean {
