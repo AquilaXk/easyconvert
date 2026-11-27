@@ -29,6 +29,7 @@ One maintainer, one list. Add a line when work is found, delete it when it lands
 - Watch `auth_mail_budget level=warn` (350 mails/day; verification stops at 400, resets at 480, entry 288) and move auth mail to a dedicated provider before sign-ups reach the cap, raising `AUTH_MAIL_DAILY_WARN`, `AUTH_MAIL_DAILY_VERIFY_CAP` and `AUTH_MAIL_DAILY_HARD_CAP` via `.env` (entry 326).
 
 ## Tests, CI and code health
+- Split the long functions the 2026-11-27 security review noted, without behaviour change: the address checks of `src/lib/security/capture-gate.ts`, the request handler of `src/app/api/storage/bundle/route.ts`, and the element walk of `src/lib/security/svg-sanitizer.ts`; keep each refactor in its own commit with the existing tests green.
 - Report real LCOV coverage to SonarCloud from the CI shards, then drop `sonar.coverage.exclusions` in `.sonarcloud.properties` and switch to a CI scanner step.
 
 ## Approved backlog (QA 2026-11-12: every Later and Waiting item is approved)
