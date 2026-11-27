@@ -12,6 +12,7 @@ import { useFileTooLargeMessage, useFormatBytes } from '../i18n/format';
 import { useConversionFailureWording } from '../i18n/error-wording';
 import { getPasswordValidationError } from './options/options-capabilities';
 import { FormatIcon } from './FormatIcon';
+import { unconvertibleReason } from './queue-item-convertibility';
 import FormatPickerButton from './FormatPickerButton';
 import { QuotaExhaustedActions } from './QuotaExhaustedActions';
 
@@ -138,10 +139,11 @@ export default function QueueItemRow({
   const sourceDef = getFormatByExtension(item.sourceFormat);
   const availableFormats = getAvailableTargetFormats(item.sourceFormat);
   // Read at render, not when the file was dropped: the plan of the session may answer after the drop.
-  const isOversize = isIdle && item.size > maxFileBytes(plan);
-  const isEmptyFile = isIdle && item.size <= 0;
-  const isUnsupportedFormat = isIdle && (!sourceDef || availableFormats.length === 0);
-  const isUnconvertible = isOversize || isEmptyFile || isUnsupportedFormat;
+  const unconvertible = isIdle ? unconvertibleReason(item, maxFileBytes(plan)) : null;
+  const isOversize = unconvertible === 'oversize';
+  const isEmptyFile = unconvertible === 'empty';
+  const isUnsupportedFormat = unconvertible === 'unsupported';
+  const isUnconvertible = unconvertible !== null;
   const hasTarget = Boolean(item.targetFormat);
   const optionError = isIdle ? resolveOptionError(tPassword, item) : null;
   const sourceLabel = item.sourceFormat ? item.sourceFormat.toUpperCase() : '';

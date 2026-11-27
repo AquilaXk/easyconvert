@@ -9,7 +9,7 @@ import BrandLogo from './BrandLogo';
 import UserNav from './UserNav';
 import MobileMenu from './MobileMenu';
 import LanguageSwitcher from './LanguageSwitcher';
-import { primaryLinksFor, TOOL_GROUPS, type SiteLink, type ToolGroup } from './site-links';
+import { primaryLinksFor, TOOL_GROUP_BY_KEY, type SiteLink, type ToolGroup } from './site-links';
 import { useWebsiteCaptureEnabled } from './CaptureAvailabilityProvider';
 import { useViewerAccount } from '@/hooks/useViewerPlan';
 import type { SessionUser } from '@/lib/viewer-plan';
@@ -163,34 +163,34 @@ export default function Header({
                       </Link>
                       {captureEnabled && (
                         <ToolMenuSection
-                          groupKey={TOOL_GROUPS[4].key}
-                          links={TOOL_GROUPS[4].links}
+                          groupKey={TOOL_GROUP_BY_KEY.websiteCapture.key}
+                          links={TOOL_GROUP_BY_KEY.websiteCapture.links}
                           onSelect={() => setIsToolsOpen(false)}
                         />
                       )}
                     </div>
                     <div className="col-span-3 flex flex-col gap-6 min-w-0">
                       <ToolMenuSection
-                        groupKey={TOOL_GROUPS[0].key}
-                        links={TOOL_GROUPS[0].links}
+                        groupKey={TOOL_GROUP_BY_KEY.converters.key}
+                        links={TOOL_GROUP_BY_KEY.converters.links}
                         onSelect={() => setIsToolsOpen(false)}
                       />
                       <ToolMenuSection
-                        groupKey={TOOL_GROUPS[2].key}
-                        links={TOOL_GROUPS[2].links}
+                        groupKey={TOOL_GROUP_BY_KEY.archives.key}
+                        links={TOOL_GROUP_BY_KEY.archives.links}
                         onSelect={() => setIsToolsOpen(false)}
                       />
                     </div>
                     <div className="col-span-5 flex flex-col gap-6 min-w-0">
                       <ToolMenuSection
-                        groupKey={TOOL_GROUPS[1].key}
-                        links={TOOL_GROUPS[1].links}
+                        groupKey={TOOL_GROUP_BY_KEY.pdfTools.key}
+                        links={TOOL_GROUP_BY_KEY.pdfTools.links}
                         columns={2}
                         onSelect={() => setIsToolsOpen(false)}
                       />
                       <ToolMenuSection
-                        groupKey={TOOL_GROUPS[3].key}
-                        links={TOOL_GROUPS[3].links}
+                        groupKey={TOOL_GROUP_BY_KEY.compressImages.key}
+                        links={TOOL_GROUP_BY_KEY.compressImages.links}
                         onSelect={() => setIsToolsOpen(false)}
                       />
                     </div>

@@ -4,12 +4,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { ChevronDown, CircleCheck, Loader2, Package, Trash2, X } from 'lucide-react';
 import { ConversionQueueItem, ConversionOptions, FormatDefinition } from '@/lib/types';
-import { getAvailableTargetFormats, getFormatByExtension } from '@/lib/registry';
+import { getAvailableTargetFormats } from '@/lib/registry';
 import { maxFileBytes } from '@/lib/plan-limits';
 import { useViewerPlan } from '@/hooks/useViewerPlan';
 import FormatPickerButton from './workbench/FormatPickerButton';
 import OptionsModal from './OptionsModal';
 import QueueItemRow from './workbench/QueueItemRow';
+import { unconvertibleReason } from './workbench/queue-item-convertibility';
 import FileSourceButton from './workbench/FileSourceButton';
 import { getPasswordValidationError } from './workbench/options/options-capabilities';
 
@@ -248,14 +249,7 @@ export default function ConversionQueue({
   const plan = useViewerPlan();
   const maxLimit = maxFileBytes(plan);
   const convertibleItems = useMemo(
-    () =>
-      items.filter(
-        (item) =>
-          item.size > 0 &&
-          item.size <= maxLimit &&
-          Boolean(getFormatByExtension(item.sourceFormat)) &&
-          getAvailableTargetFormats(item.sourceFormat).length > 0
-      ),
+    () => items.filter((item) => unconvertibleReason(item, maxLimit) === null),
     [items, maxLimit]
   );
   const view = deriveQueueViewState(t, items, convertibleItems, isConverting, maxLimit);

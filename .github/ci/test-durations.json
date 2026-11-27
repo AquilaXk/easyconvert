@@ -1161,6 +1161,7 @@
   "tests/queue-engine-hardening.test.ts": 0.3,
   "tests/queue-evalsha-redis.test.ts": 0,
   "tests/queue-final-failure-cleanup.test.ts": 0.1,
+  "tests/queue-item-convertibility.test.ts": 0.4,
   "tests/queue-job-route-ownership.test.ts": 0,
   "tests/queue-jobs-prequota-validation.test.ts": 1.2,
   "tests/queue-keep-jobs.test.ts": 0,

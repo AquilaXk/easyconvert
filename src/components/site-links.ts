@@ -68,6 +68,13 @@ export const TOOL_GROUPS = [
   },
 ] as const satisfies readonly ToolGroup[];
 
+export type ToolGroupKey = (typeof TOOL_GROUPS)[number]['key'];
+
+/** A tool group by its key, so a menu names the group it shows and does not depend on the order of TOOL_GROUPS. */
+export const TOOL_GROUP_BY_KEY = Object.fromEntries(TOOL_GROUPS.map((group) => [group.key, group])) as {
+  readonly [K in ToolGroupKey]: Extract<(typeof TOOL_GROUPS)[number], { key: K }>;
+};
+
 export const TOOL_ROUTES = [
   ...TOOL_GROUPS[0].links,
   ...TOOL_GROUPS[1].links,
