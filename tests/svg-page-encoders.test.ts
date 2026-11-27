@@ -1,9 +1,12 @@
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { describe, expect, it, vi } from 'vitest';
 import { runPdfTextJob } from '../src/lib/conversions/pdf-text-geometry';
 import { readDxf } from './helpers/dxf-reader';
 import { PicturePages } from '../src/lib/conversions/vector-dxf';
 import { isSvgPageTarget, svgPageEncoder } from '../src/worker/svg-page-encoders';
 import { withPageNumbers } from '../src/worker/worker-output';
+import { skipWithoutTools } from './helpers/strict-skip';
+import { UnsupportedOptionError } from '../src/lib/types';
 import type { WorkerConversionResult } from '../src/worker/worker-types';
 
 vi.mock('../src/lib/conversions/pdf-text-geometry', async (importOriginal) => ({
@@ -63,6 +66,38 @@ describe('the writers of the SVG-page targets', () => {
   });
 });
 
+describe('the size of the page that Poppler drew', () => {
+  const LETTER_MM = [(612 * 25.4) / 72, (792 * 25.4) / 72];
+  const FORMS = {
+    // Poppler 25.02 and later (and cairo before 1.17.6) write the unit of the document.
+    'points (Poppler 25.02 and later)': 'width="612pt" height="792pt"',
+    // Poppler 24 on cairo 1.17.6 and later (Ubuntu noble) writes the user units of cairo, which are points, without a unit.
+    'no unit (Poppler before 25.02)': 'width="612" height="792"',
+  };
+  const page = (size: string): Buffer =>
+    Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" ${size} viewBox="0 0 612 792"><path d="M 72 72 L 540 72 L 306 720 Z" fill="#ff0000"/></svg>`);
+  /** The frame of the EMF header (rclFrame, 0.01 mm), in millimetres. */
+  const emfFrame = (emf: Buffer): number[] => [(emf.readInt32LE(32) - emf.readInt32LE(24)) / 100, (emf.readInt32LE(36) - emf.readInt32LE(28)) / 100];
+
+  it.each(Object.entries(FORMS))('EMF: a page of 612 x 792 points is 215.9 x 279.4 mm with %s', async (_form, size) => {
+    const emf = await svgPageEncoder('emf', RENDERED, () => undefined, {}, new PicturePages())(page(size), RENDERED.filename);
+    const [width, height] = emfFrame(emf);
+    expect(width).toBeCloseTo(LETTER_MM[0], 0);
+    expect(height).toBeCloseTo(LETTER_MM[1], 0);
+  });
+
+  it.each(Object.entries(FORMS))('WMF: a page of 612 x 792 points has the same logical size with %s', async (_form, size) => {
+    const reference = await svgPageEncoder('wmf', RENDERED, () => undefined, {}, new PicturePages())(page(FORMS['points (Poppler 25.02 and later)']), RENDERED.filename);
+    const wmf = await svgPageEncoder('wmf', RENDERED, () => undefined, {}, new PicturePages())(page(size), RENDERED.filename);
+    expect(wmf.equals(reference)).toBe(true);
+  });
+
+  it('a page whose root names no viewBox keeps the size the SVG states', async () => {
+    const emf = await write('emf');
+    expect(emfFrame(emf)[0]).toBeCloseTo((100 * 25.4) / 96, 0);
+  });
+});
+
 describe('the text layer of a PDF, for the pages of one render', () => {
   const PAGES = 24;
   const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==';
@@ -88,5 +123,62 @@ describe('the text layer of a PDF, for the pages of one render', () => {
     expect(job).toHaveBeenCalledTimes(1);
     expect(readPdf).toHaveBeenCalledTimes(1);
     expect(job.mock.calls[0][1]).toMatchObject({ geometry: 'none', content: Array.from({ length: PAGES }, (_, index) => index + 1) });
+  });
+});
+
+/**
+ * A page that the in-process EMF and WMF writers refuse (a picture, a mask, a bitmap-font character) goes to the office suite as a
+ * one-page PDF; the pages the in-process writer writes do not, and a page with a Type 3 font is refused as before because the PDF import
+ * of the office suite drops the glyphs of such a font. The office suite is a stand-in here; tests/office-metafile-real-samples.test.ts runs it.
+ */
+describe.skipIf(skipWithoutTools('qpdf'))('an EMF or WMF page the in-process writer refuses', () => {
+  const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNiAAAABgADNjd8qAAAAABJRU5ErkJggg==';
+  const PICTURE_PAGE = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><image width="10" height="10" href="${PIXEL}"/></svg>`;
+  const WRITTEN = Buffer.from('written by the office suite');
+
+  async function pdfOfPages(pages: number, type3 = false): Promise<Buffer> {
+    const document = await PDFDocument.create();
+    for (let page = 0; page < pages; page++) document.addPage([200, 200]);
+    if (type3) {
+      const font = document.context.register(document.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type3') }));
+      document.getPage(0).node.set(PDFName.of('Resources'), document.context.obj({ Font: { F1: font } }));
+    }
+    return Buffer.from(await document.save());
+  }
+
+  const encoder = (target: string, pdf: Buffer, pages: number, officeSuite: (page: Buffer, target: string) => Promise<Buffer>) =>
+    svgPageEncoder(target, withPageNumbers({ filename: 'doc.zip' } as WorkerConversionResult, Array.from({ length: pages }, (_, index) => index + 1)), () => pdf, {}, new PicturePages(), officeSuite);
+
+  it('is written by the office suite from the one page of the PDF it came from', async () => {
+    const run = vi.fn(async () => Buffer.from('ignored'));
+    run.mockResolvedValue(Buffer.from([0x01, 0x00, 0x00, 0x00, 0x6c, 0x00, 0x00, 0x00, ...new Array(32).fill(0), 0x20, 0x45, 0x4d, 0x46, 0, 0, 0, 0]));
+    const pdf = await pdfOfPages(3);
+    const written = await encoder('emf', pdf, 3, run)(Buffer.from(PICTURE_PAGE), 'doc-p002.svg');
+    expect(written.readUInt32LE(40)).toBe(EMF_SIGNATURE);
+    expect(run).toHaveBeenCalledTimes(1);
+    const [handed, target] = run.mock.calls[0] as unknown as [Buffer, string];
+    expect(target).toBe('emf');
+    expect((await PDFDocument.load(handed)).getPageCount()).toBe(1);
+  });
+
+  it('is refused when the office suite writes no file of the target format', async () => {
+    const pdf = await pdfOfPages(1);
+    await expect(encoder('wmf', pdf, 1, async () => WRITTEN)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg')).rejects.toThrow(/wrote no \.wmf file/);
+  });
+
+  it('is refused as before when the page holds a Type 3 font, and the office suite is not asked', async () => {
+    const run = vi.fn(async () => WRITTEN);
+    const pdf = await pdfOfPages(1, true);
+    await expect(encoder('emf', pdf, 1, run)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg')).rejects.toBeInstanceOf(UnsupportedOptionError);
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('is not asked for a page the in-process writer writes, nor for a DXF page', async () => {
+    const run = vi.fn(async () => WRITTEN);
+    const pdf = await pdfOfPages(1);
+    const written = await encoder('emf', pdf, 1, run)(Buffer.from(SVG), 'doc-p001.svg');
+    expect(written.readUInt32LE(40)).toBe(EMF_SIGNATURE);
+    await encoder('dxf', pdf, 1, run)(Buffer.from(PICTURE_PAGE), 'doc-p001.svg').catch(() => undefined);
+    expect(run).not.toHaveBeenCalled();
   });
 });

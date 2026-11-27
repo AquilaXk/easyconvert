@@ -17,6 +17,7 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'djvu->avif', 'djvu->bmp', 'djvu->eps', 'djvu->gif', 'djvu->ico', 'djvu->jpg', 'djvu->pdf', 'djvu->png', 'djvu->ps', 'djvu->psd', 'djvu->svg', 'djvu->tiff', 'djvu->webp',
   // A CSV table's page images: Poppler draws the pages of the PDF the in-process engine writes of it.
   'csv->jpg', 'csv->png',
+  // A PDF and a presentation written as EMF or WMF: Poppler draws the page as SVG for the in-process writer, and the office suite writes the pages it refuses (entry 454).
   // Presentations written as PostScript pictures (Poppler draws the suite's PDF) or as Markdown (the PDF text reader reads the suite's PDF).
   'dps->eps', 'dps->md',
   // Macro-enabled documents and Word templates: the office suite writes them as Word 97, RTF and page images, as it writes a Word document.
@@ -37,15 +38,15 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'ods->jpg', 'ods->png',
   'odt->doc', 'odt->jpg', 'odt->png', 'odt->rtf',
   'oxps->avif', 'oxps->bmp', 'oxps->eps', 'oxps->gif', 'oxps->ico', 'oxps->jpg', 'oxps->pdf', 'oxps->png', 'oxps->ps', 'oxps->psd', 'oxps->svg', 'oxps->tiff', 'oxps->webp',
-  'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ppt', 'pdf->ps', 'pdf->psd', 'pdf->svg', 'pdf->webp',
+  'pdf->avif', 'pdf->bmp', 'pdf->doc', 'pdf->dxf', 'pdf->emf', 'pdf->eps', 'pdf->gif', 'pdf->ico', 'pdf->odd', 'pdf->ppt', 'pdf->ps', 'pdf->psd', 'pdf->svg', 'pdf->webp', 'pdf->wmf',
   'ps->avif', 'ps->bmp', 'ps->dxf', 'ps->eps', 'ps->gif', 'ps->ico', 'ps->jpg', 'ps->odd', 'ps->pdf', 'ps->png', 'ps->ps', 'ps->psd', 'ps->svg', 'ps->tiff', 'ps->webp',
-  'pot->jpg', 'pot->png', 'pot->ppt',
-  'potx->jpg', 'potx->odp', 'potx->png', 'potx->ppt',
+  'pot->emf', 'pot->jpg', 'pot->png', 'pot->ppt',
+  'potx->emf', 'potx->jpg', 'potx->odp', 'potx->png', 'potx->ppt',
   'pps->eps', 'pps->md', 'pps->ppt',
   'ppsx->eps', 'ppsx->jpg', 'ppsx->md', 'ppsx->png', 'ppsx->ppt',
-  'ppt->eps', 'ppt->jpg', 'ppt->md', 'ppt->odp', 'ppt->png',
-  'pptm->eps', 'pptm->jpg', 'pptm->md', 'pptm->png', 'pptm->ppt',
-  'pptx->eps', 'pptx->jpg', 'pptx->md', 'pptx->png', 'pptx->ppt',
+  'ppt->emf', 'ppt->eps', 'ppt->jpg', 'ppt->md', 'ppt->odp', 'ppt->png',
+  'pptm->emf', 'pptm->eps', 'pptm->jpg', 'pptm->md', 'pptm->png', 'pptm->ppt',
+  'pptx->emf', 'pptx->eps', 'pptx->jpg', 'pptx->md', 'pptx->png', 'pptx->ppt',
   'rtf->doc', 'rtf->jpg', 'rtf->png',
   'xls->jpg', 'xls->png',
   'xlsm->jpg', 'xlsm->png',

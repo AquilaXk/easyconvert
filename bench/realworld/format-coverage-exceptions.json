@@ -443,12 +443,6 @@
         "file lists of Tika, pyhwp, hwpilot, hwpx-skill, hwpx-owpml-model and the file(1) test suite at pinned commits"
       ]
     },
-    "ai": {
-      "reason": "One Illustrator file is published in the test suites searched (Tika testAI_PS.ai, PostScript based); no PDF-based .ai file with an open licence was found.",
-      "searched": [
-        "file lists of Tika, LibreOffice core, Scribus, UniConvertor and ImageMagick at pinned commits"
-      ]
-    },
     "cdr": {
       "reason": "Two CorelDRAW files are published with open licences (LibreOffice fdo65220-2.cdr and Apache POI pb-poi.cdr); the other .cdr file in LibreOffice's data comes from an exploit database and was not used.",
       "searched": [
