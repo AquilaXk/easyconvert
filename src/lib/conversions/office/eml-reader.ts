@@ -1,5 +1,5 @@
 import iconv from 'iconv-lite';
-import { ConversionFailedError } from '../../types';
+import { ConversionFailedError, PayloadLimitError } from '../../types';
 import { escapeMarkupAttribute, escapeMarkupText } from '../../text/escape';
 import { decodeHtmlCharacterReferences } from '../html-blocks';
 import { decodeHtmlInput } from '../html-encoding';
@@ -16,6 +16,11 @@ const MAX_MIME_DEPTH = 16;
 const MAX_MIME_PARTS = 256;
 const MAX_HEADER_BYTES = 256 * 1024;
 const MAX_DECODED_BYTES = 32 * 1024 * 1024;
+/**
+ * The raw message is read as one Latin-1 string before any bound of the walk applies. 64 MiB is what the other
+ * text-form readers take (Flat ODF), and holds a message whose parts decode to MAX_DECODED_BYTES: base64 adds a third.
+ */
+const MAX_EML_BYTES = 64 * 1024 * 1024;
 
 export interface EmlAttachment {
   name: string;
@@ -314,6 +319,9 @@ function walkMimeEntity(rawEntity: string, depth: number, state: MimeWalkState, 
 }
 
 export function readEmlMessage(input: Buffer): EmlMessage {
+  if (input.length > MAX_EML_BYTES) {
+    throw new PayloadLimitError(`EML message exceeds ${MAX_EML_BYTES} bytes.`);
+  }
   assertReadableAsText(input, 'eml');
   const raw = input.toString('latin1');
   const topHeaders = new Map<string, string>();
