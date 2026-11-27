@@ -1,4 +1,5 @@
 import { ConversionFailedError } from '../../types';
+import { trimBlanksEnd } from './html-text';
 
 /**
  * Clean, linear-time converters turning LaTeX/TeX, reStructuredText (RST), and troff/groff man pages
@@ -206,6 +207,15 @@ function unescapeTexChars(text: string): string {
     .replace(/''/g, '"');
 }
 
+/** `text` without the line breaks at both ends, by index scans: `/\n+$/` restarts at every line break of a long run. */
+function trimLineBreaks(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && text[start] === '\n') start += 1;
+  while (end > start && text[end - 1] === '\n') end -= 1;
+  return text.slice(start, end);
+}
+
 function skipEmptyTrailingGroup(text: string, from: number): number {
   let i = from;
   while (i < text.length && (text[i] === ' ' || text[i] === '\t')) i += 1;
@@ -301,7 +311,7 @@ function consumeTexEnvironment(src: TexSource, cmd: 'begin' | 'end', cursor: num
       const endTag = `\\end{${envName}}`;
       const endIdx = src.indexOfEnd(envName, endTag, nextCursor);
       if (endIdx !== -1) {
-        const body = src.text.slice(nextCursor, endIdx).replace(/^\n+|\n+$/g, '');
+        const body = trimLineBreaks(src.text.slice(nextCursor, endIdx));
         out.push(`\n\`\`\`\n${body}\n\`\`\`\n`);
         return endIdx + endTag.length;
       }
@@ -428,7 +438,7 @@ function transformTexRecursive(tex: string, depth: number, unescapeProse = true)
 function normalizeMarkdownSpacing(md: string): string {
   return md
     .split('\n')
-    .map((line) => line.replace(/[ \t]+$/g, '').replace(/^[ \t]+(?=- )/, ''))
+    .map((line) => trimBlanksEnd(line).replace(/^[ \t]+(?=- )/, ''))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();

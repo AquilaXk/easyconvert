@@ -94,7 +94,8 @@ function appendText(state: TextState, raw: string): void {
   state.atLineStart = false;
 }
 
-function trimBlanksEnd(line: string): string {
+/** `line` without the spaces and tabs at its end, found by a backward scan: `/[ \t]+$/` restarts at every blank of a long run. */
+export function trimBlanksEnd(line: string): string {
   let end = line.length;
   while (end > 0 && (line[end - 1] === ' ' || line[end - 1] === '\t')) end -= 1;
   return line.slice(0, end);

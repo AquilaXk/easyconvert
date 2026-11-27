@@ -232,7 +232,7 @@ function splitMultipartParts(body: string, boundary: string): string[] {
   let current: string[] | null = null;
 
   for (const line of lines) {
-    const trimmed = line.replace(/\s+$/, '');
+    const trimmed = line.trimEnd();
     if (trimmed === closeDelim) {
       if (current !== null) parts.push(current.join('\r\n'));
       break;
@@ -404,7 +404,14 @@ const SAFE_LINK_SCHEMES: ReadonlySet<string> = new Set(['http', 'https', 'mailto
 const DATA_RASTER_IMAGE_URI = /^data:image\/(?:png|gif|jpe?g|webp)[;,]/i;
 const IMG_DIMENSION_PATTERN = /^\d{1,4}$/;
 const CELL_SPAN_PATTERN = /^\d{1,3}$/;
-const SURROUNDING_QUOTES = /^["']+|["']+$/g;
+/** `value` without the quotes at its start and end: index scans, as `/[\"']+$/` restarts at every quote of a long run. */
+function stripSurroundingQuotes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && (value[start] === '"' || value[start] === "'")) start += 1;
+  while (end > start && (value[end - 1] === '"' || value[end - 1] === "'")) end -= 1;
+  return value.slice(start, end);
+}
 // eslint-disable-next-line no-control-regex
 const URI_CONTROL_AND_SPACE = /[\u0000-\u0020\u007f-\u009f]+/g;
 // eslint-disable-next-line no-control-regex
@@ -705,15 +712,16 @@ function decodeNumericEntity(_m: string, hex: string | undefined, dec: string | 
 }
 
 function normalizeUriCandidate(raw: string): string {
-  let decoded = raw.trim().replace(SURROUNDING_QUOTES, '');
+  let decoded = stripSurroundingQuotes(raw.trim());
   for (let pass = 0; pass < 2; pass += 1) {
-    decoded = decoded
-      .replace(URI_ENTITY_PATTERN, (m, hex?: string, dec?: string, named?: string) => {
-        if (hex !== undefined || dec !== undefined) return decodeNumericEntity(m, hex, dec);
-        return named ? (NAMED_URI_ENTITIES[asciiLower(named)] ?? m) : m;
-      })
-      .trim()
-      .replace(SURROUNDING_QUOTES, '');
+    decoded = stripSurroundingQuotes(
+      decoded
+        .replace(URI_ENTITY_PATTERN, (m, hex?: string, dec?: string, named?: string) => {
+          if (hex !== undefined || dec !== undefined) return decodeNumericEntity(m, hex, dec);
+          return named ? (NAMED_URI_ENTITIES[asciiLower(named)] ?? m) : m;
+        })
+        .trim()
+    );
   }
   return decoded.replace(URI_CONTROL_AND_SPACE, '');
 }
@@ -766,10 +774,7 @@ function decodeSafeUriEntitiesOnce(raw: string): string {
 }
 
 function cleanSafeUriForEmit(raw: string): string {
-  return decodeSafeUriEntitiesOnce(raw)
-    .trim()
-    .replace(SURROUNDING_QUOTES, '')
-    .replace(ATTR_CONTROL_CHARS, '');
+  return stripSurroundingQuotes(decodeSafeUriEntitiesOnce(raw).trim()).replace(ATTR_CONTROL_CHARS, '');
 }
 
 function cleanTextAttrForEmit(raw: string): string {
