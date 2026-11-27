@@ -856,7 +856,7 @@
   "tests/office-macro-strip.test.ts": 35.6,
   "tests/office-malformed-parts.test.ts": 0.2,
   "tests/office-metafile-page.test.ts": 0,
-  "tests/office-metafile-real-samples.test.ts": 115.0,
+  "tests/office-metafile-real-samples.test.ts": 120.0,
   "tests/office-native-route.test.ts": 6.4,
   "tests/office-package-limits.test.ts": 1.2,
   "tests/office-pdf-export-fidelity.test.ts": 19.7,

@@ -2616,7 +2616,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/postscript',
     category: 'vector',
     description: 'Adobe PostScript page description language vector format.',
-    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'ico', 'odd', 'psd'],
+    targetFormats: ['dxf', 'pdf', 'avif', 'bmp', 'eps', 'gif', 'jpg', 'png', 'ps', 'tiff', 'webp', 'svg', 'ico', 'odd', 'psd', 'emf', 'wmf'],
     optionsSchema: {pages:true,dpi:true},
   },
   sk: {

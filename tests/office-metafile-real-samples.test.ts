@@ -14,7 +14,7 @@ import { skipWithoutTools } from './helpers/strict-skip';
 import { compareImages } from './helpers/vrt-engine';
 
 /**
- * Real PDF files and presentations written as EMF and WMF (entry 454). The in-process writers write the pages made of paths and fills;
+ * Real PDF files, presentations and PostScript files written as EMF and WMF (entries 454 and 458). The in-process writers write the pages made of paths and fills;
  * a page they refuse (a picture, a mask, a dash, a clip that is not one convex polygon) is written by the office suite from the one-page
  * PDF. Readers other than the writer judge the output: the office suite reading the metafile back with its own import filter, and
  * Inkscape (the reference's tool) where it reads the file. Each is compared with the page that Poppler draws from the PDF of the same
@@ -83,6 +83,13 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'govdocs1-000133.ppt', extension: 'ppt', targets: ['emf'], pages: 21, picture: true },
   { id: 'lo-macro.pptm', extension: 'pptm', targets: ['emf'], pages: 1 },
   { id: 'lo-tdf96389_deftabstopecma.potx', extension: 'potx', targets: ['emf'], pages: 1 },
+  // PostScript files (entry 458) go to PDF with Ghostscript first. Two pages the in-process writer writes (a Ghostscript test page, a gnuplot guide of two pages),
+  // and three it refuses that the office suite writes: a clip of a curve, a picture (a TIFF in a PostScript wrapper), a dash.
+  { id: 'gs-colorcir.ps', extension: 'ps', targets: BOTH, pages: 1 },
+  { id: 'gnuplot-ps_guide.ps', extension: 'ps', targets: BOTH, pages: 2 },
+  { id: 'tk29-test.ps', extension: 'ps', targets: BOTH, pages: 1 },
+  { id: 'gs-o-tiff2ps-ps1.ps', extension: 'ps', targets: BOTH, pages: 1, picture: true },
+  { id: 'govdocs1-680986.ps', extension: 'ps', targets: BOTH, pages: 1 },
 ];
 
 function withTempDir<T>(run: (dir: string) => T): T {
@@ -222,6 +229,15 @@ describe.skipIf(toolsMissing)('real PDF files the metafile writers refuse, with 
       const refusal = await dispatchConversion(bytes, 'pdf', target, {}, 'type3.pdf').catch((error: unknown) => error);
       expect(refusal, `pdf -> ${target}`).toBeInstanceOf(UnsupportedOptionError);
       expect((refusal as Error).message, `pdf -> ${target}`).toMatch(/bitmap glyph|mask/);
+    }
+  }, CONVERSION_TIMEOUT_MS);
+
+  it('a PostScript file whose text is a Type 3 bitmap font is refused, as the PDF of it is (dvips output: 29 of the 79 older PostScript files of the corpus)', async (ctx) => {
+    const { bytes } = await requireRealworldSample(ctx, 'govdocs1-000097.ps');
+    for (const target of BOTH) {
+      const refusal = await dispatchConversion(bytes, 'ps', target, {}, 'dvips.ps').catch((error: unknown) => error);
+      expect(refusal, `ps -> ${target}`).toBeInstanceOf(UnsupportedOptionError);
+      expect((refusal as Error).message, `ps -> ${target}`).toMatch(/bitmap glyph|mask/);
     }
   }, CONVERSION_TIMEOUT_MS);
 

@@ -81,7 +81,7 @@ describe('Metafile registry advertises only working conversion pairs', () => {
     // are written from SVG by the in-process encoders. tests/vector-sources-real-samples.test.ts and
     // tests/office-metafile-real-samples.test.ts convert real files. SVG to CGM is withdrawn (entry 357): the reference offers CGM only from DWF, DWG and DXF.
     expect(sorted).toEqual([
-      'cdr->emf', 'cdr->wmf', 'cgm->emf', 'cgm->wmf', 'emf->emf', 'emf->wmf', 'pdf->emf', 'pdf->wmf', 'pot->emf', 'potx->emf', 'ppt->emf', 'pptm->emf', 'pptx->emf',
+      'cdr->emf', 'cdr->wmf', 'cgm->emf', 'cgm->wmf', 'emf->emf', 'emf->wmf', 'pdf->emf', 'pdf->wmf', 'pot->emf', 'potx->emf', 'ppt->emf', 'pptm->emf', 'pptx->emf', 'ps->emf', 'ps->wmf',
       'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf', 'wmf->emf', 'wmf->wmf',
     ]);
   });
