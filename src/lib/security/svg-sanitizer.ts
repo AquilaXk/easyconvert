@@ -336,43 +336,73 @@ function scanMatchedElement(
   return tagEnd === -1 ? 0 : tagEnd;
 }
 
-function collectElementSpans(src: string, lower: string, lowerName: string, paired: boolean): [number[], number[], boolean[]] {
-  const mayHavePrefix = lower.includes(`:${lowerName}`), firstCode = lowerName.charCodeAt(0);
-  const starts: number[] = [], ends: number[] = [], isClose: boolean[] = [];
-  const len = src.length;
-  const cachedSpecial = RE_HAS_SPECIAL.test(src) ? new Int32Array(5).fill(-1) : null;
-  let nextCand = -1, search = 0, unclosedTag = false, cachedGt = -1;
+/** The cursor and caches of one `collectElementSpans` pass; created once per pass, never per element. */
+interface ElementScan {
+  src: string; lower: string; lowerName: string; paired: boolean;
+  mayHavePrefix: boolean; firstCode: number; len: number; cachedSpecial: Int32Array | null;
+  nextCand: number; search: number; unclosedTag: boolean; cachedGt: number;
+  starts: number[]; ends: number[]; isClose: boolean[];
+}
 
-  while (search < len) {
-    const lt = src.indexOf('<', search);
-    if (lt === -1) break;
-    if (nextCand < lt) nextCand = indexOfOrLen(lower, lowerName, lt);
-    const nextSpec = cachedSpecial === null ? len : nextSpecialPos(src, lt, cachedSpecial);
-    if (nextCand >= len && nextSpec >= len) break;
-    const jump = fastJumpBefore(src, lt, Math.min(nextCand, nextSpec));
-    if (jump >= 0) { unclosedTag = false; search = jump; continue; }
-    if (jump <= -2) { search = ~jump; continue; }
-    if (unclosedTag) {
-      if (cachedGt < search) cachedGt = indexOfOrLen(src, '>', search);
-      if (cachedGt < lt) unclosedTag = false;
-    }
-    const nextCode = src.charCodeAt(lt + 1);
-    if (!unclosedTag && (nextCode === CHAR_BANG || nextCode === CHAR_QUESTION)) {
-      const skipTo = skipNonTagMarkup(src, lt);
-      if (skipTo !== -1) { search = skipTo; continue; }
-    }
-    const isCloseTag = nextCode === CHAR_SLASH;
-    const mayMatch = (!isCloseTag || paired) && (mayHavePrefix || lower.charCodeAt(lt + (isCloseTag ? 2 : 1)) === firstCode);
-    const afterName = mayMatch ? matchQualifiedTagAt(src, lower, lt, lowerName, isCloseTag, mayHavePrefix) : -1;
-    if (afterName !== -1) {
-      const spanStep = scanMatchedElement(src, lt, afterName, starts, ends, isClose);
-      if (spanStep === 0) break;
-      unclosedTag = spanStep < 0; search = spanStep < 0 ? ~spanStep : spanStep; continue;
-    }
-    const step = advanceScannerAtOtherLt(src, lt, unclosedTag);
-    unclosedTag = step < 0; search = step < 0 ? ~step : step;
+/** Moves the cursor from a step code: >0 is the next search position, <0 (~nextPos) means the tag stayed unclosed. */
+function applyScanStep(scan: ElementScan, step: number): void {
+  scan.unclosedTag = step < 0;
+  scan.search = step < 0 ? ~step : step;
+}
+
+/** The position just after the name of an element at `lt` that the scan is looking for, or -1. */
+function matchedNameEnd(scan: ElementScan, lt: number, nextCode: number): number {
+  const { src, lower, lowerName, mayHavePrefix } = scan;
+  const isCloseTag = nextCode === CHAR_SLASH;
+  const mayMatch = (!isCloseTag || scan.paired) && (mayHavePrefix || lower.charCodeAt(lt + (isCloseTag ? 2 : 1)) === scan.firstCode);
+  return mayMatch ? matchQualifiedTagAt(src, lower, lt, lowerName, isCloseTag, mayHavePrefix) : -1;
+}
+
+/** Clears `unclosedTag` once the `>` that ends the unclosed tag lies before `lt`. */
+function refreshUnclosedTag(scan: ElementScan, lt: number): void {
+  if (!scan.unclosedTag) return;
+  if (scan.cachedGt < scan.search) scan.cachedGt = indexOfOrLen(scan.src, '>', scan.search);
+  if (scan.cachedGt < lt) scan.unclosedTag = false;
+}
+
+/** Runs one step of the pass; returns false when the pass is over. */
+function stepElementScan(scan: ElementScan): boolean {
+  const { src, lower, lowerName, len } = scan;
+  const lt = src.indexOf('<', scan.search);
+  if (lt === -1) return false;
+  if (scan.nextCand < lt) scan.nextCand = indexOfOrLen(lower, lowerName, lt);
+  const nextSpec = scan.cachedSpecial === null ? len : nextSpecialPos(src, lt, scan.cachedSpecial);
+  if (scan.nextCand >= len && nextSpec >= len) return false;
+  const jump = fastJumpBefore(src, lt, Math.min(scan.nextCand, nextSpec));
+  if (jump >= 0) { scan.unclosedTag = false; scan.search = jump; return true; }
+  if (jump <= -2) { scan.search = ~jump; return true; }
+  refreshUnclosedTag(scan, lt);
+  const nextCode = src.charCodeAt(lt + 1);
+  if (!scan.unclosedTag && (nextCode === CHAR_BANG || nextCode === CHAR_QUESTION)) {
+    const skipTo = skipNonTagMarkup(src, lt);
+    if (skipTo !== -1) { scan.search = skipTo; return true; }
   }
-  return [starts, ends, isClose];
+  const afterName = matchedNameEnd(scan, lt, nextCode);
+  if (afterName === -1) {
+    applyScanStep(scan, advanceScannerAtOtherLt(src, lt, scan.unclosedTag));
+    return true;
+  }
+  const spanStep = scanMatchedElement(src, lt, afterName, scan.starts, scan.ends, scan.isClose);
+  if (spanStep === 0) return false;
+  applyScanStep(scan, spanStep);
+  return true;
+}
+
+function collectElementSpans(src: string, lower: string, lowerName: string, paired: boolean): [number[], number[], boolean[]] {
+  const scan: ElementScan = {
+    src, lower, lowerName, paired,
+    mayHavePrefix: lower.includes(`:${lowerName}`), firstCode: lowerName.charCodeAt(0), len: src.length,
+    cachedSpecial: RE_HAS_SPECIAL.test(src) ? new Int32Array(5).fill(-1) : null,
+    nextCand: -1, search: 0, unclosedTag: false, cachedGt: -1, starts: [], ends: [], isClose: [],
+  };
+  // Each step advances `search`; the pass ends at the end of the source or when a step reports it is over.
+  while (scan.search < scan.len && stepElementScan(scan));
+  return [scan.starts, scan.ends, scan.isClose];
 }
 
 /** Removes `<name>` or `<prefix:name>` elements in linear time, skipping comments, CDATA, PIs, and quoted attributes. */
