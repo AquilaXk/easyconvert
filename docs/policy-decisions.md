@@ -496,6 +496,7 @@ Security
 445. [Key CI apt-debs cache on preinstalled dpkg digest and repair unconfigured dpkg state before fallback apt-get install](#445-key-ci-apt-debs-cache-on-preinstalled-dpkg-digest-and-repair-unconfigured-dpkg-state-before-fallback-apt-get-install)
 446. [Normalize retired legacy tiers on read, block empty or unsupported queued files, preserve server archive filenames, gate upsell links on billing config, and guard Edge workers with WorkerGlobalScope](#446-normalize-retired-legacy-tiers-on-read-block-empty-or-unsupported-queued-files-preserve-server-archive-filenames-gate-upsell-links-on-billing-config-and-guard-edge-workers-with-workerglobalscope)
 447. [Implement remaining unimplemented format decoders (WBMP, PDFA, XHTML, EML, Flat ODF, DBF/DIF/SYLK/PRN/WK1, markup parsers) and align launch UI/legal text](#447-implement-remaining-unimplemented-format-decoders-wbmp-pdfa-xhtml-eml-flat-odf-dbfdifsylkprnwk1-markup-parsers-and-align-launch-uilegal-text)
+448. [Match TeX groups and trim blanks in one pass, and keep the open part of a truncated multipart mail](#448-match-tex-groups-and-trim-blanks-in-one-pass-and-keep-the-open-part-of-a-truncated-multipart-mail)
 
 ---
 
@@ -13111,3 +13112,23 @@ Security
 - **Verified by**: `tests/launch-conversions-coverage.test.ts`, `tests/compound-file-kind.test.ts`, `tests/convert-route-input-hardening.test.ts`, `tests/registry.test.ts`, `tests/registry-engine-conformance.test.ts`, `tests/office-import-filters.test.ts`, `tests/engine-registry.test.ts`, `tests/parity-audit.test.ts`, `tests/legal-pages.test.ts`, `tests/document-pairs.test.ts`, `tests/i18n-messages.test.ts`, `tests/i18n-client-messages.test.ts`, `tests/a11y-axe.test.ts`, `tests/queue-engine-hardening.test.ts`, `tests/v1-convert-idempotency-gates.test.ts`, `tests/live-test-defects.test.ts`, `npm run test:redis`, `npm run guard:policy-decisions`, `npm run guard:anti-cheat`, `npm run guard:code-smells -- --check-base .github/code-smell-baseline.json`, `npm run sdk:check`, `npm run licenses:check`, `npm run lint`, `npx --no-install tsc --noEmit`, `npm run build`, `scripts/ci-parity-families.mjs`, and local compiled `next start` + `worker` + headless Chrome CDP E2E.
 - **Revisit when**: Additional legacy binary formats (`.snb`, `.ace`, `.alz`, `.arc`, `.rz`) receive permissive extractors in the worker runtime.
 
+
+## 448. Match TeX groups and trim blanks in one pass, and keep the open part of a truncated multipart mail
+
+- **Date**: 2026-11-27
+- **Status**: Implemented (review of range 63653b2d..origin/main). Nothing is deployed.
+- **Decision**:
+  1. **TeX arguments are matched by one stack pass per text.** `markup-text.ts` finds the closing `}` of every `{` and the closing `]` of every `[` in a single pass over the text it reads (`PairIndex`, looked up by binary search), and searches for a missing `\end{verbatim}` once. An unclosed `{` or `[` costs the same per character as a closed one. Before, each opener scanned to the end of the input: `'\\a{'.repeat(n)` took 2.4 s at 120 KB and 21.6 s at 360 KB on the worker thread. TeX itself reads a group this way (each token once, a group still open at the end of the file ends the argument there), and pandoc's LaTeX reader tokenises the whole input first and builds groups from the token stream instead of searching the rest of the file per opener. The code is written for this reader; no source was copied.
+  2. **Trailing blanks and quotes are cut by index scans.** `normalizeMarkdownSpacing` (TeX, reStructuredText, man), the verbatim body trim, the EML boundary line trim and the URI quote strip no longer use `/[ \t]+$/`-style patterns: those restart at every blank of a run, so one line of 80,000 spaces and a letter took 2.8 s and a megabyte about 460 s. They share `trimBlanksEnd` of `html-text.ts` and two small index scans.
+  3. **A multipart message that ends without its close delimiter keeps the part that was open.** A cut-off mail used to lose its last part (an empty body, no error). Python's `email` package keeps the part and records `CloseBoundaryNotFoundDefect`; mail clients show a cut-off message the same way.
+- **Why**:
+  - All three were reachable by an anonymous upload and blocked the worker thread; a quadratic scan on a megabyte of input is minutes, not milliseconds.
+  - A truncated download is a common way for an `.eml` to break, and an empty result with no error looks like a successful conversion.
+- **Trade-offs**:
+  - The pair index costs about 12 bytes per opener of the text it is built for (only when a command is followed by an argument), and a nested argument builds its own index; nesting is capped at 32, so the work stays within 32 times the input.
+  - A truncated part may end in the middle of a line; the reader shows what arrived and does not mark it.
+- **Alternatives rejected**:
+  - **Remembering only that a scan failed from a position**: a later `{` can still close, so the memo would change the output.
+  - **Dropping the unclosed part as invalid**: loses the text that is there, and the readers named above keep it.
+- **Verified by**: `tests/markup-tex-scan-bounds.test.ts` (1 MB of each hostile shape under the hang guard), `tests/trailing-blanks-linear.test.ts`, `tests/eml-reader-bounds.test.ts`, and the growth ratios in `tests/markup-tex-scan-bounds.perf.test.ts` and `tests/trailing-blanks-linear.perf.test.ts` (nightly).
+- **Revisit when**: a TeX construct needs a lookup that the pair index cannot answer (a macro that changes bracket meaning), or an `.eml` reader gains MIME repair beyond the open part.

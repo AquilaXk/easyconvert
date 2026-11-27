@@ -235,7 +235,7 @@ function splitMultipartParts(body: string, boundary: string): string[] {
     const trimmed = line.trimEnd();
     if (trimmed === closeDelim) {
       if (current !== null) parts.push(current.join('\r\n'));
-      break;
+      return parts;
     }
     if (trimmed === delim) {
       if (current !== null) parts.push(current.join('\r\n'));
@@ -244,6 +244,9 @@ function splitMultipartParts(body: string, boundary: string): string[] {
     }
     if (current !== null) current.push(line);
   }
+  // A truncated message ends without its close delimiter: the open part is kept, as Python's email package does
+  // (feedparser records CloseBoundaryNotFoundDefect and keeps the last subpart) and as mail clients show a cut-off message.
+  if (current !== null) parts.push(current.join('\r\n'));
   return parts;
 }
 

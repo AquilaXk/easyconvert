@@ -397,6 +397,7 @@
   "tests/edge-worker-targets.test.ts": 3.6,
   "tests/email-verification.test.ts": 14,
   "tests/emf-sub-pixel-precision.test.ts": 0,
+  "tests/eml-reader-bounds.test.ts": 0.3,
   "tests/empty-output-pairs.test.ts": 0.2,
   "tests/encrypted-archive-staging-and-async.test.ts": 2.9,
   "tests/encrypted-document-routes.test.ts": 0.7,
