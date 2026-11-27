@@ -13,24 +13,32 @@ function bof(length: number, revision: number): Buffer {
   return buf;
 }
 
-const sniff = (buf: Buffer) => assertNotSpoofedFile(buf, 'wks', 'sheet.wks');
+/** What the check of the `.wks` extension says about a header: 'accepted', 'refused' as a spoof, or the name of another error. */
+function verdict(buf: Buffer): string {
+  try {
+    assertNotSpoofedFile(buf, 'wks', 'sheet.wks');
+    return 'accepted';
+  } catch (error) {
+    return error instanceof FileExtensionSpoofError ? 'refused' : String(error);
+  }
+}
 
 describe('Lotus 1-2-3 BOF signature', () => {
   it.each([0x0404, 0x0406, 0x0408, 0x0008])('accepts a release 1 or 2 record of revision %d', (revision) => {
-    expect(() => sniff(bof(2, revision))).not.toThrow();
+    expect(verdict(bof(2, revision))).toBe('accepted');
   });
 
   it.each([0x1000, 0x1002, 0x1003, 0x1005])('accepts a release 3 and later record of 0x1A bytes, revision %d', (revision) => {
-    expect(() => sniff(bof(0x1a, revision))).not.toThrow();
+    expect(verdict(bof(0x1a, revision))).toBe('accepted');
   });
 
   it('refuses a release 3 revision behind a 2 byte record and a release 1 revision behind a 0x1A byte record', () => {
-    expect(() => sniff(bof(2, 0x1000))).toThrow(FileExtensionSpoofError);
-    expect(() => sniff(bof(0x1a, 0x0404))).toThrow(FileExtensionSpoofError);
+    expect(verdict(bof(2, 0x1000))).toBe('refused');
+    expect(verdict(bof(0x1a, 0x0404))).toBe('refused');
   });
 
   it('refuses a revision outside both ranges', () => {
-    expect(() => sniff(bof(0x1a, 0x1006))).toThrow(FileExtensionSpoofError);
-    expect(() => sniff(bof(2, 0x0410))).toThrow(FileExtensionSpoofError);
+    expect(verdict(bof(0x1a, 0x1006))).toBe('refused');
+    expect(verdict(bof(2, 0x0410))).toBe('refused');
   });
 });

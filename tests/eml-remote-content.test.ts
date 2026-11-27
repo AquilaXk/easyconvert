@@ -6,31 +6,29 @@ import { emlMessageHtml, readEmlMessage, sanitizeUntrustedHtmlFragment } from '.
  * was read. The converted page requests nothing remote (policy 449); the images the mail carries as data: URIs stay.
  */
 const htmlMail = (body: string): Buffer =>
-  Buffer.from(`Subject: s\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><body>${body}</body></html>`);
+  Buffer.from(`Content-Type: text/html; charset=utf-8\r\n\r\n<html><body>${body}</body></html>`);
 const render = (body: string): string => emlMessageHtml(readEmlMessage(htmlMail(body)));
+/** The part of a page between its body tags: the mail as it was written, without the table of headers. */
+const bodyOf = (html: string): string => /<body>(.*)<\/body>/s.exec(html)?.[1] ?? '';
 
 describe('the HTML page of a mail', () => {
   it('drops the address of a remote image and keeps its alt text', () => {
     const html = render('<p>Hi</p><img src="https://t.example/pixel.gif?u=42" alt="Logo" width="1" height="1">');
-    expect(html).not.toContain('t.example');
-    expect(html).not.toContain('src=');
-    expect(html).toContain('<img alt="Logo">');
+    expect(bodyOf(html)).toBe('<p>Hi</p><img alt="Logo">');
   });
 
   it('drops a remote image without alt text and a protocol-relative one', () => {
     const html = render('<img src="http://t.example/a.png"><img src="//t.example/b.png"><p>text</p>');
-    expect(html).not.toContain('t.example');
-    expect(html).not.toContain('<img');
-    expect(html).toContain('<p>text</p>');
+    expect(bodyOf(html)).toBe('<p>text</p>');
   });
 
   it('keeps an image that the mail carries as a data URI', () => {
     const html = render('<img src="data:image/png;base64,iVBORw0KGgo=" alt="ok">');
-    expect(html).toContain('<img src="data:image/png;base64,iVBORw0KGgo=" alt="ok">');
+    expect(bodyOf(html)).toBe('<img src="data:image/png;base64,iVBORw0KGgo=" alt="ok">');
   });
 
   it('keeps links, which load nothing until they are followed', () => {
-    expect(render('<a href="https://example.com/x">link</a>')).toContain('<a href="https://example.com/x" rel="noopener noreferrer">link</a>');
+    expect(bodyOf(render('<a href="https://example.com/x">link</a>'))).toBe('<a href="https://example.com/x" rel="noopener noreferrer">link</a>');
   });
 
   it('allows only data: images in its content security policy', () => {
