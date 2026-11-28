@@ -15,7 +15,7 @@ inputs:
 
   libreoffice:
     description: >-
-      'true' also installs the LibreOffice release the worker image ships (26.8.2.2, entry 383, pinned in libreoffice-suite.env) under
+      'true' also installs the LibreOffice release the worker image ships (26.8.3.1, entry 383, pinned in libreoffice-suite.env) under
       /opt/libreoffice26.8 and, unless `libreoffice-activate` is 'false', links it as `soffice` in /usr/local/bin and names it in SOFFICE_PATH, so the
       job's tests and benchmark meet that suite and not the runner's 24.2; 'false' (the default) leaves the runner's. The jobs whose results are
       recorded on 24.2 (the nightly shards of bench/baseline.json) keep the default.

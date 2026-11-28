@@ -235,7 +235,7 @@ describe('the task list and its limits', () => {
     );
     expect(Object.keys(pins).sort()).toEqual(['LIBREOFFICE_SHA256', 'LIBREOFFICE_URL', 'LIBREOFFICE_VERSION']);
     expect(pins.LIBREOFFICE_SHA256).toMatch(/^[0-9a-f]{64}$/);
-    // The version of Dockerfile.worker (`4:26.8.2.2-2~bpo13+1`, entry 383) without the Debian epoch and revision.
+    // The version of Dockerfile.worker (`4:26.8.3.1-3~bpo13+1`, entry 383) without the Debian epoch and revision.
     const dockerfile = readFileSync(path.join(ROOT, 'Dockerfile.worker'), 'utf-8');
     const image = /ARG LIBREOFFICE_VERSION=\d+:([0-9.]+)-/.exec(dockerfile)?.[1];
     expect(pins.LIBREOFFICE_VERSION).toBe(image);

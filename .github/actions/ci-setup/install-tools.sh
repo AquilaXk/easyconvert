@@ -18,7 +18,7 @@
 #   quantizr the palette quantiser of the compress page, built from the pinned source with the pinned Rust toolchain (scripts/install-quantizr-pixels.sh)
 #   avifenc  the AVIF encoder, built from the pinned libavif and libaom sources (scripts/install-avifenc.sh), or the cached build when its digest still matches
 #   onnxocr  the models of the ONNX Korean OCR engine (scripts/install-onnx-ocr-models.sh), each file checked against a pinned SHA-256
-#   libreoffice the office suite the worker image ships (LibreOffice 26.8.2.2, entry 383), from the project's release archive checked against a pinned
+#   libreoffice the office suite the worker image ships (LibreOffice 26.8.3.1, entry 383), from the project's release archive checked against a pinned
 #            SHA-256, only for a job that asks for it (LIBREOFFICE_SUITE=true); the runner's own 24.2 stays for every other job
 #   raw      the RAW sample files
 #   s3       the S3 test server and its bucket, only for a job that runs the real-server storage tests

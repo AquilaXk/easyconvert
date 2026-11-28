@@ -217,7 +217,7 @@ npm run bench:quality -- --baseline-from-report <report.json> --baseline bench/b
 (on rootless Podman set `CONTAINER_ENGINE=podman BENCH_IMAGE_RUN_FLAGS=--userns=keep-id`).
 
 The pull request job meets the same suite and the same two files, on the runner (entry 452). `parity-quality` installs the project's release of
-26.8.2.2 (`.github/actions/ci-setup/libreoffice-suite.env`, the same version as the image) without making it the suite of the job, splits the families of
+26.8.3.1 (`.github/actions/ci-setup/libreoffice-suite.env`, the same version as the image) without making it the suite of the job, splits the families of
 the change into the office ones (`OFFICE_FAMILIES` in `ci.yml`) and the rest, and runs the office ones with the release first on the `PATH` against
 `bench/baseline-office-image.json` and `bench/parity-gaps-office-image.json`; the rest run as before against `bench/baseline.json`. The runner's fonts
 are not the image's, so a row whose reference is the suite can read another reference value there: two rows did on the first run (`document/complex-script txt->pdf/cer`

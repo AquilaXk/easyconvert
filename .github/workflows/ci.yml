@@ -263,7 +263,7 @@ jobs:
       - name: Use the libvips of the worker image
         uses: ./.github/actions/sharp-libvips
 
-      # The suite of the 169 test files that start LibreOffice is the one the worker image ships (26.8.2.2, entry 383), not the runner's 24.2.
+      # The suite of the 169 test files that start LibreOffice is the one the worker image ships (26.8.3.1, entry 383), not the runner's 24.2.
       - name: Install tools and start test services
         uses: ./.github/actions/ci-setup
         with:

@@ -384,7 +384,7 @@ ENV NODE_ENV=production
 # trixie-backports moves on, the build stops on this line and the three values are bumped together, after
 # `tests/worker-libreoffice-packaging.test.ts` and the office parity rows have been read on the new build
 # (docs/policy-decisions.md, "LibreOffice 26.8 from trixie-backports").
-ARG LIBREOFFICE_VERSION=4:26.8.2.2-2~bpo13+1
+ARG LIBREOFFICE_VERSION=4:26.8.3.1-3~bpo13+1
 ARG LIBORCUS_VERSION=0.21.0-4~bpo13+1
 
 # 1. Install Tini Init, util-linux (prlimit), libcap2-bin (capsh, used by scripts/verify-worker-container.sh), Native Conversion Engines (7-Zip and FFmpeg come from the pinned stages, FFmpeg with the runtime libraries of the codecs it was built against; libdeflate-tools is the deflate encoder for ZIP and gzip payloads past 4 MiB; lbzip2 is the bzip2 encoder for tarballs of up to two blocks; xz-utils is the .xz encoder and decoder, which the node base image installs only to unpack Node and then purges), and CJK Font Packages
