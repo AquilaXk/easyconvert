@@ -53,6 +53,9 @@ export const SMELL_RULES: Record<string, unknown> = {
   'max-lines': ['error', { max: 1500 }],
 };
 
+/** Code copied unmodified from another project (PROVENANCE.md next to it): the upstream's structure is not ours to ratchet. */
+const VENDORED_CODE_PATTERNS = ['src/**/vendor/**'];
+
 const BASELINE_RELATIVE_PATH = path.join('.github', 'code-smell-baseline.json');
 const MODULE_LEVEL = '<module>';
 const ANONYMOUS = '<anonymous>';
@@ -126,6 +129,7 @@ async function collectFindings(root: string): Promise<Finding[]> {
       parserOptions: { ecmaVersion: 'latest', sourceType: 'module', ecmaFeatures: { jsx: true } },
       plugins: ['@typescript-eslint'],
       noInlineConfig: true,
+      ignorePatterns: VENDORED_CODE_PATTERNS,
       rules: SMELL_RULES,
     },
   });

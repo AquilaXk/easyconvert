@@ -94,6 +94,17 @@ describe('code smell ratchet guard (#774)', () => {
     expect(errorOutput()).toMatch(/NEW {2}src\/a\.ts :: <module> :: @typescript-eslint\/no-explicit-any/);
   });
 
+  it('skips a vendor directory, whose code is the upstream\'s, and still reads the rest of src', async () => {
+    fs.mkdirSync(path.join(root, 'src', 'lib', 'vendor', 'copied'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'lib', 'vendor', 'copied', 'wide.ts'), SEVEN_PARAMETERS);
+    writeSource('b.ts', CLEAN_FUNCTION);
+    expect(await run()).toBe(0);
+    writeSource('a.ts', SEVEN_PARAMETERS);
+    expect(await run()).toBe(1);
+    expect(errorOutput()).toMatch(/NEW {2}src\/a\.ts :: wide :: max-params/);
+    expect(errorOutput()).not.toMatch(/vendor/);
+  });
+
   it('fails when a violation is removed without updating the baseline, and passes after --update', async () => {
     await baselineWith(SEVEN_PARAMETERS);
     writeSource('a.ts', CLEAN_FUNCTION);

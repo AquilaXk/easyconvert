@@ -258,6 +258,10 @@
       "match": "^src/lib/conversions/office/vendor/fast-formula-parser/"
     },
     {
+      "families": ["vector", "cad"],
+      "match": "^src/lib/conversions/vendor/clipper2/"
+    },
+    {
       "families": ["document", "ebook"],
       "match": "^src/lib/conversions/(epub-reader|document-model/epub)\\.ts$"
     },

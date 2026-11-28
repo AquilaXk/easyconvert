@@ -43,3 +43,4 @@ Third-party npm packages and the programs in the worker image are listed in THIR
 
 Versions of EasyConvert published before this licence change (up to commit
 b7a24a12 and its ancestors on the main branch) were released under the MIT License.
+- src/lib/conversions/vendor/clipper2/: the polygon and polyline clipping engine of Clipper2 (`Core.ts` and `Engine.ts` of countertype/clipper2-ts at commit f930d5a5e1d2c45711dc15bd0c5a8ef3125a0b8a, a TypeScript port of AngusJohnson/Clipper2 2.0.1), copied unmodified, Boost Software License 1.0, Copyright Angus Johnson 2010-2025 (the licence text is in the LICENSE file of that directory; docs/licensing.md).
