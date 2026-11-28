@@ -81,7 +81,7 @@ RUN apt-get update \
 FROM ${NODE_IMAGE} AS libredwg
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils build-essential \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils build-essential pkg-config \
     && rm -rf /var/lib/apt/lists/*
 COPY scripts/install-libredwg.sh /tmp/install-libredwg.sh
 RUN /tmp/install-libredwg.sh /opt/libredwg
