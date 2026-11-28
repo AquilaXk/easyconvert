@@ -17,4 +17,4 @@ ea056d2c64294936b226f7360c265e77c52adc4ba171ee61029357f101f439cf  LICENSE
 
 ## Local changes
 
-None yet.
+- `Engine.ts` line 15 and `Core.ts` line 691 import `./Core` and not `./Core.js`: the Next.js bundler of the web image does not map a `.js` specifier to a `.ts` file (`experimental.extensionAlias` is off), and the engine is reachable from the conversion modules that the web image bundles. Nothing else changed; `git diff` of the two files against the copy is these two lines.

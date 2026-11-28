@@ -12,7 +12,7 @@ import {
     ClipType, PathType, FillRule, PointInPolygonResult,
     ZCallback64, ZCallbackD,
     InternalClipper, Rect64Utils
-  } from './Core.js';
+  } from './Core';
 
 // BigInt constants — avoid BigInt literal syntax (0n, 4n, etc.) to sidestep
 // terser BigInt constant-folding issues in some consuming build setups.

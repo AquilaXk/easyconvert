@@ -688,7 +688,7 @@ export const InternalClipper = {
 /** @deprecated Import UInt128Struct directly instead of using InternalClipper.UInt128Struct */
 export namespace InternalClipper {
   /** @deprecated Import UInt128Struct directly */
-  export type UInt128Struct = import('./Core.js').UInt128Struct;
+  export type UInt128Struct = import('./Core').UInt128Struct;
 }
 
 // Point64 utility functions (plain object, avoids namespace IIFE)
