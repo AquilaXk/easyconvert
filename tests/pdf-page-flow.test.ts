@@ -3,7 +3,8 @@ import JSZip from 'jszip';
 import { documentToDocx } from '../src/lib/conversions/document-model/docx';
 import { blankDocument } from '../src/lib/conversions/document-model/build';
 import type { Block, DocumentModel, ParagraphBlock, ParagraphFormat } from '../src/lib/conversions/document-model/model';
-import { absorbFigureSpacers, irregularColumnPages, PageFlow, pageSections, regularColumnGaps, type PageSetup } from '../src/lib/conversions/pdf-layout/page-flow';
+import { absorbFigureSpacers, hoistColumnGaps, irregularColumnPages, PageFlow, pageSections, regularColumnGaps, type PageSetup } from '../src/lib/conversions/pdf-layout/page-flow';
+import { WrapMetrics } from '../src/lib/conversions/pdf-layout/wrap-fit';
 import { layoutPdf } from '../src/lib/conversions/pdf-layout';
 import { hangShapes, type BodyBlocks } from '../src/lib/conversions/pdf-layout/figures';
 import { PageInk } from '../src/lib/conversions/pdf-layout/ink';
@@ -139,6 +140,43 @@ describe('what stands beside the text', () => {
     expect(top.beforePt).toBeCloseTo(100 - 11.04 - 72, 1);
   });
 
+  it('starts the next column where the run of columns began, below the text above it, and not at the top of the page', () => {
+    const flow = new PageFlow(SETUP);
+    format(flow, paragraphOf([lineOf('Header line', 72, 300, 90)]));
+    const left = format(flow, paragraphOf([lineOf('Column one', 72, 280, 300), lineOf('goes down', 72, 280, 314), lineOf('the page', 72, 280, 328), lineOf('to the end', 72, 280, 600)]), 2);
+    // Both columns start 196 points below the header; from the top of the page the second would stand 266 below it.
+    expect(left.beforePt).toBeCloseTo(196, 0);
+    const right = format(flow, paragraphOf([lineOf('Column two starts', 300, 540, 300)]), 2);
+    expect(right.columnBreakBefore).toBe(true);
+    expect(right.beforePt).toBeCloseTo(196, 0);
+  });
+
+  it('takes the lines the writer sets for a paragraph as the height the flow moves past, so the gap below is what the page had less them', () => {
+    const wrap: PageSetup = { ...SETUP, wrap: { metrics: new WrapMetrics('serif'), bodySize: 12 } };
+    // Lines the page broke at 300 points and a last one the writer's face cannot hold in the room that keeps the others: the writer sets one line more.
+    const metrics = new WrapMetrics('serif');
+    const lines: string[] = [];
+    let line = '';
+    for (const word of 'The appellants were allegedly members of a group, comprised of more than fifteen individuals, that carried out home invasions and robberies to obtain money, drugs, and other valuable items from persons believed to be drug traffickers. Such robberies are generally known as rip-offs.'.split(' ')) {
+      const trial = line === '' ? word : `${line} ${word}`;
+      if (line !== '' && (metrics.textWidth({ bold: false, italic: false, monospace: false }, trial, 12) ?? 0) > 300) {
+        lines.push(line);
+        line = word;
+      } else line = trial;
+    }
+    lines.push(line);
+    expect(lines.length).toBeGreaterThanOrEqual(5);
+    const squeezed = [...lines.slice(0, 4), `${lines[0]} moreover`];
+    const body = paragraphOf(squeezed.map((text, index) => lineOf(text, 72, 372, 100 + index * 14)));
+    body.runs = [{ text: squeezed.join(' '), bold: false, italic: false, monospace: false }];
+    const gapBelow = (setup: PageSetup): number => {
+      const flow = new PageFlow(setup);
+      flow.paragraph(body, 1);
+      return format(flow, paragraphOf([lineOf('Page number', 72, 140, 300)])).beforePt;
+    };
+    expect(gapBelow(SETUP) - gapBelow(wrap)).toBeGreaterThan(13);
+  });
+
   it('keeps the text of a table cell inside the row and at the place of its column', () => {
     const flow = new PageFlow(SETUP);
     const cell = flow.cell({ y0: 100, y1: 118, x0: 200, x1: 300 });
@@ -192,6 +230,27 @@ describe('pages as sections', () => {
     const across: ParagraphBlock = { type: 'paragraph', runs: [], rtl: false, align: 'left', format: { beforePt: 55, lineHeightPt: 14, leftPt: 0, firstLinePt: 0, rightPt: 0 } };
     absorbFigureSpacers([spacer, across], [1, 2]);
     expect(across.format?.beforePt).toBe(55);
+  });
+
+  it('moves the gap above a run of columns that starts below the text of its page into a paragraph before the run', () => {
+    const format = (beforePt: number): ParagraphFormat => ({ beforePt, lineHeightPt: 12, leftPt: 0, firstLinePt: 0, rightPt: 0 });
+    const text = (before: number): ParagraphBlock => ({ type: 'paragraph', runs: [], rtl: false, align: 'left', format: format(before) });
+    const header = text(0);
+    const caption = text(146);
+    const second = text(341);
+    const body: BodyBlocks = { model: [header, caption, second], columnsOf: [1, 2, 2], origins: [null, null, null], pageOf: [1, 1, 1] };
+    hoistColumnGaps(body);
+    expect(body.model).toHaveLength(4);
+    expect((body.model[1] as ParagraphBlock).spacerPt).toBe(146);
+    expect(body.columnsOf).toEqual([1, 1, 2, 2]);
+    expect(body.pageOf).toEqual([1, 1, 1, 1]);
+    expect(caption.format?.beforePt).toBe(0);
+    expect(second.format?.beforePt).toBe(341);
+    // The first column of a page, a run on the page of the text above it that has no gap, and columns after columns stay as they are.
+    const first = text(60);
+    const flat: BodyBlocks = { model: [header, first, text(0), text(20)], columnsOf: [1, 2, 2, 2], origins: [null, null, null, null], pageOf: [1, 2, 2, 2] };
+    hoistColumnGaps(flat);
+    expect(flat.model).toHaveLength(4);
   });
 
   it('anchors shapes on kept pages with pageRelative coordinates instead of figure spacer paragraphs', () => {

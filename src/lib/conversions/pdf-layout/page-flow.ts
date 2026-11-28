@@ -1,6 +1,7 @@
 import type { Block, DocumentMargins, ParagraphFormat, Section, TableBlock } from '../document-model/model';
+import type { BodyBlocks } from './figures';
 import type { Box, DetectedTable, LayoutLine, Paragraph } from './types';
-import { type WrapMetrics, singleLineIndent, wrappingIndent } from './wrap-fit';
+import { type WrapMetrics, singleLineIndent, wrappingFit } from './wrap-fit';
 
 /**
  * The spacing, indents and page starts of a PDF's pages, for a writer of a flowing document that keeps the look of the pages: a
@@ -116,6 +117,9 @@ export class PageFlow {
   private newColumn = false;
   /** The baseline of the last line of text above on the page, when the flow has text above. */
   private baseline: number | undefined;
+  /** The columns of the last paragraph written on the page, and where the flow stood when its run of columns began: the top the next column starts at. */
+  private columnsAbove = 1;
+  private columnTop: number | undefined;
 
   private readonly margins: DocumentMargins;
   private readonly pageWidth: number;
@@ -149,6 +153,8 @@ export class PageFlow {
     this.currentPage = pageNumber;
     this.bottom = this.inCell ? this.cellBox?.y0 : this.topOf(pageNumber);
     this.baseline = undefined;
+    this.columnsAbove = 1;
+    this.columnTop = undefined;
   }
 
   /** The share of its width a table of `width` points keeps: a table wider than the text area is narrowed by the writer to fit it. */
@@ -183,7 +189,7 @@ export class PageFlow {
   private gapTo(top: number, line: number): number {
     if (this.bottom === undefined) return 0;
     if (!this.inCell && top < this.bottom - COLUMN_RISE_LINES * line) {
-      this.bottom = this.topOf(this.currentPage);
+      this.bottom = this.columnTop ?? this.topOf(this.currentPage);
       this.baseline = undefined;
       this.newColumn = true;
     }
@@ -225,15 +231,20 @@ export class PageFlow {
     let lineHeightPt = lineHeightOf(lines, this.baseline);
     const top = first.baseline - (lineHeightPt - DESCENT_SHARE * first.size);
     if (this.stoodBeside(top, lineHeightPt, columns)) return this.frameFormat(paragraph);
+    // A run of columns that starts below other text starts its columns there, not at the top of the page.
+    if (columns > 1 && this.columnsAbove !== columns) this.columnTop = this.bottom;
+    this.columnsAbove = columns;
     const beforePt = this.gapTo(top, lineHeightPt);
     lineHeightPt = this.fitToRow(lineHeightPt, lines, beforePt);
-    this.bottom = (beforePt > 0 ? top : (this.bottom ?? top)) + lines.length * lineHeightPt;
+    const { writerLines, ...indents } = this.indentsOf(paragraph, columns, marker);
+    // The lines the writer sets are what the flow moves past: a line more than the page had pushes what follows down, and the gap above it is what the page had less that.
+    this.bottom = (beforePt > 0 ? top : (this.bottom ?? top)) + Math.max(lines.length, writerLines ?? 0) * lineHeightPt;
     // The line boxes are as tall as the pitch says; the last baseline is where the text ends, so a tall last line keeps what it had.
     this.bottom = Math.max(this.bottom, last.baseline + DESCENT_SHARE * last.size);
     this.baseline = last.baseline;
     const columnBreakBefore = this.newColumn && columns > 1;
     this.newColumn = false;
-    return { beforePt, lineHeightPt, ...this.indentsOf(paragraph, columns, marker), ...(columnBreakBefore ? { columnBreakBefore: true as const } : {}) };
+    return { beforePt, lineHeightPt, ...indents, ...(columnBreakBefore ? { columnBreakBefore: true as const } : {}) };
   }
 
   /** Lines no taller than leave the text inside the row it stood in: a row whose text sets taller than its height would grow, and every row below would move. */
@@ -244,7 +255,7 @@ export class PageFlow {
     return fitted < lineHeight && fitted >= lines[0].size * MIN_LINE_HEIGHT_SHARE ? fitted : lineHeight;
   }
 
-  private indentsOf(paragraph: Paragraph, columns: number, marker: boolean): Pick<ParagraphFormat, 'leftPt' | 'firstLinePt' | 'rightPt' | 'align'> {
+  private indentsOf(paragraph: Paragraph, columns: number, marker: boolean): Pick<ParagraphFormat, 'leftPt' | 'firstLinePt' | 'rightPt' | 'align'> & { writerLines?: number } {
     if (columns > 1) return { leftPt: 0, firstLinePt: 0, rightPt: 0 };
     const area = this.textArea();
     const align = marker || this.inCell ? 'left' : alignmentOf(paragraph.lines, area, this.widthOf(paragraph.pageNumber) / 2);
@@ -262,20 +273,26 @@ export class PageFlow {
     if (marker) return { ...this.markerIndents(paragraph, area), rightPt, align };
     const leftPt = Math.max(0, paragraph.leftX - area.left);
     const firstLinePt = paragraph.firstLineX - paragraph.leftX;
-    return { leftPt, firstLinePt, rightPt: this.wrappingRight(paragraph, area, leftPt, firstLinePt, align, rightPt), align };
+    const fit = this.wrapOf(paragraph, area, leftPt, firstLinePt, align, rightPt);
+    return { leftPt, firstLinePt, rightPt: fit.rightPt, align, writerLines: fit.lines };
   }
 
-  /** The right indent that makes the writer break the paragraph's lines where the page did, nearest the page's right edge; `fallback` where the face cannot tell. */
-  private wrappingRight(paragraph: Paragraph, area: TextArea, leftPt: number, firstLinePt: number, align: NonNullable<ParagraphFormat['align']>, fallback: number): number {
+  /**
+   * The right indent that makes the writer break the paragraph's lines where the page did, nearest the page's right edge, and the lines
+   * the writer sets it in; `fallback` and the page's lines where the face cannot tell.
+   */
+  private wrapOf(paragraph: Paragraph, area: TextArea, leftPt: number, firstLinePt: number, align: NonNullable<ParagraphFormat['align']>, fallback: number): { rightPt: number; lines: number } {
     const { wrap } = this.page;
-    if (!wrap || paragraph.lines.length === 0) return fallback;
+    const kept = { rightPt: fallback, lines: paragraph.lines.length };
+    if (!wrap || paragraph.lines.length === 0) return kept;
     const size = Math.abs(paragraph.size - wrap.bodySize) > 0.5 ? paragraph.size : wrap.bodySize;
     if (paragraph.lines.length === 1) {
       const minIndent = this.inCell ? Number.NEGATIVE_INFINITY : -this.margins.right;
-      return singleLineIndent(paragraph, size, wrap.metrics, area.right - area.left - leftPt - firstLinePt, fallback, minIndent);
+      return { ...kept, rightPt: singleLineIndent(paragraph, size, wrap.metrics, area.right - area.left - leftPt - firstLinePt, fallback, minIndent) };
     }
     const edge = align === 'justify' ? area.right - Math.max(...paragraph.lines.map((line) => line.box.x1)) : fallback;
-    return wrappingIndent(paragraph, size, wrap.metrics, (index) => area.right - area.left - leftPt - (index === 0 ? firstLinePt : 0), edge) ?? fallback;
+    const fit = wrappingFit(paragraph, size, wrap.metrics, (index) => area.right - area.left - leftPt - (index === 0 ? firstLinePt : 0), edge);
+    return fit ? { rightPt: fit.indent, lines: fit.lines } : kept;
   }
 
   /** The area text is set in: between the page's margins, or the cell's edges where they are known. */
@@ -368,6 +385,33 @@ export function pageSections(
     }
   });
   return sections;
+}
+
+/** The format of the first paragraph of a block that is text. */
+function firstFormatOf(block: Block): ParagraphFormat | undefined {
+  if (block.type === 'paragraph' || block.type === 'heading') return block.format;
+  return block.type === 'list' ? block.items[0]?.format : undefined;
+}
+
+/**
+ * Moves the gap above the first paragraph of a run of columns that starts below other text of its page into a paragraph of its own
+ * before the run. The gap sits above the paragraph; a writer takes it as the start of the section (LibreOffice starts every column
+ * of the section below it), so the columns after the first would start that far below the gap that was measured to them.
+ */
+export function hoistColumnGaps(body: BodyBlocks): void {
+  const { model, columnsOf, origins, pageOf } = body;
+  for (let index = model.length - 1; index > 0; index--) {
+    const columns = columnsOf[index];
+    if (columns <= 1 || columnsOf[index - 1] === columns || pageOf[index - 1] !== pageOf[index]) continue;
+    const format = firstFormatOf(model[index]);
+    if (!format || format.frame || format.beforePt <= 0) continue;
+    const spacer: Block = { type: 'paragraph', runs: [], rtl: false, align: 'left', spacerPt: format.beforePt };
+    format.beforePt = 0;
+    model.splice(index, 0, spacer);
+    columnsOf.splice(index, 0, columnsOf[index - 1]);
+    origins.splice(index, 0, null);
+    pageOf.splice(index, 0, pageOf[index]);
+  }
 }
 
 /** The height in points of the paragraph that holds a figure open, never less than the line a writer can set (a rule has no height). */

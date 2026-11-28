@@ -25,6 +25,8 @@ const SCRIPT_SIZE_SHARE = 0.58;
 /** Least width in points of a span of indents that break alike for it to be one an indent is taken in. */
 const MIN_SPAN_PT = 0.1;
 const FIT_MARGIN_PT = 1.5;
+/** Points a line of the writer's wrap must have to spare for the office suite to set it as the face's table says: it measures a line a few tenths of a point wider. */
+const WRITER_LINE_SLACK_PT = 0.5;
 /** A line the page broke inside a word: the hyphen at its end, after a letter. */
 /** Lines of the page's starts that an extra line of the writer is worth: an extra line pushes what follows down the page. */
 const EXTRA_LINE_COST = 3;
@@ -33,6 +35,10 @@ const CUT_WORD = /\p{L}[\p{Pd}­]$/u;
 const loaded = new Map<string, Font>();
 const LATIN_TABLE_CODES = 256;
 const MISSING_GLYPH = -1;
+/** Thousandths of an em a character that the face lacks (a minus, an infinity, a Greek letter) is taken to be wide when a paragraph is wrapped: the width of a digit, which the symbols of a formula stand beside. */
+const WRAP_MISSING_UNITS = 556;
+/** The characters whose width a stand-in gives: symbols, punctuation, and the Greek and Latin letters the Adobe faces lack. A script of other widths (Han, Hangul) is left to the old slack. */
+const STAND_IN_CHAR = /^[\p{S}\p{P}\p{Script=Greek}\p{Script=Latin}]$/u;
 const HIGH_SURROGATE_START = 0xd800;
 const HIGH_SURROGATE_END = 0xdbff;
 const SINGLE_LINE_WIDTH_HEADROOM = 1.5;
@@ -61,8 +67,11 @@ function latinTableOf(face: Font): Int32Array {
   return table;
 }
 
-/** The width in points of a stretch of text in a face, or undefined when the face has no glyph for one of its characters. */
-function widthOf(face: Font, text: string, size: number): number | undefined {
+/**
+ * The width in points of a stretch of text in a face, or undefined when the face has no glyph for one of its characters.
+ * @param missingUnits the width in thousandths of an em of a character the face lacks, when the stretch is to be measured anyway
+ */
+function widthOf(face: Font, text: string, size: number, missingUnits?: number): number | undefined {
   const table = latinTableOf(face);
   let units = 0;
   for (let i = 0; i < text.length; i++) {
@@ -76,14 +85,19 @@ function widthOf(face: Font, text: string, size: number): number | undefined {
     }
     if (code < LATIN_TABLE_CODES) {
       const glyph = table[code];
-      if (glyph < 0) return undefined;
-      units += glyph;
-      continue;
+      if (glyph >= 0) {
+        units += glyph;
+        continue;
+      }
+    } else {
+      const glyph = Encodings.WinAnsi.canEncodeUnicodeCodePoint(code) ? face.getWidthOfGlyph(Encodings.WinAnsi.encodeUnicodeCodePoint(code).name) : undefined;
+      if (glyph !== undefined) {
+        units += glyph;
+        continue;
+      }
     }
-    if (!Encodings.WinAnsi.canEncodeUnicodeCodePoint(code)) return undefined;
-    const glyph = face.getWidthOfGlyph(Encodings.WinAnsi.encodeUnicodeCodePoint(code).name);
-    if (glyph === undefined) return undefined;
-    units += glyph;
+    if (missingUnits === undefined || !STAND_IN_CHAR.test(String.fromCodePoint(code))) return undefined;
+    units += missingUnits;
   }
   return (units * size) / PER_MILLE;
 }
@@ -119,13 +133,13 @@ export class WrapMetrics {
       for (const piece of run.text.split(/(\s+)/u)) {
         if (piece === '') continue;
         if (/^\s+$/u.test(piece)) {
-          const space = widthOf(face, piece, runSize);
+          const space = widthOf(face, piece, runSize, WRAP_MISSING_UNITS);
           if (space === undefined) return undefined;
           gap = (space * (run.widthPercent ?? PERCENT)) / PERCENT;
           open = false;
           continue;
         }
-        const natural = widthOf(face, piece, runSize);
+        const natural = widthOf(face, piece, runSize, WRAP_MISSING_UNITS);
         if (natural === undefined) return undefined;
         const width = (natural * (run.widthPercent ?? PERCENT)) / PERCENT;
         if (open) words[words.length - 1].width += width;
@@ -151,8 +165,8 @@ function lineStarts(paragraph: Paragraph): (number | undefined)[] {
   return starts;
 }
 
-/** The indices at which a greedy wrap of `words` starts a line when each line has `room(index)` points. */
-function wrapStarts(words: readonly Word[], room: (line: number) => number): Set<number> {
+/** The indices at which a greedy wrap of `words` starts a line when each line has `room(index)` points, less `slack` that a line must have to spare. */
+function wrapStarts(words: readonly Word[], room: (line: number) => number, slack = 0): Set<number> {
   const starts = new Set<number>();
   let at = 0;
   let line = 0;
@@ -161,10 +175,16 @@ function wrapStarts(words: readonly Word[], room: (line: number) => number): Set
     const limit = room(line++);
     let width = words[at].width;
     let next = at + 1;
-    while (next < words.length && width + words[next].gap + words[next].width <= limit) width += words[next].gap + words[next++].width;
+    while (next < words.length && width + words[next].gap + words[next].width <= limit - slack) width += words[next].gap + words[next++].width;
     at = next;
   }
   return starts;
+}
+
+/** The right indent that makes the writer break a paragraph where the page did, and the lines the writer then sets the paragraph in. */
+export interface WrapFit {
+  indent: number;
+  lines: number;
 }
 
 /**
@@ -173,6 +193,11 @@ function wrapStarts(words: readonly Word[], room: (line: number) => number): Set
  * @param preferred the right indent that puts the writer's right edge where the page's was, which wins among indents that break equally well
  */
 export function wrappingIndent(paragraph: Paragraph, size: number, metrics: WrapMetrics, baseOf: (line: number) => number, preferred: number): number | undefined {
+  return wrappingFit(paragraph, size, metrics, baseOf, preferred)?.indent;
+}
+
+/** `wrappingIndent` with the number of lines the writer sets the paragraph in at that indent, which is more than the page's where no indent breaks it as the page did. */
+export function wrappingFit(paragraph: Paragraph, size: number, metrics: WrapMetrics, baseOf: (line: number) => number, preferred: number): WrapFit | undefined {
   const words = metrics.wordsOf(paragraph.runs, size);
   if (!words || words.length === 0) return undefined;
   const wanted = lineStarts(paragraph);
@@ -199,14 +224,16 @@ export function wrappingIndent(paragraph: Paragraph, size: number, metrics: Wrap
   for (let index = 0; index + 1 < bounds.length; index++) {
     const [low, high] = [bounds[index], bounds[index + 1]];
     if (high - low < MIN_SPAN_PT) continue;
-    const starts = wrapStarts(words, (line) => baseOf(line) - (low + high) / 2);
+    const starts = wrapStarts(words, (line) => baseOf(line) - (low + high) / 2, WRITER_LINE_SLACK_PT);
     const score = known.filter((start) => starts.has(start)).length - EXTRA_LINE_COST * Math.abs(starts.size - paragraph.lines.length);
     const margin = Math.min(FIT_MARGIN_PT, (high - low) / 3);
     const indent = Math.min(high - margin, Math.max(low + margin, preferred));
     const distance = Math.abs(indent - preferred);
     if (!best || score > best.score || (score === best.score && distance < best.distance)) best = { indent, score, distance };
   }
-  return best?.indent;
+  if (!best) return undefined;
+  const { indent } = best;
+  return { indent, lines: wrapStarts(words, (line) => baseOf(line) - indent, WRITER_LINE_SLACK_PT).size };
 }
 
 /**

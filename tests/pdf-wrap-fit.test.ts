@@ -11,7 +11,7 @@ import { PageFlow, type PageSetup } from '../src/lib/conversions/pdf-layout/page
 import { ParagraphBuilder } from '../src/lib/conversions/pdf-layout/paragraphs';
 import { inlineRuns } from '../src/lib/conversions/pdf-layout/structure';
 import type { Box, LayoutLine, Paragraph } from '../src/lib/conversions/pdf-layout/types';
-import { singleLineIndent, WrapMetrics, wrappingIndent } from '../src/lib/conversions/pdf-layout/wrap-fit';
+import { singleLineIndent, WrapMetrics, wrappingFit, wrappingIndent } from '../src/lib/conversions/pdf-layout/wrap-fit';
 
 /**
  * Where a paragraph of a kept page wraps. The widths the checks compare against come from pdf-lib's own measure of Times-Roman
@@ -136,6 +136,36 @@ describe('the right indent that makes the writer wrap a paragraph where the page
   it('leaves the choice to the caller for text in a character the faces have no glyph for', () => {
     const paragraph = justified(['Привет мир это строка', 'и вторая строка текста'], 200);
     expect(wrappingIndent(paragraph, SIZE, metrics, baseOf, 0)).toBeUndefined();
+  });
+
+  it('measures the symbols of a formula at the width of a digit, and leaves Cyrillic and Han to the caller', () => {
+    const formula = justified(['as ε → 0 the sides are equal for ω−τ', 'up to a neighborhood of ∞ and 2π'], 200);
+    expect(metrics.wordsOf(formula.runs, SIZE)).toBeDefined();
+    expect(wrappingFit(formula, SIZE, metrics, baseOf, 0)).toBeDefined();
+    expect(metrics.wordsOf([{ text: '漢字 text', bold: false, italic: false, monospace: false }], SIZE)).toBeUndefined();
+  });
+
+  it('counts the lines the writer sets: one more than the page had where the last line is wider in the writer\'s face than every indent that keeps the other breaks', async () => {
+    const font = await timesRoman();
+    const lines = wrapped(font, TEXT, 300);
+    const fit = wrappingFit(justified(lines, 300), SIZE, metrics, baseOf, AREA - 300) as { indent: number; lines: number };
+    expect(fit.lines).toBe(lines.length);
+    // A page that set its last line closer than the writer can (spaces narrower than the face's) and broke the others at 300.
+    const tight = [...lines.slice(0, -1), `${lines[0]} moreover`];
+    const widest = font.widthOfTextAtSize(tight[tight.length - 1], SIZE);
+    expect(widest).toBeGreaterThan(300);
+    const squeezed = wrappingFit(justified(tight, 300), SIZE, metrics, baseOf, AREA - 300) as { indent: number; lines: number };
+    expect(squeezed.lines).toBe(tight.length + 1);
+  });
+
+  it('keeps half a point to spare on every line of the writer, which the office suite may measure a hair wider', async () => {
+    const font = await timesRoman();
+    const lines = wrapped(font, TEXT, 300);
+    const widest = Math.max(...lines.map((line) => font.widthOfTextAtSize(line, SIZE)));
+    const room = widest + 0.2;
+    const fit = wrappingFit(justified(lines, 300), SIZE, metrics, () => room, 0) as { indent: number; lines: number };
+    expect(room - fit.indent - widest).toBeGreaterThanOrEqual(0.5);
+    expect(fit.lines).toBe(lines.length);
   });
 
   it('sets a run at its width percent: narrower glyphs leave more room to the right of the same lines', async () => {

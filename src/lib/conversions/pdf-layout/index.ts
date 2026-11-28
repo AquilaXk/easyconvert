@@ -19,7 +19,7 @@ import { LayoutBudget } from './limits';
 import { pageCounterBlocks, type CounterForm, type FurnitureLine } from './page-counters';
 import { builderOf, continuesInNextFlow, type ParagraphBuilder, paragraphsOfFlow } from './paragraphs';
 import { hangShapes, type BlockOrigin, type BodyBlocks } from './figures';
-import { irregularColumnPages, PageFlow, pageSections, regularColumnGaps, type PageSetup } from './page-flow';
+import { hoistColumnGaps, irregularColumnPages, PageFlow, pageSections, regularColumnGaps, type PageSetup } from './page-flow';
 import { faceWidthPercents, setFaceWidths } from './face-width';
 import { WrapMetrics } from './wrap-fit';
 import { hexOf, PageInk, readableRuns } from './ink';
@@ -310,6 +310,7 @@ interface RowGrowth {
 function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk, flow?: PageFlow, growth?: RowGrowth): TableBlock {
   const columnEdges = columnEdgesOf(table);
   const scale = flow?.tableScale(table.box.x1 - table.box.x0, table.pageNumber) ?? 1;
+  const exactRows = table.rowEdges?.length === table.rows.length + 1;
   const rows: TableCellBlock[][] = table.rows.map((row, rowIndex) => {
     let column = 0;
     let needed = 0;
@@ -333,7 +334,8 @@ function tableBlockOf(table: DetectedTable, bodySize: number, ink?: PageInk, flo
       };
     });
     const height = (table.rowEdges?.[rowIndex + 1] ?? 0) - (table.rowEdges?.[rowIndex] ?? 0);
-    if (growth) growth.total += Math.max(0, needed - height);
+    // The writer sets the rows of a table that keeps its page at the page's heights (`rowHeights`, exact), so only a row without its own edges grows.
+    if (growth && !exactRows) growth.total += Math.max(0, needed - height);
     return cells;
   });
   const rules = table.kind === 'lattice' ? ink?.borderOf(table) : null;
@@ -817,6 +819,7 @@ export function layoutPdf(pages: PdfPageContent[], fonts: PdfContentFont[], opti
   const margins = keeping?.margins ?? marginsOf(layouts);
   const body = bodyOf(blocks, { bodySize, levels, ink, flow: keeping?.flow, framed: keeping?.framed });
   if (ink.active) hangShapes(body, pages, ink, gridBoxesOf(layouts, ink), keeping !== undefined);
+  if (keeping) hoistColumnGaps(body);
   const first = pages[0];
   const documentSize = { width: first?.width ?? 0, height: first?.height ?? 0 };
   const sections = keeping

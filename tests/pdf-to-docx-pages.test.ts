@@ -260,6 +260,12 @@ const SPILL_REGRESSION_SAMPLES = [
   { id: 'govdocs1-000166.pdf', minRecall: 0.99, checkPageSizes: false },
   { id: 'govdocs1-001383.pdf', minRecall: 0.99, checkPageSizes: true },
   { id: 'govdocs1-004507.pdf', minRecall: 0.95, checkPageSizes: false },
+  // Tight spills of entry 467: columns that start below a figure, a page number set low on its page, a table whose rows are exact, a formula the writer's face cannot measure.
+  { id: 'govdocs1-001294.pdf', minRecall: 0.97, checkPageSizes: false },
+  { id: 'govdocs1-004161.pdf', minRecall: 0.96, checkPageSizes: false },
+  { id: 'govdocs1-000141.pdf', minRecall: 0.98, checkPageSizes: false },
+  { id: 'govdocs1-002202.pdf', minRecall: 0.93, checkPageSizes: false },
+  { id: 'govdocs1-002384.pdf', minRecall: 0.91, checkPageSizes: false },
 ] as const;
 
 describe('unequal columns, anchored picture runs, mixed page sizes, omitted footers and tiny runs keep the PDF page count', () => {
