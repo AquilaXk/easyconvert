@@ -20,12 +20,10 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'xlsx->numbers', 'xlsx->xps',
   // Entry 187: pairs the reference offers that the product leaves out, each with the reason measured on real files. Entry 454 offers the PDF,
   // presentation, CorelDRAW, CGM, EMF and WMF sources as EMF and WMF, entry 458 the PostScript files, and entry 460 the Illustrator and EPS files
-  // (entry 459 draws what the writers cannot as bitmap records); what stays withdrawn: a page that is only a picture or has a curved clip is not
-  // written as DXF from EMF (1 of 3), and no reader of DWF, Sketch or sK1 files (entry 42). The SVG a DXF is drawn as holds text and round line
-  // caps that the metafile writers refuse; entries 466 and 468 write WMF and CGM from the drawing's PDF instead, and entry 471 writes DWG from a DXF
-  // and from a DWG with a separate program of the pinned LibreDWG release.
+  // (entry 459 draws what the writers cannot as bitmap records); what stays withdrawn: no reader of DWF, Sketch or sK1 files (entry 42). The SVG a
+  // DXF is drawn as holds text and round line caps that the metafile writers refuse; entries 466 and 468 write WMF and CGM from the drawing's PDF
+  // instead, entry 471 writes DWG from a DXF and from a DWG with a separate program of the pinned LibreDWG release, and entry 472 offers EMF as DXF.
   'dwf->cgm', 'dwf->dwg', 'dwf->wmf',
-  'emf->dxf',
   'sk->emf', 'sk->wmf',
   'sk1->emf', 'sk1->wmf',
   // Entry 455: the office suite of the image has no Flash export; a raster slide show by FFmpeg is an option that waits for QA.

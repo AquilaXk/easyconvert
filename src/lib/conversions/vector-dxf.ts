@@ -3,8 +3,7 @@ import { placeBitmapGlyphText, UNMAPPABLE_CHARACTER, type PdfPageText, type Plac
 import { reportConversionWarning } from './conversion-warnings';
 import { pagesPhrase } from './pdf-text-types';
 import { BitmapGlyphs } from './svg-bitmap-glyph';
-import { parseSvgGeometries, type ParsedSvgVectorDocument, type SvgGeometryElement } from './svg-geometry';
-import { isPageSizedRectangle } from './svg-page-clip';
+import { parseSvgGeometries, type ParsedSvgVectorDocument } from './svg-geometry';
 import { LeftOutPictures } from './svg-picture';
 
 /**
@@ -21,9 +20,8 @@ import { LeftOutPictures } from './svg-picture';
  * A picture the page draws is left out, and the conversion says so: a DXF holds no bitmaps, and the exporters leave them out
  * (Inkscape's dxf_outlines.py `process_shape` reads paths, rectangles, lines, circles and ellipses only; pstoedit's DXF drivers
  * are registered with `imageformat::noimage` in drvdxf.cpp, so pstoedit.pro never hooks the image operators for them). A picture
- * that is not painted (`display: none`, hidden, fully transparent) is not counted. A page whose geometry is only shapes without a
- * stroke that cover the page (the white sheet a scan lies on) is a page of a picture: it is refused as a page without geometry,
- * as a scan with no shape under it is, and not written as the rectangle of the sheet.
+ * that is not painted (`display: none`, hidden, fully transparent) is not counted. A page that draws nothing but pictures is
+ * written as a drawing without entities that spans the page, with the warning, as those exporters write it (entry 472).
  *
  * The characters of a bitmap font, which Poppler draws as pictures, are written as TEXT in the STANDARD style (font `txt`,
  * AutoCAD's default) from the PDF's text layer (bitmap-glyph-text.ts): each run left-aligned on its baseline and fitted to its
@@ -228,29 +226,29 @@ export class PicturePages {
   }
 }
 
-/** Whether the element paints no outline and reaches every side of the page, to the tolerance of a page-sized clip: the sheet under a scan. */
-function isPageBackdrop(element: SvgGeometryElement, page: Pick<ParsedSvgVectorDocument, 'width' | 'height'>): boolean {
-  // One unstroked rectangle over the whole page: a diamond, a triangle or a frame with a hole that spans the page is geometry.
-  return element.stroke === null && isPageSizedRectangle(element.subpaths, page);
+/** A page read for the writer, and whether it drew a picture that the DXF leaves out. */
+interface ReadPage {
+  parsed: ParsedSvgVectorDocument;
+  picturesLeftOut: boolean;
 }
 
-function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs, leftOut: PicturePages, page?: number): ParsedSvgVectorDocument {
+function readSvgPage(svg: Buffer, bitmapGlyphs: BitmapGlyphs, leftOut: PicturePages, page?: number): ReadPage {
   const text = svg.toString('utf-8');
   if (!SVG_ROOT_PATTERN.test(text)) {
     throw new CadGeometryUnavailableError('DXF encoding failed: input is not an SVG document.');
   }
   const pictures = new LeftOutPictures();
   const parsed = refusingUnsupported(() => parseSvgGeometries(text, { bitmapGlyphs, pens: 'centre-line', pictures }));
-  if (pictures.count === 0) return parsed;
-  if (bitmapGlyphs.marks.length === 0 && parsed.elements.every((element) => isPageBackdrop(element, parsed))) throw new ConversionFailedError(NO_GEOMETRY_REFUSAL);
+  if (pictures.count === 0) return { parsed, picturesLeftOut: false };
   leftOut.add(page);
-  return parsed;
+  return { parsed, picturesLeftOut: true };
 }
 
 /** The page geometry of an SVG document as DXF text; fails closed when the page draws no vector geometry or a bitmap glyph. */
 export function encodeSvgPageToDxf(svg: Buffer): Buffer {
   const leftOut = new PicturePages();
-  const dxf = writeDxf(readSvgPage(svg, new BitmapGlyphs(), leftOut), []);
+  const { parsed, picturesLeftOut } = readSvgPage(svg, new BitmapGlyphs(), leftOut);
+  const dxf = writeDxf(parsed, [], picturesLeftOut);
   leftOut.report();
   return dxf;
 }
@@ -262,10 +260,10 @@ export function encodeSvgPageToDxf(svg: Buffer): Buffer {
  */
 export async function encodeSvgPageToDxfWithText(svg: Buffer, readText: () => Promise<PdfPageText>, leftOut: PicturePages, page?: number): Promise<Buffer> {
   const bitmapGlyphs = new BitmapGlyphs(true);
-  const parsed = readSvgPage(svg, bitmapGlyphs, leftOut, page);
-  if (bitmapGlyphs.marks.length === 0) return writeDxf(parsed, []);
+  const { parsed, picturesLeftOut } = readSvgPage(svg, bitmapGlyphs, leftOut, page);
+  if (bitmapGlyphs.marks.length === 0) return writeDxf(parsed, [], picturesLeftOut);
   const text = await readText();
-  return writeDxf(parsed, refusingUnsupported(() => finitePlacements(placeBitmapGlyphText(bitmapGlyphs.marks, text, parsed.width, parsed.height))));
+  return writeDxf(parsed, refusingUnsupported(() => finitePlacements(placeBitmapGlyphText(bitmapGlyphs.marks, text, parsed.width, parsed.height))), picturesLeftOut);
 }
 
 /** The placed texts, refused when one has a position or size that is not a finite number (a Type 3 font of zero widths gives a run of infinite width). */
@@ -315,7 +313,8 @@ function scaledText(text: PlacedText, scale: number): PlacedText {
   return { ...text, x: text.x * scale, baseline: text.baseline * scale, width: text.width * scale, height: text.height * scale };
 }
 
-function writeDxf(parsed: ParsedSvgVectorDocument, deviceTexts: readonly PlacedText[]): Buffer {
+/** The drawing of a page; a page whose pictures were all that it drew is a drawing without entities, with the page as its extents. */
+function writeDxf(parsed: ParsedSvgVectorDocument, deviceTexts: readonly PlacedText[], picturesLeftOut: boolean): Buffer {
   const scale = 1 / parsed.unitPx;
   const pageHeight = parsed.height * scale;
   const texts = deviceTexts.map((text) => scaledText(text, scale));
@@ -351,7 +350,8 @@ function writeDxf(parsed: ParsedSvgVectorDocument, deviceTexts: readonly PlacedT
     entities.push(textEntity(text, pageHeight));
   }
   if (entities.length === 0) {
-    throw new ConversionFailedError(NO_GEOMETRY_REFUSAL);
+    if (!picturesLeftOut) throw new ConversionFailedError(NO_GEOMETRY_REFUSAL);
+    [minX, minY, maxX, maxY] = [0, 0, parsed.width * scale, pageHeight];
   }
 
   const sections = [

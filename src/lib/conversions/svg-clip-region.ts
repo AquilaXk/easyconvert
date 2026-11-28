@@ -456,7 +456,10 @@ function clipRefusal(value: string, reason: string): UnsupportedOptionError {
 
 interface ActiveClip {
   value: string;
-  region: ClipRegion;
+  id: string;
+  ctm: AffineMatrix;
+  /** Read when a shape is first measured against the clip: a clip with nothing drawn under it (a group of pictures a DXF leaves out) hides nothing, whatever its shape. */
+  region?: ClipRegion;
 }
 
 /**
@@ -484,9 +487,7 @@ export class ActiveClips {
     const id = CLIP_URL_PATTERN.exec(value)?.[1];
     if (id === undefined) throw clipRefusal(value, 'it is not a reference to a <clipPath>');
     if (this.stack.length >= MAX_ACTIVE_CLIPS) throw clipRefusal(value, `clips are nested more than ${MAX_ACTIVE_CLIPS} deep`);
-    const definition = this.definitionOf(id, value);
-    this.work.charge(definition.pointCount);
-    this.stack.push({ value, region: deviceRegion(definition, ctm) });
+    this.stack.push({ value, id, ctm });
     return true;
   }
 
@@ -547,9 +548,23 @@ export class ActiveClips {
     return drawn;
   }
 
-  private reaching(subpaths: readonly (readonly Point[])[]): (ActiveClip & { farthest: number })[] {
+  private reaching(subpaths: readonly (readonly Point[])[]): (ActiveClip & { region: ClipRegion; farthest: number })[] {
     const tolerance = this.stack.length > 1 ? 0 : this.tolerance;
-    return this.stack.map((clip) => ({ ...clip, farthest: farthestOutside(clip.region, subpaths, tolerance, this.work) })).filter(({ farthest }) => !(farthest <= tolerance));
+    return this.stack
+      .map((clip) => {
+        const region = this.regionOf(clip);
+        return { ...clip, region, farthest: farthestOutside(region, subpaths, tolerance, this.work) };
+      })
+      .filter(({ farthest }) => !(farthest <= tolerance));
+  }
+
+  private regionOf(clip: ActiveClip): ClipRegion {
+    if (clip.region === undefined) {
+      const definition = this.definitionOf(clip.id, clip.value);
+      this.work.charge(definition.pointCount);
+      clip.region = deviceRegion(definition, clip.ctm);
+    }
+    return clip.region;
   }
 
   private reach(farthest: number, nested: boolean): string {

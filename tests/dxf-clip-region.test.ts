@@ -252,6 +252,13 @@ describe('a clip of any other shape', () => {
     expect(refused).toMatch(/curve/);
   });
 
+  it('does not read the curved clip of a group that draws only a picture, which a DXF leaves out', () => {
+    const picture = '<image x="60" y="30" width="20" height="20" href="data:image/png;base64,iVBORw0KGgo="/>';
+    const svg = clipped(clipOf('<circle cx="100" cy="50" r="40"/>'), picture);
+    expect(refusal(clipped(clipOf('<circle cx="100" cy="50" r="40"/>'), `${picture}${stroke('M 100 45 L 101 45')}`))).toMatch(/curve/);
+    expect(dxfOf(`${svg.slice(0, -6)}${stroke('M 10 10 L 20 10')}</svg>`).entities).toHaveLength(1);
+  });
+
   it('leaves out a hidden curve, which adds nothing to the region, instead of refusing the clip for it', () => {
     const clip = clipOf('<circle cx="100" cy="50" r="40" display="none"/><rect x="40" y="20" width="120" height="60"/>');
     expect(dxfOf(clipped(clip, stroke('M 60 30 L 140 30'))).entities).toHaveLength(1);
@@ -424,10 +431,10 @@ describe('hostile clips', () => {
     expectWithinHangGuard('hostile clip', performance.now() - start, HOSTILE_GUARD);
   });
 
-  it('a clip placed under an element is charged for every point it moves, also where a singular matrix leaves it no edge', () => {
+  it('a clip placed under an element is charged for every point it moves', () => {
     const ring = Array.from({ length: MAX_CLIP_EDGES - 1 }, (_, i) => `L ${100 + 90 * Math.cos(i * 0.006)} ${50 + 40 * Math.sin(i * 0.006)}`).join(' ');
-    const placements = '<g clip-path="url(#c)"></g>'.repeat(80_000);
-    const svg = svgOf(`<defs>${pathClip(`M 100 0 ${ring} Z`)}</defs><g transform="matrix(1 0 0 0 0 0)">${placements}</g>${stroke('M 10 90 L 190 90')}`);
+    const placements = `<g clip-path="url(#c)">${stroke('M 100 50 L 101 50')}</g>`.repeat(9_000);
+    const svg = svgOf(`<defs>${pathClip(`M 100 0 ${ring} Z`)}</defs>${placements}`);
     const { result, ms } = timed(svg);
     expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
     expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);

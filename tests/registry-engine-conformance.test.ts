@@ -1158,7 +1158,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     docx: ['hwp', 'hwpx', 'pages', 'xps'],
     dps: ['swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
-    emf: ['dxf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     ibooks: ['epub', 'pdf', 'txt'],

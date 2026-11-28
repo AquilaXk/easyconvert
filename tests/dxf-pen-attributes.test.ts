@@ -369,20 +369,23 @@ describe('pictures', () => {
     expect((await conversion(`${outline}${picture}`)).warnings).toEqual([LEFT_OUT]);
   });
 
-  it('leaves a page of only a picture to the rule for a page without geometry', () => {
-    expect(refusal(PICTURE)).toMatch(/^ConversionFailedError: /);
+  it('writes a page of only a picture as a drawing without entities that spans the page, with the warning', async () => {
+    const { dxf, warnings } = await conversion(PICTURE);
+    expect(dxf.entities).toHaveLength(0);
+    expect([dxf.extMin, dxf.extMax]).toEqual([{ x: 0, y: 0, z: 0 }, { x: PAGE_WIDTH, y: PAGE_HEIGHT, z: 0 }]);
+    expect(warnings).toEqual([LEFT_OUT]);
   });
 
   describe('on a sheet that covers the page', () => {
-    const NO_GEOMETRY = /^ConversionFailedError: The page draws no vector geometry, so there is nothing to write as DXF\.$/;
-
     it.each([
       ['a white sheet', SHEET],
       ['a sheet that falls short of the page by a point', `<rect x="0.5" y="0.5" width="${PAGE_WIDTH - 1}" height="${PAGE_HEIGHT - 1}" fill="#fff"/>`],
       ['two sheets', `${SHEET}<path d="M 0 0 H ${PAGE_WIDTH} V ${PAGE_HEIGHT} H 0 Z" fill="#eee" stroke="none"/>`],
       ['a sheet of a group with a transform', `<g transform="translate(0 0)">${SHEET}</g>`],
-    ])('is a page of only a picture, refused as a page without geometry: %s', (_name, sheet) => {
-      expect(refusal(`${sheet}${PICTURE}`)).toMatch(NO_GEOMETRY);
+    ])('is written as the outline of the sheet with the picture left out: %s', async (_name, sheet) => {
+      const { dxf, warnings } = await conversion(`${sheet}${PICTURE}`);
+      expect(dxf.entities.length).toBeGreaterThan(0);
+      expect(warnings).toEqual([LEFT_OUT]);
     });
 
     it.each([

@@ -567,11 +567,11 @@ describe('PostScript sources become DXF geometry', () => {
     });
   }, NATIVE_TIMEOUT_MS);
 
-  oracleTest('a scan on a white sheet is a page of only a picture: refused as a page without geometry, not written as the rectangle of the sheet', ['pdftocairo'], async () => {
+  oracleTest('a scan on a white sheet is written as the sheet, with the picture left out and said so (entry 472)', ['pdftocairo'], async () => {
     await withPs2pdfShim(buildPdf(picturePages([`${WHITE_SHEET} ${PICTURE}`]), 1).buffer, async () => {
-      const run = dispatchConversion(POSTSCRIPT_SOURCE, 'ps', 'dxf', {}, 'scan.ps');
-      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(/no vector geometry/);
+      const result = await dispatchConversion(POSTSCRIPT_SOURCE, 'ps', 'dxf', {}, 'scan.ps');
+      expect(readDxf(result.buffer.toString('utf-8')).entities).toHaveLength(1);
+      expect(result.metadata?.warnings).toEqual(['Left out the pictures of page 1: a DXF holds lines and text and no bitmaps.']);
     });
   }, NATIVE_TIMEOUT_MS);
 
@@ -583,11 +583,11 @@ describe('PostScript sources become DXF geometry', () => {
     });
   }, NATIVE_TIMEOUT_MS);
 
-  oracleTest('a page that holds only a picture has no vector geometry: a typed 400 error, never a stand-in line', ['pdftocairo'], async () => {
+  oracleTest('a page that holds only a picture is a drawing without entities, never a stand-in line, and says the picture was left out (entry 472)', ['pdftocairo'], async () => {
     await withPs2pdfShim(buildPdf(pictureWith('q 100 0 0 50 10 10 cm /Im Do Q'), 1).buffer, async () => {
-      const run = dispatchConversion(POSTSCRIPT_SOURCE, 'ps', 'dxf', {}, 'picture.ps');
-      await expect(run).rejects.toBeInstanceOf(ConversionFailedError);
-      await expect(run).rejects.toThrow(/no vector geometry/);
+      const result = await dispatchConversion(POSTSCRIPT_SOURCE, 'ps', 'dxf', {}, 'picture.ps');
+      expect(readDxf(result.buffer.toString('utf-8')).entities).toHaveLength(0);
+      expect(result.metadata?.warnings).toEqual(['Left out the pictures of page 1: a DXF holds lines and text and no bitmaps.']);
     });
   }, NATIVE_TIMEOUT_MS);
 });
