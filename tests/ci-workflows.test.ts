@@ -279,6 +279,12 @@ describe('the nightly workflow', () => {
     expect(steps[saveAt].if).toBe("always() && steps.written.outputs.any == 'true'");
     expect(String(steps[saveAt].with?.path).split('\n').filter(Boolean)).toEqual(['~/.cache/easyconvert-realworld']);
     expect(steps[saveAt].with?.key).toBe("realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}");
+    const pruneAt = indexOf((step) => step.name === 'Delete the older corpus caches of this shard');
+    expect(pruneAt).toBeGreaterThan(saveAt);
+    expect(steps[pruneAt].if).toBe(steps[saveAt].if);
+    expect(steps[pruneAt].env?.KEEP).toBe(steps[saveAt].with?.key);
+    expect(steps[pruneAt].env?.PREFIX).toBe('realworld-${{ matrix.shard }}-');
+    expect(nightly.jobs.realworld.permissions).toEqual({ contents: 'read', actions: 'write' });
     const gate = nightly.jobs['realworld-gate'];
     expect(gate.needs).toEqual(['realworld']);
     expect(gate.if).toBe('always()');

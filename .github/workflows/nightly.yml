@@ -594,6 +594,10 @@ jobs:
     needs: sharp-libvips
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    # `actions: write` deletes the superseded corpus caches of the shard; nothing else here writes.
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -671,6 +675,22 @@ jobs:
         with:
           path: ~/.cache/easyconvert-realworld
           key: realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # The entry just saved holds every file of the older ones of this shard, which the restore above never reads again. Left in place
+      # they keep the repository over its 10 GB of caches until the oldest entries are evicted, and the evicted ones were the office
+      # suite install that every CI job restores (2026-11-28: 10.7 GB, the CI then downloaded the suite from a mirror that failed TLS).
+      # A prefix of `realworld-1-` does not match shard 10's `realworld-10-`.
+      - name: Delete the older corpus caches of this shard
+        if: always() && steps.written.outputs.any == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: realworld-${{ matrix.shard }}-
+          KEEP: realworld-${{ matrix.shard }}-${{ hashFiles('bench/realworld/manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          ids="$(gh api "repos/$GITHUB_REPOSITORY/actions/caches?key=$PREFIX&ref=$GITHUB_REF&per_page=100" --jq ".actions_caches[] | select(.key != \"$KEEP\") | .id")"
+          for id in $ids; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/caches/$id" || echo "::warning::could not delete cache $id"
+          done
 
       - name: Upload the shard report
         if: always()
