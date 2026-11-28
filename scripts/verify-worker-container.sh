@@ -501,6 +501,29 @@ else
   fail "the ImageMagick policy does not verify for $(id -un): $(head -c 300 "$work_dir/magick-policy.out")"
 fi
 
+# --- 9a. dwg2dxf and dxf2dwg -----------------------------------------------------------------------------
+# DWG input is read by `dwg2dxf` and DWG output is written by `dxf2dwg`, both statically linked LibreDWG programs that the worker runs as separate
+# sandboxed processes. One line is written as a DWG and read back the way the worker does; a program that starts but writes nothing, or a file that
+# does not start with the AutoCAD 2000 release code, fails here and not on the first customer's drawing.
+if ! command -v dxf2dwg >/dev/null 2>&1 || ! command -v dwg2dxf >/dev/null 2>&1; then
+  fail "dwg2dxf or dxf2dwg is not installed (the libredwg stage): DWG files cannot be read or written"
+else
+  printf '%s\n' 0 SECTION 2 HEADER 9 '$ACADVER' 1 AC1015 0 ENDSEC \
+    0 SECTION 2 TABLES 0 TABLE 2 LAYER 70 1 0 LAYER 2 0 70 0 62 7 6 CONTINUOUS 0 ENDTAB \
+    0 TABLE 2 BLOCK_RECORD 70 2 0 BLOCK_RECORD 2 '*Model_Space' 0 BLOCK_RECORD 2 '*Paper_Space' 0 ENDTAB 0 ENDSEC \
+    0 SECTION 2 BLOCKS 0 BLOCK 8 0 2 '*Model_Space' 70 0 10 0 20 0 30 0 3 '*Model_Space' 0 ENDBLK 8 0 \
+    0 BLOCK 8 0 2 '*Paper_Space' 70 0 10 0 20 0 30 0 3 '*Paper_Space' 0 ENDBLK 8 0 0 ENDSEC \
+    0 SECTION 2 ENTITIES 0 LINE 8 0 10 0 20 0 30 0 11 10 21 10 31 0 0 ENDSEC 0 EOF > "$work_dir/dwg-check.dxf"
+  if sandboxed dxf2dwg -y --as r2000 -o "$work_dir/dwg-check.dwg" "$work_dir/dwg-check.dxf" >"$work_dir/dxf2dwg.out" 2>&1 \
+    && [ "$(head -c 6 "$work_dir/dwg-check.dwg" 2>/dev/null)" = "AC1015" ] \
+    && sandboxed dwg2dxf -y -o "$work_dir/dwg-back.dxf" "$work_dir/dwg-check.dwg" >"$work_dir/dwg2dxf.out" 2>&1 \
+    && grep -q '^LINE' "$work_dir/dwg-back.dxf"; then
+    pass "dxf2dwg wrote an AutoCAD 2000 DWG and dwg2dxf read its LINE back inside the sandbox"
+  else
+    fail "the DWG programs did not round-trip a line inside the sandbox: $(head -c 300 "$work_dir/dxf2dwg.out" "$work_dir/dwg2dxf.out" 2>/dev/null)"
+  fi
+fi
+
 # --- 10. pid-init --------------------------------------------------------------------------------------
 # Every sandboxed program is started as `unshare -r -n -- pid-init -- <program>`, which puts it in a PID namespace of its own (PID 2, with pid-init's
 # init as PID 1), so it can neither see nor signal the other runs of the worker. Without pid-init, or where the profile does not let `clone` make a PID

@@ -7,7 +7,7 @@
 #   verapdf  the PDF/A validator, from the cached install when the cache was restored
 #   epubcheck the EPUB validator, from its release archive checked against a pinned SHA-256
 #   calibre   the ebook converter the ebook benchmark compares against and the writer of the MOBI, AZW3, PDB, LRF and OEB tests, from its release archive checked against a pinned SHA-256
-#   libredwg the DWG reader (dwg2dxf), built from its release archive checked against a pinned SHA-256, or the cached build
+#   libredwg the DWG reader and writer (dwg2dxf, dxf2dwg), built from its release archive checked against a pinned SHA-256, or the cached build
 #   libraw   the Nikon High Efficiency NEF decoder (a separate dcraw_emu), built from the LibRaw commit pinned in scripts/install-libraw-he.sh, or the cached build
 #   ghostxps the XPS renderer (gxps), built from the GhostPDL release archive checked against a pinned SHA-256, or the cached build when its digest still matches
 #   vtracer  the raster to SVG tracers: the project's release program checked against a pinned SHA-256 (scripts/install-vtracer.sh), and the
@@ -285,12 +285,14 @@ task_raw() {
   npm run fixtures:raw
 }
 
-# DWG input is read by LibreDWG's `dwg2dxf` (GPL-3.0-or-later, an unmodified separate program), built from the pinned release
+# DWG input is read by LibreDWG's `dwg2dxf` and DWG output is written by its `dxf2dwg` (GPL-3.0-or-later, unmodified separate programs), built from the pinned release
 # archive in scripts/install-libredwg.sh, which checks the SHA-256 before anything in it runs. The build is cached by the hash of that script.
 task_libredwg() {
-  if [ "$libredwg_cache_hit" = true ] && [ -x "$libredwg_dir/bin/dwg2dxf" ]; then
+  if [ "$libredwg_cache_hit" = true ] && [ -x "$libredwg_dir/bin/dwg2dxf" ] && [ -x "$libredwg_dir/bin/dxf2dwg" ]; then
     sudo ln -sf "$libredwg_dir/bin/dwg2dxf" /usr/local/bin/dwg2dxf
+    sudo ln -sf "$libredwg_dir/bin/dxf2dwg" /usr/local/bin/dxf2dwg
     dwg2dxf --version
+    dxf2dwg --version
   else
     sudo scripts/install-libredwg.sh "$libredwg_dir"
   fi

@@ -45,6 +45,7 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   'rsvg-convert': ['rsvg-convert'],
   gs: ['gs'],
   dwg2dxf: ['dwg2dxf'],
+  dxf2dwg: ['dxf2dwg'],
   vtracer: ['vtracer'],
 };
 
@@ -86,6 +87,7 @@ const VERSION_ARGS: Readonly<Record<string, readonly string[]>> = {
   'rsvg-convert': ['--version'],
   gs: ['--version'],
   dwg2dxf: ['--version'],
+  dxf2dwg: ['--version'],
   vtracer: ['--version'],
   pdftoppm: ['-v'],
   qpdf: ['--version'],

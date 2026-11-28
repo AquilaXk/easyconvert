@@ -4,8 +4,8 @@ import path from 'node:path';
 import { parseDockerfile } from './helpers/dockerfile';
 
 /**
- * The worker image carries the DWG reader. LibreDWG is GPL-3.0-or-later and Debian ships no package of it, so the image
- * builds the pinned release archive in a stage of its own and copies one statically linked program, with its licence text
+ * The worker image carries the DWG reader and writer. LibreDWG is GPL-3.0-or-later and Debian ships no package of it, so the image
+ * builds the pinned release archive in a stage of its own and copies two statically linked programs, with their licence text
  * and the note that names the archive, into the runner. The expectations are written out from the licence terms (the corresponding source
  * of the binary must be nameable, the licence text must ship with it) and from the install script's own pin.
  */
@@ -28,15 +28,16 @@ describe('the libredwg stage of the worker image', () => {
     expect(copies).toContain('scripts/install-libredwg.sh /tmp/install-libredwg.sh');
   });
 
-  it('puts only the program, its licence text and its source note into the runner, and checks that the program starts', () => {
+  it('puts only the two programs, their licence text and their source note into the runner, and checks that they start', () => {
     const instructions = (keyword: string) => runner.instructions.filter((instruction) => instruction.keyword === keyword).map((instruction) => instruction.argument);
     expect(instructions('COPY').filter((argument) => argument.includes('libredwg'))).toEqual([
       '--from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf',
+      '--from=libredwg /opt/libredwg/bin/dxf2dwg /usr/local/bin/dxf2dwg',
       '--from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg',
     ]);
     // The notices step collects every /usr/share/doc/*/copyright into /licenses; the source note is copied beside them.
     expect(instructions('RUN').filter((argument) => argument.includes('libredwg') || argument.startsWith('dwg2dxf'))).toEqual([
-      'dwg2dxf --version',
+      'dwg2dxf --version && dxf2dwg --version',
       'cp /usr/share/doc/libredwg/SOURCE /licenses/libredwg.SOURCE',
     ]);
   });
@@ -51,18 +52,21 @@ describe('the libredwg stage of the worker image', () => {
 });
 
 describe('the install script of the reader', () => {
-  it('pins a snapshot of the 0.14 series that carries the fix of the R2004 decompressor overflow (first in 0.14.8396), not the 0.14 release', () => {
-    const version = /^LIBREDWG_VERSION="(\d+)\.(\d+)\.(\d+)"$/m.exec(INSTALL);
+  it('pins a published release from 0.15 on, which has the complete fix of the R2004 decompressor overflow and the writer of every DWG version', () => {
+    const version = /^LIBREDWG_VERSION="(\d+)\.(\d+)(?:\.(\d+))?"$/m.exec(INSTALL);
     expect(version).not.toBeNull();
-    const [major, minor, build] = [Number(version?.[1]), Number(version?.[2]), Number(version?.[3])];
-    expect([major, minor]).toEqual([0, 14]);
-    expect(build).toBeGreaterThanOrEqual(8396);
+    const [major, minor] = [Number(version?.[1]), Number(version?.[2])];
+    expect(major * 1000 + minor).toBeGreaterThanOrEqual(15);
+    expect(INSTALL).toMatch(/^LIBREDWG_SHA256="[0-9a-f]{64}"$/m);
   });
 
-  it('builds the unmodified archive as a read-only, statically linked program with the settings of an official release', () => {
-    for (const flag of ['--enable-release', '--disable-write', '--disable-shared', '--enable-static', '--disable-bindings']) expect(INSTALL).toContain(flag);
+  it('builds the unmodified archive, writer included, as statically linked programs', () => {
+    for (const flag of ['--disable-shared', '--enable-static', '--disable-bindings']) expect(INSTALL).toContain(flag);
+    // --enable-release needs GNU plotutils since 0.15, and a tarball is built as a release without it; the writer is the default.
+    expect(INSTALL).not.toContain('--disable-write');
     expect(INSTALL).not.toMatch(/\bpatch\b|\bgit apply\b|\bsed -i\b/);
     expect(INSTALL).toContain('install -m 0755 programs/dwg2dxf');
+    expect(INSTALL).toContain('install -m 0755 programs/dxf2dwg');
   });
 
   it('names the archive it built from in a note that ships with the licence text', () => {

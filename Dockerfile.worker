@@ -72,9 +72,9 @@ RUN apt-get update \
     && grep -q ' Rar5 ' /tmp/7zip-formats.txt
 
 # ==============================================================================
-# Stage 3: Pinned LibreDWG reader (dwg2dxf)
+# Stage 3: Pinned LibreDWG reader and writer (dwg2dxf, dxf2dwg)
 # ==============================================================================
-# The DWG to DXF step of DWG input. LibreDWG is GPL-3.0-or-later and is built here from its unmodified release archive,
+# The DWG to DXF step of DWG input and the DXF to DWG step of DWG output. LibreDWG is GPL-3.0-or-later and is built here from its unmodified release archive,
 # pinned by SHA-256 in scripts/install-libredwg.sh, as a statically linked program that the worker runs as a separate
 # sandboxed process; nothing links it into the application. Debian ships no package of it. The stage fails the build if
 # the program does not start.
@@ -514,11 +514,12 @@ COPY --from=sevenzip /seven-zip/7zzs /usr/local/bin/7zz
 COPY --from=sevenzip /seven-zip/License.txt /usr/share/doc/7zip/License.txt
 RUN ln -s 7zz /usr/local/bin/7z
 
-# DWG reader (pinned release built in the libredwg stage). Its licence text goes to /usr/share/doc/libredwg/copyright, which the
+# DWG reader and writer (pinned release built in the libredwg stage). Its licence text goes to /usr/share/doc/libredwg/copyright, which the
 # notices step below collects into /licenses with the system packages; the SOURCE file names the release archive it was built from.
 COPY --from=libredwg /opt/libredwg/bin/dwg2dxf /usr/local/bin/dwg2dxf
+COPY --from=libredwg /opt/libredwg/bin/dxf2dwg /usr/local/bin/dxf2dwg
 COPY --from=libredwg /opt/libredwg/share/doc/libredwg /usr/share/doc/libredwg
-RUN dwg2dxf --version
+RUN dwg2dxf --version && dxf2dwg --version
 
 # Pinned LibRaw snapshot for Nikon High Efficiency NEF files (built in the librawhe stage), installed beside the distribution's LibRaw as
 # `dcraw_emu_he`; the worker runs it for those NEF files and for a camera file the distribution's LibRaw does not recognise. Its licence texts go to /usr/share/doc/libraw-he/copyright, which the notices step

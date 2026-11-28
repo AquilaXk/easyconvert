@@ -396,6 +396,7 @@ Generate a secret with `openssl rand -hex 32`.
 | `CAPTURE_PYTHON_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `CAPTURE_DRIVER_PATH` | absolute path of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `DWG2DXF_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
+| `DXF2DWG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `OXIPNG_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
 | `VTRACER_PIXELS_PATH` | path or command name of an executable (existence is not checked at start-up) | none | no | web, worker |
@@ -450,6 +451,7 @@ Generate a secret with `openssl rand -hex 32`.
 - `CAPTURE_PYTHON_PATH`: Absolute path of the Python 3 interpreter that runs the website capture driver (native/capture-website) with the PyQt6 WebEngine bindings that calibre brings; searched in the standard locations when unset. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.
 - `CAPTURE_DRIVER_PATH`: Absolute path of the website capture driver script (native/capture-website/capture.py); `/usr/local/lib/easyconvert/capture-website.py` in the worker image, the file in `native/` in a checkout. A website cannot be captured without it (HTTP 503); a value that is not an absolute path is rejected at start-up.
 - `DWG2DXF_PATH`: Path of the LibreDWG `dwg2dxf` executable that reads a DWG drawing into a DXF; searched in the standard locations when unset. A DWG cannot be converted without it (HTTP 503).
+- `DXF2DWG_PATH`: Path of the LibreDWG `dxf2dwg` executable that writes a DXF drawing as a DWG; searched in the standard locations when unset. A DXF or DWG cannot be converted to DWG without it (HTTP 503).
 - `VTRACER_PATH`: Path of the vtracer executable that traces PNG, JPEG, WebP, GIF, BMP and TIFF pictures to SVG; searched in the standard locations when unset. Those pictures cannot be converted to SVG without it (HTTP 503).
 - `OXIPNG_PATH`: Path of the pinned oxipng executable that optimises a PNG converted to PNG without loss (entry 232); searched in the standard locations when unset. Without it the PNG is written as the image library encodes it.
 - `VTRACER_PIXELS_PATH`: Path of the vtracer-pixels executable (scripts/vtracer-pixels), the vtracer front-end that reads the raw pixels the worker decoded; searched in the standard locations when unset. When it is found it traces those pictures instead of the vtracer executable; the SVG is the same.
