@@ -542,7 +542,15 @@ function buildStreamTable(run: Row[], fonts: FontList, budget: LayoutBudget, pag
       for (const segment of row.segments) {
         const start = bandOf(segment.box.x0 + 1, channels);
         const end = bandOf(segment.box.x1 - 1, channels);
-        slots.push({ text: segment.text, lines: [segment], span: Math.max(1, end - start + 1), start });
+        const previous = slots[slots.length - 1];
+        // A segment that begins in a band the previous one covers joins its cell: a row never holds more cells than the grid has columns.
+        if (previous && start < previous.start + previous.span) {
+          previous.lines.push(segment);
+          previous.text += ` ${segment.text}`;
+          previous.span = Math.max(previous.span, end - previous.start + 1);
+        } else {
+          slots.push({ text: segment.text, lines: [segment], span: Math.max(1, end - start + 1), start });
+        }
         cellTexts.push(segment.text);
         filled++;
       }

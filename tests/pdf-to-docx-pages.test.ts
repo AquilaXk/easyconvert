@@ -34,6 +34,12 @@ const MIN_WORD_RECALL = 0.97;
 /** Points the first line of a page may stand from where the PDF's first line does, at the median over the pages of a file (LibreOffice 24.2 on Ubuntu gives 1 to 2, the macOS build 5). */
 const MAX_MEDIAN_TOP_OFFSET = 8;
 
+/** A table whose rows hold more cells than the grid has columns once wrote `w:tcW w:w="0"` and `w:right="NaN"`. */
+function expectRealCellWidths(documentXml: string): void {
+  expect(documentXml).not.toContain('NaN');
+  expect(documentXml).not.toMatch(/<w:tcW w:w="0"/);
+}
+
 const converted = new Map<string, Promise<{ source: Buffer; docx: Buffer }>>();
 
 function convertedSample(ctx: { skip: () => never }, id: string): Promise<{ source: Buffer; docx: Buffer }> {
@@ -276,6 +282,7 @@ describe('unequal columns, anchored picture runs, mixed page sizes, omitted foot
       async (ctx) => {
         const { source, docx } = await convertedSample(ctx, id);
         const zip = await JSZip.loadAsync(docx);
+        expectRealCellWidths(await (zip.file('word/document.xml') as JSZip.JSZipObject).async('string'));
         const xmlParts = await Promise.all(
           Object.keys(zip.files)
             .filter((name) => /\.(xml|rels)$/.test(name))
@@ -324,4 +331,17 @@ describe('unequal columns, anchored picture runs, mixed page sizes, omitted foot
       TEST_TIMEOUT_MS
     );
   }
+});
+
+describe('a table row never holds more cells than the grid has columns', () => {
+  oracleTest(
+    'govdocs1-001284.pdf: every cell of the DOCX has a real width',
+    [],
+    async (ctx) => {
+      const { docx } = await convertedSample(ctx, 'govdocs1-001284.pdf');
+      const zip = await JSZip.loadAsync(docx);
+      expectRealCellWidths(await (zip.file('word/document.xml') as JSZip.JSZipObject).async('string'));
+    },
+    TEST_TIMEOUT_MS
+  );
 });

@@ -96,7 +96,12 @@ export interface DocxWriteOptions {
   maxAnchoredShapes?: number;
 }
 
-const twips = (points: number): number => Math.round(points * TWIPS_PER_POINT);
+/** Twips of `points`; a length that is not a finite number is a bug upstream and never reaches the XML. */
+const twips = (points: number): number => {
+  const value = Math.round(points * TWIPS_PER_POINT);
+  if (!Number.isFinite(value)) throw new Error(`DOCX length is not a finite number: ${points}`);
+  return value;
+};
 /** Distance of a running header from the top edge and of a running footer from the bottom edge, when the document does not say (one half inch). */
 const DEFAULT_FURNITURE_DISTANCE_PT = 36;
 const DEFAULT_CELL_PADDING_TWIPS = 80;
@@ -379,6 +384,7 @@ class PartWriter {
   // -------------------------------------------------------------------------------------------
 
   private cellXml(cell: TableCellBlock, widthTwips: number, rowSpanContinues: boolean): string {
+    if (!Number.isFinite(widthTwips)) throw new Error(`DOCX cell width is not a finite number: ${widthTwips}`);
     let props = `<w:tcW w:w="${widthTwips}" w:type="dxa"/>`;
     if (cell.colSpan > 1) props += `<w:gridSpan w:val="${cell.colSpan}"/>`;
     if (cell.continuation) props += '<w:vMerge/>';
