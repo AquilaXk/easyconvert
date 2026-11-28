@@ -39,11 +39,16 @@ describe('Phase 1: Architecture Integrity & Emergency Security/Bug Patches', () 
       ).rejects.toThrow('The file is not a DWG drawing: it does not start with a DWG release code.');
     });
 
-    it('fails closed on DWG encoding when native encoder is unavailable', async () => {
+    it('fails closed on DWG encoding when the DWG writer is not installed (the writer is tested in cad-dwg-writer.test.ts)', async () => {
       const dxfContent = '0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n11\n1.0\n21\n1.0\n0\nENDSEC\n0\nEOF\n';
-      await expect(
-        convertVectorCad(Buffer.from(dxfContent, 'utf-8'), 'dxf', 'dwg', {}, 'plan.dxf')
-      ).rejects.toThrow('Unsupported CAD format: DWG binary encoder unavailable');
+      const before = process.env.DXF2DWG_PATH;
+      process.env.DXF2DWG_PATH = '/nonexistent/dxf2dwg';
+      try {
+        await expect(convertVectorCad(Buffer.from(dxfContent, 'utf-8'), 'dxf', 'dwg', {}, 'plan.dxf')).rejects.toThrow(/dxf2dwg/);
+      } finally {
+        if (before === undefined) delete process.env.DXF2DWG_PATH;
+        else process.env.DXF2DWG_PATH = before;
+      }
     });
 
     it('fails closed when converting to Apple iWork targets (pages, numbers, key)', async () => {

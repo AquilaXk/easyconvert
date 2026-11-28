@@ -38,6 +38,7 @@ import { hasSvgText, outlineSvgText } from './svg-text-outlines';
 import { dxfDrawingToSvg, dxfSvgDeclaredSize, parseDxfDrawing, renderDxfDrawingToPdf } from './cad-dxf';
 import { decodeDxfBytes } from './cad-dxf-text';
 import { convertDwgToDxf } from './cad-dwg';
+import { convertDwgToDwg, convertDxfToDwg } from './cad-dwg-writer';
 import { vectorizeRaster } from './raster-vectorize';
 import { isVectorizePair } from './raster-vectorize-options';
 import { encodeSvgPageToDxf } from './vector-dxf';
@@ -638,7 +639,7 @@ async function convertDxfSource(
   baseName: string
 ): Promise<ConversionResult> {
   // DXF -> DWG
-  if (tgt === 'dwg') dxfToDwg(inputBuffer.toString('utf-8'));
+  if (tgt === 'dwg') return dwgResult(await convertDxfToDwg(inputBuffer, options), baseName);
 
   const drawing = parseDxfDrawing(decodeDxfBytes(inputBuffer));
 
@@ -675,9 +676,13 @@ async function convertDxfSource(
   throw new UnsupportedTargetError(`Unsupported DXF target conversion: ${tgt}`);
 }
 
+function dwgResult(buffer: Buffer, baseName: string): ConversionResult {
+  return { buffer, mimeType: 'image/vnd.dwg', filename: `${baseName}.dwg`, size: buffer.length };
+}
+
 /**
  * Converts a DWG: the pinned reader (an unmodified separate program, see cad-dwg.ts) writes a DXF, and the DXF path draws it.
- * A DWG is never written (there is no DWG encoder), so that target fails before the reader starts.
+ * A DWG is written as an AutoCAD 2000 DWG by the pinned writer from the DXF of the reader (see cad-dwg-writer.ts).
  */
 async function convertDwgSource(
   inputBuffer: Buffer,
@@ -685,9 +690,7 @@ async function convertDwgSource(
   options: ConversionOptions,
   baseName: string
 ): Promise<ConversionResult> {
-  if (tgt === 'dwg') {
-    throw new CadGeometryUnavailableError('Unsupported CAD format: DWG binary encoder unavailable');
-  }
+  if (tgt === 'dwg') return dwgResult(await convertDwgToDwg(inputBuffer, options), baseName);
   const dxfBuf = await convertDwgToDxf(inputBuffer, options);
   if (tgt === 'dxf') {
     return {

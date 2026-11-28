@@ -121,7 +121,7 @@ const CARRIAGE_RETURN = 13;
 const MAX_GROUP_CODE = 1071;
 const PROXY_ENTITY = 'ACAD_PROXY_ENTITY';
 
-class DxfShapeError extends Error {}
+export class DxfShapeError extends Error {}
 
 /** Group codes whose value the structure check reads: the record type (0) and the name of a section (2). The other values are skipped unread. */
 const STRUCTURE_CODES: ReadonlySet<number> = new Set([0, 2]);
@@ -130,7 +130,7 @@ const STRUCTURE_CODES: ReadonlySet<number> = new Set([0, 2]);
  * Calls `visit` with the group code of every pair and, for the codes the structure check reads, its value (an empty string for
  * the others, which are not decoded); throws DxfShapeError when the bytes are not pairs of an integer line and a value line.
  */
-function forEachPair(dxf: Buffer, visit: (code: number, value: string) => void): void {
+export function forEachPair(dxf: Buffer, visit: (code: number, value: string) => void): void {
   let position = 0;
   let line = 0;
   let pendingCode = -1;
@@ -222,15 +222,15 @@ const READER_CANDIDATES = ['/usr/local/bin/dwg2dxf', '/usr/bin/dwg2dxf', '/opt/h
 /** One drawing may take this long in the reader; the job's own deadline can shorten it. */
 const READER_DEFAULT_TIMEOUT_MS = 120_000;
 /** The reader keeps the whole drawing in memory; this is above what the drawings of the corpus need by a wide margin. */
-const READER_MEMORY_LIMIT_MB = 2048;
+export const READER_MEMORY_LIMIT_MB = 2048;
 /** The largest DXF accepted: the DXF reader holds it as one string, which V8 caps near 512 MB. */
-const READER_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
+export const READER_MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 /** Its messages go to the error stream, one line per fault in a damaged file. */
-const READER_MAX_DIAGNOSTIC_BYTES = 4 * 1024 * 1024;
+export const READER_MAX_DIAGNOSTIC_BYTES = 4 * 1024 * 1024;
 const INPUT_NAME = 'input.dwg';
 const OUTPUT_NAME = 'output.dxf';
-const SHELL_NOT_EXECUTABLE = 126;
-const SHELL_NOT_FOUND = 127;
+export const SHELL_NOT_EXECUTABLE = 126;
+export const SHELL_NOT_FOUND = 127;
 
 export type DwgReaderOptions = Pick<ConversionOptions, 'signal' | 'timeoutMs'> & JobDeadlined;
 

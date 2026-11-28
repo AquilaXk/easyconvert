@@ -193,6 +193,7 @@
   "tests/cad-dwg-reader.test.ts": 28.4,
   "tests/cad-dwg-routes.test.ts": 0.1,
   "tests/cad-dwg-version.test.ts": 0,
+  "tests/cad-dwg-writer.test.ts": 16.0,
   "tests/cad-dxf-drawing.test.ts": 0.3,
   "tests/cad-dxf-limits.test.ts": 0.8,
   "tests/cad-dxf-pdf-dense-polyline.test.ts": 0.1,
