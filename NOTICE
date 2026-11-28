@@ -4,6 +4,7 @@ Copyright 2026 EasyConvert Contributors
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 Parts of this repository keep their own licences:
+- scripts/calibre-patches/: a patch to calibre, GPL-3.0 (upstream's own change, with its commit named in the file).
 - scripts/djvulibre-patches/: patches to DjVuLibre, GPL-2.0-or-later.
 - scripts/vtracer-pixels/: built on the command-line front-end of vtracer, MIT (scripts/vtracer-pixels/LICENSE).
 - scripts/quantizr-pixels/: a program around the quantizr library, MIT (scripts/quantizr-pixels/LICENSE).

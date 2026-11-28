@@ -1495,6 +1495,7 @@
   "tests/workbench-options-capabilities.test.ts": 0.2,
   "tests/worker-7z-extraction-containment.test.ts": 17,
   "tests/worker-avifenc-packaging.test.ts": 0,
+  "tests/worker-calibre-snb-patch.test.ts": 0,
   "tests/worker-djvulibre-packaging.test.ts": 0,
   "tests/worker-drain-engines.test.ts": 0.1,
   "tests/worker-ffmpeg-packaging.test.ts": 0,

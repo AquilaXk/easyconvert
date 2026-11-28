@@ -68,6 +68,7 @@ const RELEVANT_PATHS = [
   'scripts/pandoc-notices/THIRD-PARTY-NOTICES',
   'scripts/ffmpeg-patches/libvorbis-whole-frames.patch',
   'scripts/djvulibre-patches/include-search-visit-once.patch',
+  'scripts/calibre-patches/snb-entry-names-as-text.patch',
   'scripts/lib/djvulibre-gates.sh',
   'scripts/avifenc/SOURCE',
   'scripts/verify-imagemagick-policy.sh',

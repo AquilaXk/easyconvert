@@ -715,6 +715,44 @@ RUN scratch="$(mktemp -d)" \
     && grep -q 'Sample text' "${scratch}/book-from-tcr.txt" \
     && rm -rf "${scratch}"
 
+# SNB reader of calibre (installed above). calibre 8.5.0 reads no SNB book: its reader keeps the entry names of the container as bytes and looks them up
+# with text names, so it finds no entry, writes an empty text book and stops with `IndexError` for every other target (docs/policy-decisions.md, entries 309
+# and 465). Upstream fixed it in 9.10.0 (kovidgoyal/calibre commit c33f0a54bd63ac25fb3009ab5ac587a62dacfd80); the change is applied unmodified to the
+# installed `snbfile.py` (scripts/calibre-patches, GPL-3.0, kept in /usr/share/doc/calibre/patches as the changed source of the program). The build
+# fails when the patch does not apply (a file that changed, or one that already has the fix under a version below 9.10) and skips it with a message from
+# calibre 9.10. `patch` is installed for this step only and removed in the same layer. Then calibre writes an SNB book from a text file and reads it back
+# to EPUB and text: the book starts with `SNBP000B`, the EPUB carries its media type entry at byte 30 and the text holds the words that were written.
+COPY scripts/calibre-patches /tmp/calibre-patches
+RUN calibre_version="$(dpkg-query -W -f='${Version}' calibre)" \
+    && snbfile="$(dpkg -L calibre | grep -E '/calibre/ebooks/snb/snbfile\.py$')" \
+    && test "$(printf '%s\n' "${snbfile}" | wc -l)" = 1 \
+    && if dpkg --compare-versions "${calibre_version}" ge 9.10; then \
+        echo "calibre ${calibre_version} has the SNB reader fix (9.10.0): the patch is skipped"; \
+    else \
+        apt-get update \
+        && apt-get install -y --no-install-recommends patch \
+        && patch --batch --forward --fuzz=0 --no-backup-if-mismatch --reject-file=- "${snbfile}" /tmp/calibre-patches/snb-entry-names-as-text.patch \
+        && python3 -m py_compile "${snbfile}" \
+        && install -D -m 0644 /tmp/calibre-patches/snb-entry-names-as-text.patch /usr/share/doc/calibre/patches/snb-entry-names-as-text.patch \
+        && apt-get purge -y patch \
+        && apt-get clean \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi \
+    && rm -rf /tmp/calibre-patches \
+    && scratch="$(mktemp -d)" \
+    && mkdir "${scratch}/config" "${scratch}/cache" "${scratch}/tmp" \
+    && printf 'Sample text\n' > "${scratch}/book.txt" \
+    && export HOME="${scratch}" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="${scratch}/config" \
+        CALIBRE_CACHE_DIRECTORY="${scratch}/cache" CALIBRE_TEMP_DIR="${scratch}/tmp" \
+    && timeout 120 ebook-convert "${scratch}/book.txt" "${scratch}/book.snb" > "${scratch}/calibre.log" 2>&1 \
+    && for target in epub txt; do \
+        timeout 120 ebook-convert "${scratch}/book.snb" "${scratch}/book-from-snb.${target}" >> "${scratch}/calibre.log" 2>&1 || { tail -n 50 "${scratch}/calibre.log" >&2; exit 1; }; \
+    done \
+    && test "$(head -c 8 "${scratch}/book.snb")" = 'SNBP000B' \
+    && test "$(dd if="${scratch}/book-from-snb.epub" bs=1 skip=30 count=28 2> /dev/null)" = "mimetypeapplication/epub+zip" \
+    && grep -q 'Sample text' "${scratch}/book-from-snb.txt" \
+    && rm -rf "${scratch}"
+
 # Website capture (src/lib/capture/website-capture.ts): the page is drawn by Qt WebEngine (Chromium), which calibre's dependencies already put in this image
 # (libqt6webenginecore6 and python3-pyqt6.qtwebengine; nothing is added), driven by our own script as a separate sandboxed process whose only route to the
 # network is the gate proxy of the worker. The build fails unless the browser starts without a display and draws a page, from a `data:` URL that needs no

@@ -172,6 +172,7 @@ describe('classifying changed paths', () => {
     ['the ffmpeg install script', 'scripts/install-ffmpeg.sh', ['video', 'audio']],
     ['a djvulibre patch', 'scripts/djvulibre-patches/decode-thread-start-failure.patch', ['document']],
     ['the djvulibre gates', 'scripts/lib/djvulibre-gates.sh', ['document']],
+    ['the calibre patch of the SNB reader', 'scripts/calibre-patches/snb-entry-names-as-text.patch', ['ebook']],
     ['the avifenc install script', 'scripts/install-avifenc.sh', ['image', 'raw']],
     ['the avifenc source pin', 'scripts/avifenc/SOURCE', ['image', 'raw']],
     ['the GhostXPS install script', 'scripts/install-ghostxps.sh', ['document', 'vector']],

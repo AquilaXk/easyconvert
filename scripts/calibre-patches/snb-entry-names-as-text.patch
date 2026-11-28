@@ -1,0 +1,60 @@
+calibre: keep the entry names of an SNB book as text so the reader finds snbf/book.snbf
+
+calibre 8.5.0 (the Debian package of the worker image) stores each entry name of an SNB
+container as bytes and looks it up with text names, so its SNB reader finds no entry: it
+writes an empty book and stops with "IndexError: list index out of range" (docs/policy-decisions.md,
+entries 309 and 465). The change below is upstream's own fix, taken unmodified and applied to
+the installed snbfile.py while the image is built (Dockerfile.worker). calibre runs as a
+separate program; nothing of it is linked into or copied to src/.
+
+Upstream commit:  https://github.com/kovidgoyal/calibre/commit/c33f0a54bd63ac25fb3009ab5ac587a62dacfd80
+                  c33f0a54bd63ac25fb3009ab5ac587a62dacfd80 "SNB input: fix IndexError by keeping entry
+                  filenames as str", by dipu-bd, 2026-06-19, first released in v9.10.0
+File:             src/calibre/ebooks/snb/snbfile.py (calibre 8.5.0 .. 9.5.0 lack the change)
+Licence:          GPL-3.0 (`__license__ = 'GPL v3'` in the file; calibre COPYRIGHT file: GPL-3), Copyright (C) 2008-2026 Kovid
+                  Goyal and contributors; docs/licensing.md, section 2.41
+Applies to:       calibre 8.5.0+ds-1+deb13u3 with an offset of one line and no fuzz; the build skips it from calibre 9.10
+
+The text above the first "diff" line is ignored by patch(1).
+
+diff --git a/src/calibre/ebooks/snb/snbfile.py b/src/calibre/ebooks/snb/snbfile.py
+index 2ad97261cdcc..1ad422980507 100644
+--- a/src/calibre/ebooks/snb/snbfile.py
++++ b/src/calibre/ebooks/snb/snbfile.py
+@@ -107,7 +107,8 @@ def ParseFile(self, vfat, fileCount):
+         for i in range(fileCount):
+             f = FileStream()
+             (f.attr, f.fileNameOffset, f.fileSize) = struct.unpack('>iii', vfat[i * 12 : (i+1)*12])
+-            f.fileName = fileNames[i]
++            # Decode to str so lookups against str keys match (see GetFileStream)
++            f.fileName = fileNames[i].decode('utf-8', 'replace')
+             self.files.append(f)
+ 
+     def ParseTail(self, vtail, fileCount):
+@@ -159,8 +160,6 @@ def AppendPlain(self, fileName, tdir):
+         with open(os.path.join(tdir, fileName), 'rb') as data:
+             f.fileBody = data.read()
+         f.fileName = fileName.replace(os.sep, '/')
+-        if isinstance(f.fileName, str):
+-            f.fileName = f.fileName.encode('ascii', 'ignore')
+         self.files.append(f)
+ 
+     def AppendBinary(self, fileName, tdir):
+@@ -170,8 +169,6 @@ def AppendBinary(self, fileName, tdir):
+         with open(os.path.join(tdir, fileName), 'rb') as data:
+             f.fileBody = data.read()
+         f.fileName = fileName.replace(os.sep, '/')
+-        if isinstance(f.fileName, str):
+-            f.fileName = f.fileName.encode('ascii', 'ignore')
+         self.files.append(f)
+ 
+     def GetFileStream(self, fileName):
+@@ -208,7 +205,7 @@ def Output(self, outputFile):
+         binStream = b''
+         for f in self.files:
+             vfat += struct.pack('>iii', f.attr, len(fileNameTable), f.fileSize)
+-            fileNameTable += (f.fileName + b'\0')
++            fileNameTable += f.fileName.encode('ascii', 'ignore') + b'\0'
+ 
+             if f.attr & 0x41000000 == 0x41000000:
+                 # Plain Files

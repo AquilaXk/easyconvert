@@ -361,6 +361,36 @@ else
   fail "calibre did not read a TCR book inside the sandbox: $calibre_reader_failure"
 fi
 
+# calibre also reads the Bambook SNB books once the image build has applied upstream's fix for the entry names to the installed reader (scripts/calibre-patches,
+# entry 465; calibre 8.5.0 reads none and writes an empty text book): it writes an SNB book from the text file (`SNBP000B` at byte 0), reads it back to EPUB and
+# text as the worker starts it, and the EPUB must carry its media type entry and the text the marker text.
+calibre_snb_failure=""
+if ! sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
+    CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+    ebook-convert "$work_dir/book.txt" "$work_dir/book.snb" >"$work_dir/calibre.out" 2>&1; then
+  calibre_snb_failure="the SNB book was not written: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+elif [ "$(head -c 8 "$work_dir/book.snb")" != 'SNBP000B' ]; then
+  calibre_snb_failure="the SNB book does not start with its signature"
+fi
+for calibre_target in epub txt; do
+  [ -n "$calibre_snb_failure" ] && break
+  if ! sandboxed timeout "$CONVERSION_TIMEOUT_SECONDS" env HOME="$work_dir" QT_QPA_PLATFORM=offscreen CALIBRE_CONFIG_DIRECTORY="$work_dir/calibre-config" \
+      CALIBRE_CACHE_DIRECTORY="$work_dir/calibre-cache" CALIBRE_TEMP_DIR="$work_dir/calibre-tmp" PYTHONDONTWRITEBYTECODE=1 \
+      ebook-convert "$work_dir/book.snb" "$work_dir/from-snb.$calibre_target" >"$work_dir/calibre.out" 2>&1; then
+    calibre_snb_failure="the SNB book was not written as .$calibre_target: $(tail -c 300 "$work_dir/calibre.out" 2>/dev/null)"
+    break
+  fi
+  case "$calibre_target" in
+    epub) [ "$(dd if="$work_dir/from-snb.epub" bs=1 skip=30 count=28 2>/dev/null)" = "mimetypeapplication/epub+zip" ] || calibre_snb_failure="no EPUB media type entry" ;;
+    txt) grep -q "$MARKER_TEXT" "$work_dir/from-snb.txt" || calibre_snb_failure="the marker text is not in the text book (the reader finds no entry of the book)" ;;
+  esac
+done
+if [ -z "$calibre_snb_failure" ]; then
+  pass "calibre read an SNB book and wrote EPUB and text from it inside the sandbox"
+else
+  fail "calibre did not read an SNB book inside the sandbox: $calibre_snb_failure"
+fi
+
 # pandoc writes LaTeX from Markdown and reStructuredText from Markdown: it converts a Markdown file to each started as the worker starts it
 # (`--sandbox`, the job's home and temporary directories in the scratch directory), under the address space limit of the other programs; the
 # LaTeX must open with the section command pandoc writes for the heading, and the reStructuredText with the heading and its underline.

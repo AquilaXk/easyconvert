@@ -182,6 +182,10 @@
       "match": "^scripts/(install-djvulibre\\.sh$|djvulibre-patches/|lib/djvulibre-gates\\.sh$)"
     },
     {
+      "families": ["ebook"],
+      "match": "^scripts/calibre-patches/"
+    },
+    {
       "families": ["document", "vector"],
       "match": "^scripts/install-ghostxps\\.sh$"
     },
