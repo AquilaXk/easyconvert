@@ -890,7 +890,7 @@ describe('empty inputs in the manifest', () => {
     expect(() => parseManifest(file({ emptyInputReason: 'x' }))).toThrow(ManifestError);
   });
 
-  it('marks exactly the 56 corpus files that hold no content, each with the reason read from the file', () => {
+  it('marks exactly the 60 corpus files that hold no content, each with the reason read from the file', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'bench', 'realworld', 'manifest.json'), 'utf8')) as CorpusManifest;
     const marked = manifest.files.filter((f) => f.emptyInput === true).map((f) => f.id).sort();
     expect(marked).toEqual([
@@ -903,6 +903,7 @@ describe('empty inputs in the manifest', () => {
       'govdocs1-001782.html',
       'govdocs1-002007.html',
       'govdocs1-002028.html',
+      'lo-ole-img.xhtml',
       'office-document-51921-word-crash067.docx',
       'office-document-59378.docx',
       'office-document-emptydocumentwithheaderfooter.docx',
@@ -948,6 +949,8 @@ describe('empty inputs in the manifest', () => {
       'office-spreadsheet-simplewithimages.xls',
       'office-spreadsheet-solvercontainerafterspgr.xls',
       'office-spreadsheet-template.xlsx',
+      'okular-pdf_with_internal_links.tex',
+      'pdf-pdfbox-test_pagelabels.pdf',
       'pdf-pdfjs-issue17333.pdf',
       'pdf-vera-pdfa1b-devicen.pdf',
       'pdfjs-empty_protected.pdf',
