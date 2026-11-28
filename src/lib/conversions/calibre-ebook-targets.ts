@@ -15,11 +15,12 @@ export function isCalibreEbookTarget(target: string): boolean {
 }
 
 /**
- * The e-book containers that only calibre reads (docs/policy-decisions.md, "CHM, LIT and TCR books"): the worker hands the book to
- * `ebook-convert` as it is and calibre writes every target, the in-process targets (EPUB, PDF, RTF and text) included. SNB is not
- * here: the calibre release of the image (8.5.0) reads no SNB file (its reader compares the byte names of the archive with text names).
+ * The e-book containers that only calibre reads (docs/policy-decisions.md, "CHM, LIT and TCR books" and entry 465 for SNB): the worker
+ * hands the book to `ebook-convert` as it is and calibre writes every target, the in-process targets (EPUB, PDF, RTF and text)
+ * included. calibre 8.5.0 reads no SNB file (its reader compares the byte names of the archive with text names), so the worker image
+ * applies upstream's fix to the installed reader while it is built (scripts/calibre-patches).
  */
-export const CALIBRE_ONLY_SOURCES: ReadonlySet<string> = new Set(['chm', 'lit', 'tcr']);
+export const CALIBRE_ONLY_SOURCES: ReadonlySet<string> = new Set(['chm', 'lit', 'tcr', 'snb']);
 
 /** The targets calibre writes for those sources besides the five above; a ZIP of the container's files is the archive route's. */
 const CALIBRE_ONLY_SOURCE_TARGETS: ReadonlySet<string> = new Set(['epub', 'pdf', 'rtf', 'txt']);

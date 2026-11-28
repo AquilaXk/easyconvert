@@ -8,8 +8,6 @@ const WITHDRAWN_PAIRS: ReadonlySet<string> = new Set([
   'docx->pages', 'docx->xps',
   // Entry 183: a Pages document has no export to a presentation.
   'pages->ppt',
-  // Entry 309 and entry 455: the calibre of the image (8.5.0) reads no SNB file, its reader compares the byte names of the archive with text names, so these nine stay withdrawn.
-  'snb->azw3', 'snb->epub', 'snb->lrf', 'snb->mobi', 'snb->oeb', 'snb->pdb', 'snb->pdf', 'snb->rtf', 'snb->txt',
   'key->doc', 'key->xls',
   // Entry 455: the office suite has no XPS filter and Ghostscript's xpswrite writes a drawing with no Glyphs (bitmap rows by default, outlines with -dNOCACHE), so these eight stay withdrawn.
   'pot->xps',

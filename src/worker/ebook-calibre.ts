@@ -110,7 +110,7 @@ const PDB_ENCODING_UTF8 = 'utf-8';
 
 /**
  * Sources calibre has an input plug-in for and that are handed to it unchanged: the Palm, Kindle and Sony families (a PRC is a Mobipocket
- * book under its Palm name), and the CHM, LIT and TCR books that no other engine of the project reads.
+ * book under its Palm name), and the CHM, LIT, TCR and SNB books that no other engine of the project reads.
  */
 const CALIBRE_NATIVE_SOURCES: ReadonlySet<string> = new Set(['mobi', 'azw', 'azw3', 'pdb', 'lrf', 'prc', ...CALIBRE_ONLY_SOURCES]);
 

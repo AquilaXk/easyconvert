@@ -25,12 +25,17 @@ import { withMissingBinary } from './helpers/native-tools';
  * Microsoft Reader and Compiled HTML Help files of the real-world corpus and a Psion TCR book written by calibre from public text
  * (tests/fixtures/ebooks/PROVENANCE). The oracles are not calibre: 7-Zip unpacks a CHM, the TCR container is decoded by a reader
  * written here from its layout, the EPUB is read as a ZIP, the PDF by Poppler, the RTF by LibreOffice, the Palm books by the
- * Palm database reader of the tests, and LRF by `lrf2lrs`. SNB is not offered: the calibre of the image reads no SNB file.
+ * Palm database reader of the tests, and LRF by `lrf2lrs`.
+ *
+ * SNB books (entry 465) are the fourth container: the calibre of the image (8.5.0) reads none until the image build applies upstream's fix
+ * for the entry names (scripts/calibre-patches), and the CI calibre (9.15.0) has it. The real files are the two calibre-written books of the
+ * format corpus; a book that links to files of the host is read as the CHM above is.
  */
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'ebooks');
 const CONVERSION_TIMEOUT_MS = 300_000;
-const SOURCES = ['chm', 'lit', 'tcr'] as const;
+const SOURCES = ['chm', 'lit', 'tcr', 'snb'] as const;
+const MAGIC = { chm: 'ITSF', lit: 'ITOLITLS', tcr: '!!8-Bit!!', snb: 'SNBP000B' } as const;
 const TARGETS = ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'] as const;
 const calibreMissing = skipUnless('ebook-convert', calibreBinary !== null);
 const sevenZipMissing = skipWithoutTools('7z');
@@ -136,10 +141,6 @@ describe('the pairs of the books only calibre reads', () => {
     expect([...FORMAT_REGISTRY[source].targetFormats].sort()).toEqual(['zip', ...TARGETS].sort());
   });
 
-  it('does not offer SNB, whose books the calibre of the image cannot read', () => {
-    expect(FORMAT_REGISTRY.snb.targetFormats).toEqual(['zip']);
-  });
-
   it.each(SOURCES.flatMap((source) => TARGETS.map((target) => [source, target] as const)))('%s -> %s is a native pair with calibre as its only engine', (source, target) => {
     expect(requiresNativeEngine(source, target)).toBe(true);
     expect(enginesForPair(source, target)).toEqual([{ id: 'calibre', default: true }]);
@@ -151,10 +152,19 @@ describe('the pairs of the books only calibre reads', () => {
   });
 
   it.each(SOURCES.flatMap((source) => TARGETS.map((target) => [source, target] as const)))('%s -> %s answers an unavailable engine on a worker without ebook-convert', async (source, target) => {
-    const probe = Buffer.concat([Buffer.from(source === 'chm' ? 'ITSF' : source === 'lit' ? 'ITOLITLS' : '!!8-Bit!!', 'latin1'), Buffer.alloc(64)]);
+    const probe = Buffer.concat([Buffer.from(MAGIC[source], 'latin1'), Buffer.alloc(64)]);
     const run = withMissingBinary('EBOOK_CONVERT_PATH', () => dispatchConversion(probe, source, target, {}, `book.${source}`));
     await expect(run).rejects.toBeInstanceOf(EngineUnavailableError);
     await expect(run).rejects.toMatchObject({ engineName: 'ebook-convert' });
+  });
+
+  it('refuses a Samsung S Note book named .snb, a ZIP archive, before calibre is asked', async () => {
+    const note = await new JSZip().file('note.xml', '<note/>').generateAsync({ type: 'nodebuffer' });
+    expect(() => assertNotSpoofedFile(note, 'snb', 'note.snb')).toThrow(/^File spoofing rejected for file "note\.snb": .* incompatible with declared format "\.snb"/);
+  });
+
+  it('accepts a Bambook book by its signature', () => {
+    expect(assertNotSpoofedFile(Buffer.concat([Buffer.from('SNBP000B', 'latin1'), Buffer.alloc(64)]), 'snb', 'book.snb')).toBeUndefined();
   });
 
   it.each(SOURCES)('refuses a text file named .%s before calibre is asked', (source) => {
@@ -173,6 +183,21 @@ describe.skipIf(calibreMissing)('the books of the real-world corpus and the fixt
         const result = await dispatchConversion(bytes, 'lit', target, {}, id);
         expect(result.engineUsed, target).toBe('native-calibre');
         expect(result.filename, target).toBe(`${id.replace(/\.lit$/, '')}.${target === 'oeb' ? 'zip' : target}`);
+        const words = await wordsOfTarget(result.buffer, target);
+        expect(recall(expected, words), `${id} -> ${target}`).toBe(1);
+      }
+    }, CONVERSION_TIMEOUT_MS);
+  });
+
+  describe.each(['opf-lorem-ipsum-0857.snb', 'opf-lorem-ipsum-090.snb'])('the Bambook book %s', (id) => {
+    it.skipIf(pdfToolsMissing || sofficeMissing)('is written to every target with the words of the book, each read back by a reader of its own', async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, id);
+      expect(bytes.subarray(0, 8).toString('latin1')).toBe('SNBP000B');
+      const expected = wordsOf(LOREM);
+      for (const target of targetsOf('snb')) {
+        const result = await dispatchConversion(bytes, 'snb', target, {}, id);
+        expect(result.engineUsed, target).toBe('native-calibre');
+        expect(result.filename, target).toBe(`${id.replace(/\.snb$/, '')}.${target === 'oeb' ? 'zip' : target}`);
         const words = await wordsOfTarget(result.buffer, target);
         expect(recall(expected, words), `${id} -> ${target}`).toBe(1);
       }
@@ -237,10 +262,18 @@ describe.skipIf(calibreMissing)('the books of the real-world corpus and the fixt
       ['lit', Buffer.concat([Buffer.from('ITOLITLS', 'latin1'), Buffer.alloc(200)])],
       ['chm', Buffer.concat([Buffer.from('ITSF', 'latin1'), Buffer.alloc(200)])],
       ['tcr', Buffer.concat([Buffer.from('!!8-Bit!!', 'latin1'), Buffer.alloc(200)])],
+      ['snb', Buffer.concat([Buffer.from('SNBP000B', 'latin1'), Buffer.alloc(200)])],
     ] as const)('refuses a damaged .%s with a typed conversion error', async (source, damaged) => {
       const failure = await dispatchConversion(damaged, source, 'txt', {}, `book.${source}`).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(ConversionFailedError);
       expect((failure as Error).message).toMatch(new RegExp(`^calibre could not convert the \\.${source} file to \\.txt`));
+    }, CONVERSION_TIMEOUT_MS);
+
+    it('refuses a Bambook book cut in half', async (ctx) => {
+      const { bytes } = await requireRealworldSample(ctx, 'opf-lorem-ipsum-0857.snb');
+      const failure = await dispatchConversion(bytes.subarray(0, bytes.length >> 1), 'snb', 'txt', {}, 'cut.snb').catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ConversionFailedError);
+      expect((failure as Error).message).toMatch(/^calibre could not convert the \.snb file to \.txt/);
     }, CONVERSION_TIMEOUT_MS);
 
     it('refuses a book cut in half', async (ctx) => {
@@ -253,9 +286,11 @@ describe.skipIf(calibreMissing)('the books of the real-world corpus and the fixt
   });
 });
 
-describe.skipIf(calibreMissing || sevenZipMissing)('a CHM whose pages link to a file of the host', () => {
+describe.each([['chm', 'hostile-links.chm'], ['snb', 'hostile-links.snb']] as const)('a .%s book whose pages link to a file of the host', (source, fixture) => {
   const HOSTS_FILE = '/etc/hosts';
-  const hostile = fs.readFileSync(path.join(FIXTURES, 'hostile-links.chm'));
+  const hostile = fs.readFileSync(path.join(FIXTURES, fixture));
+  // 7-Zip is the oracle of the CHM files only; the SNB book is read back by the readers of every target alone.
+  const missingTool = calibreMissing || (source === 'chm' && sevenZipMissing);
 
   async function extractedTextOfTarget(book: Buffer, target: string): Promise<string> {
     if (target === 'txt') return book.toString('utf-8');
@@ -272,7 +307,7 @@ describe.skipIf(calibreMissing || sevenZipMissing)('a CHM whose pages link to a 
     const sentinel = fs.existsSync(HOSTS_FILE) ? fs.readFileSync(HOSTS_FILE, 'utf-8').split('\n').find((line) => /\S{9,}/.test(line))?.trim() : undefined;
     expect(typeof sentinel, `${HOSTS_FILE} has a line to look for`).toBe('string');
     const hostLine = sentinel as string;
-    const result = await dispatchConversion(hostile, 'chm', target, {}, 'hostile.chm');
+    const result = await dispatchConversion(hostile, source, target, {}, `hostile.${source}`);
     const words = await wordsOfTarget(result.buffer, target);
     expect(words.join(' ')).toContain('visible words of the book');
     const extracted = await extractedTextOfTarget(result.buffer, target);
@@ -288,15 +323,15 @@ describe.skipIf(calibreMissing || sevenZipMissing)('a CHM whose pages link to a 
     }
   }
 
-  it.each(['epub', 'txt', 'oeb', 'mobi', 'azw3'] as const)('writes the book without the file the links name, as .%s', async (target) => {
+  it.skipIf(missingTool).each(['epub', 'txt', 'oeb', 'mobi', 'azw3'] as const)('writes the book without the file the links name, as .%s', async (target) => {
     await assertHostFileNotLeaked(target);
   }, CONVERSION_TIMEOUT_MS);
 
-  it.skipIf(pdfToolsMissing)('writes the book without the file the links name, as .pdf', async () => {
+  it.skipIf(missingTool || pdfToolsMissing)('writes the book without the file the links name, as .pdf', async () => {
     await assertHostFileNotLeaked('pdf');
   }, CONVERSION_TIMEOUT_MS);
 
-  it.skipIf(sofficeMissing)('writes the book without the file the links name, as .rtf', async () => {
+  it.skipIf(missingTool || sofficeMissing)('writes the book without the file the links name, as .rtf', async () => {
     await assertHostFileNotLeaked('rtf');
   }, CONVERSION_TIMEOUT_MS);
 });

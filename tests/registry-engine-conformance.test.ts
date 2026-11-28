@@ -762,6 +762,7 @@ const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   chm: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   lit: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   tcr: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
+  snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   doc: ['jpg', 'png', 'rtf'],
   docm: ['doc', 'jpg', 'png', 'rtf'],
   docx: ['azw3', 'doc', 'jpg', 'lrf', 'mobi', 'oeb', 'pdb', 'png', 'rtf'],
@@ -1181,7 +1182,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
     slk: ['tsv'],
-    snb: ['azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
     sxd: ['odp', 'pptx'],
     webp: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     wk1: ['tsv'],
@@ -1880,6 +1880,8 @@ describe('native-engine pairs route through the dispatcher', () => {
         return Buffer.concat([Buffer.from('ITOLITLS', 'latin1'), Buffer.alloc(120)]);
       case 'tcr':
         return Buffer.concat([Buffer.from('!!8-Bit!!', 'latin1'), Buffer.alloc(120)]);
+      case 'snb':
+        return Buffer.concat([Buffer.from('SNBP000B', 'latin1'), Buffer.alloc(120)]);
       default:
         return undefined;
     }

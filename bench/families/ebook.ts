@@ -51,15 +51,15 @@ const ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>',
 const CALIBRE_BOOK_TARGETS = ['azw3', 'mobi', 'pdb', 'lrf', 'oeb'] as const;
 type CalibreBookTarget = (typeof CALIBRE_BOOK_TARGETS)[number];
 const isCalibreBookTarget = (target: string): target is CalibreBookTarget => (CALIBRE_BOOK_TARGETS as readonly string[]).includes(target);
-/** Whether the product hands the pair to the reference tool itself: it writes the target, or reads a book that only it reads (LIT). */
-const writtenByReferenceTool = (item: BookCase): boolean => isCalibreBookTarget(item.target) || item.source === 'lit';
+/** Whether the product hands the pair to the reference tool itself: it writes the target, or reads a book that only it reads (LIT, SNB). */
+const writtenByReferenceTool = (item: BookCase): boolean => isCalibreBookTarget(item.target) || item.source === 'lit' || item.source === 'snb';
 /** A PDB book (PalmDOC) holds no pictures. */
 const PICTURE_TARGETS = new Set<string>(['pdf', 'epub', 'azw3', 'mobi', 'lrf', 'oeb']);
 /** Pages of the generated comic archive. */
 const COMIC_PAGES = ['photo-a.jpg', 'photo-b.png', 'lineart.png'] as const;
 
 interface BookCase {
-  source: 'epub' | 'mobi' | 'fb2' | 'prc' | 'cbz' | 'lit';
+  source: 'epub' | 'mobi' | 'fb2' | 'prc' | 'cbz' | 'lit' | 'snb';
   target: 'txt' | 'pdf' | 'epub' | 'rtf' | CalibreBookTarget;
 }
 
@@ -83,6 +83,8 @@ const CASES: readonly BookCase[] = [
   ...CALIBRE_BOOK_TARGETS.map((target) => ({ source: 'cbz' as const, target })),
   // The Microsoft Reader pairs (docs/policy-decisions.md, "CHM, LIT and TCR books"): the reference tool writes the LIT book from the EPUB, and reads it on both sides.
   ...(['txt', 'pdf', 'epub', 'rtf', ...CALIBRE_BOOK_TARGETS] as const).map((target) => ({ source: 'lit' as const, target })),
+  // The Bambook pairs (entry 465): the reference tool writes the SNB book from the EPUB (the image's calibre reads it with the patch of scripts/calibre-patches).
+  ...(['txt', 'pdf', 'epub', 'rtf', ...CALIBRE_BOOK_TARGETS] as const).map((target) => ({ source: 'snb' as const, target })),
 ];
 const caseName = (item: BookCase): string => `book.${item.source}->${item.target}`;
 /** The conversions a public book gets, by its format (the targets of the generated book's cases). */
@@ -399,10 +401,10 @@ async function runCase(ctx: FamilyContext, tools: Tools, files: BookFiles, book:
   return rows;
 }
 
-/** The generated book in the form a source format reads: the corpus files, the MOBI under its Palm name, the pictures of the corpus bound as a comic archive, the EPUB written as a LIT book by the reference tool. */
+/** The generated book in the form a source format reads: the corpus files, the MOBI under its Palm name, the pictures of the corpus bound as a comic archive, the EPUB written as a LIT or SNB book by the reference tool. */
 async function generatedFiles(ctx: FamilyContext, tools: Tools, source: BookCase['source'], bookTruth: Truth, comicTruth: Truth): Promise<BookFiles> {
   const filename = `book.${source}`;
-  if (source === 'lit') {
+  if (source === 'lit' || source === 'snb') {
     const file = ctx.scratch(filename);
     runTool(tools.ebookConvert, [ctx.corpusPath('ebooks/book.epub'), file], { env: CALIBRE_ENV });
     return { file, filename, truth: bookTruth };

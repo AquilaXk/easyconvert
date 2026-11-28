@@ -294,9 +294,10 @@
       ]
     },
     "snb": {
-      "reason": "Two Bambook books are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus).",
+      "reason": "Two Bambook books are published (calibre 0.8.57 and 0.9.0 outputs in the Open Preservation Foundation format corpus); no book written by a Bambook device or its desktop software was found. The .snb files on GitHub are notebooks of a Scala tool, shaders, navigation data and programs of a toy language, and the Samsung S Note files of the same extension are ZIP archives.",
       "searched": [
-        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits"
+        "file lists of calibre, libmobi and the Open Preservation Foundation format corpus at pinned commits",
+        "a GitHub code search for the extension snb on 2026-11-28 (about 300 files in 60 repositories, each by repository and path a notebook, shader, navigation or program file, none an e-book collection) and for the signature SNBP000B (calibre and its forks, readers, writers and converters: sources, no sample books)"
       ]
     },
     "tcr": {

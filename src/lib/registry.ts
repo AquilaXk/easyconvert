@@ -981,7 +981,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'application/x-snb',
     category: 'ebook',
     description: 'Shanda Bambook electronic book archive format.',
-    targetFormats: ['zip'],
+    targetFormats: ['zip', 'azw3', 'epub', 'lrf', 'mobi', 'oeb', 'pdb', 'pdf', 'rtf', 'txt'],
   },
   tcr: {
     id: 'tcr',

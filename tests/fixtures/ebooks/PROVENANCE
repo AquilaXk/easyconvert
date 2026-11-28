@@ -16,4 +16,11 @@ hostile-links.chm (5,257 bytes), a Compiled HTML Help file whose first page link
   `file:///` URL and by an absolute path. Python 3.12: `python3 -I generators/mkchm-links.py` (run in this directory, with an `out/` directory).
   Read back with chmlib (python3-chm): and by calibre 8.5.0 and 7.6.0.
 
+hostile-links.snb (492 bytes), a Bambook book whose one chapter links to files of the host
+  Written by calibre's own SNBFile writer (the code of calibre 8.5.0 and of 9.x is the same there) through generators/mksnb-links.py, which loads
+  `calibre/ebooks/snb/snbfile.py` by path and copies nothing of it. The chapter says "These are the visible words of the book." and names
+  /etc/hosts and /etc/passwd as pictures: by an absolute path, by a relative path with twelve `..` segments and by a `file:///` URL. Read by calibre
+  8.5.0 with the fix of scripts/calibre-patches (entry 465) to EPUB, text and OEB on the Linux testbed: the pictures stay dangling `src` attributes,
+  no file of the host is read into the book (a PNG written beside the book was named the same three ways and was not embedded either).
+
 rocketbook-calibre-9.17-rich.rb: see docs/policy-decisions.md and tests/rocketbook-real-samples.test.ts.
