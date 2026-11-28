@@ -2128,7 +2128,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/vnd.dwg',
     category: 'cad',
     description: 'Autodesk AutoCAD binary 2D and 3D computer-aided design format.',
-    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'jpg', 'bmp', 'gif', 'tiff', 'eps'],
+    targetFormats: ['dxf', 'pdf', 'svg', 'png', 'zip', 'jpg', 'bmp', 'gif', 'tiff', 'eps', 'wmf'],
   },
   dxf: {
     id: 'dxf',
@@ -2137,7 +2137,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/vnd.dxf',
     category: 'cad',
     description: 'AutoCAD ASCII vector drawing interchange format.',
-    targetFormats: ['pdf', 'svg', 'png', 'zip', 'jpg', 'bmp', 'gif', 'tiff', 'eps'],
+    targetFormats: ['pdf', 'svg', 'png', 'zip', 'jpg', 'bmp', 'gif', 'tiff', 'eps', 'wmf'],
   },
   step: {
     id: 'step',

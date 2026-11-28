@@ -325,12 +325,12 @@ describe.skipIf(skipWithoutTools('gs', 'pdftocairo', 'soffice', 'rsvg-convert') 
   }, TIMEOUT_MS);
 });
 
-/** Entries 454, 458 and 460 offer EMF and WMF for CorelDRAW, CGM, EMF, WMF, PostScript, Illustrator and EPS sources: what entry 187 left out and those entries kept out is listed. */
+/** Entries 454, 458 and 460 offer EMF and WMF for CorelDRAW, CGM, EMF, WMF, PostScript, Illustrator and EPS sources, and entry 466 WMF for DXF and DWG: what entry 187 left out and those entries kept out is listed. */
 describe('the pairs left out of entry 187 stay out of the registry', () => {
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     dwf: ['cgm', 'wmf'],
-    dwg: ['cgm', 'wmf'],
-    dxf: ['cgm', 'wmf'],
+    dwg: ['cgm'],
+    dxf: ['cgm'],
     emf: ['dxf'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],

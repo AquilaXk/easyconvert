@@ -17,6 +17,8 @@ const NATIVE_ENGINE_ONLY_PAIRS: ReadonlySet<string> = new Set([
   'djvu->avif', 'djvu->bmp', 'djvu->eps', 'djvu->gif', 'djvu->ico', 'djvu->jpg', 'djvu->pdf', 'djvu->png', 'djvu->ps', 'djvu->psd', 'djvu->svg', 'djvu->tiff', 'djvu->webp',
   // A CSV table's page images: Poppler draws the pages of the PDF the in-process engine writes of it.
   'csv->jpg', 'csv->png',
+  // A DXF or DWG drawing written as WMF: Poppler draws the page of the PDF the in-process engine writes of it (entry 466).
+  'dwg->wmf', 'dxf->wmf',
   // A PDF and a presentation written as EMF or WMF: Poppler draws the page as SVG for the in-process writer, and the office suite writes the pages it refuses (entry 454).
   // Presentations written as PostScript pictures (Poppler draws the suite's PDF) or as Markdown (the PDF text reader reads the suite's PDF).
   'dps->eps', 'dps->md',

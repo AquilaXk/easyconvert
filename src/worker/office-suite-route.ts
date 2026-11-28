@@ -468,9 +468,16 @@ const PAGE_IMAGE_TARGETS: ReadonlySet<string> = new Set(['jpg', 'png']);
 /** The sources whose pages the native PDF tools draw: the text and markup sources, and a delimited table, whose PDF the in-process engine writes. */
 const PAGE_IMAGE_SOURCES: ReadonlySet<string> = new Set([...MARKUP_SOURCES, 'csv']);
 
-/** Whether the pair is a text, markup or delimited source written as page images (`convertMarkupPageImages`). */
+/**
+ * The drawings written as WMF from the page of their PDF (entry 466): the SVG a DXF is drawn as holds text and round line caps that
+ * the metafile writer refuses, while Poppler's page of the drawing's PDF holds the text as outlines.
+ */
+const DRAWING_PAGE_SOURCES: ReadonlySet<string> = new Set(['dxf', 'dwg']);
+const DRAWING_PAGE_TARGET = 'wmf';
+
+/** Whether the pair is a text, markup or delimited source written as page images, or a drawing written as WMF (`convertMarkupPageImages`). */
 export function isMarkupPageImagePair(src: string, tgt: string): boolean {
-  return PAGE_IMAGE_SOURCES.has(src) && PAGE_IMAGE_TARGETS.has(tgt);
+  return (PAGE_IMAGE_SOURCES.has(src) && PAGE_IMAGE_TARGETS.has(tgt)) || (DRAWING_PAGE_SOURCES.has(src) && tgt === DRAWING_PAGE_TARGET);
 }
 
 /** The text file the office suite is handed as it is, and the targets it writes from it (`convertTextFileDirectly`). */
@@ -644,9 +651,9 @@ async function convertTextFileDirectly(deps: OfficeSuiteRouteDeps, request: Offi
 }
 
 /**
- * A text, Markdown, reStructuredText, HTML or CSV document written as page images: the PDF of the source is written as that source converts to
- * PDF, and the native PDF tools draw its pages, so that the pictures are the pages of the PDF the same source converts to, one for each
- * page and a ZIP of them for a document of several. The PDF never goes to the output path of the request and carries no page selection,
+ * A text, Markdown, reStructuredText, HTML or CSV document written as page images, or a DXF or DWG drawing written as WMF: the PDF of the
+ * source is written as that source converts to PDF, and the native PDF tools draw its pages, so that the pictures are the pages of the
+ * PDF the same source converts to, one for each page and a ZIP of them for a document of several. The PDF never goes to the output path of the request and carries no page selection,
  * which belongs to the pictures. Without Poppler the answer is an unavailable engine.
  */
 export async function convertMarkupPageImages(

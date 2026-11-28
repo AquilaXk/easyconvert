@@ -749,6 +749,8 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   ai: ['dxf', 'emf', 'svg', 'wmf'],
   csv: ['jpg', 'png', 'xls'],
+  dwg: ['wmf'],
+  dxf: ['wmf'],
   azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
   cbr: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
@@ -1156,8 +1158,8 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     docx: ['hwp', 'hwpx', 'pages', 'xps'],
     dps: ['swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
-    dwg: ['cgm', 'dwg', 'wmf'],
-    dxf: ['cgm', 'dwg', 'wmf'],
+    dwg: ['cgm', 'dwg'],
+    dxf: ['cgm', 'dwg'],
     emf: ['dxf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
@@ -1641,6 +1643,11 @@ describe('native-engine pairs route through the dispatcher', () => {
   const DOCUMENT_TEXT_SOURCES = new Set(['txt', 'md', 'html', 'htm', 'rst']);
   /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
   const TABLE_PICTURE_SOURCE = 'csv';
+  /**
+   * A DXF or DWG drawing written as WMF from the page of the PDF the in-process engine writes of it (entry 466): Poppler draws the page,
+   * after `dwg2dxf` for a DWG. tests/cad-wmf-real-samples.test.ts converts real drawings and reads them back.
+   */
+  const DRAWING_SOURCES = new Set(['dxf', 'dwg']);
   /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */
   const BRIDGED_PDF_TARGETS = new Set(['doc', 'ppt', 'xls']);
   /** Page targets beyond jpg and png: the encoded rasters, PostScript, EPS and DXF are written from the rendered PDF pages. */
@@ -1676,7 +1683,7 @@ describe('native-engine pairs route through the dispatcher', () => {
   const pairs = allPartPairs.filter(([source, target]) => !isCalibreOnlyPair(source, target) && !isPandocPair(source, target) && !isSubtitleFormat(source));
   /** The subtitle pairs are FFmpeg's: the sandbox, the file checks and the independent read-back are proven by tests/subtitle-pairs.test.ts. */
   const subtitlePairs = allPartPairs.filter(([source]) => isSubtitleFormat(source));
-  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source);
+  const authorable = ([source]: [string, string]) => !NO_AUTHORABLE_INPUT.has(source) && !POSTSCRIPT_SOURCES.has(source) && !XPS_SOURCES.has(source) && !DJVU_SOURCES.has(source) && !DRAWING_SOURCES.has(source);
   const MARKDOWN_TARGET = 'md';
   const officeToOffice = pairs.filter((pair) => pair[0] !== PDF_SOURCE && !PAGE_TARGETS.has(pair[1]) && pair[1] !== 'html' && pair[1] !== MARKDOWN_TARGET && authorable(pair));
   const officeToMarkdown = pairs.filter((pair) => pair[0] !== PDF_SOURCE && pair[1] === MARKDOWN_TARGET && authorable(pair));
@@ -1699,6 +1706,8 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (POSTSCRIPT_SOURCES.has(source)) return { envVar: 'PS2PDF_PATH', engineName: 'ps2pdf' };
     if (XPS_SOURCES.has(source)) return { envVar: 'GXPS_PATH', engineName: 'gxps' };
     if (DJVU_SOURCES.has(source)) return { envVar: 'DDJVU_PATH', engineName: 'ddjvu' };
+    if (source === 'dwg') return { envVar: 'DWG2DXF_PATH', engineName: 'dwg2dxf' };
+    if (DRAWING_SOURCES.has(source)) return { envVar: 'PDFTOCAIRO_PATH', engineName: 'pdftocairo' };
     // The pictures of a text, Markdown, reStructuredText or HTML document are the pages of its PDF, drawn by Poppler; the office suite writes its Word 97 and RTF files.
     if (DOCUMENT_TEXT_SOURCES.has(source) || source === TABLE_PICTURE_SOURCE) return IMAGE_TARGETS.has(target) ? { envVar: 'PDFTOPPM_PATH', engineName: 'pdftoppm' } : { envVar: 'SOFFICE_PATH', engineName: 'soffice' };
     // A table read from a PDF is written as .xls, and a text or slide document as Word 97 or PowerPoint 97, by the office suite, like every other source of those formats.
@@ -1826,6 +1835,8 @@ describe('native-engine pairs route through the dispatcher', () => {
     if (POSTSCRIPT_SOURCES.has(source)) return Buffer.from('%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage\n', 'latin1');
     if (XPS_SOURCES.has(source)) return emptyZipPackage();
     if (DJVU_SOURCES.has(source)) return singlePage(64, 64);
+    if (source === 'dxf') return DXF_SEED;
+    if (source === 'dwg') return Buffer.concat([Buffer.from('AC1015', 'latin1'), Buffer.alloc(OLE_SECTOR_BYTES)]);
     return Buffer.concat([OLE_SIGNATURE, Buffer.alloc(OLE_SECTOR_BYTES - OLE_SIGNATURE.length)]);
   }
 

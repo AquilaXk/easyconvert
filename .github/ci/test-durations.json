@@ -208,6 +208,7 @@
   "tests/cad-step-iges-encoders.test.ts": 5.1,
   "tests/cad-topology-units.test.ts": 0,
   "tests/cad-watertightness-and-astral-cmap.test.ts": 0,
+  "tests/cad-wmf-real-samples.test.ts": 12.0,
   "tests/camera-raw-ahd-amaze-separation.test.ts": 0.5,
   "tests/camera-raw-false-color-suppression.test.ts": 0,
   "tests/capture-driver-config.test.ts": 0.3,

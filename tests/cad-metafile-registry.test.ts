@@ -78,10 +78,10 @@ describe('Metafile registry advertises only working conversion pairs', () => {
     const sorted = [...advertised].sort((a, b) => a.localeCompare(b));
     // A PDF, a Visio, CorelDRAW, CGM, EMF or WMF drawing and a presentation (EMF only) reach EMF and WMF through the SVG that Poppler
     // draws from the office suite's PDF, and a page the in-process writers refuse through the office suite (entry 454); the SVG pairs
-    // are written from SVG by the in-process encoders. tests/vector-sources-real-samples.test.ts and
+    // are written from SVG by the in-process encoders, and a DXF or DWG drawing as WMF from the page of the PDF the in-process engine writes (entry 466). tests/vector-sources-real-samples.test.ts and
     // tests/office-metafile-real-samples.test.ts convert real files. SVG to CGM is withdrawn (entry 357): the reference offers CGM only from DWF, DWG and DXF.
     expect(sorted).toEqual([
-      'ai->emf', 'ai->wmf', 'cdr->emf', 'cdr->wmf', 'cgm->emf', 'cgm->wmf', 'emf->emf', 'emf->wmf', 'eps->emf', 'eps->wmf', 'pdf->emf', 'pdf->wmf', 'pot->emf', 'potx->emf', 'ppt->emf', 'pptm->emf', 'pptx->emf', 'ps->emf', 'ps->wmf',
+      'ai->emf', 'ai->wmf', 'cdr->emf', 'cdr->wmf', 'cgm->emf', 'cgm->wmf', 'dwg->wmf', 'dxf->wmf', 'emf->emf', 'emf->wmf', 'eps->emf', 'eps->wmf', 'pdf->emf', 'pdf->wmf', 'pot->emf', 'potx->emf', 'ppt->emf', 'pptm->emf', 'pptx->emf', 'ps->emf', 'ps->wmf',
       'svg->emf', 'svg->wmf', 'svgz->emf', 'svgz->wmf', 'vsd->emf', 'vsd->wmf', 'wmf->emf', 'wmf->wmf',
     ]);
   });
