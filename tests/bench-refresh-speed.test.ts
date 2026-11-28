@@ -77,9 +77,9 @@ const baseline = (): Baseline => ({
 const gaps = (): GapFile => ({
   schemaVersion: 1,
   gaps: [
-    { id: SLOW, issue: 487, ratio: 0.46, note: 'speed ratio 0.46 or below when recorded (baseline 0.46, measured 0.46): ours is slower than the reference tool' },
-    { id: NEAR, issue: 497, ratio: 0.92, note: 'TODO(lead): file a dedicated issue' },
-    { id: 'image/photo-a.jpg->webp/bd_rate_psnr', issue: 640, ratio: null, note: 'quality gap', recorded: 4, reference: 0 },
+    { id: SLOW, entry: 87, ratio: 0.46, note: 'speed ratio 0.46 or below when recorded (baseline 0.46, measured 0.46): ours is slower than the reference tool' },
+    { id: NEAR, entry: 97, ratio: 0.92, note: 'TODO(lead): file a dedicated issue' },
+    { id: 'image/photo-a.jpg->webp/bd_rate_psnr', entry: 140, ratio: null, note: 'quality gap', recorded: 4, reference: 0 },
   ],
 });
 
@@ -104,12 +104,12 @@ describe('planning a speed refresh', () => {
     expect(plan.gaps.gaps).toEqual([
       {
         id: SLOW,
-        issue: 487,
+        entry: 87,
         ratio: 0.52,
         note: 'speed ratio 0.52 or below when recorded on the CI runner (previous record 0.46): ours is slower than the reference tool',
         history: [{ ratio: 0.5278, at: RUN_1, commit: COMMIT }],
       },
-      { id: NEAR, issue: 497, ratio: 0.8, note: 'TODO(lead): file a dedicated issue', history: [{ ratio: 0.8049, at: RUN_1, commit: COMMIT }] },
+      { id: NEAR, entry: 97, ratio: 0.8, note: 'TODO(lead): file a dedicated issue', history: [{ ratio: 0.8049, at: RUN_1, commit: COMMIT }] },
       gaps().gaps[2],
     ]);
     expect(plan.gapChanges).toEqual([

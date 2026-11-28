@@ -9,11 +9,11 @@ import { applyParityVerdict, decide, ParityPolicyError, parseRunFile, readRunFil
  * non-strict run or a failed benchmark fails the job, and nothing excuses it.
  */
 
-type Row = { id: string; family: string; case: string; metric: string; outcome: string; basis: string; detail: string; worsening: null; allowance: null; gap: { id: string; issue: number | null; note: string } | null };
+type Row = { id: string; family: string; case: string; metric: string; outcome: string; basis: string; detail: string; worsening: null; allowance: null; gap: { id: string; entry: number | null; note: string } | null };
 
-const failing = (id: string, issue: number | null = null): Row => {
+const failing = (id: string, entry: number | null = null): Row => {
   const [family, caseName, metric] = id.split('/');
-  return { id, family, case: caseName, metric, outcome: 'fail', basis: 'speed-below-reference', detail: `${metric} is below the reference`, worsening: null, allowance: null, gap: issue === null ? null : { id, issue, note: 'known' } };
+  return { id, family, case: caseName, metric, outcome: 'fail', basis: 'speed-below-reference', detail: `${metric} is below the reference`, worsening: null, allowance: null, gap: entry === null ? null : { id, entry, note: 'known' } };
 };
 const passing = (id: string): Row => ({ ...failing(id), outcome: 'pass', basis: 'speed-pass', detail: 'ok' });
 
@@ -52,7 +52,7 @@ describe('the verdict file', () => {
     ['a verdict that disagrees with its rows', (f) => { (f.parity as { verdict: string }).verdict = 'pass'; }, /disagrees/],
     ['a row of an unknown outcome', (f) => { ((f.parity as { rows: Row[] }).rows[0] as { outcome: string }).outcome = 'meh'; }, /unknown outcome/],
     ['a row without an id', (f) => { delete ((f.parity as { rows: Row[] }).rows[0] as Partial<Row>).id; }, /id, a family and a detail/],
-    ['a malformed gap', (f) => { ((f.parity as { rows: Row[] }).rows[0] as { gap: unknown }).gap = { issue: 'x' }; }, /malformed gap/],
+    ['a malformed gap', (f) => { ((f.parity as { rows: Row[] }).rows[0] as { gap: unknown }).gap = { entry: 'x' }; }, /malformed gap/],
   ])('rejects %s', (_name, damage, message) => {
     const file = runFile([failing(XZ)]);
     damage(file);

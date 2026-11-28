@@ -145,7 +145,7 @@ describe('judging a tracked row by its median', () => {
   const XZ = 'compression/mixed.xz->tar/throughput';
   const gapsWith = (history: number[], ratio: number): GapFile => ({
     schemaVersion: PARITY_SCHEMA_VERSION,
-    gaps: [{ id: XZ, issue: 685, ratio, note: 'archive decode speed', ...(history.length > 0 ? { history: points(...history) } : {}) }],
+    gaps: [{ id: XZ, entry: 185, ratio, note: 'archive decode speed', ...(history.length > 0 ? { history: points(...history) } : {}) }],
   });
   const speed = (over: Partial<BenchRow>): BenchRow => ({
     id: XZ,
@@ -196,7 +196,7 @@ describe('judging a tracked row by its median', () => {
   it('names the median and the limit it was held to in the verdict', () => {
     const slow = verdictOf(speed({ ratioMedian: 0.3 }), gapsWith([0.46, 0.46, 0.46, 0.46], 0.46));
     expect(slow.detail).toBe(
-      'speed ratio 0.3 [0.4, 0.9] over 7 pairs; tracked (issue #685), but its median 0.3 is below the 99% one-sided prediction bound 0.46 over the last 4 CI runs (geometric mean 0.46): it got slower than its history'
+      'speed ratio 0.3 [0.4, 0.9] over 7 pairs; tracked (entry 185), but its median 0.3 is below the 99% one-sided prediction bound 0.46 over the last 4 CI runs (geometric mean 0.46): it got slower than its history'
     );
   });
 
@@ -206,7 +206,7 @@ describe('judging a tracked row by its median', () => {
     expect(verdictOf(speed({ ratioMedian: 0.3 }), gaps)).toMatchObject({ outcome: 'pass', basis: 'tracked-gap' });
     expect(verdictOf(speed({ ratioMedian: 0.28 }), gaps)).toMatchObject({ outcome: 'fail', basis: 'tracked-slower-than-gap' });
     expect(verdictOf(speed({ ratioMedian: 0.28 }), gaps).detail).toMatch(
-      /^speed ratio 0\.28 \[0\.4, 0\.9\] over 7 pairs; tracked \(issue #685\), but its median 0\.28 is below 65% of the median 0\.4472\d* of its last 4 CI runs \(0\.290\d*\), which is above the 99% one-sided prediction bound 0\.09\d* over the last 4 CI runs: it got slower than its history$/
+      /^speed ratio 0\.28 \[0\.4, 0\.9\] over 7 pairs; tracked \(entry 185\), but its median 0\.28 is below 65% of the median 0\.4472\d* of its last 4 CI runs \(0\.290\d*\), which is above the 99% one-sided prediction bound 0\.09\d* over the last 4 CI runs: it got slower than its history$/
     );
   });
 
@@ -276,7 +276,7 @@ describe('where a speed report may come from', () => {
     schemaVersion: SCHEMA_VERSION,
     entries: { [SLOW]: { direction: 'higher', tolerance: { abs: 0, rel: 0.35 }, ours: null, delta: null, ratio: 0.46 } },
   });
-  const gaps = (): GapFile => ({ schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: SLOW, issue: 685, ratio: 0.46, note: 'archive decode speed' }] });
+  const gaps = (): GapFile => ({ schemaVersion: PARITY_SCHEMA_VERSION, gaps: [{ id: SLOW, entry: 185, ratio: 0.46, note: 'archive decode speed' }] });
   const plan = (report: BenchReport, options?: { allowBranch?: string }) => planSpeedRefresh([{ label: 'speed.json', report }], baseline(), gaps(), options);
 
   it.each([
@@ -365,9 +365,9 @@ describe('re-seeding the histories that are on file', () => {
   const gapsFile = (): GapFile => ({
     schemaVersion: PARITY_SCHEMA_VERSION,
     gaps: [
-      { id: 'image/lineart.png->avif/throughput', issue: 641, ratio: 0.8, note: 'n', history: points(0.0513, 0.0553, 0.0722, 0.8028) },
-      { id: 'image/photo-a.jpg->avif/throughput', issue: 641, ratio: 0.8, note: 'n', history: points(0.8241, 0.8417, 0.864, 0.8088) },
-      { id: 'image/a.jpg->avif/bd_rate_psnr', issue: 640, ratio: null, note: 'quality', recorded: 4, reference: 0 },
+      { id: 'image/lineart.png->avif/throughput', entry: 141, ratio: 0.8, note: 'n', history: points(0.0513, 0.0553, 0.0722, 0.8028) },
+      { id: 'image/photo-a.jpg->avif/throughput', entry: 141, ratio: 0.8, note: 'n', history: points(0.8241, 0.8417, 0.864, 0.8088) },
+      { id: 'image/a.jpg->avif/bd_rate_psnr', entry: 140, ratio: null, note: 'quality', recorded: 4, reference: 0 },
     ],
   });
 
@@ -380,7 +380,7 @@ describe('re-seeding the histories that are on file', () => {
   });
 
   it('carries the acknowledged slowdowns of the file through unchanged', () => {
-    const ack = { id: 'image/photo-a.jpg->avif/throughput', issue: 880, pr: 881, reason: 'one AV1 tile per image' };
+    const ack = { id: 'image/photo-a.jpg->avif/throughput', entry: 180, reason: 'one AV1 tile per image' };
     expect(reseedGapHistories({ ...gapsFile(), acceptedSlowdowns: [ack] }).gaps.acceptedSlowdowns).toEqual([ack]);
   });
 

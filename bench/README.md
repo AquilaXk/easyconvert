@@ -115,7 +115,7 @@ and a timed row costs many pairs). A pull request's quality job (`--quick`) meas
 reference side is read from the cache the nightly run keeps. A pull request's speed job sets `BENCH_CORPUS_TIER=pr` and times the
 generated corpus only, as before, and so does the plain baseline run of the nightly workflow (its gate then looks for the generated
 corpus' baseline entries only; the parity jobs of the night measure and judge the public samples); a change that lands a speed gap on a public sample is found by the nightly run (the gate files
-that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was). A speed row of a public sample can be a known gap like any other: the nightly run judges it by the entry's history (the bound and the 65 percent floor of "The boundary of a tracked row" below), and a pull request that adds or edits the entry is checked for the form of the entry only (the issue, and a commit on every new history point, which only `bench:refresh-speed` writes from the `bench-speed-results` artifact of a nightly run), because its speed job does not time the row and cannot back the ratio. The nightly run times only the samples of `PUBLIC_SPEED_SAMPLES`, and `tests/bench-public-unified.test.ts` refuses an entry for a public sample outside it.
+that judge speed rows are the base's, `scripts/ci-parity-base-gate.mjs`, so the number of rows a pull request times stays as it was). A speed row of a public sample can be a known gap like any other: the nightly run judges it by the entry's history (the bound and the 65 percent floor of "The boundary of a tracked row" below), and a pull request that adds or edits the entry is checked for the form of the entry only (the policy entry, and a commit on every new history point, which only `bench:refresh-speed` writes from the `bench-speed-results` artifact of a nightly run), because its speed job does not time the row and cannot back the ratio. The nightly run times only the samples of `PUBLIC_SPEED_SAMPLES`, and `tests/bench-public-unified.test.ts` refuses an entry for a public sample outside it.
 
 ### Documents, PDF, ebooks, fonts, CAD, RAW, vector and data
 
@@ -288,17 +288,18 @@ output that matches the reference, say) lists the row in the `acceptedSlowdowns`
 
 ```json
 "acceptedSlowdowns": [
-  { "id": "image/photo-a.jpg->avif/throughput", "issue": 880, "pr": 881, "reason": "one AV1 tile per image, as the reference encodes it" }
+  { "id": "image/photo-a.jpg->avif/throughput", "entry": 36, "reason": "one AV1 tile per image, as the reference encodes it" }
 ]
 ```
 
-An entry names one speed row, the issue that records the trade-off, the pull request it was written for and a one-line
+An entry names one speed row, the entry of `docs/policy-decisions.md` that records the trade-off (`entry`, a positive integer
+whose `## <n>.` heading must exist; `readGaps` refuses the file otherwise) and a one-line
 reason (`validateGaps` in `bench/parity-gaps.ts` refuses anything else, a second entry for a row, a row that is also a
 tracked gap, and more than `MAX_ACCEPTED_SLOWDOWNS` (16) entries). It turns `speed-slower-than-base` into
 `speed-slowdown-acknowledged` (a pass, listed under ACKNOWLEDGED SLOWDOWNS) only while the head is not credibly below the
 reference: the same bound and confirmation as `speed-lost-parity`, without asking whether the base was at the reference. A
 head below the reference fails as before, and a row without an entry is judged as before. The entry is **single-use**: it
-applies only while the gap file of the base (`--base-gaps`) does not hold it (same row, same `pr`; rewording the reason does
+applies only while the gap file of the base (`--base-gaps`) does not hold it (same row, same `entry`; rewording the reason does
 not make an entry new), so once the change has merged it excuses nothing, not even a later change that slows the row. A run
 reports such an entry, and a new one it did not need (the head is not credibly slower than the base), as
 `acknowledgement-unused` under ACKNOWLEDGEMENTS NOT NEEDED, a pass like `tracked-now-at-parity`: remove it in the next bench
@@ -520,7 +521,7 @@ reference, `bench/parity-gaps.json` provides a staged tracking ratchet:
 
 - *Quality is immediate.* Every quality row of a touched family must be at or above the reference, unless an entry in
   `bench/parity-gaps.json` tracks it (next bullet group). An unlisted row below the reference fails.
-- *A quality row that is listed is "tracked" at a recorded value.* The entry has `ratio: null`, the issue, the `recorded`
+- *A quality row that is listed is "tracked" at a recorded value.* The entry has `ratio: null`, the policy `entry`, the `recorded`
   value of the row and the `reference` value then. The row's own direction and allowance judge it: not worse than `recorded`
   by more than the allowance passes (`TRACK`); worse fails (`tracked-worse-than-recorded`); better but still below the
   reference fails too (`tracked-better-than-recorded`: set `recorded` to the new value, so the ratchet tightens and a lenient
@@ -535,7 +536,7 @@ reference, `bench/parity-gaps.json` provides a staged tracking ratchet:
   slower than its own history predicts or falls 35 percent under the median of its history (next section). A tracked row that now passes the normal rule is reported as
   "now at parity: remove it from bench/parity-gaps.json". A row already at parity is not tracked and has to keep its
   interval lower bound at or above 0.90 in the same job, unchanged.
-- *Every tracked entry names its issue* (`issue` is required and the loader refuses `null`). Speed entries carry
+- *Every tracked entry names the policy entry that records it* (`entry` is required, a positive integer, and `readGaps` refuses a number with no `## <n>.` heading in `docs/policy-decisions.md`; the repository has no issues). Speed entries carry
   the latest CI-measured `ratio` for display and a `history` of the ratios of the latest runs; remove the entry when
   the row reaches parity.
 
@@ -575,7 +576,7 @@ continuous benchmarking (`bench/speed-history.ts`):
 - Each point keeps the commit its report was measured at.
 - A tracked row's `ratio` field is the latest point rounded down, kept for display and for the gap note.
 
-The report has separate sections: failing rows, tracked rows (with issue, ratio and interval), rows now at parity, then
+The report has separate sections: failing rows, tracked rows (with entry, ratio and interval), rows now at parity, then
 the rows at or above the reference and the rows not evaluated.
 
 **No exemption** (`scripts/ci-parity-policy.mjs`): a row below the reference, a metric worse than our own baseline, a

@@ -1,5 +1,24 @@
 {
   "schemaVersion": 1,
-  "gaps": [],
+  "gaps": [
+    {
+      "id": "image/wm-deep-dart.png->avif/throughput",
+      "entry": 469,
+      "ratio": 0.97,
+      "note": "same bytes as the reference, 2.2 ms more per run for the sandbox chain and the input handoff, kept for the sandbox",
+      "history": [
+        {
+          "ratio": 0.9436,
+          "at": "2026-11-27T11:46:08.919Z",
+          "commit": "0de4051f21ba0a64e244efb4442280a2e7c44d11"
+        },
+        {
+          "ratio": 0.9735,
+          "at": "2026-11-28T11:13:45.741Z",
+          "commit": "dd2d4935df780aa3a0b0053447990a0fc362fbbc"
+        }
+      ]
+    }
+  ],
   "acceptedSlowdowns": []
 }

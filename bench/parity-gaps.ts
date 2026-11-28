@@ -1,10 +1,11 @@
 import fs from 'node:fs';
+import { resolve } from 'node:path';
 import { MAX_ACCEPTED_SLOWDOWNS, MAX_GAP_ENTRIES, MAX_JSON_BYTES, PARITY_SCHEMA_VERSION, SPEED_HISTORY_MAX_POINTS } from './speed-config';
 import { ReportSchemaError } from './errors';
 import type { SpeedHistoryPoint } from './speed-history';
 
 /**
- * Rows that are below the reference tool today, each with the issue that tracks it.
+ * Rows that are below the reference tool today, each with the entry of docs/policy-decisions.md that records it.
  *
  * A quality row listed here is "tracked" the way an expected failure of a conformance suite is: the entry records the
  * value the row has (`recorded`) and the reference's value then (`reference`). The row passes while it is not worse than
@@ -22,8 +23,8 @@ import type { SpeedHistoryPoint } from './speed-history';
 export interface GapEntry {
   /** Row id `<family>/<case>/<metric>`. */
   id: string;
-  /** The issue that tracks the gap; every entry has one. */
-  issue: number;
+  /** The number of the entry of docs/policy-decisions.md that records the gap; every entry has one, and the heading must exist. */
+  entry: number;
   /** Speed rows: the latest recorded speed ratio (reference time / our time), for display. Quality rows: null. */
   ratio: number | null;
   note: string;
@@ -44,18 +45,16 @@ export const isQualityGap = (gap: GapEntry | null): gap is QualityGap => gap !==
 
 /**
  * An intended slowdown against the base, acknowledged as a performance-alert triage marks an alert "acknowledged": the row
- * got slower than its base on purpose, and the entry names the issue that records the trade-off. It excuses
- * `speed-slower-than-base` for the change it was written for (`pr`) and only while the head is not credibly below the
- * reference. Once that change has merged the base holds the entry and it excuses nothing; the run flags it so the next
+ * got slower than its base on purpose, and the entry names the policy entry that records the trade-off. It excuses
+ * `speed-slower-than-base` for the change that wrote that policy entry (the pair of row and `entry` is what tells a new
+ * acknowledgement from one the base already holds) and only while the head is not credibly below the reference. Once that change has merged the base holds the entry and it excuses nothing; the run flags it so the next
  * bench change removes it (bench/parity.ts, `acknowledgement-unused`).
  */
 export interface AcceptedSlowdown {
   /** Speed row id `<family>/<case>/throughput`. */
   id: string;
-  /** The issue that records why the slowdown is accepted. */
-  issue: number;
-  /** The pull request the entry was written for. */
-  pr: number;
+  /** The number of the entry of docs/policy-decisions.md that records why the slowdown is accepted. */
+  entry: number;
   /** One line: what the row gets in return. */
   reason: string;
 }
@@ -109,15 +108,29 @@ function validateRecord(entry: Record<string, unknown>, path: string, speedRow: 
   return record;
 }
 
-const ACCEPTED_FIELDS: ReadonlySet<string> = new Set(['id', 'issue', 'pr', 'reason']);
+const ACCEPTED_FIELDS: ReadonlySet<string> = new Set(['id', 'entry', 'reason']);
 
-function positiveInteger(entry: Record<string, unknown>, field: 'issue' | 'pr', path: string): number {
-  const value = entry[field];
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) throw new ReportSchemaError(`parity gaps: ${path}.${field} must be a positive integer`);
+const POLICY_FILE = resolve(__dirname, '..', 'docs', 'policy-decisions.md');
+const POLICY_HEADING = /^## (\d+)\. /gm;
+
+let policyEntries: ReadonlySet<number> | undefined;
+
+/** The numbers of the `## <n>.` headings of docs/policy-decisions.md. A missing or unreadable file throws: an entry cannot be checked against nothing. */
+function policyEntryNumbers(): ReadonlySet<number> {
+  policyEntries ??= new Set([...fs.readFileSync(POLICY_FILE, 'utf8').matchAll(POLICY_HEADING)].map((match) => Number(match[1])));
+  return policyEntries;
+}
+
+function policyEntry(entry: Record<string, unknown>, path: string, known: ReadonlySet<number> | undefined): number {
+  const value = entry.entry;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+    throw new ReportSchemaError(`parity gaps: ${path}.entry must be a positive integer, the number of the entry of docs/policy-decisions.md that records it`);
+  }
+  if (known && !known.has(value)) throw new ReportSchemaError(`parity gaps: ${path}.entry ${value} has no heading "## ${value}." in docs/policy-decisions.md; write the entry first`);
   return value;
 }
 
-function validateAcceptedSlowdowns(value: unknown, gapIds: ReadonlySet<string>): AcceptedSlowdown[] {
+function validateAcceptedSlowdowns(value: unknown, gapIds: ReadonlySet<string>, known: ReadonlySet<number> | undefined): AcceptedSlowdown[] {
   if (!Array.isArray(value)) throw new ReportSchemaError('parity gaps: acceptedSlowdowns must be an array');
   if (value.length > MAX_ACCEPTED_SLOWDOWNS) throw new ReportSchemaError(`parity gaps: acceptedSlowdowns holds at most ${MAX_ACCEPTED_SLOWDOWNS} entries; remove the ones whose change has merged`);
   const seen = new Set<string>();
@@ -133,14 +146,17 @@ function validateAcceptedSlowdowns(value: unknown, gapIds: ReadonlySet<string>):
     if (seen.has(entry.id)) throw new ReportSchemaError(`parity gaps: ${entry.id} is listed twice in acceptedSlowdowns`);
     seen.add(entry.id);
     if (gapIds.has(entry.id)) throw new ReportSchemaError(`parity gaps: ${entry.id} is both a known gap and an acknowledged slowdown; a gap is a row below the reference, an acknowledged slowdown stays at it`);
-    const issue = positiveInteger(entry, 'issue', path);
-    const pr = positiveInteger(entry, 'pr', path);
+    const policy = policyEntry(entry, path, known);
     if (typeof entry.reason !== 'string' || entry.reason.trim() === '' || /[\r\n]/.test(entry.reason)) throw new ReportSchemaError(`parity gaps: ${path}.reason must be a one-line string`);
-    return { id: entry.id, issue, pr, reason: entry.reason };
+    return { id: entry.id, entry: policy, reason: entry.reason };
   });
 }
 
-export function validateGaps(value: unknown): GapFile {
+/**
+ * The form of a gaps file. With `known` (the heading numbers of docs/policy-decisions.md) every entry must name a policy
+ * entry that exists; `readGaps` always passes it, so a file loaded from disk is never judged against a missing record.
+ */
+export function validateGaps(value: unknown, known?: ReadonlySet<number>): GapFile {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new ReportSchemaError('parity gaps: must be an object');
   const obj = value as Record<string, unknown>;
   if (obj.schemaVersion !== PARITY_SCHEMA_VERSION) throw new ReportSchemaError(`parity gaps: schemaVersion must be ${PARITY_SCHEMA_VERSION}`);
@@ -154,10 +170,7 @@ export function validateGaps(value: unknown): GapFile {
     if (typeof entry.id !== 'string' || !ROW_ID_PATTERN.test(entry.id)) throw new ReportSchemaError(`parity gaps: ${path}.id must be <family>/<case>/<metric>`);
     if (seen.has(entry.id)) throw new ReportSchemaError(`parity gaps: ${entry.id} is listed twice`);
     seen.add(entry.id);
-    const issue = entry.issue;
-    if (typeof issue !== 'number' || !Number.isInteger(issue) || issue < 1) {
-      throw new ReportSchemaError(`parity gaps: ${path}.issue must be a positive integer; every gap names the issue that tracks it`);
-    }
+    const policy = policyEntry(entry, path, known);
     const ratio = entry.ratio;
     if (isSpeedRowId(entry.id)) {
       if (typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio <= 0) throw new ReportSchemaError(`parity gaps: ${path}.ratio must be a positive speed ratio for the speed row ${entry.id}`);
@@ -165,7 +178,7 @@ export function validateGaps(value: unknown): GapFile {
       throw new ReportSchemaError(`parity gaps: ${path}.ratio must be null for the quality row ${entry.id}; a quality gap is judged by its recorded value`);
     }
     if (typeof entry.note !== 'string' || entry.note === '') throw new ReportSchemaError(`parity gaps: ${path}.note must be a non-empty string`);
-    const parsed: GapEntry = { id: entry.id, issue, ratio: ratio as number | null, note: entry.note, ...validateRecord(entry, path, isSpeedRowId(entry.id)) };
+    const parsed: GapEntry = { id: entry.id, entry: policy, ratio: ratio as number | null, note: entry.note, ...validateRecord(entry, path, isSpeedRowId(entry.id)) };
     if (entry.history !== undefined) {
       if (!isSpeedRowId(entry.id)) throw new ReportSchemaError(`parity gaps: ${path}.history is only for speed rows, and ${entry.id} is a quality row`);
       parsed.history = validateHistory(entry.history, `${path}.history`);
@@ -173,29 +186,29 @@ export function validateGaps(value: unknown): GapFile {
     return parsed;
   });
   if (obj.acceptedSlowdowns === undefined) return { schemaVersion: PARITY_SCHEMA_VERSION, gaps };
-  return { schemaVersion: PARITY_SCHEMA_VERSION, gaps, acceptedSlowdowns: validateAcceptedSlowdowns(obj.acceptedSlowdowns, seen) };
+  return { schemaVersion: PARITY_SCHEMA_VERSION, gaps, acceptedSlowdowns: validateAcceptedSlowdowns(obj.acceptedSlowdowns, seen, known) };
 }
 
 export function readGaps(file: string): GapFile {
   const size = fs.statSync(file).size;
   if (size > MAX_JSON_BYTES) throw new ReportSchemaError(`parity gaps ${file} is ${size} bytes, over the ${MAX_JSON_BYTES} byte limit`);
-  return validateGaps(JSON.parse(fs.readFileSync(file, 'utf8')) as unknown);
+  return validateGaps(JSON.parse(fs.readFileSync(file, 'utf8')) as unknown, policyEntryNumbers());
 }
 
 export function gapIndex(file: GapFile): ReadonlyMap<string, GapEntry> {
   return new Map(file.gaps.map((gap) => [gap.id, gap] as const));
 }
 
-/** Whether `file` holds this acknowledgement: the same row, written for the same change. Rewording the reason does not make an entry new. */
+/** Whether `file` holds this acknowledgement: the same row, recorded by the same policy entry. Rewording the reason does not make an entry new. */
 export function holdsAcceptedSlowdown(file: GapFile, entry: AcceptedSlowdown): boolean {
-  return (file.acceptedSlowdowns ?? []).some((other) => other.id === entry.id && other.pr === entry.pr);
+  return (file.acceptedSlowdowns ?? []).some((other) => other.id === entry.id && other.entry === entry.entry);
 }
 
 /** How an acknowledgement reads in a message. */
-export const describeAcceptedSlowdown = (entry: AcceptedSlowdown): string => `issue #${entry.issue}, PR #${entry.pr}: ${entry.reason}`;
+export const describeAcceptedSlowdown = (entry: AcceptedSlowdown): string => `entry ${entry.entry}: ${entry.reason}`;
 
-/** How a gap reads in a message: the issue that tracks it, or the fact that none is filed. */
+/** How a gap reads in a message: the policy entry that records it, or the fact that none does. */
 export function describeGap(gap: GapEntry | undefined): string {
-  if (!gap) return 'not a known gap: bring it to parity, or file a gap issue and list the row in bench/parity-gaps.json';
-  return `known gap, issue #${gap.issue}: ${gap.note}`;
+  if (!gap) return 'not a known gap: bring it to parity, or write a policy entry for the gap and list the row in bench/parity-gaps.json';
+  return `known gap, entry ${gap.entry}: ${gap.note}`;
 }

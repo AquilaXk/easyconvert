@@ -458,7 +458,7 @@ describe('the rows of baseline.json and parity-gaps.json', () => {
       mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
       writeFileSync(path.join(repo, file), `${JSON.stringify(value, null, 2)}\n`);
     };
-    const gap = (id: string, ratio: number) => ({ id, issue: 641, ratio, note: 'n' });
+    const gap = (id: string, ratio: number) => ({ id, entry: 141, ratio, note: 'n' });
 
     it('maps the bypass of a new image gap at 0.1 to the image family, so its speed is measured against the entry', () => {
       git('init', '-q');

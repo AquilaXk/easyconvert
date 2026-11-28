@@ -42,7 +42,7 @@ export function parseRunFile(value) {
   for (const row of parity.rows) {
     if (typeof row?.id !== 'string' || typeof row.family !== 'string' || typeof row.detail !== 'string') fail('every row needs an id, a family and a detail');
     if (row.outcome !== 'pass' && row.outcome !== 'fail' && row.outcome !== 'not-evaluated') fail(`row ${row.id} has an unknown outcome`);
-    if (row.gap !== null && (typeof row.gap !== 'object' || (row.gap.issue !== null && !Number.isInteger(row.gap.issue)))) fail(`row ${row.id} has a malformed gap`);
+    if (row.gap !== null && (typeof row.gap !== 'object' || (row.gap.entry !== null && !Number.isInteger(row.gap.entry)))) fail(`row ${row.id} has a malformed gap`);
   }
   const failing = parity.rows.filter((row) => row.outcome === 'fail').length;
   if ((parity.verdict === 'fail') !== (failing > 0)) fail('parity.verdict disagrees with its rows');

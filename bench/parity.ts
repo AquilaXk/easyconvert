@@ -32,7 +32,7 @@ import { speedGapThreshold } from './speed-history';
  *    fails, as a baseline entry does.
  *
  * Acknowledged slowdowns: a change that makes a speed row slower than its base on purpose lists the row in the
- * `acceptedSlowdowns` of bench/parity-gaps.json with an issue, the pull request and a reason, as a performance-alert
+ * `acceptedSlowdowns` of bench/parity-gaps.json with the policy entry that records the trade-off and a reason, as a performance-alert
  * triage marks an alert "acknowledged": a regression accepted as a trade-off and tied to a bug. It excuses
  * `speed-slower-than-base` for that change only, and only while the head is not credibly below the reference. It is
  * single-use: the base of a later change already holds it, so it excuses nothing and the run reports it for removal, as a
@@ -156,10 +156,10 @@ function judgeAbsolute(row: BenchRow, gap: GapEntry | null): Judgement {
   const interval =
     row.ratioLow !== undefined && row.ratioHigh !== undefined ? `speed ratio ${show(row.ratioMedian ?? row.ratio ?? NaN)} [${show(row.ratioLow)}, ${show(row.ratioHigh)}] over ${row.runs ?? '?'} pairs` : `speed ratio ${show(row.ratio ?? NaN)}`;
   const none = { worsening: null, allowance: null };
-  const tracked = gap !== null && gap.ratio !== null ? { issue: gap.issue, recorded: gap.ratio, history: (gap.history ?? []).map((point) => point.ratio) } : null;
+  const tracked = gap !== null && gap.ratio !== null ? { entry: gap.entry, recorded: gap.ratio, history: (gap.history ?? []).map((point) => point.ratio) } : null;
   if (row.speedVerdict === 'pass') {
     if (tracked) {
-      return { outcome: 'pass', basis: 'tracked-now-at-parity', detail: `${interval}; now at parity: remove ${row.id} from bench/parity-gaps.json (issue #${tracked.issue})`, ...none };
+      return { outcome: 'pass', basis: 'tracked-now-at-parity', detail: `${interval}; now at parity: remove ${row.id} from bench/parity-gaps.json (entry ${tracked.entry})`, ...none };
     }
     return { outcome: 'pass', basis: 'speed-pass', detail: `${interval}; the lower bound is at least ${show(line)}`, ...none };
   }
@@ -182,17 +182,17 @@ function judgeAbsolute(row: BenchRow, gap: GapEntry | null): Judgement {
       limit = `${floor}, which is above the ${confidence} one-sided prediction bound ${show(bound.lower)} over the last ${bound.points} CI runs`;
     }
     if (median < threshold.lower) {
-      return { outcome: 'fail', basis: 'tracked-slower-than-gap', detail: `${interval}; tracked (issue #${tracked.issue}), but its median ${show(median)} is below ${limit}: it got slower than its history`, ...none };
+      return { outcome: 'fail', basis: 'tracked-slower-than-gap', detail: `${interval}; tracked (entry ${tracked.entry}), but its median ${show(median)} is below ${limit}: it got slower than its history`, ...none };
     }
     if (bound === null) {
       return {
         outcome: 'pass',
         basis: 'tracked-short-history',
-        detail: `${interval}; below the reference, tracked (issue #${tracked.issue}) with ${tracked.history.length} of the ${SPEED_HISTORY_MIN_POINTS} CI-measured runs a bound needs: judged by ${floor}`,
+        detail: `${interval}; below the reference, tracked (entry ${tracked.entry}) with ${tracked.history.length} of the ${SPEED_HISTORY_MIN_POINTS} CI-measured runs a bound needs: judged by ${floor}`,
         ...none,
       };
     }
-    return { outcome: 'pass', basis: 'tracked-gap', detail: `${interval}; below the reference, tracked (issue #${tracked.issue}), median not below ${limit}`, ...none };
+    return { outcome: 'pass', basis: 'tracked-gap', detail: `${interval}; below the reference, tracked (entry ${tracked.entry}), median not below ${limit}`, ...none };
   }
   if (row.unstableAtCap) {
     return { outcome: 'fail', basis: 'speed-unstable-at-cap', detail: `${interval}; the interval still straddled ${show(line)} at the cap on pairs, which counts as a failure`, ...none };
@@ -247,19 +247,19 @@ function judgeQuality(row: BenchRow, siblings: BenchRow[]): Judgement {
  */
 function judgeQualityGap(row: BenchRow, normal: Judgement, gap: QualityGap): Judgement {
   if (normal.outcome === 'pass') {
-    return { ...normal, basis: 'tracked-now-at-parity', detail: `${normal.detail}; now at parity: remove ${row.id} from bench/parity-gaps.json (issue #${gap.issue})` };
+    return { ...normal, basis: 'tracked-now-at-parity', detail: `${normal.detail}; now at parity: remove ${row.id} from bench/parity-gaps.json (entry ${gap.entry})` };
   }
   const ours = row.ours as number;
   const allowance = normal.allowance as number;
   const behindRecord = worsening(row.direction, gap.recorded, ours);
   const measured = `${row.metric} ${show(ours)} ${row.unit} against the recorded ${show(gap.recorded)} (the reference was ${show(gap.reference)} then, ${show(row.reference as number)} now; allowance ${show(allowance)})`;
   if (behindRecord > allowance + GATE_EPSILON) {
-    return { ...normal, outcome: 'fail', basis: 'tracked-worse-than-recorded', detail: `${measured}; tracked (issue #${gap.issue}), but ours is worse than the recorded value by ${show(behindRecord)}: the gap got worse` };
+    return { ...normal, outcome: 'fail', basis: 'tracked-worse-than-recorded', detail: `${measured}; tracked (entry ${gap.entry}), but ours is worse than the recorded value by ${show(behindRecord)}: the gap got worse` };
   }
   if (-behindRecord > allowance + GATE_EPSILON) {
-    return { ...normal, outcome: 'fail', basis: 'tracked-better-than-recorded', detail: `${measured}; tracked (issue #${gap.issue}), but ours is better than the recorded value by ${show(-behindRecord)} and still below the reference: update recorded to ${show(ours)} in bench/parity-gaps.json` };
+    return { ...normal, outcome: 'fail', basis: 'tracked-better-than-recorded', detail: `${measured}; tracked (entry ${gap.entry}), but ours is better than the recorded value by ${show(-behindRecord)} and still below the reference: update recorded to ${show(ours)} in bench/parity-gaps.json` };
   }
-  return { ...normal, outcome: 'pass', basis: 'tracked-quality-gap', detail: `${measured}; below the reference, tracked (issue #${gap.issue}), not worse than recorded` };
+  return { ...normal, outcome: 'pass', basis: 'tracked-quality-gap', detail: `${measured}; below the reference, tracked (entry ${gap.entry}), not worse than recorded` };
 }
 
 /** The entries of quality rows that a run is about (`expected`) and did not produce: a vanished row cannot carry a gap. */
@@ -269,7 +269,7 @@ function missingGapRows(gaps: GapFile, produced: ReadonlySet<string>, expected: 
     .filter((gap) => !isSpeedRowId(gap.id) && !produced.has(gap.id) && expected(gap.id))
     .map((gap) => {
       const [family, caseName, metric] = gap.id.split('/');
-      const detail = `known-gap entry (issue #${gap.issue}) names a row this run did not produce: restore the row, or remove the entry if the row is gone for good`;
+      const detail = `known-gap entry (entry ${gap.entry}) names a row this run did not produce: restore the row, or remove the entry if the row is gone for good`;
       return { id: gap.id, family: family as Family, case: caseName, metric, outcome: 'fail', basis: 'gap-row-missing', detail, worsening: null, allowance: null, gap };
     });
 }
@@ -310,7 +310,7 @@ export interface ParityOptions {
   qualityBase?: { gaps: GapFile; baseline: Baseline };
 }
 
-const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, issue: gap.issue, ratio: gap.ratio, note: gap.note, history: gap.history ?? [], recorded: gap.recorded, reference: gap.reference });
+const canonicalGap = (gap: GapEntry): string => JSON.stringify({ id: gap.id, entry: gap.entry, ratio: gap.ratio, note: gap.note, history: gap.history ?? [], recorded: gap.recorded, reference: gap.reference });
 
 /**
  * Why a new or changed gap entry is not backed by the measured row, or null when it is. A row the run does not time at all
