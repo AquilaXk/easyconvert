@@ -263,7 +263,10 @@ task_libreoffice() {
   else
     archive="$(mktemp)"
     staging="$(mktemp -d)"
-    curl -fsSL --proto =https --proto-redir =https --retry 6 --retry-delay 10 -o "$archive" "$LIBREOFFICE_URL" || return 1
+    # The archive sends a release that is still on the mirrors to one of them, and a mirror whose certificate chain the runner cannot
+    # verify fails with a TLS error, which plain --retry does not repeat: every try starts again at the archive, and the digest below
+    # checks whatever mirror answered.
+    curl -fsSL --proto =https --proto-redir =https --retry 6 --retry-delay 10 --retry-all-errors -o "$archive" "$LIBREOFFICE_URL" || return 1
     echo "$LIBREOFFICE_SHA256  $archive" | sha256sum -c - || return 1
     tar -xzf "$archive" -C "$staging" --strip-components=2 || return 1
     rm -f "$archive"
