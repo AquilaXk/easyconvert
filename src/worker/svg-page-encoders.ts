@@ -2,7 +2,7 @@ import { UNMAPPABLE_CHARACTER, type PdfPageText } from '../lib/conversions/bitma
 import { openPdfForReading } from '../lib/conversions/pdf-access';
 import { runPdfTextJob } from '../lib/conversions/pdf-text-geometry';
 import { encodeSvgPageToDxfWithText, PicturePages } from '../lib/conversions/vector-dxf';
-import { encodeEmf, encodeWmf } from '../lib/conversions/vector-metafile';
+import { encodeCgm, encodeEmf, encodeWmf, type MetafileFormat } from '../lib/conversions/vector-metafile';
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError, type ConversionOptions } from '../lib/types';
 import { writeMetafilePageWithPictures, type PageRasterRun } from './metafile-raster-fallback';
 import { officeSuiteMetafilePage, type OfficeMetafileRun } from './office-metafile-page';
@@ -17,14 +17,17 @@ export { pageRasterRun } from './metafile-raster-fallback';
  * write DXF entities or an EMF or WMF metafile. The registry offers them only for the sources whose pages these writers can
  * represent. A picture is left out of a DXF page with a warning (entry 129); a clip region that is not one convex polygon and hides
  * part of the drawing is refused by the writer (a convex one cuts the drawing). The DXF writer also writes the characters of a bitmap
- * font, which Poppler draws as pictures, as text from the PDF's text layer. An EMF or WMF page is written with a bitmap record for each
+ * font, which Poppler draws as pictures, as text from the PDF's text layer. An EMF or WMF page is written with a bitmap record, and a CGM page with a cell array, for each
  * part the writer cannot draw (a picture, a dash, a clip, a mask, a gradient, a pen the format lacks), cut from Poppler's picture of
  * the page (`metafile-raster-fallback.ts`, entry 459); a page the writer refuses as a whole is written by the office suite instead
  * (`office-metafile-page.ts`).
  */
 
-/** The targets whose parts are drawn as pictures and whose pages refused as a whole the office suite writes. */
+/** The targets whose pages refused as a whole the office suite writes. */
 const OFFICE_SUITE_METAFILE_TARGETS: ReadonlySet<string> = new Set(['emf', 'wmf']);
+
+/** The targets whose parts the in-process writer cannot draw are bitmap records or cell arrays, cut from Poppler's picture of the page. */
+const PICTURE_METAFILE_TARGETS: ReadonlySet<string> = new Set(['emf', 'wmf', 'cgm']);
 
 /** What a page of a metafile target falls back on for the parts the in-process writer cannot draw. */
 export interface MetafileFallbacks {
@@ -39,6 +42,7 @@ type PageTextReader = () => Promise<PdfPageText>;
 
 const SVG_PAGE_ENCODERS: Readonly<Record<string, (svg: Buffer, readText: PageTextReader, leftOut: PicturePages, page: number) => Buffer | Promise<Buffer>>> = {
   dxf: encodeSvgPageToDxfWithText,
+  cgm: (svg) => encodeCgm(svg),
   emf: encodeEmf,
   wmf: encodeWmf,
 };
@@ -116,7 +120,7 @@ export function svgPageEncoder(
     const page = zipped ? Number(PAGE_ENTRY_NUMBER.exec(entryName)?.[1]) : pages[0];
     try {
       const sized = pageInPoints(svg);
-      if (fallbacks.pageRaster && OFFICE_SUITE_METAFILE_TARGETS.has(target)) return await writeMetafilePageWithPictures(sized, target as 'emf' | 'wmf', page, fallbacks.pageRaster);
+      if (fallbacks.pageRaster && PICTURE_METAFILE_TARGETS.has(target)) return await writeMetafilePageWithPictures(sized, target as MetafileFormat, page, fallbacks.pageRaster);
       return await encode(sized, () => textLayers(page), leftOut, page);
     } catch (refusal) {
       const stored = readPdf();

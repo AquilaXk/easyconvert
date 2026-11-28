@@ -325,12 +325,11 @@ describe.skipIf(skipWithoutTools('gs', 'pdftocairo', 'soffice', 'rsvg-convert') 
   }, TIMEOUT_MS);
 });
 
-/** Entries 454, 458 and 460 offer EMF and WMF for CorelDRAW, CGM, EMF, WMF, PostScript, Illustrator and EPS sources, and entry 466 WMF for DXF and DWG: what entry 187 left out and those entries kept out is listed. */
+/** Entries 454, 458 and 460 offer EMF and WMF for CorelDRAW, CGM, EMF, WMF, PostScript, Illustrator and EPS sources, and entries 466 and 468 WMF and CGM for DXF and DWG: what entry 187 left out and those entries kept out is listed. */
 describe('the pairs left out of entry 187 stay out of the registry', () => {
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     dwf: ['cgm', 'wmf'],
-    dwg: ['cgm'],
-    dxf: ['cgm'],
+    // DXF and DWG to CGM and WMF are offered since entries 466 and 468; DWF has no reader.
     emf: ['dxf'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
@@ -340,7 +339,7 @@ describe('the pairs left out of entry 187 stay out of the registry', () => {
     expect(targets.filter((target) => FORMAT_REGISTRY[source].targetFormats.includes(target))).toEqual([]);
   });
 
-  it('the SVG a DXF drawing is drawn as holds <text>, which the CGM writer refuses', async () => {
+  it('the SVG a DXF drawing is drawn as holds <text>, which the CGM writer refuses (the pages of the drawing PDF hold outlines, entry 468)', async () => {
     const svg = (await convertVectorCad(plateBytes('plate-basic'), 'dxf', 'svg', {}, 'plate-basic.dxf')).buffer;
     expect(svg.toString('utf-8')).toContain('<text');
     const refusal = convertVectorCad(svg, 'svg', 'cgm', {}, 'plate-basic.svg');

@@ -3,7 +3,8 @@ import sharp from 'sharp';
 import { emfStretchDib, wmfStretchDib } from '../src/lib/conversions/metafile-bitmap';
 import { isTooComplexToDraw, MAX_RASTER_REGIONS, pageSizeFromRoot, RasterRegions, refusalKindOf } from '../src/lib/conversions/svg-raster-regions';
 import { parseSvgGeometries } from '../src/lib/conversions/svg-geometry';
-import { encodeEmf, readMetafilePage } from '../src/lib/conversions/vector-metafile';
+import { encodeCgm, encodeEmf, readMetafilePage } from '../src/lib/conversions/vector-metafile';
+import { cgmBinaryElements, cgmBinaryName } from './helpers/cgm-binary-oracle';
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../src/lib/types';
 import {
   MAX_REGION_PIXELS,
@@ -282,6 +283,26 @@ describe('a page written with pictures for what the writer cannot draw', () => {
     expect(draw).toHaveBeenCalledTimes(2);
   });
 
+  it('writes a cell array for a CGM, the pen of a dash and the part inside a gradient being pictures too', async () => {
+    const draw = vi.fn(async (_page: number, dpi: number) => picture(dpi));
+    const names = async (body: string) => cgmBinaryElements(await writeMetafilePageWithPictures(Buffer.from(body), 'cgm', 1, draw)).map(cgmBinaryName);
+    expect(await names(page(`${BACKGROUND}${SHADED}${INSIDE}${BLACK}`))).toContain('CELLARRAY');
+    expect(await names(page(`${BACKGROUND}<path d="M 0 5 L 90 5" stroke="#000" stroke-dasharray="4 2"/>`))).toContain('CELLARRAY');
+    expect(await names(page(`${BACKGROUND}${BLACK}`))).not.toContain('CELLARRAY');
+    expect(draw).toHaveBeenCalledTimes(2);
+    expect(() => encodeCgm(Buffer.from(page(`${BACKGROUND}${SHADED}`)))).toThrow(UnsupportedOptionError);
+  });
+
+  it('draws a round cap and join as the line cap and line join of a CGM, which the pen of a metafile page keeps vector', async () => {
+    const round = page(`${BACKGROUND}<path d="M 10 10 L 60 10 L 60 50" fill="none" stroke="#000" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`);
+    const written = await writeMetafilePageWithPictures(Buffer.from(round), 'cgm', 1, vi.fn());
+    const elements = cgmBinaryElements(written);
+    const named = (name: string) => elements.find((element) => cgmBinaryName(element) === name)?.parameters;
+    expect(Array.from(named('LINECAP') ?? [])).toEqual([0, 3, 0, 3]);
+    expect(Array.from(named('LINEJOIN') ?? [])).toEqual([0, 3]);
+    expect(elements.map(cgmBinaryName)).not.toContain('CELLARRAY');
+  });
+
   it('draws every refused part of a page in one render of the page', async () => {
     const draw = vi.fn(async (_page: number, dpi: number) => picture(dpi));
     const mixed = page(`${BACKGROUND}${SHADED}<image x="100" y="40" width="9" height="9" xlink:href="${PIXEL}"/>`);
@@ -308,6 +329,7 @@ describe('a page that is more than the vector writers hold', () => {
     expect(isTooComplexToDraw(new CadGeometryUnavailableError('SVG viewBox "0 0 0 0" must be four finite numbers with positive width and height.'))).toBe(false);
     expect(isTooComplexToDraw(new CadGeometryUnavailableError('SVG expands to more than 500000 vertices; the drawing is too complex to encode.'))).toBe(true);
     expect(isTooComplexToDraw(new CadGeometryUnavailableError("EMF output would exceed 52428800 bytes; the drawing is too complex to encode."))).toBe(true);
+    expect(isTooComplexToDraw(new CadGeometryUnavailableError('CGM output would exceed 52428800 bytes; the drawing is too complex to encode.'))).toBe(true);
   });
 
   it('is written as one picture of the whole page', async () => {
@@ -319,6 +341,9 @@ describe('a page that is more than the vector writers hold', () => {
     expect(emfRecordTypes(written)).not.toContain(EMR_POLYGON16);
     const wmf = await writeMetafilePageWithPictures(OVERSIZE, 'wmf', 4, draw);
     expect(wmfRecordFunctions(wmf)).toContain(META_STRETCHDIB);
+    const cgm = cgmBinaryElements(await writeMetafilePageWithPictures(OVERSIZE, 'cgm', 4, draw)).map(cgmBinaryName);
+    expect(cgm).toContain('CELLARRAY');
+    expect(cgm).not.toContain('POLYGON');
   });
 
   it('reads the size of the page from the root alone', () => {

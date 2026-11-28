@@ -15,7 +15,7 @@ vi.mock('../src/lib/conversions/pdf-text-geometry', async (importOriginal) => ({
 }));
 
 /**
- * The writers behind the SVG-page targets (DXF, EMF, WMF) are the ones the PDF chain calls for a Visio drawing, so each
+ * The writers behind the SVG-page targets (CGM, DXF, EMF, WMF) are the ones the PDF chain calls for a Visio drawing, so each
  * must write the file signature its format specification names; a table that paired a target with the wrong writer would
  * otherwise hand out a file of another format under the right name.
  */
@@ -32,11 +32,11 @@ function write(target: string): Promise<Buffer> {
 }
 
 describe('the writers of the SVG-page targets', () => {
-  it.each(['dxf', 'emf', 'wmf'])('.%s is a target written from the SVG page', (target) => {
+  it.each(['cgm', 'dxf', 'emf', 'wmf'])('.%s is a target written from the SVG page', (target) => {
     expect(isSvgPageTarget(target)).toBe(true);
   });
 
-  it.each(['png', 'svg', 'cgm', 'pdf', 'eps', 'toString', '__proto__'])('.%s is not', (target) => {
+  it.each(['png', 'svg', 'pdf', 'eps', 'toString', '__proto__'])('.%s is not', (target) => {
     expect(isSvgPageTarget(target)).toBe(false);
   });
 
@@ -54,6 +54,13 @@ describe('the writers of the SVG-page targets', () => {
     expect([1, 2]).toContain(wmf.readUInt16LE(header));
   });
 
+  it('CGM: a binary metafile opens with BEGIN METAFILE and closes with END METAFILE, and its name is not the text layer reader', async () => {
+    const cgm = await write('cgm');
+    expect(cgm.readUInt16BE(0) >> 5).toBe(1);
+    expect(cgm.readUInt16BE(cgm.length - 2)).toBe(2 << 5);
+    expect(cgm.indexOf(Buffer.from('drawing'))).toBe(3);
+  });
+
   it('DXF: a SECTION record opens the file and an EOF record closes it', async () => {
     const dxf = (await write('dxf')).toString('utf-8');
     expect(dxf).toMatch(/^\s*0\nSECTION\n/);
@@ -61,8 +68,8 @@ describe('the writers of the SVG-page targets', () => {
   });
 
   it('each target has a writer of its own', async () => {
-    const outputs = await Promise.all(['dxf', 'emf', 'wmf'].map(async (target) => (await write(target)).subarray(0, 48).toString('hex')));
-    expect(new Set(outputs).size).toBe(3);
+    const outputs = await Promise.all(['cgm', 'dxf', 'emf', 'wmf'].map(async (target) => (await write(target)).subarray(0, 48).toString('hex')));
+    expect(new Set(outputs).size).toBe(4);
   });
 });
 

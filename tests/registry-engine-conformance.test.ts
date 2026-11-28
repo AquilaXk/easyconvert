@@ -749,8 +749,8 @@ async function probeInputs(source: string): Promise<Buffer[]> {
 const NATIVE_ENGINE_PAIRS: Readonly<Record<string, readonly string[]>> = {
   ai: ['dxf', 'emf', 'svg', 'wmf'],
   csv: ['jpg', 'png', 'xls'],
-  dwg: ['wmf'],
-  dxf: ['wmf'],
+  dwg: ['cgm', 'wmf'],
+  dxf: ['cgm', 'wmf'],
   azw: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
   azw3: ['lrf', 'mobi', 'oeb', 'pdb'],
   cbr: ['azw3', 'lrf', 'mobi', 'oeb', 'pdb'],
@@ -1158,8 +1158,8 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     docx: ['hwp', 'hwpx', 'pages', 'xps'],
     dps: ['swf'],
     dwf: ['cgm', 'dwg', 'wmf'],
-    dwg: ['cgm', 'dwg'],
-    dxf: ['cgm', 'dwg'],
+    dwg: ['dwg'],
+    dxf: ['dwg'],
     emf: ['dxf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
@@ -1644,8 +1644,8 @@ describe('native-engine pairs route through the dispatcher', () => {
   /** A CSV table's page images are likewise the pages of the PDF the in-process engine writes of it, drawn by Poppler. */
   const TABLE_PICTURE_SOURCE = 'csv';
   /**
-   * A DXF or DWG drawing written as WMF from the page of the PDF the in-process engine writes of it (entry 466): Poppler draws the page,
-   * after `dwg2dxf` for a DWG. tests/cad-wmf-real-samples.test.ts converts real drawings and reads them back.
+   * A DXF or DWG drawing written as WMF or CGM from the page of the PDF the in-process engine writes of it (entries 466 and 468): Poppler draws
+   * the page, after `dwg2dxf` for a DWG. tests/cad-wmf-real-samples.test.ts and tests/cad-cgm-real-samples.test.ts convert real drawings and read them back.
    */
   const DRAWING_SOURCES = new Set(['dxf', 'dwg']);
   /** Targets of a PDF that the office suite writes from the DOCX or PPTX the in-process converter writes of it. */

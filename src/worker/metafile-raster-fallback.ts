@@ -1,6 +1,6 @@
 import sharp from 'sharp';
 import type { RegionBitmap } from '../lib/conversions/metafile-bitmap';
-import { readMetafilePage, wholePageAsPicture, type MetafilePage } from '../lib/conversions/vector-metafile';
+import { readMetafilePage, wholePageAsPicture, type MetafileFormat, type MetafilePage } from '../lib/conversions/vector-metafile';
 import { isTooComplexToDraw, type PixelRect } from '../lib/conversions/svg-raster-regions';
 import { CadGeometryUnavailableError, ConversionFailedError, PayloadLimitError } from '../lib/types';
 
@@ -126,7 +126,7 @@ async function writeWithPictures(page: MetafilePage, pageNumber: number, draw: P
  * @throws what `readMetafilePage` throws for a page refused as a whole (malformed, a bitmap font, nothing to draw), which the caller hands to
  * the office suite or refuses.
  */
-export async function writeMetafilePageWithPictures(svg: Buffer, format: 'emf' | 'wmf', pageNumber: number, draw: PageRasterRun): Promise<Buffer> {
+export async function writeMetafilePageWithPictures(svg: Buffer, format: MetafileFormat, pageNumber: number, draw: PageRasterRun): Promise<Buffer> {
   let page: MetafilePage;
   try {
     page = readMetafilePage(svg, format);
