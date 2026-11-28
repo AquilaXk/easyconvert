@@ -272,6 +272,9 @@ const SPILL_REGRESSION_SAMPLES = [
   { id: 'govdocs1-000141.pdf', minRecall: 0.98, checkPageSizes: false },
   { id: 'govdocs1-002202.pdf', minRecall: 0.93, checkPageSizes: false },
   { id: 'govdocs1-002384.pdf', minRecall: 0.91, checkPageSizes: false },
+  // A last paragraph 0.7 points above the page's edge, and a slide title drawn twice with a shadow.
+  { id: 'govdocs1-001284.pdf', minRecall: 0.98, checkPageSizes: false },
+  { id: 'govdocs1-003667.pdf', minRecall: 0.99, checkPageSizes: false },
 ] as const;
 
 describe('unequal columns, anchored picture runs, mixed page sizes, omitted footers and tiny runs keep the PDF page count', () => {

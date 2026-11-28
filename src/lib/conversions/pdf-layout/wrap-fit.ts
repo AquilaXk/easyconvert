@@ -102,6 +102,11 @@ function widthOf(face: Font, text: string, size: number, missingUnits?: number):
   return (units * size) / PER_MILLE;
 }
 
+/** Thousandths of an em a character is wide in Helvetica, where the face lacks it the width of a digit (a symbol, a Greek letter) or of an em (Han, Hangul). */
+export function helveticaAdvance(char: string): number {
+  return widthOf(faceOf(FontNames.Helvetica), char, PER_MILLE, WRAP_MISSING_UNITS) ?? PER_MILLE;
+}
+
 /** A word of a paragraph as the writer sets it: its width, and the width of the space that stands before it. */
 interface Word {
   width: number;

@@ -76,6 +76,33 @@ describe('the gap and the line height of a paragraph', () => {
   });
 });
 
+describe('a paragraph at the foot of its page', () => {
+  const TALL: PageSetup = { ...SETUP, pageHeights: new Map([[1, 792]]) };
+
+  it('sets a paragraph whose last line ends within 3 points of the page edge as a frame at its place and leaves the flow where it was', () => {
+    const flow = new PageFlow(TALL);
+    format(flow, paragraphOf([lineOf('Above', 72, 120, 700)]));
+    // The last baseline is 790 and a 6-point line holds 0.23 em below it: 791.4 stands past 789, where the office suite ends the body.
+    const foot = format(flow, paragraphOf([lineOf('Prescribed by', 440, 470, 784.5, 6), lineOf('298-102', 440, 465, 790, 6)]));
+    expect(foot.frame?.xPt).toBe(440);
+    expect(foot.frame?.yPt).toBeCloseTo(784.5 - (5.5 - 0.23 * 6), 1);
+    const next = format(flow, paragraphOf([lineOf('Next', 72, 100, 714)]));
+    // The first paragraph ends at 700 + 0.23 * 12 = 702.76 and the next box starts at 714 - (13.8 - 2.76) = 702.96.
+    expect(next.beforePt).toBeCloseTo(0.2, 1);
+  });
+
+  it('leaves a paragraph that ends above that in the flow', () => {
+    const flow = new PageFlow(TALL);
+    const last = format(flow, paragraphOf([lineOf('Last line', 72, 120, 786, 6)]));
+    expect(last.frame).toBeUndefined();
+  });
+
+  it('sets no frame where the height of the page is not known', () => {
+    const flow = new PageFlow(SETUP);
+    expect(format(flow, paragraphOf([lineOf('Last line', 72, 120, 790, 6)])).frame).toBeUndefined();
+  });
+});
+
 describe('indents and alignment', () => {
   it('indents the first line and the rest from the left margin, and wraps where the longest line ended', () => {
     const flow = new PageFlow(SETUP);

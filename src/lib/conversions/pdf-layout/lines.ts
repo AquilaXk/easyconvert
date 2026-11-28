@@ -1,5 +1,6 @@
 import { hexOf } from '../pdf-content-colours';
 import type { PdfContentItem } from '../pdf-text-types';
+import { withoutDuplicates } from './duplicates';
 import { LayoutBudget } from './limits';
 import { directionBalance, isDigit, isLetter, isRightToLeftLetter, isUnspacedScript, isWhitespace, firstChar, lastChar } from './text-chars';
 import type { FontList, LayoutLine, Row, StyledRun } from './types';
@@ -27,8 +28,6 @@ const DESCENT_EM = 0.2;
 const ROW_OVERLAP_SHARE = 0.5;
 /** How many recent rows a run is compared with before it starts a new row. */
 const OPEN_ROWS = 8;
-/** Runs this close (points) with equal text are one run drawn twice (a bold imitation). */
-const DUPLICATE_DISTANCE = 0.6;
 
 type Direction = 'L' | 'R';
 
@@ -46,36 +45,6 @@ function overlapShare(top: number, bottom: number, other: { top: number; bottom:
   const overlap = Math.min(bottom, other.bottom) - Math.max(top, other.top);
   const smaller = Math.min(bottom - top, other.bottom - other.top);
   return smaller > 0 ? overlap / smaller : 0;
-}
-
-/** Whether two runs are set in different colours (a run without a colour is black). */
-function differInColour(a: PdfContentItem, b: PdfContentItem): boolean {
-  return (a.colors?.[0]?.color ?? 0) !== (b.colors?.[0]?.color ?? 0);
-}
-
-/**
- * Drops runs drawn twice at (almost) the same place, which is how some producers fake bold type. Of two runs in different colours
- * (a white shadow under black type) the one drawn last is the one seen, and it is the one kept.
- */
-function withoutDuplicates(items: PdfContentItem[], budget: LayoutBudget): PdfContentItem[] {
-  const drawn = new Map(items.map((item, index) => [item, index]));
-  const sorted = [...items].sort((a, b) => a.baseline - b.baseline || a.x - b.x);
-  const kept: PdfContentItem[] = [];
-  for (const item of sorted) {
-    budget.tick();
-    let duplicate = false;
-    for (let i = kept.length - 1; i >= 0 && i >= kept.length - OPEN_ROWS * 4; i--) {
-      const other = kept[i];
-      if (item.baseline - other.baseline > DUPLICATE_DISTANCE) break;
-      if (other.text === item.text && Math.abs(other.x - item.x) <= DUPLICATE_DISTANCE) {
-        duplicate = true;
-        if (differInColour(other, item) && (drawn.get(item) ?? 0) > (drawn.get(other) ?? 0)) kept[i] = item;
-        break;
-      }
-    }
-    if (!duplicate) kept.push(item);
-  }
-  return kept;
 }
 
 function clusterRuns(items: PdfContentItem[], budget: LayoutBudget): PdfContentItem[][] {
