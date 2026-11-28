@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { encodeEmf, encodeWmf, encodeCgm, estimateMetafileBytes } from '../src/lib/conversions/vector-metafile';
 import { CadGeometryUnavailableError, ConversionFailedError, UnsupportedOptionError } from '../src/lib/types';
 import { convertFile } from '../src/lib/conversions';
+import { cgmBinaryAsClearText, cgmBinaryElements, cgmBinaryName } from './helpers/cgm-binary-oracle';
 import { emfOracleRecords, emfOraclePlayback, wmfOraclePlayback, cgmOracleDocument, cgmOraclePoints, cgmOraclePolygonSet, type PlaybackShape } from './helpers/metafile-oracle';
 import { SCALING_FACTOR, SCALING_TEST_TIMEOUT_MS, settle, expectNoHangOnInput } from './helpers/timing';
 
@@ -106,7 +107,7 @@ describe('SVG document model for metafile encoders', () => {
 
     it('applies transforms to CGM geometry', () => {
       const cgm = cgmOracleDocument(
-        encodeCgm(svgDoc('<rect x="0" y="0" width="10" height="10" transform="translate(30 40) scale(2)" fill="#000"/>')).toString('utf-8')
+        cgmBinaryAsClearText(encodeCgm(svgDoc('<rect x="0" y="0" width="10" height="10" transform="translate(30 40) scale(2)" fill="#000"/>')))
       );
       const polygons = cgm.body
         .filter((e) => e.name === 'POLYGON' || e.name === 'POLYGONSET')
@@ -275,7 +276,7 @@ describe('SVG document model for metafile encoders', () => {
     const INNER_SAME = 'M25 25 H75 V75 H25 Z';
 
     function cgmBody(body: string) {
-      return cgmOracleDocument(encodeCgm(svgDoc(body)).toString('utf-8')).body;
+      return cgmOracleDocument(cgmBinaryAsClearText(encodeCgm(svgDoc(body)))).body;
     }
 
     it('fills open sub-paths, closing them implicitly', () => {
@@ -373,7 +374,7 @@ describe('SVG document model for metafile encoders', () => {
 
     it('writes CGM line widths in VDC units (LINEWIDTHMODE ABS)', () => {
       const doc = cgmOracleDocument(
-        encodeCgm(svgDoc('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="1"/>', 'width="100" height="100" viewBox="0 0 10 10"')).toString('utf-8')
+        cgmBinaryAsClearText(encodeCgm(svgDoc('<line x1="0" y1="5" x2="10" y2="5" stroke="#000" stroke-width="1"/>', 'width="100" height="100" viewBox="0 0 10 10"')))
       );
       expect(doc.elements.find((e) => e.name === 'LINEWIDTHMODE')?.params).toBe('ABS');
       expect(doc.body.filter((e) => e.name === 'LINEWIDTH').map((e) => Number(e.params))).toEqual([10]);
@@ -422,7 +423,7 @@ describe('SVG document model for metafile encoders', () => {
     });
 
     it('scales CGM VDC coordinates into the 16-bit integer range', () => {
-      const doc = cgmOracleDocument(encodeCgm(svgDoc(BIG_RECT, BIG_ROOT)).toString('utf-8'));
+      const doc = cgmOracleDocument(cgmBinaryAsClearText(encodeCgm(svgDoc(BIG_RECT, BIG_ROOT))));
       const [lowerLeft, upperRight] = doc.vdcExtent;
       expect(lowerLeft.x).toBe(0);
       expect(upperRight.y).toBe(0);
@@ -803,10 +804,15 @@ describe('SVG document model for metafile encoders', () => {
       });
     }
 
-    it('rejects non-default caps/joins in CGM, which has no cap or join control in version 1', () => {
-      const body = svgDoc('<polyline points="0,0 20,20 40,0" fill="none" stroke="#000" stroke-linecap="round"/>');
-      expect(() => encodeCgm(body)).toThrow(UnsupportedOptionError);
-      expect(() => encodeCgm(body)).toThrow(/stroke-linecap/);
+    it('writes the cap and join of a pen as the line cap and line join elements of CGM version 3', () => {
+      const body = svgDoc('<polyline points="0,0 20,20 40,0" fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="bevel"/>');
+      const elements = cgmBinaryElements(encodeCgm(body));
+      const named = (name: string) => Array.from(elements.find((e) => cgmBinaryName(e) === name)?.parameters ?? []);
+      expect(named('LINECAP')).toEqual([0, 3, 0, 3]);
+      expect(named('LINEJOIN')).toEqual([0, 4]);
+      const square = cgmBinaryElements(encodeCgm(svgDoc('<polyline points="0,0 20,20 40,0" fill="none" stroke="#000" stroke-linecap="square"/>')));
+      expect(Array.from(square.find((e) => cgmBinaryName(e) === 'LINECAP')?.parameters ?? [])).toEqual([0, 4, 0, 4]);
+      expect(Array.from(square.find((e) => cgmBinaryName(e) === 'LINEJOIN')?.parameters ?? [])).toEqual([0, 2]);
     });
   });
 
@@ -1085,7 +1091,7 @@ describe('SVG document model for metafile encoders', () => {
         expect(stroked[0].pen!.style & JOIN_MASK).toBe(PS_JOIN_MITER);
         expect(corners(stroked[0].rings[0])).toEqual([[10, 10], [50, 50], [90, 10]]);
       }
-      const cgm = cgmOracleDocument(encodeCgm(svg).toString('utf-8'));
+      const cgm = cgmOracleDocument(cgmBinaryAsClearText(encodeCgm(svg)));
       const polylines = cgm.body.filter((e) => e.name === 'POLYLINE').map((e) => cgmOraclePoints(e.params));
       expect(polylines).toEqual([[{ x: 10, y: 10 }, { x: 50, y: 50 }, { x: 90, y: 10 }]]);
     });

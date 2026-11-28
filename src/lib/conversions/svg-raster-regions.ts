@@ -27,7 +27,7 @@ const REFUSAL_KIND_PATTERNS: readonly (readonly [RegExp, RefusalKind])[] = [
   [/^SVG element <image> /, 'picture'],
   [/^SVG stroke-dasharray /, 'dash'],
   [/^Semi-transparent SVG colour |^SVG (?:opacity|fill-opacity|stroke-opacity) /, 'transparency'],
-  [/^Stroked SVG <|^EMF cannot reproduce an SVG miter|^WMF cannot reproduce an SVG miter/, 'pen'],
+  [/^Stroked SVG <|^(?:EMF|WMF|CGM) cannot reproduce an SVG miter|^SVG stroke-line(?:cap|join) /, 'pen'],
 ];
 
 /** The kind of a refusal of the SVG readers, by what their message names. */
@@ -150,7 +150,7 @@ const COMPLEXITY_PATTERNS: readonly RegExp[] = [
   /^SVG clip-path work exceeds /,
   /does not fit the (?:metafile's \d+-limited field|16-bit metafile range)/,
   /is too large for the 16-bit metafile coordinate range/,
-  /^(?:EMF|WMF) output would exceed \d+ bytes/,
+  /^(?:EMF|WMF|CGM) output would exceed \d+ bytes/,
 ];
 
 /** Whether a refusal says the page has more in it than the vector writers read or hold (not that it is malformed): a picture of the whole page then stands for it. */

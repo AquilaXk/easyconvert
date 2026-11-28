@@ -1,5 +1,6 @@
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
-import { stretchDibRecordBytes, emfStretchDib, wmfStretchDib, type RegionBitmap } from './metafile-bitmap';
+import { CGM_CLASS, CGM_ID, CGM_MAX_PARAMETER_BYTES, CGM_MAX_POINTS, CGM_MAX_POLYGON_SET_VERTICES, POINT_BYTES, POLYGON_SET_VERTEX_BYTES, cgmColour, cgmElement, cgmInt16, cgmIntegers, cgmPoints, cgmPolygonSetPoints, cgmString } from './cgm-binary';
+import { stretchDibRecordBytes, cgmCellArrays, emfStretchDib, wmfStretchDib, type RegionBitmap } from './metafile-bitmap';
 import { coveredByRegion, elementExtent, pageRect, pageSizeFromRoot, RasterRegions, type PixelRect, type RefusalKind } from './svg-raster-regions';
 import { parseSvgGeometries, type ParsedSvgVectorDocument, type RgbColor, type SvgLinecap, type SvgLinejoin } from './svg-geometry';
 import { planElement, nonzeroDiffersFromEvenOdd, WorkMeter, miterRatios, strokedLines, type DrawOp, type FillOp, type PlanPen, type PlanPoint } from './metafile-draw-plan';
@@ -180,10 +181,9 @@ const EMF_OP_OVERHEAD = 160; // fill mode, pen, brush, selects and deletes
 const EMF_STROKE_LINE_HEADER = 28;
 const WMF_FILE_OVERHEAD = 96; // placeable + META_HEADER, window org/ext, EOF
 const WMF_OP_OVERHEAD = 80; // fill mode, pen, brush, selects and deletes
-const CGM_FILE_OVERHEAD = 512; // metafile/picture descriptors and terminators
-const CGM_OP_OVERHEAD = 96; // LINECOLR, LINEWIDTH, FILLCOLR elements
-const CGM_ELEMENT_OVERHEAD = 24; // element name, separators and terminator
-const CGM_MAX_POINT_CHARS = 26; // "(-32767,-32767) CLOSEVIS "
+const CGM_FILE_OVERHEAD = 256; // metafile/picture descriptors and terminators
+const CGM_OP_OVERHEAD = 32; // LINECOLR, LINEWIDTH, FILLCOLR elements
+const CGM_ELEMENT_OVERHEAD = 4; // command header and length word
 
 function pointCount(lines: PlanPoint[][]): number {
   return lines.reduce((n, l) => n + l.length, 0);
@@ -203,11 +203,12 @@ function estimateOpBytes(op: DrawOp, format: MetafileFormat): number {
     const words = WMF_POLY_HEADER_WORDS * lines.length + lines.length + WMF_POINT_WORDS * points;
     return WMF_OP_OVERHEAD + words * BYTES_PER_WORD;
   }
-  const outlined = op.kind === 'fill' && op.pen ? 2 : 1;
-  return CGM_OP_OVERHEAD + outlined * (CGM_ELEMENT_OVERHEAD * lines.length + CGM_MAX_POINT_CHARS * (points + lines.length));
+  // A filled shape with a pen is its polygon, written with an edge flag for each vertex, and a polyline of each ring and its first point.
+  const bytes = POLYGON_SET_VERTEX_BYTES * points + (op.kind === 'fill' && op.pen ? POINT_BYTES * (points + lines.length) : 0);
+  return CGM_OP_OVERHEAD + CGM_ELEMENT_OVERHEAD * (2 * lines.length + Math.ceil(bytes / CGM_MAX_PARAMETER_BYTES)) + bytes;
 }
 
-type MetafileFormat = 'emf' | 'wmf' | 'cgm';
+export type MetafileFormat = 'emf' | 'wmf' | 'cgm';
 
 const FILE_OVERHEAD: Record<MetafileFormat, number> = {
   emf: EMF_FILE_OVERHEAD,
@@ -812,11 +813,19 @@ function writeWmf(doc: ParsedSvgVectorDocument, bitmaps: readonly RegionBitmap[]
 // A page with parts the writers cannot draw (a picture of those parts stands for them)
 // ============================================================================
 
-function bitmapBytes(bitmaps: readonly RegionBitmap[], format: 'emf' | 'wmf'): number {
+function bitmapBytes(bitmaps: readonly RegionBitmap[], format: MetafileFormat): number {
   return bitmaps.reduce((sum, bitmap) => sum + stretchDibRecordBytes(bitmap, format), 0);
 }
 
-/** The page of an SVG as an EMF or WMF writer reads it when the parts it cannot draw are left to pictures. */
+function writePage(doc: ParsedSvgVectorDocument, format: MetafileFormat, bitmaps: readonly RegionBitmap[]): Buffer {
+  if (format === 'emf') return writeEmf(doc, bitmaps);
+  return format === 'wmf' ? writeWmf(doc, bitmaps) : writeCgm(doc, bitmaps, PAGE_NAME);
+}
+
+/** The name a CGM page is given in its BEGIN METAFILE and BEGIN PICTURE elements. */
+const PAGE_NAME = 'drawing';
+
+/** The page of an SVG as an EMF, WMF or CGM writer reads it when the parts it cannot draw are left to pictures. */
 export interface MetafilePage {
   /** The rectangles, in device pixels of the page, that need a picture each (none when the page is all vector). Pictures are given to `write` in this order. */
   readonly regions: readonly PixelRect[];
@@ -834,13 +843,15 @@ export interface MetafilePage {
  * vector elements that lie wholly inside a region are left out, as cairo's analysis surface leaves out an operation inside its fallback region.
  * @throws what `encodeEmf` or `encodeWmf` throws for a page that is refused as a whole (malformed, too large, no drawing, a bitmap font).
  */
-export function readMetafilePage(svgBuffer: Buffer, format: 'emf' | 'wmf'): MetafilePage {
+export function readMetafilePage(svgBuffer: Buffer, format: MetafileFormat): MetafilePage {
   const label = format.toUpperCase();
   const regions = new RasterRegions();
   const doc = parseDrawableSvg(svgBuffer, label, regions);
+  const meter = new WorkMeter();
+  const refusedOf = (op: DrawOp): void => (format === 'cgm' ? assertCgmPageOp(op, meter) : assertMiterCorners(op, label, GDI_DEFAULT_MITER_LIMIT));
   const drawable = doc.elements.filter((element) => {
     try {
-      for (const op of planElement(element)) assertMiterCorners(op, label, GDI_DEFAULT_MITER_LIMIT);
+      for (const op of planElement(element)) refusedOf(op);
       return true;
     } catch (error) {
       if (!(error instanceof UnsupportedOptionError)) throw error;
@@ -862,7 +873,7 @@ export function readMetafilePage(svgBuffer: Buffer, format: 'emf' | 'wmf'): Meta
       if (bitmaps.length !== regions.rects.length) {
         throw new CadGeometryUnavailableError(`${label} page has ${regions.rects.length} regions to draw as pictures and was given ${bitmaps.length}.`);
       }
-      return format === 'emf' ? writeEmf(written, bitmaps) : writeWmf(written, bitmaps);
+      return writePage(written, format, bitmaps);
     },
   };
 }
@@ -872,7 +883,7 @@ export function readMetafilePage(svgBuffer: Buffer, format: 'emf' | 'wmf'): Meta
  * vertices or coordinates than they hold; `isTooComplexToDraw`).
  * @throws `refusal` again when the root of the SVG does not give the size of the page.
  */
-export function wholePageAsPicture(svgBuffer: Buffer, format: 'emf' | 'wmf', refusal: Error): MetafilePage {
+export function wholePageAsPicture(svgBuffer: Buffer, format: MetafileFormat, refusal: Error): MetafilePage {
   const size = pageSizeFromRoot(svgBuffer);
   const rect = size && pageRect({ x0: 0, y0: 0, x1: size.width, y1: size.height }, size);
   if (!size || !rect) throw refusal;
@@ -882,51 +893,32 @@ export function wholePageAsPicture(svgBuffer: Buffer, format: 'emf' | 'wmf', ref
     kinds: new Set<RefusalKind>(['other']),
     width: size.width,
     height: size.height,
-    write: (bitmaps) => (format === 'emf' ? writeEmf(doc, bitmaps) : writeWmf(doc, bitmaps)),
+    write: (bitmaps) => writePage(doc, format, bitmaps),
   };
 }
 
 // ============================================================================
-// CGM ENCODER (ISO/IEC 8632 Clear-Text Encoding)
+// CGM ENCODER (ISO/IEC 8632-3 Binary Encoding)
 // ============================================================================
 
-const CGM_STRING_DELIMITER = '"';
-
-/** Quotes a clear-text CGM string; the delimiter is escaped by doubling it (ISO/IEC 8632-4). */
-function quoteCgmString(str: string): string {
-  const flattened = str.replace(/[\r\n]+/g, ' ').trim();
-  const escaped = flattened.split(CGM_STRING_DELIMITER).join(CGM_STRING_DELIMITER + CGM_STRING_DELIMITER);
-  return `${CGM_STRING_DELIMITER}${escaped}${CGM_STRING_DELIMITER}`;
-}
-
-function formatCgmPoints(points: { x: number; y: number }[]): string {
-  return points.map((p) => `(${toInt16(p.x)},${toInt16(p.y)})`).join(' ');
-}
-
-/** Direct colour specifier: three colour components separated by spaces. */
-function formatCgmColour(c: RgbColor): string {
-  return `${c.r} ${c.g} ${c.b}`;
-}
-
-function cgmClosingPolyline(ring: PlanPoint[]): string {
-  return `POLYLINE ${formatCgmPoints([...ring, ring[0]])};`;
-}
+/** Version 3 of the format (ISO/IEC 8632-1:1999) adds the line cap and line join elements, and its element list is the version 3 set. */
+const CGM_VERSION = 3;
+/** The integer, VDC integer and colour component widths the writer declares, in bits. */
+const CGM_INTEGER_BITS = 16;
+const CGM_COLOUR_BITS = 8;
+const CGM_COLOUR_MAX = 255;
+const CGM_VDC_INTEGER = 0;
+const CGM_DIRECT_COLOUR = 1;
+const CGM_ABSOLUTE_LINE_WIDTH = 0;
+const CGM_INTERIOR_SOLID = 1;
+/** The shorthand of the element list for the version 3 set (ISO 8632-1 clause 8.2), which holds every element this writer uses. */
+const CGM_VERSION_3_SET = [-1, 5];
+const CGM_WHITE = { r: CGM_COLOUR_MAX, g: CGM_COLOUR_MAX, b: CGM_COLOUR_MAX };
+const CGM_DESCRIPTION = 'Generated by EasyConvert Vector Engine';
 
 /**
- * POLYGONSET (ISO/IEC 8632-1 7.6.7): each vertex carries an edge-out flag;
- * CLOSEVIS ends a ring. The set is one area, so inner rings form holes.
- */
-function formatCgmPolygonSet(rings: PlanPoint[][]): string {
-  const parts = rings.flatMap((ring) =>
-    ring.map((p, i) => `(${toInt16(p.x)},${toInt16(p.y)}) ${i === ring.length - 1 ? 'CLOSEVIS' : 'VIS'}`)
-  );
-  return `POLYGONSET ${parts.join(' ')};`;
-}
-
-/**
- * CGM clear text has no fill-rule control: POLYGON and POLYGONSET interiors
- * use the even-odd rule. A nonzero fill is encoded only when even-odd gives
- * the same area; otherwise it is rejected rather than drawn differently.
+ * CGM has no fill-rule control: POLYGON and POLYGONSET interiors use the even-odd rule. A nonzero fill is encoded only when
+ * even-odd gives the same area; otherwise it is rejected rather than drawn differently.
  */
 function assertCgmFillRule(op: FillOp, meter: WorkMeter): void {
   if (op.fillRule === 'nonzero' && nonzeroDiffersFromEvenOdd(op.rings, meter)) {
@@ -936,75 +928,147 @@ function assertCgmFillRule(op: FillOp, meter: WorkMeter): void {
   }
 }
 
-function formatCgmPen(pen: PlanPen, lines: string[]): void {
-  // Version 1 CGM has no line cap or join elements; only the SVG defaults are accepted.
-  if (pen.cap !== 'butt') {
-    throw new UnsupportedOptionError(`SVG stroke-linecap "${pen.cap}" is not supported by the CGM encoder.`);
+/** A polygon is one element, which holds `CGM_MAX_POINTS` points (a polygon set `CGM_MAX_POLYGON_SET_VERTICES` vertices); a longer polyline is written as several. */
+function assertCgmPolygonSize(op: FillOp): void {
+  const vertices = op.rings.reduce((sum, ring) => sum + ring.length, 0);
+  if (vertices > (op.rings.length === 1 ? CGM_MAX_POINTS : CGM_MAX_POLYGON_SET_VERTICES)) {
+    throw new UnsupportedOptionError(`CGM cannot hold a polygon of ${vertices} vertices in one element.`);
   }
-  if (pen.join !== 'miter') {
-    throw new UnsupportedOptionError(`SVG stroke-linejoin "${pen.join}" is not supported by the CGM encoder.`);
-  }
-  lines.push(`LINECOLR ${formatCgmColour(pen.color)};`, `LINEWIDTH ${toInt16(Math.max(1, pen.width), 'CGM line width')};`);
 }
 
-function formatCgmOp(op: DrawOp, lines: string[], meter: WorkMeter): void {
+/** Everything the writer refuses of an operation: a miter corner that SVG bevels (CGM has no miter limit), a fill rule, a polygon of more vertices than an element holds. */
+function assertCgmOp(op: DrawOp, meter: WorkMeter): void {
   // CGM has no join control: any corner SVG would bevel cannot be expressed.
   assertMiterCorners(op, 'CGM', null);
+  if (op.kind === 'fill') {
+    assertCgmPolygonSize(op);
+    assertCgmFillRule(op, meter);
+  }
+}
+
+/** The same refusals for the page reader, which leaves a refused element to a picture: a fill rule it cannot decide within its budget is one too. */
+function assertCgmPageOp(op: DrawOp, meter: WorkMeter): void {
+  try {
+    assertCgmOp(op, meter);
+  } catch (error) {
+    if (error instanceof CadGeometryUnavailableError && op.kind === 'fill') throw new UnsupportedOptionError(error.message);
+    throw error;
+  }
+}
+
+/** The indicators of the line cap and line join elements (ISO 8632-1 clauses 8.5.37 and 8.5.38; 1 is "unspecified"). */
+const CGM_CAP: Readonly<Record<PlanPen['cap'], number>> = { butt: 2, round: 3, square: 4 };
+const CGM_JOIN: Readonly<Record<PlanPen['join'], number>> = { miter: 2, round: 3, bevel: 4 };
+
+/** The line and fill attributes last written, so that an element repeats an attribute only when it changes. */
+interface CgmAttributes {
+  line?: PlanPen;
+  fill?: RgbColor;
+}
+
+function sameColour(a: RgbColor | undefined, b: RgbColor): boolean {
+  return a !== undefined && a.r === b.r && a.g === b.g && a.b === b.b;
+}
+
+function cgmWidth(pen: PlanPen): number {
+  return Math.max(1, Math.round(pen.width));
+}
+
+function cgmLineAttributes(pen: PlanPen, state: CgmAttributes, out: Buffer[]): void {
+  const last = state.line;
+  const { attribute } = CGM_CLASS;
+  if (!sameColour(last?.color, pen.color)) out.push(cgmElement(attribute, CGM_ID.lineColour, cgmColour(pen.color)));
+  if (last === undefined || cgmWidth(last) !== cgmWidth(pen)) out.push(cgmElement(attribute, CGM_ID.lineWidth, cgmIntegers(cgmInt16(cgmWidth(pen), 'CGM line width'))));
+  // The dash cap, which no dash uses here, is the line cap.
+  if (last?.cap !== pen.cap) out.push(cgmElement(attribute, CGM_ID.lineCap, cgmIntegers(CGM_CAP[pen.cap], CGM_CAP[pen.cap])));
+  if (last?.join !== pen.join) out.push(cgmElement(attribute, CGM_ID.lineJoin, cgmIntegers(CGM_JOIN[pen.join])));
+  state.line = pen;
+}
+
+/** A polyline as one element, or as elements of `CGM_MAX_POINTS` points that each begin where the one before ended. */
+function cgmPolylines(points: readonly PlanPoint[], out: Buffer[]): void {
+  for (let from = 0; ; from += CGM_MAX_POINTS - 1) {
+    out.push(cgmElement(CGM_CLASS.primitive, CGM_ID.polyline, cgmPoints(points.slice(from, from + CGM_MAX_POINTS))));
+    if (from + CGM_MAX_POINTS >= points.length) return;
+  }
+}
+
+function cgmOpElements(op: DrawOp, state: CgmAttributes, out: Buffer[]): void {
   if (op.kind === 'stroke') {
-    formatCgmPen(op.pen, lines);
-    for (const line of op.lines) lines.push(`POLYLINE ${formatCgmPoints(line)};`);
+    cgmLineAttributes(op.pen, state, out);
+    for (const line of op.lines) cgmPolylines(line, out);
     return;
   }
-  assertCgmFillRule(op, meter);
-  lines.push(`FILLCOLR ${formatCgmColour(op.fill)};`);
-  lines.push(op.rings.length === 1 ? `POLYGON ${formatCgmPoints(op.rings[0])};` : formatCgmPolygonSet(op.rings));
+  if (!sameColour(state.fill, op.fill)) out.push(cgmElement(CGM_CLASS.attribute, CGM_ID.fillColour, cgmColour(op.fill)));
+  state.fill = op.fill;
+  out.push(
+    op.rings.length === 1
+      ? cgmElement(CGM_CLASS.primitive, CGM_ID.polygon, cgmPoints(op.rings[0]))
+      : cgmElement(CGM_CLASS.primitive, CGM_ID.polygonSet, cgmPolygonSetPoints(op.rings))
+  );
   if (op.pen) {
-    formatCgmPen(op.pen, lines);
-    for (const ring of op.rings) lines.push(cgmClosingPolyline(ring));
+    cgmLineAttributes(op.pen, state, out);
+    for (const ring of op.rings) cgmPolylines([...ring, ring[0]], out);
   }
 }
 
 /**
- * Encodes an SVG document into standard ISO 8632 clear-text Computer Graphics Metafile (CGM).
+ * The elements before the picture body: the descriptors of the metafile and of one picture whose VDC space is `width` by `height`
+ * integers, on a white page. VDC space has its y axis pointing up; listing the bottom-left corner as (0,height) and the top-right as
+ * (width,0) keeps SVG coordinates unmirrored (the extent's corners fix the direction of the axes, ISO 8632-1 clause 8.3), and every
+ * coordinate is written as the SVG gives it.
  */
-export function encodeCgm(svgBuffer: Buffer, baseName: string = 'drawing'): Buffer {
-  const doc = parseDrawableSvg(svgBuffer, 'CGM');
+function cgmPrologue(name: string, width: number, height: number): Buffer[] {
+  const { delimiter, metafileDescriptor, pictureDescriptor, control, attribute } = CGM_CLASS;
+  return [
+    cgmElement(delimiter, CGM_ID.beginMetafile, cgmString(name)),
+    cgmElement(metafileDescriptor, CGM_ID.metafileVersion, cgmIntegers(CGM_VERSION)),
+    cgmElement(metafileDescriptor, CGM_ID.metafileDescription, cgmString(CGM_DESCRIPTION)),
+    cgmElement(metafileDescriptor, CGM_ID.vdcType, cgmIntegers(CGM_VDC_INTEGER)),
+    cgmElement(metafileDescriptor, CGM_ID.integerPrecision, cgmIntegers(CGM_INTEGER_BITS)),
+    cgmElement(metafileDescriptor, CGM_ID.colourPrecision, cgmIntegers(CGM_COLOUR_BITS)),
+    cgmElement(metafileDescriptor, CGM_ID.colourValueExtent, Buffer.from([0, 0, 0, CGM_COLOUR_MAX, CGM_COLOUR_MAX, CGM_COLOUR_MAX])),
+    cgmElement(metafileDescriptor, CGM_ID.metafileElementList, cgmIntegers(1, ...CGM_VERSION_3_SET)),
+    cgmElement(delimiter, CGM_ID.beginPicture, cgmString(name)),
+    cgmElement(pictureDescriptor, CGM_ID.colourMode, cgmIntegers(CGM_DIRECT_COLOUR)),
+    // Line widths are absolute VDC lengths, matching device-scaled SVG stroke widths.
+    cgmElement(pictureDescriptor, CGM_ID.lineWidthMode, cgmIntegers(CGM_ABSOLUTE_LINE_WIDTH)),
+    cgmElement(pictureDescriptor, CGM_ID.vdcExtent, cgmIntegers(0, height, width, 0)),
+    cgmElement(pictureDescriptor, CGM_ID.backgroundColour, cgmColour(CGM_WHITE)),
+    cgmElement(delimiter, CGM_ID.beginPictureBody),
+    cgmElement(control, CGM_ID.vdcIntegerPrecision, cgmIntegers(CGM_INTEGER_BITS)),
+    cgmElement(attribute, CGM_ID.interiorStyle, cgmIntegers(CGM_INTERIOR_SOLID)),
+  ];
+}
+
+function writeCgm(doc: ParsedSvgVectorDocument, bitmaps: readonly RegionBitmap[], baseName: string): Buffer {
   const width = Math.max(1, Math.round(doc.width));
   const height = Math.max(1, Math.round(doc.height));
-  const quotedName = quoteCgmString(baseName || 'drawing');
+  const name = baseName || 'drawing';
 
-  // VDC integers are 16-bit by default, so large drawings use a scaled VDC space.
+  // VDC integers are 16-bit, so large drawings use a scaled VDC space.
   const deviceOps = planDocument(doc);
-  assertEstimatedSize(deviceOps, 'cgm', quotedName.length * 2);
+  assertEstimatedSize(deviceOps, 'cgm', name.length * 2 + bitmapBytes(bitmaps, 'cgm'));
   const space = computeLogicalSpace(deviceOps, width, height);
-  const vdcWidth = Math.round(width * space.scale);
-  const vdcHeight = Math.round(height * space.scale);
-
-  // VDC space has its y axis pointing up; listing the bottom-left corner as
-  // (0,height) and the top-right as (width,0) keeps SVG coordinates unmirrored.
-  const lines: string[] = [
-    `BEGMF ${quotedName};`,
-    'MFVERSION 1;',
-    `MFDESC ${quoteCgmString('Generated by EasyConvert Vector Engine')};`,
-    `MFELEMLIST ${quoteCgmString('DRAWINGSET')};`,
-    `BEGPIC ${quotedName};`,
-    'COLRMODE DIRECT;',
-    // Line widths are absolute VDC lengths, matching device-scaled SVG stroke widths
-    'LINEWIDTHMODE ABS;',
-    `VDCEXT (0,${vdcHeight}) (${vdcWidth},0);`,
-    'BEGPICBODY;',
-    'INTSTYLE SOLID;',
-  ];
+  const elements = cgmPrologue(name, Math.round(width * space.scale), Math.round(height * space.scale));
 
   const meter = new WorkMeter();
-  let outputChars = 0;
+  const state: CgmAttributes = {};
   for (const op of scaleOps(deviceOps, space.scale)) {
-    const before = lines.length;
-    formatCgmOp(op, lines, meter);
-    for (let k = before; k < lines.length; k++) outputChars += lines[k].length + 1;
-    assertOutputSize(outputChars, 'CGM');
+    assertCgmOp(op, meter);
+    cgmOpElements(op, state, elements);
   }
+  for (const bitmap of bitmaps) elements.push(...cgmCellArrays(bitmap, space.scale));
+  elements.push(cgmElement(CGM_CLASS.delimiter, CGM_ID.endPicture), cgmElement(CGM_CLASS.delimiter, CGM_ID.endMetafile));
 
-  lines.push('ENDPIC;', 'ENDMF;', '');
-  return Buffer.from(lines.join('\n'), 'utf-8');
+  const file = Buffer.concat(elements);
+  assertOutputSize(file.length, 'CGM');
+  return file;
+}
+
+/**
+ * Encodes an SVG document into a binary Computer Graphics Metafile (ISO/IEC 8632-3), the encoding the office suite and the viewers read.
+ */
+export function encodeCgm(svgBuffer: Buffer, baseName: string = PAGE_NAME): Buffer {
+  return writeCgm(parseDrawableSvg(svgBuffer, 'CGM'), [], baseName);
 }
