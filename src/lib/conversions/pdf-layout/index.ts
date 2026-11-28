@@ -465,11 +465,12 @@ function pageKeepingOf(
   const margins = pageMarginsOf(measured, tops);
   const pageSizes = new Map(pages.map((page) => [page.pageNumber, { width: page.width, height: page.height }]));
   const pageWidths = new Map(pages.map((page) => [page.pageNumber, page.width]));
+  const pageHeights = new Map(pages.map((page) => [page.pageNumber, page.height]));
   const pageWidth = pages[0]?.width ?? 0;
   const columned = blocks.map((block) => ({ pageNumber: pageOfBlock(block), columns: block.columns, boxes: block.kind === 'paragraph' ? block.paragraph.lines.map((line) => line.box) : [blockBox(block)] }));
   const framed = irregularColumnPages(columned);
   const columnGaps = regularColumnGaps(columned, framed, pageWidths, pageWidth, margins);
-  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts, pageWidths, wrap }), framed, tops, margins, pageSizes, columnGaps };
+  return { flow: new PageFlow({ margins, pageWidth, pageTops: tops.starts, pageWidths, pageHeights, wrap }), framed, tops, margins, pageSizes, columnGaps };
 }
 
 /** The margins of a document that keeps its pages: the page's own at the top, and none at the bottom, so a page whose lines come out a hair taller does not start another page. */

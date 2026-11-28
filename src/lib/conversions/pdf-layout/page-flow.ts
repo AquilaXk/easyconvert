@@ -36,6 +36,11 @@ const DEFAULT_MARKER_GAP = 18;
 const MAX_MARKER_GAP = 72;
 const MIN_COLUMN_GAP_PT = 4;
 const DEFAULT_COLUMN_GAP_PT = 36;
+/**
+ * Points above the page's edge where the office suite ends the body of a page that has a footer part, empty or not, when the page's
+ * bottom margin and its footer distance are zero (measured: the body of such a page ends 2.8 points up, 1 mm, whatever the footer holds).
+ */
+const FOOTER_FLOOR_PT = 3;
 
 function median(values: number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
@@ -104,6 +109,8 @@ export interface PageSetup {
   pageTops: ReadonlyMap<number, number>;
   /** Width in points of each page when the document mixes page sizes. */
   pageWidths?: ReadonlyMap<number, number>;
+  /** Height in points of each page. */
+  pageHeights?: ReadonlyMap<number, number>;
   /** The face the writer sets the text in and the size it sets a paragraph of the body's size in, so that a paragraph is made to wrap where the page's lines did. */
   wrap?: { metrics: WrapMetrics; bodySize: number };
 }
@@ -206,6 +213,15 @@ export class PageFlow {
     return columns === 1 || top >= this.bottom - COLUMN_RISE_LINES * line;
   }
 
+  /**
+   * Whether the last line of a paragraph of the body ends where the office suite keeps the foot of the page free of body text: a line
+   * there is set on the next page, and the paragraph with it, so the paragraph stands at its place on the page as a frame instead.
+   */
+  private endsInFooterFloor(last: LayoutLine): boolean {
+    const height = this.page.pageHeights?.get(this.currentPage);
+    return !this.inCell && height !== undefined && last.baseline + DESCENT_SHARE * last.size > height - FOOTER_FLOOR_PT;
+  }
+
   /** The format of a paragraph set as a frame at its place on the page; the flow does not move. */
   frameFormat(paragraph: Paragraph): ParagraphFormat {
     const { lines } = paragraph;
@@ -230,7 +246,7 @@ export class PageFlow {
     const last = lines[lines.length - 1];
     let lineHeightPt = lineHeightOf(lines, this.baseline);
     const top = first.baseline - (lineHeightPt - DESCENT_SHARE * first.size);
-    if (this.stoodBeside(top, lineHeightPt, columns)) return this.frameFormat(paragraph);
+    if (this.stoodBeside(top, lineHeightPt, columns) || this.endsInFooterFloor(last)) return this.frameFormat(paragraph);
     // A run of columns that starts below other text starts its columns there, not at the top of the page.
     if (columns > 1 && this.columnsAbove !== columns) this.columnTop = this.bottom;
     this.columnsAbove = columns;
