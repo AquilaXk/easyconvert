@@ -44,7 +44,7 @@ describe('the intro of a converter page', () => {
     ['video-converter', 'ko', '동영상 파일을 온라인에서 변환합니다. WEBM, MKV, AVI, MOV, MP3 등으로 바꿀 수 있습니다.'],
     ['ttf-converter', 'en', 'Convert TTF fonts online. Targets include WOFF, WOFF2, EOT, OTF, and SVG.'],
     ['ttf-converter', 'ko', 'TTF 글꼴 파일을 온라인에서 변환합니다. WOFF, WOFF2, EOT, OTF, SVG 등으로 바꿀 수 있습니다.'],
-    ['dxf-converter', 'en', 'Convert DXF drawings online. Targets include PDF, SVG, PNG, ZIP, and JPG.'],
+    ['dxf-converter', 'en', 'Convert DXF drawings online. Targets include DWG, PDF, SVG, PNG, and ZIP.'],
   ] as const)('of %s in %s says what it converts, other targets and the options', (slug, locale, intro) => {
     expect(slugPageCopy(slug, locale).description).toBe(intro);
   });
