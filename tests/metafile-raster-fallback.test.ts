@@ -17,7 +17,7 @@ import {
 } from '../src/worker/metafile-raster-fallback';
 
 /**
- * The parts of a page that the in-process EMF and WMF writers cannot draw (a gradient, a mask, a clip that is not one convex polygon, a
+ * The parts of a page that the in-process EMF and WMF writers cannot draw (a gradient, a mask, a clip that cannot be measured exactly, a
  * pen the format lacks) are written as a bitmap record each, cut from Poppler's picture of the page, and the rest stays vector (entry 459).
  */
 
@@ -188,7 +188,7 @@ describe('the kind of a refusal', () => {
     ['picture', `<image x="0" y="0" width="9" height="9" xlink:href="${PIXEL}"/>`],
     ['dash', '<path d="M 0 5 L 90 5" stroke="#000" stroke-dasharray="4 2"/>'],
   ];
-  const DEFS = `${GRADIENT}<clipPath id="c"><path d="M 0 0 C 30 40 60 40 90 0 Z"/></clipPath><mask id="m"><rect x="0" y="0" width="9" height="9" fill="#fff"/></mask><filter id="f"/>`;
+  const DEFS = `${GRADIENT}<clipPath id="c" clipPathUnits="objectBoundingBox"><rect x="0" y="0" width="1" height="1"/></clipPath><mask id="m"><rect x="0" y="0" width="9" height="9" fill="#fff"/></mask><filter id="f"/>`;
 
   it.each(CASES)('%s is named from what the reader says', (kind, body) => {
     const regions = new RasterRegions();

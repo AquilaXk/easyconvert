@@ -1172,7 +1172,8 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
       return d;
     })
   );
-  const hiding = state.clips.hiding(deviceSubpaths);
+  const fillRule = ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero';
+  const hiding = state.clips.hiding(deviceSubpaths, node.name !== 'line' && ctx.fill.trim() !== 'none' ? fillRule : null);
   const lengthScale = matrixLengthScale(ctx.ctm);
   requireFinite(strokeWidth * lengthScale, `<${node.name}> device stroke width`);
   const stroke = strokeWidth > 0 ? resolvePaint(ctx.stroke, ctx.color, 'stroke') : null;
@@ -1186,7 +1187,7 @@ function emitShape(node: SvgNode, ctx: StyleContext, state: RenderState): void {
     isClosed: shape.isClosed,
     fillable: node.name !== 'line',
     fill: resolvePaint(ctx.fill, ctx.color, 'fill'),
-    fillRule: ctx.fillRule.trim() === 'evenodd' ? 'evenodd' : 'nonzero',
+    fillRule,
     stroke,
     strokeWidth: strokeWidth * lengthScale,
     strokeLinecap: ctx.strokeLinecap.trim() as SvgLinecap,

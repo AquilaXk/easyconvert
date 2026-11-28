@@ -427,11 +427,7 @@ describe('pictures', () => {
 
 describe('what the DXF writer still refuses', () => {
   it.each([
-    [
-      'a clip that is not the page and not one convex polygon',
-      '<clipPath id="c"><rect x="0" y="0" width="50" height="50"/><rect x="60" y="0" width="30" height="50"/></clipPath><rect width="100" height="100" clip-path="url(#c)"/>',
-      /clip-path "url\(#c\)" is not supported: .*only a clip of one convex polygon is cut/,
-    ],
+    ['a clip on the clip', '<clipPath id="c" clip-path="url(#d)"><rect x="0" y="0" width="50" height="50"/></clipPath><rect width="100" height="100" clip-path="url(#c)"/>', /clip-path "url\(#c\)" is not supported: .*clip-path of its own/],
     ['a mask', '<mask id="m"><rect width="10" height="10"/></mask><rect width="100" height="100" mask="url(#m)"/>', /mask/],
     ['paint-order', '<rect width="10" height="10" stroke="#000" paint-order="stroke"/>', /paint-order/],
     ['mix-blend-mode', '<rect width="10" height="10" style="mix-blend-mode: multiply"/>', /mix-blend-mode/],

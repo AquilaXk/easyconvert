@@ -81,13 +81,14 @@ function outcome(clip: string, drawn = clippedGroup('c'), body = FULL_PAGE): 'wh
 }
 
 describe('a clip path that clips something is not dropped: the drawing is cut at it, or refused', () => {
-  const CLIP_REFUSAL = /clip-path "url\(#c\)" is not supported/;
-
   it.each([
     ['a rectangle smaller than the page', pathClip('c', 'M 10 10 L 150 10 L 150 90 L 10 90 Z')],
     ['a rectangle that covers the width of the page but not its height', pathClip('c', 'M 0 0 L 200 0 L 200 50 L 0 50 Z')],
     ['a triangle that spans the page', pathClip('c', 'M 0 0 L 200 0 L 200 100 Z')],
     ['a page rectangle that is itself transformed', `<clipPath id="c" transform="rotate(10)"><rect width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}"/></clipPath>`],
+    ['a path with a curved side', pathClip('c', 'M 0 0 L 200 0 C 210 50 210 50 200 90 L 0 90 Z')],
+    ['a rectangle with rounded corners', `<clipPath id="c"><rect x="0" y="0" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}" rx="20"/></clipPath>`],
+    ['two shapes that together cover the page except a corner', `<clipPath id="c"><rect width="100" height="100"/><rect x="100" width="100" height="90"/></clipPath>`],
   ])('%s cuts the drawing', (_name, clip) => {
     expect(outcome(clip)).toBe('cut');
   });
@@ -96,16 +97,6 @@ describe('a clip path that clips something is not dropped: the drawing is cut at
     const pageSized = pathClip('c', `M 0 0 L ${PAGE_WIDTH} 0 L ${PAGE_WIDTH} ${PAGE_HEIGHT} L 0 ${PAGE_HEIGHT} Z`);
     const larger = `<path d="M -50 -50 L 250 -50 L 250 150 L -50 150 Z" fill="red"/>`;
     expect(outcome(pageSized, '<g transform="scale(0.5)" clip-path="url(#c)">$BODY</g>', larger)).toBe('cut');
-  });
-
-  it.each([
-    ['a path with a curved side', pathClip('c', 'M 0 0 L 200 0 C 210 50 210 50 200 90 L 0 90 Z'), /curve/],
-    ['a rectangle with rounded corners', `<clipPath id="c"><rect x="0" y="0" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}" rx="20"/></clipPath>`, /curve/],
-    ['two shapes that together cover the page', `<clipPath id="c"><rect width="100" height="100"/><rect x="100" width="100" height="90"/></clipPath>`, /only a clip of one convex polygon is cut/],
-  ])('%s is refused', (_name, clip, reason) => {
-    const refused = outcome(clip);
-    expect(refused).toMatch(CLIP_REFUSAL);
-    expect(refused).toMatch(reason);
   });
 
   it('a clip on the root element, which is not a group the page is drawn in, is refused', () => {
@@ -221,10 +212,10 @@ describe('a clip is read once, however many elements refer to it', () => {
     expect(parseSvgGeometries(svg).elements).toHaveLength(5000);
   });
 
-  it('refuses a document whose page clip is a long path with the unsupported-clip answer at the first reference', () => {
+  it('hides every element of a document whose page clip is a long path of no area, reading the clip once', () => {
     const longPath = `M 0 0 ${'M 1 1 '.repeat(MAX_PAGE_CLIP_PATH_CHARS)}`;
     const groups = Array.from({ length: 5000 }, () => `<g clip-path="url(#c)"><path d="${BOX_PATH}"/></g>`).join('');
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_WIDTH}" height="${PAGE_HEIGHT}"><defs>${pathClip('c', longPath)}</defs>${groups}</svg>`;
-    expect(() => parseSvgGeometries(svg)).toThrow(/clip-path "url\(#c\)" is not supported/);
+    expect(parseSvgGeometries(svg).elements).toEqual([]);
   });
 });

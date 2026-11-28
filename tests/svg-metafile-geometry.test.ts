@@ -590,11 +590,46 @@ describe('SVG document model for metafile encoders', () => {
       expect(filledShapes(emfShapes(under('<rect x="85" y="85" width="10" height="10" fill="#ff0000"/>') + '<rect x="0" y="0" width="5" height="5" fill="#0000ff"/>')).map((shape) => shape.brush)).toEqual([0x0000ff]);
     });
 
-    it('refuse a region that is not one convex polygon when it hides part of the drawing, with the reason', () => {
-      const lShape = '<defs><clipPath id="c"><path d="M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z"/></clipPath></defs>';
-      expect(() => encodeEmf(svgDoc(`${lShape}<g clip-path="url(#c)"><rect x="10" y="10" width="80" height="80" fill="#000"/></g>`))).toThrow(
-        /^SVG clip-path "url\(#c\)" is not supported: a drawn path reaches [\d.]+ pixels past it, and only a clip of one convex polygon is cut\.$/
-      );
+    const L_SHAPE = '<defs><clipPath id="c"><path d="M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z"/></clipPath></defs>';
+    const circleClip = (rule = 'nonzero'): string => `<defs><clipPath id="c"><circle clip-rule="${rule}" cx="50" cy="50" r="30"/></clipPath></defs>`;
+    const areaOf = (ring: { x: number; y: number }[]): number => Math.abs(ring.reduce((total, a, i) => total + a.x * ring[(i + 1) % ring.length].y - ring[(i + 1) % ring.length].x * a.y, 0)) / 2;
+    /** The 36 sides of a circle of radius 30, the polygon the reader flattens it to. */
+    const CIRCLE_AREA = 0.5 * 36 * 30 * 30 * Math.sin((2 * Math.PI) / 36);
+
+    it('cut a fill at a region that is not one convex polygon, which keeps the L of the rectangle', () => {
+      const filled = filledShapes(emfShapes(`${L_SHAPE}<g clip-path="url(#c)"><rect x="10" y="10" width="80" height="80" fill="#000"/></g>`));
+      expect(filled).toHaveLength(1);
+      expect(new Set(corners(filled[0].rings[0]).map(String))).toEqual(new Set(['10,10', '90,10', '90,40', '40,40', '40,80', '10,80']));
+    });
+
+    it('cut a fill at a curved region, the polygon it is flattened to: the rectangle becomes the circle', () => {
+      for (const shapes of [emfShapes(`${circleClip()}<g clip-path="url(#c)"><rect x="0" y="0" width="100" height="100" fill="#f00"/></g>`), wmfShapes(`${circleClip()}<g clip-path="url(#c)"><rect x="0" y="0" width="100" height="100" fill="#f00"/></g>`)]) {
+        const filled = filledShapes(shapes);
+        expect(filled).toHaveLength(1);
+        expect(filled[0].rings).toHaveLength(1);
+        // The metafile holds whole numbers, which move the area of the ring by a tenth of a percent.
+        expect(Math.abs(areaOf(filled[0].rings[0]) - CIRCLE_AREA) / CIRCLE_AREA).toBeLessThan(0.01);
+      }
+    });
+
+    it('cut a fill at a curved region by the rule of the fill and the rule of the clip', () => {
+      const holes = (rule: string): string => `<defs><clipPath id="c"><path clip-rule="${rule}" d="M 0 0 L 100 0 L 100 100 L 0 100 Z M 20 20 L 80 20 L 80 80 L 20 80 Z"/></clipPath></defs>`;
+      const drawn = '<g clip-path="url(#c)"><rect x="10" y="10" width="80" height="80" fill="#000" fill-rule="evenodd"/></g>';
+      const ringsOf = (rule: string): number[] => filledShapes(emfShapes(`${holes(rule)}${drawn}`)).flatMap((shape) => shape.rings.map(areaOf));
+      // Evenodd clip: the frame between the rectangles 0..100 and 20..80, of the fill 10..90 only the frame 10..90 minus 20..80, as an outer ring and a hole.
+      expect(ringsOf('evenodd').sort((a, b) => b - a)).toEqual([6400, 3600]);
+      // Nonzero clip: the second rectangle turns the same way, so the clip is the whole of 0..100 and the fill stays whole.
+      expect(ringsOf('nonzero')).toEqual([6400]);
+    });
+
+    it('keep a stroke that runs along the edge of its own curved clip whole, where the clipper drops some segments of a path on its edge', () => {
+      const drawn =
+        '<g clip-path="url(#c)"><circle cx="50" cy="50" r="30" fill="none" stroke="#0000ff"/><line x1="0" y1="50" x2="100" y2="50" stroke="#ff0000"/></g>';
+      const lines = emfShapes(`${circleClip()}${drawn}`).filter((shape) => shape.pen !== null);
+      const byColour = new Map(lines.map((shape) => [shape.pen?.color, shape.rings]));
+      expect(byColour.get(0x0000ff)).toHaveLength(1);
+      expect((byColour.get(0x0000ff) ?? [])[0].length).toBeGreaterThanOrEqual(36);
+      expect(byColour.get(0xff0000)?.map(corners)).toEqual([[[20, 50], [80, 50]]]);
     });
 
     it('cut a self-intersecting fill so that its winding count is kept inside the region and nothing is painted outside it', () => {

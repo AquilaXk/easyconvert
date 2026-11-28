@@ -10,8 +10,9 @@ import { DEFAULT_HANG_GUARD_MS, expectWithinHangGuard } from './helpers/timing';
 /**
  * A clip path that is not the page. The DXF writer (which writes the centre lines of the drawing and holds no clip) drops it
  * when nothing it hides is more than one point outside it, measured on the flattened device-space vertices against the clip
- * region (policy 79). Past that, a clip of one convex polygon cuts the lines at its edges, and a clip of any other region is
- * refused, because dropping it draws what it hides.
+ * region (policy 79). Past that, the clip cuts the lines at its edges, whatever its region: a convex polygon by the textbook
+ * algorithms (policy 99), a curve flattened to a polygon, a concave or holed path and the union of several shapes at the
+ * edges that the line crosses (policy 473). A clip that cannot be read exactly is refused, because dropping it draws what it hides.
  */
 
 const PAGE_WIDTH = 200;
@@ -45,7 +46,8 @@ const refusal = (svg: string): string => {
 };
 
 const CLIP_REFUSAL = /^ConversionFailedError: The page cannot be written as DXF: SVG clip-path "url\(#c\)" is not supported: /;
-const NOT_CONVEX = /, and only a clip of one convex polygon is cut\.$/;
+/** What a page says when the clip hid every line of it: a drawing with no entity is not written. */
+const NOTHING_LEFT = /draws no vector geometry/;
 
 /** The vertices of each entity, x and y rounded to 4 decimals. */
 const linesOf = (svg: string): number[][][] => dxfOf(svg).entities.map((entity) => entity.points.map((p) => [round(p.x), round(p.y)]));
@@ -168,38 +170,46 @@ describe('a rectangular clip', () => {
 describe('a clip of any other shape', () => {
   const L_SHAPE = 'M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z';
 
-  it('measures a vertex in the notch of a concave path to the nearest edge, and refuses it past a point, since only a convex clip is cut', () => {
-    expect(dxfOf(clipped(pathClip(L_SHAPE), stroke('M 10 10 L 90 10 L 90 30 L 30 30 L 30 70'))).entities).toHaveLength(1);
-    const refused = refusal(clipped(pathClip(L_SHAPE), stroke('M 10 10 L 80 60')));
-    expect(refused).toMatch(/reaches 20 pixels past it, more than the 1\.33 pixels \(one point\) a clip may hide/);
-    expect(refused).toMatch(NOT_CONVEX);
+  it('measures a vertex in the notch of a concave path to the nearest edge, and cuts the line where it enters the notch past a point', () => {
+    const inside = 'M 10 10 L 90 10 L 90 30 L 30 30 L 30 70';
+    expect(linesOf(clipped(pathClip(L_SHAPE), stroke(inside)))).toEqual([[[10, 90], [90, 90], [90, 70], [30, 70], [30, 30]]]);
+    // The line from (10, 10) to (80, 60) reaches the edge y = 40 of the wide arm at x = 52 and ends in the notch, 20 pixels from the region.
+    expect(linesOf(clipped(pathClip(L_SHAPE), stroke('M 10 10 L 80 60')))).toEqual([[[10, 90], [52, 60]]]);
   });
 
-  it('finds a segment that leaves a concave clip between two vertices inside it', () => {
-    expect(refusal(clipped(pathClip(L_SHAPE), stroke('M 30 70 L 90 30')))).toMatch(CLIP_REFUSAL);
+  it('finds a segment that leaves a concave clip between two vertices inside it, and keeps the two pieces', () => {
+    // From the tall arm into the notch at x = 40 and back into the wide arm at y = 40.
+    expect(linesOf(clipped(pathClip(L_SHAPE), stroke('M 30 70 L 90 30')))).toEqual([
+      [[30, 30], [40, round(100 - (70 - 20 / 3))]],
+      [[75, 60], [90, 70]],
+    ]);
   });
 
   it('measures the farthest point of a piece of a segment outside the clip, not only its middle', () => {
     const frame = 'M 0 0 H 200 V 100 H 0 Z M 20 10 H 180 V 90 H 20 Z';
     const across = stroke('M 10 50 L 190 50');
     expect(refusal(clipped(pathClip(`${frame} M 99 10 H 101 L 100 49.5 Z`, 'evenodd'), across)), 'needle on the edge of the hole').toMatch(CLIP_REFUSAL);
-    expect(refusal(clipped(pathClip(`${frame} M 99 10.5 H 101 L 100 49.5 Z`, 'evenodd'), across)), 'needle in the hole').toMatch(/reaches 40 pixels past it/);
-    expect(dxfOf(clipped(pathClip(L_SHAPE), stroke('M 39 41.5 L 41.5 39'))).entities, 'a corner cut by 0.35 pixels').toHaveLength(1);
+    // The line is 0.5 pixels under the tip of the needle at one place and 40 pixels from the region over the hole: the hole is cut out.
+    expect(linesOf(clipped(pathClip(`${frame} M 99 10.5 H 101 L 100 49.5 Z`, 'evenodd'), across)), 'needle in the hole').toEqual([
+      [[10, 50], [20, 50]],
+      [[180, 50], [190, 50]],
+    ]);
+    expect(linesOf(clipped(pathClip(L_SHAPE), stroke('M 39 41.5 L 41.5 39'))), 'a corner cut by 0.35 pixels is drawn whole').toEqual([[[39, 58.5], [41.5, 61]]]);
   });
 
   it('follows clip-rule: a hole drawn the same way is filled by nonzero and empty for evenodd', () => {
     const holed = 'M 0 0 L 100 0 L 100 80 L 0 80 Z M 30 20 L 70 20 L 70 60 L 30 60 Z';
     expect(dxfOf(clipped(pathClip(holed, 'nonzero'), stroke('M 50 40 L 51 41'))).entities).toHaveLength(1);
-    expect(refusal(clipped(pathClip(holed, 'evenodd'), stroke('M 50 40 L 51 41')))).toMatch(/reaches 20 pixels past it/);
+    expect(refusal(clipped(pathClip(holed, 'evenodd'), stroke('M 50 40 L 51 41')))).toMatch(NOTHING_LEFT);
     const reversed = 'M 0 0 L 100 0 L 100 80 L 0 80 Z M 30 20 L 30 60 L 70 60 L 70 20 Z';
-    expect(refusal(clipped(pathClip(reversed, 'nonzero'), stroke('M 50 40 L 51 41')))).toMatch(CLIP_REFUSAL);
+    expect(refusal(clipped(pathClip(reversed, 'nonzero'), stroke('M 50 40 L 51 41')))).toMatch(NOTHING_LEFT);
   });
 
   it('takes clip-rule from the shape, its style, its <clipPath> or the nonzero default', () => {
     const holed = 'M 0 0 L 100 0 L 100 80 L 0 80 Z M 30 20 L 70 20 L 70 60 L 30 60 Z';
     const inHole = stroke('M 50 40 L 51 41');
-    expect(refusal(clipped(clipOf(`<path style="clip-rule:evenodd" d="${holed}"/>`), inHole))).toMatch(CLIP_REFUSAL);
-    expect(refusal(clipped(clipOf(`<path d="${holed}"/>`, 'clip-rule="evenodd"'), inHole))).toMatch(CLIP_REFUSAL);
+    expect(refusal(clipped(clipOf(`<path style="clip-rule:evenodd" d="${holed}"/>`), inHole))).toMatch(NOTHING_LEFT);
+    expect(refusal(clipped(clipOf(`<path d="${holed}"/>`, 'clip-rule="evenodd"'), inHole))).toMatch(NOTHING_LEFT);
     expect(dxfOf(clipped(clipOf(`<path d="${holed}"/>`), inHole)).entities).toHaveLength(1);
   });
 
@@ -207,9 +217,9 @@ describe('a clip of any other shape', () => {
     const holed = 'M 0 0 L 100 0 L 100 80 L 0 80 Z M 30 20 L 70 20 L 70 60 L 30 60 Z';
     const inHole = stroke('M 50 40 L 51 41');
     const plain = clipOf(`<path d="${holed}"/>`);
-    expect(refusal(clipped(plain, inHole).replace('<svg ', '<svg clip-rule="evenodd" ')), 'evenodd on the root').toMatch(CLIP_REFUSAL);
-    expect(refusal(svgOf(`<defs clip-rule="evenodd">${plain}</defs><g clip-path="url(#c)">${inHole}</g>`)), 'evenodd on <defs>').toMatch(CLIP_REFUSAL);
-    expect(refusal(clipped(clipOf(`<path clip-rule="inherit" d="${holed}"/>`, 'clip-rule="evenodd"'), inHole)), 'inherit').toMatch(CLIP_REFUSAL);
+    expect(refusal(clipped(plain, inHole).replace('<svg ', '<svg clip-rule="evenodd" ')), 'evenodd on the root').toMatch(NOTHING_LEFT);
+    expect(refusal(svgOf(`<defs clip-rule="evenodd">${plain}</defs><g clip-path="url(#c)">${inHole}</g>`)), 'evenodd on <defs>').toMatch(NOTHING_LEFT);
+    expect(refusal(clipped(clipOf(`<path clip-rule="inherit" d="${holed}"/>`, 'clip-rule="evenodd"'), inHole)), 'inherit').toMatch(NOTHING_LEFT);
     expect(dxfOf(clipped(clipOf(`<path clip-rule="nonzero" d="${holed}"/>`, 'clip-rule="evenodd"'), inHole)).entities, 'its own value first').toHaveLength(1);
     expect(dxfOf(clipped(plain, inHole, 'clip-rule="evenodd"')).entities, 'the clipped element').toHaveLength(1);
   });
@@ -217,18 +227,22 @@ describe('a clip of any other shape', () => {
   it('inherits a hidden visibility from the ancestors of the <clipPath> and through inherit, unless a shape is visible again', () => {
     const rect = (attributes = ''): string => `<rect x="40" y="20" width="120" height="60" ${attributes}/>`;
     const drawn = stroke('M 60 30 L 140 30');
-    expect(refusal(svgOf(`<defs visibility="hidden">${clipOf(rect())}</defs><g clip-path="url(#c)">${drawn}</g>`)), 'hidden <defs>').toMatch(/hides everything/);
-    expect(refusal(clipped(clipOf(rect('visibility="inherit"'), 'visibility="hidden"'), drawn)), 'inherit').toMatch(/hides everything/);
+    expect(refusal(svgOf(`<defs visibility="hidden">${clipOf(rect())}</defs><g clip-path="url(#c)">${drawn}</g>`)), 'hidden <defs>').toMatch(NOTHING_LEFT);
+    expect(refusal(clipped(clipOf(rect('visibility="inherit"'), 'visibility="hidden"'), drawn)), 'inherit').toMatch(NOTHING_LEFT);
     expect(dxfOf(svgOf(`<defs visibility="hidden">${clipOf(rect('visibility="visible"'))}</defs><g clip-path="url(#c)">${drawn}</g>`)).entities, 'visible again').toHaveLength(1);
   });
 
   it('is the union of its shapes', () => {
     const two = clipOf('<rect x="0" y="0" width="50" height="100"/><rect x="100" y="0" width="50" height="100"/>');
     expect(dxfOf(clipped(two, `${stroke('M 10 10 L 40 10')}${stroke('M 110 10 L 140 10')}`)).entities).toHaveLength(2);
-    expect(refusal(clipped(two, stroke('M 10 10 L 75 10')))).toMatch(/reaches 25 pixels past it/);
+    expect(linesOf(clipped(two, stroke('M 10 10 L 75 10'))), 'the gap between them is cut out').toEqual([[[10, 90], [50, 90]]]);
+    expect(linesOf(clipped(two, stroke('M 10 10 L 190 10'))), 'and the line left of both').toEqual([
+      [[10, 90], [50, 90]],
+      [[100, 90], [150, 90]],
+    ]);
   });
 
-  it('can be a polygon, which cuts when it is convex', () => {
+  it('can be a polygon, a convex one cut by the textbook algorithm', () => {
     const triangle = clipOf('<polygon points="60,10 140,10 100,90"/>');
     expect(dxfOf(clipped(triangle, stroke('M 100 20 L 100 89'))).entities).toHaveLength(1);
     expect(linesOf(clipped(triangle, stroke('M 100 20 L 100 93')))).toEqual([
@@ -246,16 +260,29 @@ describe('a clip of any other shape', () => {
     ['a path of cubic curves', '<path d="M 60 50 C 60 0 140 0 140 50 C 140 100 60 100 60 50 Z"/>'],
     ['a path of quadratic curves', '<path d="M 60 50 Q 100 -30 140 50 Q 100 130 60 50 Z"/>'],
     ['a path of arcs', '<path d="M 60 50 A 40 40 0 1 1 140 50 A 40 40 0 1 1 60 50 Z"/>'],
-  ])('is refused when it is %s, whose flattened outline is off the curve by an error the region would not hold', (_name, shape) => {
-    const refused = refusal(clipped(clipOf(shape), stroke('M 100 45 L 101 45')));
-    expect(refused).toMatch(CLIP_REFUSAL);
-    expect(refused).toMatch(/curve/);
+  ])('is %s, its flattened outline the region: a line across it is cut at the two ends of the axis, a line inside it is not', (_name, shape) => {
+    const across = linesOf(clipped(clipOf(shape), stroke('M 10 50 L 190 50')));
+    expect(across).toHaveLength(1);
+    expect(across[0].map(([x, y]) => [Math.round(x), y])).toEqual([[60, 50], [140, 50]]);
+    expect(linesOf(clipped(clipOf(shape), stroke('M 100 45 L 101 45')))).toEqual([[[100, 55], [101, 55]]]);
   });
 
-  it('does not read the curved clip of a group that draws only a picture, which a DXF leaves out', () => {
+  it('cuts a closed curve that starts inside the clip into one line through its first point, not two that meet there', () => {
+    const lines = linesOf(clipped(clipOf('<circle cx="100" cy="50" r="40"/>'), '<circle cx="60" cy="50" r="30" fill="none" stroke="#000"/>'));
+    expect(lines).toHaveLength(1);
+    const [line] = lines;
+    // The circle of 36 sides starts at (90, 50), inside the clip, and the cut leaves its two ends on the edge of the clip.
+    expect(line).toContainEqual([90, 50]);
+    expect(line[0]).not.toEqual([90, 50]);
+    const distanceToCentre = (point: number[]): number => Math.hypot(point[0] - 100, point[1] - 50);
+    expect(distanceToCentre(line[0])).toBeCloseTo(40, 0);
+    expect(distanceToCentre(line[line.length - 1])).toBeCloseTo(40, 0);
+  });
+
+  it('does not read the clip of a group that draws only a picture, which a DXF leaves out', () => {
     const picture = '<image x="60" y="30" width="20" height="20" href="data:image/png;base64,iVBORw0KGgo="/>';
     const svg = clipped(clipOf('<circle cx="100" cy="50" r="40"/>'), picture);
-    expect(refusal(clipped(clipOf('<circle cx="100" cy="50" r="40"/>'), `${picture}${stroke('M 100 45 L 101 45')}`))).toMatch(/curve/);
+    expect(dxfOf(clipped(clipOf('<circle cx="100" cy="50" r="40"/>'), `${picture}${stroke('M 100 45 L 101 45')}`)).entities).toHaveLength(1);
     expect(dxfOf(`${svg.slice(0, -6)}${stroke('M 10 10 L 20 10')}</svg>`).entities).toHaveLength(1);
   });
 
@@ -264,14 +291,15 @@ describe('a clip of any other shape', () => {
     expect(dxfOf(clipped(clip, stroke('M 60 30 L 140 30'))).entities).toHaveLength(1);
   });
 
-  it('is refused when a curve of it is flattened past a point under the scale of the clipped element', () => {
+  it('is the flattened polygon where the flattening is off the curve by more than a point under the scale of the clipped element', () => {
     const k = 0.5523;
     const circle = (cx: number, cy: number, r: number): string =>
       `M ${cx + r} ${cy} C ${cx + r} ${cy + k * r} ${cx + k * r} ${cy + r} ${cx} ${cy + r} C ${cx - k * r} ${cy + r} ${cx - r} ${cy + k * r} ${cx - r} ${cy} ` +
       `C ${cx - r} ${cy - k * r} ${cx - k * r} ${cy - r} ${cx} ${cy - r} C ${cx + k * r} ${cy - r} ${cx + r} ${cy - k * r} ${cx + r} ${cy} Z`;
     const frameWithRoundHole = pathClip(`M 0 0 L 10 0 L 10 5 L 0 5 Z ${circle(5, 2.5, 2)}`, 'evenodd');
+    // Under scale(20) a chord of the flattened hole lies 3 pixels inside the true circle: the clip is the polygon, so a line on the chord is on the edge and stays.
     const inTheHoleOnAChord = stroke('M 6.7071 3.2071 L 6.7739 3.2348');
-    expect(refusal(clipped(frameWithRoundHole, inTheHoleOnAChord, 'transform="scale(20)"')), 'hidden by 3 pixels, measured inside').toMatch(CLIP_REFUSAL);
+    expect(dxfOf(clipped(frameWithRoundHole, inTheHoleOnAChord, 'transform="scale(20)"')).entities).toHaveLength(1);
   });
 });
 
@@ -316,11 +344,10 @@ describe('clips inside one another', () => {
     ]);
   });
 
-  it('refuse a line that reaches past a nested clip that is not convex', () => {
+  it('cut a line at a nested clip that is not convex, as at a single one', () => {
     const lShape = 'M 0 0 L 100 0 L 100 40 L 40 40 L 40 80 L 0 80 Z';
-    expect(refusal(nested('M 0 0 L 190 0 L 190 100 L 0 100 Z', lShape, stroke('M 10 10 L 80 60')))).toMatch(
-      /clip-path "url\(#b\)" is not supported: a drawn path reaches 20 pixels past it, and a path under more than one clip must be inside each of them, and only a clip of one convex polygon is cut\.$/
-    );
+    expect(linesOf(nested('M 0 0 L 190 0 L 190 100 L 0 100 Z', lShape, stroke('M 10 10 L 80 60')))).toEqual([[[10, 90], [52, 60]]]);
+    expect(linesOf(nested(lShape, 'M 0 0 L 190 0 L 190 100 L 0 100 Z', stroke('M 10 10 L 80 60')))).toEqual([[[10, 90], [52, 60]]]);
   });
 
   it('end with their element: what is drawn after the group is not clipped', () => {
@@ -363,9 +390,9 @@ describe('a clip that cannot be computed exactly', () => {
     expect(refusal(svgOf(`<defs>${pathClip(BOX)}</defs><g clip-path="url(#c)">${drawn}</g>`).replace('<svg ', '<svg clip-path="url(#c)" '))).toMatch(/clip-path/);
   });
 
-  it('hides everything when it holds no shape, a hidden shape or a shape with no area', () => {
+  it('hides everything when it holds no shape, a hidden shape or a shape with no area, and the page has nothing left', () => {
     for (const clip of [clipOf(''), clipOf('<rect x="0" y="0" width="200" height="100" display="none"/>'), pathClip('M 10 50 L 190 50 L 100 50 Z'), pathClip('M 10 50 L 190 50')]) {
-      expect(refusal(clipped(clip, drawn)), clip).toMatch(/hides everything|reaches/);
+      expect(refusal(clipped(clip, drawn)), clip).toMatch(NOTHING_LEFT);
     }
   });
 
@@ -378,7 +405,8 @@ describe('a clip that cannot be computed exactly', () => {
 
   it('keeps a polygon of no area that still fills: a bow tie under nonzero cuts its reversed half out of a rectangle', () => {
     const rectangleAndBowTie = 'M 0 0 L 200 0 L 200 100 L 0 100 Z M 60 30 L 140 70 L 140 30 L 60 70 Z';
-    expect(refusal(clipped(pathClip(rectangleAndBowTie), stroke('M 65 50 L 135 50')))).toMatch(CLIP_REFUSAL);
+    // The lobe of the bow tie that turns the other way from the rectangle cancels it (winding 0), the other adds to it: the line is kept to the crossing point.
+    expect(linesOf(clipped(pathClip(rectangleAndBowTie), stroke('M 65 50 L 135 50')))).toEqual([[[65, 50], [100, 50]]]);
   });
 
   it('hides nothing when nothing is drawn under it', () => {
@@ -498,6 +526,28 @@ describe('hostile clips', () => {
     const past = timed(clipped(pathClip(BOX), zigzag(400_000)));
     expect(past.result).toMatch(/^CadGeometryUnavailableError: SVG expands to more than 500000 vertices/);
     expectWithinHangGuard('hostile clip', past.ms, HOSTILE_GUARD);
+  });
+
+  it('a line that crosses a concave clip at every edge stops at the work limit and does not run for long', () => {
+    // Each tooth is 3 pixels wide, so a point in the gap between two is 1.5 pixels from the region, past the tolerance of a DXF.
+    const teeth = 60;
+    const comb = Array.from({ length: teeth }, (_, i) => `L ${10 + (i * 180) / teeth} ${i % 2 === 0 ? 20 : 80}`).join(' ');
+    const clip = pathClip(`M 10 90 ${comb} L 190 90 Z`);
+    const across = (count: number): string => stroke(`M 10 50${Array.from({ length: count }, (_, i) => ` L ${i % 2 === 0 ? 190 : 10} ${50 + (i % 7) / 100}`).join('')}`);
+    const { result, ms } = timed(clipped(clip, across(20_000)));
+    expect(result).toMatch(/^CadGeometryUnavailableError: SVG clip-path work exceeds/);
+    expectWithinHangGuard('hostile clip', ms, HOSTILE_GUARD);
+    expect(refusal(clipped(clip, across(3))), 'a few crossings are within the limit').toBe('converted');
+  });
+
+  it('twenty clips of a thousand edges each are read at the cost of their edges, not of every pair of them', () => {
+    const ring = (shift: number): string => `M ${100 + shift} 50 ${Array.from({ length: 998 }, (_, i) => `L ${100 + shift + 40 * Math.cos(((i + 1) * 2 * Math.PI) / 999)} ${50 + 40 * Math.sin(((i + 1) * 2 * Math.PI) / 999)}`).join(' ')} Z`;
+    const ids = Array.from({ length: 20 }, (_, i) => i);
+    const defs = ids.map((i) => `<clipPath id="r${i}"><path d="${ring(i)}"/></clipPath>`).join('');
+    const drawn = ids.map((i) => `<g clip-path="url(#r${i})">${stroke(`M ${90 + i} 50 L ${91 + i} 50`)}</g>`).join('');
+    const start = performance.now();
+    expect(dxfOf(svgOf(`<defs>${defs}</defs>${drawn}`)).entities).toHaveLength(20);
+    expectWithinHangGuard('hostile clip', performance.now() - start, HOSTILE_GUARD);
   });
 
   it('a cut is charged to the work limit as its vertices times the edges of the clip', () => {

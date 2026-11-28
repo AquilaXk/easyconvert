@@ -1,5 +1,6 @@
 import { CadGeometryUnavailableError, UnsupportedOptionError } from '../types';
 import type { AffineMatrix } from './svg-geometry';
+import { cutAreasAtRegion, engineWork, GRID_UNITS_PER_PIXEL, holeVertices, polygonRegion, type PolygonRegion, type RegionShape } from './svg-clip-polygons';
 import { PAGE_CLIP_TOLERANCE_PIXELS, type ClipNode } from './svg-page-clip';
 import { excerpt, type SvgPenMode } from './svg-pen';
 
@@ -7,10 +8,13 @@ import { excerpt, type SvgPenMode } from './svg-pen';
  * The clips of the geometry readers, which write formats that hold no clip path. A non-page `clip-path` is measured against
  * what is drawn under it on the flattened device-space geometry: it is dropped when no vertex of what it clips is more than
  * the tolerance outside its region (PAGE_CLIP_TOLERANCE_PIXELS, one point of the page, for the DXF writer, policy 79; none for
- * the metafile encoders, which paint what they draw). Past that, a clip whose region is one convex polygon cuts the drawing
- * (`ActiveClips.cut`): the lines of a path keep their pieces inside the region (Cyrus and Beck, "Generalized two- and
- * three-dimensional clipping", Computers & Graphics 3(1), 1978) and a filled area keeps its part inside it (Sutherland and
- * Hodgman, "Reentrant polygon clipping", CACM 17(1), 1974). A clip of any other region that hides more is refused (policy 42).
+ * the metafile encoders, which paint what they draw). Past that, the clip cuts the drawing (`ActiveClips.cut`), whatever its region.
+ * A region of one convex polygon with straight edges (Poppler writes every clip as one) is cut the textbook way: the lines of a
+ * path keep their pieces inside the region (Cyrus and Beck, "Generalized two- and three-dimensional clipping", Computers &
+ * Graphics 3(1), 1978) and a filled area keeps its part inside it (Sutherland and Hodgman, "Reentrant polygon clipping", CACM
+ * 17(1), 1974). Any other region (a curve flattened to a polygon, a concave or holed path, several shapes) cuts the lines of a
+ * path at the edges the segment crosses and keeps the pieces whose middle is inside, the measure's own test, and cuts a filled
+ * area with the polygon clipper of Clipper2 (`svg-clip-polygons.ts`, policy 473).
  *
  * The region of a clip is the union of the shapes of its `<clipPath>` (SVG 1.1 section 14.3.5), each filled by its own
  * `clip-rule`, in the user space of the clipped element; a point is inside by the winding count of the edges to its left that
@@ -27,8 +31,8 @@ import { excerpt, type SvgPenMode } from './svg-pen';
  *
  * The limits are this reader's own (neither reference has any): MAX_ACTIVE_CLIPS clips under one element, MAX_CLIP_EDGES edges
  * in one clip, MAX_CLIP_WORK edge tests in a document, on top of the document's vertex budget, which the clip shapes are
- * charged to once per clip. A clip that cannot be measured exactly (a bounding-box unit, a clip on the clip, a curve, text, a
- * picture or a group as its shape) stays refused.
+ * charged to once per clip. A clip that cannot be measured exactly (a bounding-box unit, a clip on the clip, text, a picture or
+ * a group as its shape) stays refused.
  */
 
 /** How far outside a clip what it hides may lie before it is cut: one point for the centre lines of a DXF (policy 79), none for the metafile encoders, which paint what they draw. */
@@ -56,10 +60,12 @@ const hasRadius = (attrs: ReadonlyMap<string, string>): boolean => ['rx', 'ry'].
 
 /**
  * The elements whose fill is a clip shape this reader measures, each with whether an element draws straight edges only. A curve
- * is measured on its flattened outline, which is off the curve by more than the path reader's 0.25 user units (its Bézier test
- * stops at 8 halvings and reads the distance to the chord's line, arcs take steps of a sixteenth of a turn, circles 36 sides),
- * times the scale of the clipped element; so a clip with a curve stays refused. Poppler writes every clip with straight edges.
- * `text`, `use` and groups are not exact either.
+ * is the polygon the path reader flattens it to, off the curve by up to its 0.25 user units (its Bézier test stops at 8 halvings
+ * and reads the distance to the chord's line, arcs take steps of a sixteenth of a turn, circles 36 sides), times the scale of the
+ * clipped element: the drawing under the clip is flattened the same way, so the clip is cut at the polygon and not at the curve,
+ * as the flattened shapes themselves are written. The edges of a flattened curve are never exact, so such a region is cut by
+ * the general route (a coincident edge of the drawing is within the rounding of the cut, `GRID_UNITS_PER_PIXEL`). `text`,
+ * `use` and groups are not shapes this reader flattens.
  */
 const CLIP_SHAPE_IS_STRAIGHT: ReadonlyMap<string, (attrs: ReadonlyMap<string, string>) => boolean> = new Map([
   ['path', (attrs) => !CURVE_COMMAND_PATTERN.test(attrs.get('d') ?? '')],
@@ -70,6 +76,8 @@ const CLIP_SHAPE_IS_STRAIGHT: ReadonlyMap<string, (attrs: ReadonlyMap<string, st
 ]);
 const CLIP_URL_PATTERN = /^url\(\s*#([^)\s"']+)\s*\)$/;
 const MAX_REPORTED_DECIMALS = 2;
+/** How far outside the region the middle of a piece of a line may lie and still be kept: the rounding of the polygon cut, a thousandth of a pixel. */
+const CUT_SNAP_PIXELS = 1 / GRID_UNITS_PER_PIXEL;
 const FULL_TURN = 2 * Math.PI;
 const TURN_EPSILON = 1e-6;
 
@@ -121,7 +129,7 @@ export class ClipWork {
 
 /** The shapes of a clip as closed polygons in the user space of the clipped element, and the number of their points. */
 interface ClipDefinition {
-  shapes: { rule: FillRule; polygons: Point[][] }[];
+  shapes: { rule: FillRule; polygons: Point[][]; curved: boolean }[];
   pointCount: number;
 }
 
@@ -137,14 +145,19 @@ export interface ConvexRegion {
   orientation: number;
 }
 
-interface ClipRegion {
+export interface ClipRegion {
   shapes: DeviceShape[];
   edgeCount: number;
-  /**
-   * The region when it is one convex polygon, else null. A segment with both ends inside a convex region is inside, so only
-   * the vertices are measured, and only such a region cuts what it hides.
-   */
+  /** Whether the region is one convex polygon, flattened from a curve or not. A segment with both ends inside a convex region is inside, so only the vertices are measured. */
+  isConvex: boolean;
+  /** The region when it is one convex polygon with straight edges, else null: such a region is cut by the two textbook algorithms. */
   convex: ConvexRegion | null;
+  /** The polygons of each shape in device space, for the polygon clipper. */
+  outlines: RegionShape[];
+  /** The shapes joined by the polygon clipper, made when the first area is cut at the region or measured against its holes. */
+  polygons?: PolygonRegion;
+  /** One vertex of each hole of `polygons`. */
+  holes?: Point[];
 }
 
 /** A polygon whose points are all on one line, which adds nothing to the winding count of any point off that line. */
@@ -178,13 +191,24 @@ function overlap(edges: Float64Array, i: number, j: number): boolean {
   return Math.min(Math.max(s, t), dx * dx + dy * dy) > Math.max(Math.min(s, t), 0);
 }
 
-/** Whether two edges of the polygons of one shape lie on one another; every pair is tested and charged to the work. */
+/**
+ * Whether two edges of the polygons of one shape lie on one another. Edges on one line overlap their extents on both axes, so
+ * the edges are sorted by their left end and each is tested only against those that start before it ends; every such pair is
+ * charged to the work, which is the pairs of a hostile clip (all of the edges across one another) and a few for a real one.
+ */
 function hasOverlappingEdges(polygons: readonly (readonly Point[])[], work: ClipWork): boolean {
   const edges = edgeRuns(polygons);
   const count = edges.length / 4;
-  work.charge((count * (count - 1)) / 2);
-  for (let i = 0; i < edges.length; i += 4) {
-    for (let j = i + 4; j < edges.length; j += 4) if (overlap(edges, i, j)) return true;
+  const left = (run: number): number => Math.min(edges[run], edges[run + 2]);
+  const order = Array.from({ length: count }, (_, i) => i * 4).sort((a, b) => left(a) - left(b));
+  work.charge(count * Math.ceil(Math.log2(count + 1)));
+  for (let k = 0; k < count; k++) {
+    const i = order[k];
+    const right = Math.max(edges[i], edges[i + 2]);
+    let next = k + 1;
+    while (next < count && left(order[next]) <= right) next++;
+    work.charge(next - k - 1);
+    for (let m = k + 1; m < next; m++) if (overlap(edges, i, order[m])) return true;
   }
   return false;
 }
@@ -247,15 +271,18 @@ function twiceSignedArea(polygon: readonly Point[]): number {
 /** The device-space region of a clip under `ctm`; a polygon that a singular `ctm` puts on one line fills nothing and is left out. */
 function deviceRegion(definition: ClipDefinition, ctm: AffineMatrix): ClipRegion {
   const shapes: DeviceShape[] = [];
+  const outlines: RegionShape[] = [];
   const devicePolygons: Point[][] = [];
   for (const shape of definition.shapes) {
     const polygons = shape.polygons.map((polygon) => simplePolygon(polygon.map((p) => transformPoint(ctm, p)))).filter((polygon) => !fillsNothing(polygon));
     if (polygons.length > 0) shapes.push({ rule: shape.rule, edges: edgeRuns(polygons) });
+    outlines.push({ rule: shape.rule, polygons });
     devicePolygons.push(...polygons);
   }
-  const isConvex = shapes.length === 1 && definition.shapes.length === 1 && definition.shapes[0].polygons.length === 1 && isConvexPolygon(simplePolygon(definition.shapes[0].polygons[0]));
-  const convex = isConvex ? { vertices: devicePolygons[0], orientation: Math.sign(twiceSignedArea(devicePolygons[0])) } : null;
-  return { shapes, edgeCount: shapes.reduce((total, shape) => total + shape.edges.length / 4, 0), convex };
+  const [only] = definition.shapes;
+  const isConvex = shapes.length === 1 && definition.shapes.length === 1 && only.polygons.length === 1 && isConvexPolygon(simplePolygon(only.polygons[0]));
+  const convex = isConvex && !only.curved ? { vertices: devicePolygons[0], orientation: Math.sign(twiceSignedArea(devicePolygons[0])) } : null;
+  return { shapes, edgeCount: shapes.reduce((total, shape) => total + shape.edges.length / 4, 0), isConvex, convex, outlines };
 }
 
 /**
@@ -345,7 +372,7 @@ function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[
       pointOnPage(subpath[i]);
       const distance = distanceOutside(region, subpath[i].x, subpath[i].y);
       farthest = Math.max(farthest, distance);
-      if (region.convex === null && i > 0) {
+      if (!region.isConvex && i > 0) {
         const [p, q] = [subpath[i - 1], subpath[i]];
         work.charge(region.edgeCount);
         const cuts = [0, ...crossings(region, p, q), 1];
@@ -363,6 +390,19 @@ function farthestOutside(region: ClipRegion, subpaths: readonly (readonly Point[
 /** How far inside the line of the region's edge from `a` to `b` a point is: at or above zero on the inner side. */
 function inside(region: ConvexRegion, a: Point, b: Point, p: Point): number {
   return region.orientation * ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x));
+}
+
+/** Whether the point is inside the filled area of the subpaths by the fill rule: the winding count of the edges to its left, as the clip region counts. */
+function insideFill(subpaths: readonly (readonly Point[])[], rule: FillRule, x: number, y: number): boolean {
+  let winding = 0;
+  for (const subpath of subpaths) {
+    for (let i = 0; i < subpath.length; i++) {
+      const [a, b] = [subpath[i], subpath[(i + 1) % subpath.length]];
+      if (a.y === b.y || (a.y <= y) === (b.y <= y)) continue;
+      if (a.x + ((y - a.y) * (b.x - a.x)) / (b.y - a.y) < x) winding += b.y > a.y ? 1 : -1;
+    }
+  }
+  return rule === 'evenodd' ? (winding & 1) !== 0 : winding !== 0;
 }
 
 const pointAt = (p: Point, q: Point, t: number): Point => ({ x: p.x + t * (q.x - p.x), y: p.y + t * (q.y - p.y) });
@@ -387,7 +427,18 @@ function insideSpan(region: ConvexRegion, p: Point, q: Point): [number, number] 
   return [entering, leaving];
 }
 
-/** The pieces of a polyline inside the region; a closed one (first point repeated last) that is cut keeps its pieces through the first point joined. */
+/** A closed polyline (first point repeated last, to the rounding of a flattened curve) that is cut keeps its pieces through the first point joined: the one that ends at the start continues into the one that begins there. */
+function joinThroughStart(pieces: Point[][], line: readonly Point[], cut: boolean): Point[][] {
+  const closed = line.length > 2 && Math.abs(line[0].x - line[line.length - 1].x) <= CUT_SNAP_PIXELS && Math.abs(line[0].y - line[line.length - 1].y) <= CUT_SNAP_PIXELS;
+  const [first, last] = [pieces[0], pieces[pieces.length - 1]];
+  if (closed && cut && pieces.length > 1 && first[0] === line[0] && last[last.length - 1] === line[line.length - 1]) {
+    pieces[0] = [...last, ...first.slice(1)];
+    pieces.pop();
+  }
+  return pieces;
+}
+
+/** The pieces of a polyline inside the region. */
 function cutLines(region: ConvexRegion, line: readonly Point[]): Point[][] {
   const pieces: Point[][] = [];
   let open: Point[] | null = null;
@@ -407,13 +458,43 @@ function cutLines(region: ConvexRegion, line: readonly Point[]): Point[][] {
     if (span[0] > 0 || span[1] < 1) cut = true;
     if (span[1] < 1) open = null;
   }
-  const closed = line.length > 2 && line[0].x === line[line.length - 1].x && line[0].y === line[line.length - 1].y;
-  const [first, last] = [pieces[0], pieces[pieces.length - 1]];
-  if (closed && cut && pieces.length > 1 && first[0] === line[0] && last[last.length - 1] === line[line.length - 1]) {
-    pieces[0] = [...last, ...first.slice(1)];
-    pieces.pop();
+  return joinThroughStart(pieces, line, cut);
+}
+
+/**
+ * The pieces of a polyline inside any region: each segment is split where it crosses an edge, and a piece is kept when its
+ * middle is inside, a point on an edge or within the rounding of the polygon cut being inside, so a line along the edge of its
+ * clip stays whole. Each segment is charged its scan for crossings and each piece its test of the middle. The structure is that of
+ * `ConcaveClippingPolygon2d.clip_line` of ezdxf (mozman/ezdxf, `src/ezdxf/math/clipping.py`, MIT): the crossings of the segment with
+ * the edges in order, and a test of the middle of a piece that may lie on an edge, where collinear counts as inside. No code is copied.
+ */
+function cutLinesAtRegion(region: ClipRegion, line: readonly Point[], work: ClipWork): Point[][] {
+  const pieces: Point[][] = [];
+  let open: Point[] | null = null;
+  let cut = false;
+  for (let i = 1; i < line.length; i++) {
+    const [p, q] = [line[i - 1], line[i]];
+    work.charge(region.edgeCount);
+    const bounds = [0, ...crossings(region, p, q), 1];
+    const length = Math.hypot(q.x - p.x, q.y - p.y);
+    for (let k = 1; k < bounds.length; k++) {
+      const [a, b] = [bounds[k - 1], bounds[k]];
+      // A piece within the rounding is a crossing at a corner of the region counted twice, not a piece.
+      if ((b - a) * length <= CUT_SNAP_PIXELS) continue;
+      work.charge(region.edgeCount);
+      const middle = pointAt(p, q, (a + b) / 2);
+      if (distanceOutside(region, middle.x, middle.y) > CUT_SNAP_PIXELS) {
+        [open, cut] = [null, true];
+        continue;
+      }
+      if (open === null) {
+        open = [a === 0 ? p : pointAt(p, q, a)];
+        pieces.push(open);
+      }
+      open.push(b === 1 ? q : pointAt(p, q, b));
+    }
   }
-  return pieces;
+  return joinThroughStart(pieces, line, cut);
 }
 
 /** The part of a ring (closed implicitly) inside the region, closed by its first point repeated, or nothing (Sutherland and Hodgman). */
@@ -440,6 +521,7 @@ export type ClipCut = 'lines' | 'area';
 /** What `cutElement` reads of an element: its device-space subpaths and whether it paints a fill and a stroke. */
 interface CutElement {
   subpaths: Point[][];
+  fillRule: FillRule;
   fillable: boolean;
   fill: unknown;
   stroke: unknown;
@@ -473,6 +555,8 @@ export class ActiveClips {
   private readonly inherited = new Map<ClipNode, InheritedClipStyle>();
 
   private readonly tolerance: number;
+  /** Whether the writer paints filled areas, which a clip with a hole hides inside the outline of the area (a DXF paints lines only). */
+  private readonly paintsAreas: boolean;
 
   constructor(
     private readonly reader: ClipReader,
@@ -480,6 +564,7 @@ export class ActiveClips {
     private readonly work: ClipWork = new ClipWork()
   ) {
     this.tolerance = CLIP_TOLERANCE_PIXELS[pens];
+    this.paintsAreas = pens === 'metafile';
   }
 
   /** Opens the clip named by a `clip-path` value for an element drawn under `ctm`; refuses a clip it cannot measure. */
@@ -509,23 +594,32 @@ export class ActiveClips {
 
   /**
    * The regions of the clips that hide more than the tolerance of a shape, outermost first (none when the shape is drawn as
-   * it is); refuses the shape when such a clip is not one convex polygon. Under nested clips the tolerance is none, as for
-   * `assertWithin`, and each clip that hides anything cuts, so the shape is cut to their intersection.
+   * it is). Under nested clips the tolerance is none, as for `assertWithin`, and each clip that hides anything cuts, so the
+   * shape is cut to their intersection. A shape painted as a filled area (`filledBy`, the rule of its fill; a DXF paints none)
+   * is hidden by a clip whose outline it never reaches past when it covers a hole of the clip.
    */
-  hiding(subpaths: readonly (readonly Point[])[]): readonly ConvexRegion[] {
-    const nested = this.stack.length > 1;
-    return this.reaching(subpaths).map(({ value, region, farthest }) => {
-      if (region.convex === null) throw clipRefusal(value, `${this.reach(farthest, nested)}, and only a clip of one convex polygon is cut`);
-      return region.convex;
-    });
+  hiding(subpaths: readonly (readonly Point[])[], filledBy: FillRule | null = null): readonly ClipRegion[] {
+    return this.reaching(subpaths, filledBy).map(({ region }) => region);
   }
 
-  /** The shape cut by the regions `hiding` gave, each charged to the work as its vertices times the region's edges. */
-  cut(regions: readonly ConvexRegion[], subpaths: readonly (readonly Point[])[], kind: ClipCut): Point[][] {
+  /**
+   * The shape cut by the regions `hiding` gave. A convex region is charged as the vertices of the shape times its edges, a line
+   * at any other region as its segments are cut, a filled area at one by the work of the polygon clipper (`engineWork`).
+   * `rule` fills the polygons of an area.
+   */
+  cut(regions: readonly ClipRegion[], subpaths: readonly (readonly Point[])[], kind: ClipCut, rule: FillRule): Point[][] {
     return regions.reduce<Point[][]>((pieces, region) => {
-      this.work.charge(pieces.reduce((total, piece) => total + piece.length, 0) * region.vertices.length);
-      return kind === 'lines' ? pieces.flatMap((line) => cutLines(region, line)) : pieces.map((ring) => cutArea(region, ring)).filter((ring) => ring.length > 0);
+      if (region.convex === null) return kind === 'lines' ? pieces.flatMap((line) => cutLinesAtRegion(region, line, this.work)) : this.cutAreaAtRegion(region, pieces, rule);
+      const { convex } = region;
+      this.work.charge(pieces.reduce((total, piece) => total + piece.length, 0) * convex.vertices.length);
+      return kind === 'lines' ? pieces.flatMap((line) => cutLines(convex, line)) : pieces.map((ring) => cutArea(convex, ring)).filter((ring) => ring.length > 0);
     }, subpaths.map((subpath) => [...subpath]));
+  }
+
+  private cutAreaAtRegion(region: ClipRegion, rings: Point[][], rule: FillRule): Point[][] {
+    region.polygons ??= polygonRegion(region.outlines);
+    this.work.charge(engineWork(region.polygons, rings));
+    return cutAreasAtRegion(region.polygons, rings, rule);
   }
 
   /**
@@ -533,13 +627,13 @@ export class ActiveClips {
    * metafile paints the fill and the stroke, so the fill is cut as an area and the stroke as lines, one element each where the
    * shape has both. The vertices the cut adds are charged to `vertices`, the document's budget.
    */
-  cutElement<T extends CutElement>(element: T, regions: readonly ConvexRegion[], pens: SvgPenMode, vertices: { charge: (count: number) => void }): T[] {
-    const lines = (): Point[][] => this.cut(regions, element.subpaths, 'lines');
+  cutElement<T extends CutElement>(element: T, regions: readonly ClipRegion[], pens: SvgPenMode, vertices: { charge: (count: number) => void }): T[] {
+    const lines = (): Point[][] => this.cut(regions, element.subpaths, 'lines', element.fillRule);
     const pieces: T[] =
       pens === 'centre-line'
         ? [{ ...element, subpaths: lines() }]
         : [
-            ...(element.fillable && element.fill !== null ? [{ ...element, stroke: null, subpaths: this.cut(regions, element.subpaths, 'area') }] : []),
+            ...(element.fillable && element.fill !== null ? [{ ...element, stroke: null, subpaths: this.cut(regions, element.subpaths, 'area', element.fillRule) }] : []),
             ...(element.stroke !== null ? [{ ...element, fill: null, subpaths: lines() }] : []),
           ];
     const drawn = pieces.filter((piece) => piece.subpaths.length > 0);
@@ -548,14 +642,24 @@ export class ActiveClips {
     return drawn;
   }
 
-  private reaching(subpaths: readonly (readonly Point[])[]): (ActiveClip & { region: ClipRegion; farthest: number })[] {
+  private reaching(subpaths: readonly (readonly Point[])[], filledBy: FillRule | null = null): (ActiveClip & { region: ClipRegion; farthest: number })[] {
     const tolerance = this.stack.length > 1 ? 0 : this.tolerance;
     return this.stack
       .map((clip) => {
         const region = this.regionOf(clip);
-        return { ...clip, region, farthest: farthestOutside(region, subpaths, tolerance, this.work) };
+        const farthest = farthestOutside(region, subpaths, tolerance, this.work);
+        return { ...clip, region, farthest: farthest <= tolerance && this.coversHole(region, subpaths, filledBy) ? Infinity : farthest };
       })
       .filter(({ farthest }) => !(farthest <= tolerance));
+  }
+
+  /** Whether the filled area of the subpaths encloses a hole of the region, the outline of the area being inside the region. */
+  private coversHole(region: ClipRegion, subpaths: readonly (readonly Point[])[], filledBy: FillRule | null): boolean {
+    if (filledBy === null || !this.paintsAreas || region.isConvex) return false;
+    region.polygons ??= polygonRegion(region.outlines);
+    region.holes ??= holeVertices(region.polygons);
+    this.work.charge(region.holes.length * subpaths.reduce((total, subpath) => total + subpath.length, 0));
+    return region.holes.some((hole) => insideFill(subpaths, filledBy, hole.x, hole.y));
   }
 
   private regionOf(clip: ActiveClip): ClipRegion {
@@ -602,7 +706,6 @@ export class ActiveClips {
       if (hasClipOfItsOwn(shape, declared)) throw clipRefusal(value, 'a shape of the <clipPath> has a clip-path of its own');
       const style = this.inheritedOf(shape);
       if (declared.get('display') === 'none' || style.hidden) continue;
-      if (!isStraight(shape.attrs)) throw clipRefusal(value, `its <${shape.name}> draws a curve, which is measured only on its flattened outline`);
       const outline = outlineOf(shape);
       if (outline === null) continue;
       const toClipSpace = multiply(clipTransform, transformOf(shape.attrs.get('transform') ?? ''));
@@ -610,7 +713,7 @@ export class ActiveClips {
       edges += polygons.reduce((total, polygon) => total + polygon.length, 0);
       if (edges > MAX_CLIP_EDGES) throw clipRefusal(value, `it has more than ${MAX_CLIP_EDGES} edges`);
       if (hasOverlappingEdges(polygons, this.work)) throw clipRefusal(value, 'two edges of a shape in it lie on one another, so an edge may border nothing');
-      shapes.push({ rule: style.rule, polygons });
+      shapes.push({ rule: style.rule, polygons, curved: !isStraight(shape.attrs) });
     }
     return { shapes, pointCount: edges };
   }

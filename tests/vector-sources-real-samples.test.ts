@@ -66,7 +66,7 @@ const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
  * The registry offers DXF, EMF and WMF for Visio drawings. DXF is also offered for CorelDRAW, CGM, EMF and WMF files (entries 187 and 472: every
  * real file of them converts, a picture being left out with a warning, a clip cut and a page of only a picture written as a drawing of no
  * entities or of the sheet under it), and EMF and WMF for CorelDRAW, CGM, EMF and WMF files (entry 454: a page the in-process writers refuse,
- * which holds a picture, a dash or a curved clip, is written by the office suite).
+ * which holds a picture, a dash or a gradient, is written by the office suite).
  */
 const VISIO_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 const DXF_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;

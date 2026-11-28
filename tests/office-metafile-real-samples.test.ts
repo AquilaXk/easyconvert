@@ -15,7 +15,7 @@ import { compareImages } from './helpers/vrt-engine';
 
 /**
  * Real PDF files, presentations and PostScript files written as EMF and WMF (entries 454 and 458). The in-process writers write the pages made of paths and fills;
- * a page they refuse (a picture, a mask, a dash, a clip that is not one convex polygon) is written by the office suite from the one-page
+ * a page they refuse (a picture, a mask, a dash, a clip it cannot measure) is written by the office suite from the one-page
  * PDF. Readers other than the writer judge the output: the office suite reading the metafile back with its own import filter, and
  * Inkscape (the reference's tool) where it reads the file. Each is compared with the page that Poppler draws from the PDF of the same
  * source, after both are cut to their drawing, since the office suite's export (like the reference's) is cropped to the drawing.
@@ -84,7 +84,7 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'lo-macro.pptm', extension: 'pptm', targets: ['emf'], pages: 1 },
   { id: 'lo-tdf96389_deftabstopecma.potx', extension: 'potx', targets: ['emf'], pages: 1 },
   // PostScript files (entry 458) go to PDF with Ghostscript first. Two pages the in-process writer writes (a Ghostscript test page, a gnuplot guide of two pages),
-  // and three it draws a picture for (entry 459): a clip of a curve, a picture (a TIFF in a PostScript wrapper), a dash.
+  // and three it draws a picture for (entry 459): a gradient under a curved clip, a picture (a TIFF in a PostScript wrapper), a dash.
   { id: 'gs-colorcir.ps', extension: 'ps', targets: BOTH, pages: 1 },
   { id: 'gnuplot-ps_guide.ps', extension: 'ps', targets: BOTH, pages: 2 },
   { id: 'tk29-test.ps', extension: 'ps', targets: BOTH, pages: 1 },
