@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { layoutPdf } from '../src/lib/conversions/pdf-layout';
 import { parseListMarker } from '../src/lib/conversions/pdf-layout/lists';
-import { PDF_LAYOUT_MAX_STEPS_PER_PAGE, PdfLayoutLimitError } from '../src/lib/conversions/pdf-layout/limits';
+import { withoutDuplicates } from '../src/lib/conversions/pdf-layout/duplicates';
+import { LayoutBudget, PDF_LAYOUT_MAX_STEPS_PER_PAGE, PdfLayoutLimitError } from '../src/lib/conversions/pdf-layout/limits';
 import { counterLabel, markerText } from '../src/lib/conversions/document-model/counters';
 import { documentToHtml } from '../src/lib/conversions/document-model/html';
 import { documentToMarkdown, documentToStructuredText } from '../src/lib/conversions/document-model/markdown';
@@ -47,6 +48,52 @@ function page(items: PdfContentItem[], rules: PdfContentRule[] = []): PdfPageCon
 function lines(model: DocumentModel): string[] {
   return documentToText(model).split('\n').filter((line) => line !== '');
 }
+
+/** A run with the width and colours the page gave it; the text of the runs below is from the title slide of `govdocs1-003667` (a shadow of 1.3 points under type of 32). */
+function drawn(text: string, x: number, baseline: number, width: number, colors?: { end: number; color: number }[]): PdfContentItem {
+  return { text, x, baseline, width, size: 31.98, font: 0, rtl: false, angled: false, vertical: false, ...(colors ? { colors } : {}) };
+}
+
+describe('text a page draws twice', () => {
+  const texts = (items: PdfContentItem[]): string[] => items.map((run) => run.text);
+  const keep = (items: PdfContentItem[]): PdfContentItem[] => withoutDuplicates(items, new LayoutBudget(1));
+
+  it('keeps one of two equal runs a shadow apart, and the one drawn last', () => {
+    const white = [{ end: 4, color: 0xffffff }];
+    const kept = keep([drawn('adaptive', 110.6, 125.4, 130, white), drawn('adaptive', 109.3, 124.1, 130)]);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].x).toBe(109.3);
+    expect(kept[0].colors).toBeUndefined();
+  });
+
+  it('drops a run that its copy covers although the two are cut into runs at other places', () => {
+    // One copy is "EMAP-" and "GRE designs should support"; the other "EMAP" a shadow away and "-GRE designs should support".
+    const kept = keep([
+      drawn('EMAP', 130.46, 87.08, 88.87, [{ end: 4, color: 0xffffff }]),
+      drawn('EMAP-', 129.14, 85.76, 100.83, [{ end: 4, color: 0 }, { end: 5, color: 0xffffff }]),
+      drawn('-GRE designs should support', 218, 85.76, 377.48, [{ end: 1, color: 0 }, { end: 27, color: 0xffffff }]),
+      drawn('GRE designs should support', 228.62, 85.76, 365.53),
+    ]);
+    expect(texts(kept).join('')).toBe('EMAP-GRE designs should support');
+    expect(kept.map((run) => run.x)).toEqual([129.14, 218, 228.62].map((x) => expect.closeTo(x, 0)));
+  });
+
+  it('cuts the colours of a run with its text', () => {
+    const kept = keep([drawn('AB-', 100, 50, 50, [{ end: 2, color: 0xff0000 }, { end: 3, color: 0x00ff00 }]), drawn('AB', 100, 50, 40)]);
+    expect(texts(kept)).toEqual(['-', 'AB']);
+    expect(kept[0].colors).toEqual([{ end: 1, color: 0x00ff00 }]);
+    expect(kept[0].x).toBeCloseTo(140, 0);
+  });
+
+  it('keeps equal text on the next line, in the next column and in words that only share letters', () => {
+    const kept = keep([drawn('total', 100, 100, 60), drawn('total', 100, 132, 60), drawn('total', 300, 100, 60), drawn('tool', 100, 100, 50)]);
+    expect(kept).toHaveLength(4);
+  });
+
+  it('keeps a run of another size over the same place', () => {
+    expect(keep([drawn('Note', 100, 100, 80), { ...drawn('Note', 100, 100, 160), size: 63.96 }])).toHaveLength(2);
+  });
+});
 
 describe('list markers (bullets and the counters of the standard numbering formats)', () => {
   const cases: [string, { kind: string; value: number; punctuation: string; rest: string } | null][] = [
