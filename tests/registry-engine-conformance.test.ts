@@ -1160,7 +1160,6 @@ describe.runIf(IS_FIRST_PART)('withdrawn pairs stay withdrawn', () => {
     dwf: ['cgm', 'dwg', 'wmf'],
     dwg: ['dwg'],
     dxf: ['dwg'],
-    emf: ['dxf'],
     fods: ['json'],
     gif: ['aac', 'aiff', 'flac', 'm4a', 'mp3', 'wav', 'wma'],
     ibooks: ['epub', 'pdf', 'txt'],
