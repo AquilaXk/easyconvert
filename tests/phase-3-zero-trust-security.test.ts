@@ -48,8 +48,9 @@ describe('Phase 3: Zero-Trust Enterprise Security, Sandboxing & Privacy Hardenin
       const res = resolveSandboxedCommand('/bin/echo', ['hello'], true);
       expect(res.binary).toBeDefined();
       if (res.wrapped) {
-        expect(res.binary).toMatch(/unshare$/);
-        expect(res.args).toContain('-n');
+        // `unshare -n`, or pid-init when it makes the network namespace itself (--userns-net).
+        expect(res.binary).toMatch(/(unshare|pid-init)[^/]*$/);
+        expect(res.args).toContain(res.binary.includes('unshare') ? '-n' : '--userns-net');
         expect(res.args).toContain('/bin/echo');
       } else {
         expect(res.binary).toBe('/bin/echo');

@@ -382,7 +382,7 @@ export function getProcessRssMb(pid: number): number | null {
 
 /**
  * The process to read the memory of for a run: the one `proc.pid` names, or the program itself when `levels` processes that hold
- * little (the `unshare` and `pid-init` it was started through) stand above it, each the only child of the one before.
+ * little (the `pid-init` it was started through: its two processes, or `unshare` and `pid-init` where the chain is used) stand above it, each the only child of the one before.
  */
 export function memoryWatchPid(pid: number, levels: number): number {
   if (levels === 0 || process.platform !== 'linux') return pid;
@@ -435,6 +435,27 @@ export function getPrlimitCapability(): PrlimitCapability {
   return prlimitCapability;
 }
 
+/** The limits of a run that both `prlimit` and `pid-init --rlimit` can set, by their resource name (the soft and the hard limit are the same). */
+function rlimitEntriesOf(rlimits: SandboxedRlimitsOptions): Array<[name: string, value: number]> {
+  const entries: Array<[string, number]> = [];
+  if (rlimits.asBytes && Number.isFinite(rlimits.asBytes) && rlimits.asBytes > 0) {
+    entries.push(['as', Math.round(rlimits.asBytes)]);
+  }
+  if (rlimits.fsizeBytes && Number.isFinite(rlimits.fsizeBytes) && rlimits.fsizeBytes > 0) {
+    entries.push(['fsize', Math.round(rlimits.fsizeBytes)]);
+  }
+  if (rlimits.nproc && Number.isFinite(rlimits.nproc) && rlimits.nproc > 0) {
+    entries.push(['nproc', Math.round(rlimits.nproc)]);
+  }
+  if (rlimits.cpuSeconds && Number.isFinite(rlimits.cpuSeconds) && rlimits.cpuSeconds > 0) {
+    entries.push(['cpu', Math.round(rlimits.cpuSeconds)]);
+  }
+  if (rlimits.coreBytes !== undefined && Number.isInteger(rlimits.coreBytes) && rlimits.coreBytes >= 0) {
+    entries.push(['core', rlimits.coreBytes]);
+  }
+  return entries;
+}
+
 /**
  * Assembles Linux prlimit CLI arguments from requested resource limits.
  */
@@ -442,23 +463,12 @@ export function buildPrlimitArgs(
   _cap: PrlimitCapability,
   rlimits: SandboxedRlimitsOptions
 ): string[] {
-  const args: string[] = [];
-  if (rlimits.asBytes && Number.isFinite(rlimits.asBytes) && rlimits.asBytes > 0) {
-    args.push(`--as=${Math.round(rlimits.asBytes)}`);
-  }
-  if (rlimits.fsizeBytes && Number.isFinite(rlimits.fsizeBytes) && rlimits.fsizeBytes > 0) {
-    args.push(`--fsize=${Math.round(rlimits.fsizeBytes)}`);
-  }
-  if (rlimits.nproc && Number.isFinite(rlimits.nproc) && rlimits.nproc > 0) {
-    args.push(`--nproc=${Math.round(rlimits.nproc)}`);
-  }
-  if (rlimits.cpuSeconds && Number.isFinite(rlimits.cpuSeconds) && rlimits.cpuSeconds > 0) {
-    args.push(`--cpu=${Math.round(rlimits.cpuSeconds)}`);
-  }
-  if (rlimits.coreBytes !== undefined && Number.isInteger(rlimits.coreBytes) && rlimits.coreBytes >= 0) {
-    args.push(`--core=${rlimits.coreBytes}`);
-  }
-  return args;
+  return rlimitEntriesOf(rlimits).map(([name, value]) => `--${name}=${value}`);
+}
+
+/** The same limits as `pid-init --rlimit` options (`--rlimit as=<limit>:<limit>`), which pid-init sets on the program just before it executes it. */
+export function buildPidInitRlimitArgs(rlimits: SandboxedRlimitsOptions): string[] {
+  return rlimitEntriesOf(rlimits).flatMap(([name, value]) => ['--rlimit', `${name}=${value}:${value}`]);
 }
 
 export interface UnshareCapability {
@@ -470,6 +480,12 @@ export interface UnshareCapability {
   pidInitPath: string;
   /** Whether `pid-init --confine` can confine the files of a program on this host (Landlock version 3: Linux 6.2 or later, the calls allowed by the seccomp profile). */
   confinesFiles: boolean;
+  /**
+   * Whether `pid-init` makes the user and network namespaces and sets the limits itself (`--userns-net`, `--rlimit`) on this host, so that a run
+   * is started by one program in front of the tool and not by `unshare` and `prlimit` as well. False for a pid-init that predates the options
+   * and for a host where it cannot make the namespaces; the runs then go through the chain.
+   */
+  pidInitFolds: boolean;
 }
 
 export const PID_INIT_PATH_ENV = 'PID_INIT_PATH';
@@ -571,24 +587,39 @@ export function withoutProcHideNotice(stderr: Buffer): Buffer {
 }
 
 /** The `pid-init` program that runs a program here with the namespaces of `base` around it, or '' (and a warning) when none does, and whether it can confine files. */
-function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): { pidInitPath: string; confinesFiles: boolean } {
+function probePidInit(base: Pick<UnshareCapability, 'path' | 'args'>): Pick<UnshareCapability, 'pidInitPath' | 'confinesFiles' | 'pidInitFolds'> {
   pidInitTriedAt = Date.now();
   // Read as the config schema reads a boolean (trimmed, any case), so `FALSE` turns it off as the startup check accepted.
-  if (process.env[SANDBOX_PID_NAMESPACE_ENV]?.trim().toLowerCase() === 'false') return { pidInitPath: '', confinesFiles: false };
+  if (process.env[SANDBOX_PID_NAMESPACE_ENV]?.trim().toLowerCase() === 'false') return { pidInitPath: '', confinesFiles: false, pidInitFolds: false };
   const pidInit = findPidInit();
   if (pidInit === null) {
     sayPidInitDegraded(`no pid-init program was found (${PID_INIT_PATH_ENV}, ${PID_INIT_CANDIDATES.join(', ')})`);
-    return { pidInitPath: '', confinesFiles: false };
+    return { pidInitPath: '', confinesFiles: false, pidInitFolds: false };
   }
   try {
     execFileSync(base.path, [...base.args, '--', pidInit, '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
     pidInitDegradeSaid = false;
     if (!procHidingDisabled()) probeProcHide(base, pidInit);
     // Asked whatever the switch says: the answer is a fact about the host, and the switch is read when a run is started.
-    return { pidInitPath: pidInit, confinesFiles: probeConfinement(base, pidInit) };
+    return { pidInitPath: pidInit, confinesFiles: probeConfinement(base, pidInit), pidInitFolds: probeFold(base, pidInit) };
   } catch {
     sayPidInitDegraded(`${pidInit} could not start a program in a PID namespace (a seccomp profile or kernel setting that denies it, or a host too busy to answer in ${PID_INIT_PROBE_TIMEOUT_MS} ms)`);
-    return { pidInitPath: '', confinesFiles: false };
+    return { pidInitPath: '', confinesFiles: false, pidInitFolds: false };
+  }
+}
+
+/**
+ * Asks `pid-init` whether it takes over `unshare -r -n` and `prlimit` here: it must know `--userns-net` and `--rlimit` (an older program prints its usage and
+ * exits 2) and be allowed to make the user and network namespaces itself. Only a host whose `unshare` takes `-r -n` is asked, as pid-init makes exactly those;
+ * any other host, and any answer but yes, keeps the chain, which needs no word of it.
+ */
+function probeFold(base: Pick<UnshareCapability, 'args'>, pidInit: string): boolean {
+  if (base.args.length !== 2 || !base.args.includes('-r') || !base.args.includes('-n')) return false;
+  try {
+    execFileSync(pidInit, ['--userns-net', '--rlimit', 'core=0:0', '--', '/bin/true'], { stdio: 'ignore', timeout: PID_INIT_PROBE_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -619,7 +650,7 @@ function probeConfinement(base: Pick<UnshareCapability, 'path' | 'args'>, pidIni
  * network namespaces and not a PID namespace (a seccomp profile that lets `clone` make the first two only), and a host without the
  * program has none to offer; runs there go without a PID namespace, which is said once and tried again after `PID_INIT_REPROBE_MS`.
  */
-function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath' | 'confinesFiles'>): UnshareCapability {
+function withPidInitProbe(base: Omit<UnshareCapability, 'pidInitPath' | 'confinesFiles' | 'pidInitFolds'>): UnshareCapability {
   return { ...base, ...probePidInit(base) };
 }
 
@@ -640,7 +671,7 @@ export function getUnshareCapability(): UnshareCapability {
     return unshareCapability;
   }
   if (process.platform !== 'linux') {
-    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '', confinesFiles: false };
+    unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '', confinesFiles: false, pidInitFolds: false };
     return unshareCapability;
   }
 
@@ -663,7 +694,7 @@ export function getUnshareCapability(): UnshareCapability {
     }
   }
 
-  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '', confinesFiles: false };
+  unshareCapability = { available: false, path: '', args: [], supportsNetNamespace: false, pidInitPath: '', confinesFiles: false, pidInitFolds: false };
   return unshareCapability;
 }
 
@@ -791,12 +822,14 @@ function effectiveRlimitsOf(rlimits: SandboxedRlimitsOptions | undefined, memory
  * reaches the other runs of the worker with kill(2), as they share one user ID. pid-init runs the program as PID 2 of the namespace, so
  * it dies of its signals as it does outside one; `pidNamespace: true` is the program as PID 1 (`unshare -p --fork`), `false` is none.
  * `wrapper` goes between the `unshare` options and the program; `levelsAboveProgram` counts the processes the program stands below.
+ * `launcher` is what pid-init is told to do that `unshare` and `prlimit` would have done (`--userns-net`, `--rlimit`), when it takes their place.
  */
 function pidIsolationOf(
   unshare: UnshareCapability | undefined,
   isolationArgs: string[] | undefined,
   options: UnshareIsolationOptions,
-  confinement: readonly string[]
+  confinement: readonly string[],
+  launcher: readonly string[]
 ): { wrapper: string[]; levelsAboveProgram: number } {
   if (!isolationArgs) return { wrapper: [], levelsAboveProgram: 0 };
   if (options.pidNamespace) {
@@ -804,12 +837,24 @@ function pidIsolationOf(
     return { wrapper: [], levelsAboveProgram: 1 };
   }
   if (unshare?.pidInitPath) {
-    const flags = options.hideProc === false || procHidingDisabled() ? ['--keep-proc', ...confinement] : [...confinement];
+    const flags = [...launcher, ...(options.hideProc === false || procHidingDisabled() ? ['--keep-proc'] : []), ...confinement];
     // `pidNamespace: false` still hides the /proc entries of the other runs: pid-init applies the ruleset and becomes the program (no process in between).
     if (options.pidNamespace === false) return { wrapper: [unshare.pidInitPath, '--no-pid-namespace', ...flags, '--'], levelsAboveProgram: 0 };
     if (options.pidNamespace === undefined) return { wrapper: [unshare.pidInitPath, ...flags, '--'], levelsAboveProgram: 2 };
   }
   return { wrapper: [], levelsAboveProgram: 0 };
+}
+
+/** `prlimit` with the limits of a run in front of the program where the host has it, or the program itself when it has not or the run has no limit. */
+function withPrlimit(binary: string, args: string[], rlimits: SandboxedRlimitsOptions, prlimit: PrlimitCapability): { binary: string; args: string[]; wrapped: boolean } {
+  const prlimitArgs = process.platform === 'linux' && prlimit.available ? buildPrlimitArgs(prlimit, rlimits) : [];
+  if (prlimitArgs.length === 0) return { binary, args: [...args], wrapped: false };
+  return { binary: prlimit.path, args: [...prlimitArgs, '--', binary, ...args], wrapped: true };
+}
+
+/** Whether the namespaces a run asks of `unshare` are those of `unshare -r -n` and no other, which is what `pid-init --userns-net` makes. */
+function isUserAndNetOnly(isolationArgs: readonly string[] | undefined): boolean {
+  return isolationArgs !== undefined && isolationArgs.length === 2 && isolationArgs.includes('-r') && isolationArgs.includes('-n');
 }
 
 /** A directory a run is confined to, as pid-init takes it: absolute, normalized, and never one that holds the files of other jobs. */
@@ -917,38 +962,26 @@ export function resolveSandboxedCommand(
   const unshare = process.platform === 'linux' && (networkIsolated || keepsNetwork) ? getUnshareCapability() : undefined;
   const isolationArgs = unshare?.available ? buildUnshareIsolationArgs(unshare, sandboxOptions) : undefined;
   const confinement = confinementOf(scope, strictIsolation, unshare, isolationArgs, sandboxOptions, binaryPath);
-  const pid = pidIsolationOf(unshare, isolationArgs, sandboxOptions, confinement);
+  // pid-init makes the namespaces and sets the limits itself when it can, and the run wants exactly the namespaces of `unshare -r -n` with pid-init in front of the program.
+  const pidInitLaunches = unshare?.pidInitFolds === true && unshare.pidInitPath !== '' && sandboxOptions.pidNamespace !== true && isUserAndNetOnly(isolationArgs);
+  const pid = pidIsolationOf(unshare, isolationArgs, sandboxOptions, confinement, pidInitLaunches ? ['--userns-net', ...buildPidInitRlimitArgs(effectiveRlimits)] : []);
   const capPrlimit = getPrlimitCapability();
-  if (effectiveRlimits.nproc !== undefined && !(isolationArgs?.includes('-r') && capPrlimit.available)) {
+  if (effectiveRlimits.nproc !== undefined && !(pidInitLaunches || (isolationArgs?.includes('-r') && capPrlimit.available))) {
     throw sandboxUnavailable('The task limit of a run is kept only by prlimit in a user namespace of its own (unshare -r), which this host cannot give the run; the program is not started.');
   }
 
-  let finalBinary = binaryPath;
-  let finalArgs = [...args];
-  let isWrapped = false;
-
-  // Apply prlimit wrapping if available on Linux and rlimits are specified
-  const hasRlimits =
-    effectiveRlimits.asBytes !== undefined ||
-    effectiveRlimits.fsizeBytes !== undefined ||
-    effectiveRlimits.nproc !== undefined ||
-    effectiveRlimits.cpuSeconds !== undefined ||
-    effectiveRlimits.coreBytes !== undefined;
-
-  if (process.platform === 'linux' && capPrlimit.available && hasRlimits) {
-    const prlimitArgs = buildPrlimitArgs(capPrlimit, effectiveRlimits);
-    if (prlimitArgs.length > 0) {
-      finalArgs = [...prlimitArgs, '--', finalBinary, ...finalArgs];
-      finalBinary = capPrlimit.path;
-      isWrapped = true;
-    }
-  }
+  // pid-init has put the limits on the program itself when it launches the run; otherwise prlimit stands in front of the tool where the host has it.
+  const limited = pidInitLaunches ? { binary: binaryPath, args: [...args], wrapped: false } : withPrlimit(binaryPath, args, effectiveRlimits, capPrlimit);
 
   if (unshare) {
+    if (isolationArgs && pidInitLaunches) {
+      // One launcher in front of the tool: pid-init makes the namespaces and sets the limits, and its wrapper holds the options.
+      return { binary: pid.wrapper[0], args: [...pid.wrapper.slice(1), limited.binary, ...limited.args], wrapped: true, levelsAboveProgram: pid.levelsAboveProgram };
+    }
     if (isolationArgs) {
       return {
         binary: unshare.path,
-        args: [...isolationArgs, '--', ...pid.wrapper, finalBinary, ...finalArgs],
+        args: [...isolationArgs, '--', ...pid.wrapper, limited.binary, ...limited.args],
         wrapped: true,
         levelsAboveProgram: pid.levelsAboveProgram,
       };
@@ -962,7 +995,7 @@ export function resolveSandboxedCommand(
     );
   }
 
-  return { binary: finalBinary, args: finalArgs, wrapped: isWrapped, levelsAboveProgram: 0 };
+  return { ...limited, levelsAboveProgram: 0 };
 }
 
 /**

@@ -8,13 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * the probe starts are stand-ins that fail or succeed as the test says; what is read is the capability the sandbox then reports.
  */
 
-const probe = vi.hoisted(() => ({ pidInitWorks: false, procHideWorks: true, confineWorks: true, calls: [] as string[][] }));
+const probe = vi.hoisted(() => ({ pidInitWorks: false, procHideWorks: true, confineWorks: true, foldWorks: false, userNamespaceWorks: true, calls: [] as string[][] }));
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   const execFileSync = ((file: string, args: string[]) => {
     probe.calls.push([file, ...args]);
+    if (args.includes('--') && args.includes('-r') && !probe.userNamespaceWorks) throw new Error('unshare: unshare failed: Operation not permitted');
     if (args.includes('--') && args.some((arg) => arg.endsWith('/pid-init-stand-in')) && !probe.pidInitWorks) throw new Error('unshare: unshare failed: Operation not permitted');
+    // A pid-init that predates --userns-net prints its usage and exits 2.
+    if (args.includes('--userns-net') && !probe.foldWorks) throw new Error('Command failed: exit status 2');
     if (args.includes('--check') && args.includes('--confine') && !probe.confineWorks) throw new Error('Command failed: exit status 3');
     if (args.includes('--check') && !args.includes('--confine') && !probe.procHideWorks) throw new Error('Command failed: exit status 3');
     return Buffer.alloc(0);
@@ -23,14 +26,14 @@ vi.mock('node:child_process', async (importOriginal) => {
 });
 
 import { SandboxUnavailableError } from '../src/lib/types';
-import { fileConfinementDisabled, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetUnshareCapabilityCache, resolveSandboxedCommand, strictSandboxEnabled, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
+import { buildPidInitRlimitArgs, buildPrlimitArgs, fileConfinementDisabled, getPrlimitCapability, getUnshareCapability, PID_INIT_REPROBE_MS, PID_INIT_STRICT_REPROBE_MS, resetPrlimitCapabilityCache, resetUnshareCapabilityCache, resolveSandboxedCommand, strictSandboxEnabled, withoutProcHideNotice } from '../src/lib/security/process-sandbox';
 
 const PID_INIT = '/opt/test/pid-init-stand-in';
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
 
 beforeEach(() => {
   Object.defineProperty(process, 'platform', { value: 'linux' });
-  vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr/bin/unshare' || candidate === PID_INIT);
+  vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr/bin/unshare' || candidate === '/usr/bin/prlimit' || candidate === PID_INIT);
   vi.stubEnv('PID_INIT_PATH', PID_INIT);
   vi.stubEnv('SANDBOX_PID_NAMESPACE', undefined);
   vi.stubEnv('SANDBOX_HIDE_PROC', undefined);
@@ -39,8 +42,11 @@ beforeEach(() => {
   probe.pidInitWorks = false;
   probe.procHideWorks = true;
   probe.confineWorks = true;
+  probe.foldWorks = false;
+  probe.userNamespaceWorks = true;
   probe.calls = [];
   resetUnshareCapabilityCache();
+  resetPrlimitCapabilityCache();
 });
 
 afterEach(() => {
@@ -267,5 +273,107 @@ describe('the PID namespace probe', () => {
     const untouched = Buffer.from(`the program said this first\n${notice}`);
     expect(withoutProcHideNotice(untouched)).toBe(untouched);
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * pid-init takes over `unshare -r -n` and `prlimit` where it can (its own --userns-net and --rlimit), so that a run is one launcher and the tool. A host whose
+ * pid-init predates the options, or that cannot make the namespaces from it, keeps the chain; the probe decides, once, and the rest of this file shows the chain.
+ */
+describe('the launcher that makes the namespaces and sets the limits itself', () => {
+  const RLIMITS = { asBytes: 512 * 1024 * 1024, fsizeBytes: 1_048_576, nproc: 64, cpuSeconds: 30, coreBytes: 0 };
+  const FOLDED_OPTIONS = ['--userns-net', '--rlimit', `as=${512 * 1024 * 1024}:${512 * 1024 * 1024}`, '--rlimit', 'fsize=1048576:1048576', '--rlimit', 'nproc=64:64', '--rlimit', 'cpu=30:30', '--rlimit', 'core=0:0'];
+  const start = (options: Partial<Parameters<typeof resolveSandboxedCommand>[2] & object> = {}) => resolveSandboxedCommand('/usr/bin/tool', ['a'], { networkIsolated: true, rlimits: RLIMITS, ...options });
+
+  it('asks pid-init directly, once, whether it makes the namespaces and sets a limit on this host', () => {
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, pidInitFolds: true });
+    expect(probe.calls.filter((call) => call.includes('--userns-net'))).toEqual([[PID_INIT, '--userns-net', '--rlimit', 'core=0:0', '--', '/bin/true']]);
+    getUnshareCapability();
+    expect(probe.calls.filter((call) => call.includes('--userns-net'))).toHaveLength(1);
+  });
+
+  it('starts a run with pid-init in front of the tool, with the namespaces and the limits as its options, and no unshare and no prlimit', () => {
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    const command = start();
+    expect(command).toMatchObject({ binary: PID_INIT, wrapped: true, levelsAboveProgram: 2 });
+    expect(command.args).toEqual([...FOLDED_OPTIONS, '--', '/usr/bin/tool', 'a']);
+  });
+
+  it('puts the same limits on the program as prlimit does in the chain', () => {
+    probe.pidInitWorks = true;
+    const prlimit = buildPrlimitArgs(getPrlimitCapability(), RLIMITS);
+    const pidInit = buildPidInitRlimitArgs(RLIMITS);
+    expect(prlimit).toEqual([`--as=${512 * 1024 * 1024}`, '--fsize=1048576', '--nproc=64', '--cpu=30', '--core=0']);
+    expect(pidInit.filter((_, index) => index % 2 === 1).map((spec) => spec.replace(/:\d+$/, ''))).toEqual(prlimit.map((flag) => flag.slice(2)));
+    expect(buildPidInitRlimitArgs({})).toEqual([]);
+    expect(buildPidInitRlimitArgs({ asBytes: Number.NaN, nproc: -1, coreBytes: 1.5 })).toEqual([]);
+  });
+
+  it('keeps the options of the files, of /proc and of the PID namespace, after its own', () => {
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    const wrapperOf = (options: Parameters<typeof resolveSandboxedCommand>[2]) => {
+      const command = resolveSandboxedCommand('/opt/tool/bin/tool', ['a'], options);
+      return command.args.slice(0, command.args.lastIndexOf('/opt/tool/bin/tool'));
+    };
+    expect(wrapperOf({ networkIsolated: true, workDir: '/jobs/one', strictIsolation: true, sandboxOptions: { hideProc: false } })).toEqual([
+      '--userns-net', '--keep-proc', '--confine', '--require', '--write', '/jobs/one', '--read', '/opt/tool/bin/tool', '--',
+    ]);
+    const optedOut = resolveSandboxedCommand('/usr/bin/tool', ['a'], { networkIsolated: true, rlimits: { coreBytes: 0 }, sandboxOptions: { pidNamespace: false } });
+    expect(optedOut).toMatchObject({ binary: PID_INIT, levelsAboveProgram: 0 });
+    expect(optedOut.args).toEqual(['--no-pid-namespace', '--userns-net', '--rlimit', 'core=0:0', '--', '/usr/bin/tool', 'a']);
+  });
+
+  it('keeps the chain on a host whose pid-init predates the options, or cannot make the namespaces itself, and says nothing', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    probe.pidInitWorks = true;
+    probe.foldWorks = false;
+    expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, pidInitFolds: false });
+    const command = start();
+    expect(command.binary).toBe('/usr/bin/unshare');
+    expect(command.args).toEqual(['-r', '-n', '--', PID_INIT, '--', '/usr/bin/prlimit', ...buildPrlimitArgs(getPrlimitCapability(), RLIMITS), '--', '/usr/bin/tool', 'a']);
+    expect(command.args).not.toContain('--userns-net');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the chain for a run that wants other namespaces than `unshare -r -n` makes, and for the PID namespace of unshare', () => {
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    expect(start({ sandboxOptions: { mountNamespace: true } }).binary).toBe('/usr/bin/unshare');
+    expect(start({ sandboxOptions: { ipcNamespace: true } }).binary).toBe('/usr/bin/unshare');
+    expect(start({ sandboxOptions: { pidNamespace: true } }).binary).toBe('/usr/bin/unshare');
+    // The network of the worker is kept: only the user namespace is made, which pid-init does not offer alone.
+    expect(resolveSandboxedCommand('/usr/bin/tool', [], { networkIsolated: false, sandboxOptions: { keepNetwork: true } }).binary).toBe('/usr/bin/unshare');
+  });
+
+  it('is not asked of a host whose unshare takes -n only (no user namespace), which keeps the chain', () => {
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    probe.userNamespaceWorks = false;
+    expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, pidInitFolds: false });
+    expect(probe.calls.filter((call) => call.includes('--userns-net'))).toEqual([]);
+  });
+
+  it('needs no prlimit on the host for the task limit when pid-init sets it, and still refuses it where nothing can', () => {
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    vi.spyOn(fs, 'existsSync').mockImplementation((candidate) => candidate === '/usr/bin/unshare' || candidate === PID_INIT);
+    expect(() => start()).not.toThrow();
+    probe.foldWorks = false;
+    resetUnshareCapabilityCache();
+    resetPrlimitCapabilityCache();
+    expect(() => start()).toThrow(SandboxUnavailableError);
+  });
+
+  it('is tried again after the backoff like the rest of the probe, and does not make a run of the chain wait for it', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(getUnshareCapability()).toMatchObject({ pidInitPath: '', pidInitFolds: false });
+    probe.pidInitWorks = true;
+    probe.foldWorks = true;
+    vi.setSystemTime(Date.now() + PID_INIT_REPROBE_MS);
+    expect(getUnshareCapability()).toMatchObject({ pidInitPath: PID_INIT, pidInitFolds: true });
   });
 });

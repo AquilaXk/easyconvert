@@ -1,10 +1,11 @@
 // pid-init: runs a program in a PID namespace of its own, with the program as PID 2 and this code as PID 1.
 //
-//   pid-init [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]... [--sockets <dir>]...] -- <program> [argument...]
-//   pid-init --no-pid-namespace [--keep-proc] [--confine ...] -- <program> [argument...]
-//   pid-init --check [--confine]
+//   pid-init [--userns-net] [--rlimit <name>=<soft>:<hard>]... [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]... [--sockets <dir>]...] -- <program> [argument...]
+//   pid-init --no-pid-namespace [--userns-net] [--rlimit ...] [--keep-proc] [--confine ...] -- <program> [argument...]
+//   pid-init [--userns-net] --check [--confine]
 //
-// It is started inside a user namespace (`unshare -r -n -- pid-init -- ...`), where it holds the capability to make a PID namespace.
+// It runs inside a user namespace, where it holds the capability to make a PID namespace: either one that `unshare -r -n -- pid-init -- ...`
+// made, or, with `--userns-net`, one that it makes itself (see below).
 //
 // Why not `unshare -p --fork -- <program>`: the program would be PID 1 of the namespace, and the kernel does not deliver to PID 1 a
 // signal it has no handler for unless the sender is outside the namespace. The signals a run is judged by are lost that way: SIGXFSZ
@@ -58,6 +59,20 @@
 // enforce that ruleset and 3 when it cannot. `--sockets <dir>` (repeatable) also lets the program make and remove sockets below <dir> (and remove the
 // files there, which no right can tell from sockets), for a program that binds a socket at a place it cannot choose.
 //
+// `--userns-net` is `unshare -r -n` done by this process before anything else: one unshare(2) for a user and a network namespace, then
+// "deny" to /proc/self/setgroups and the current user and group mapped to root (uid_map, gid_map), as `unshare -r` does. The program sees root,
+// an empty network (loopback only) and no way to regain a supplementary group. `--rlimit <name>=<soft>:<hard>` (as, core, cpu, fsize, nproc;
+// a number or `unlimited`) is `prlimit --<name>=<limit>` done by the process that becomes the program, after the rulesets and just before the
+// exec, so that PID 1 and the process outside the namespace stay unlimited, as they were with prlimit between pid-init and the program. Both
+// replace two programs of the chain `unshare -r -n -- pid-init -- prlimit ... -- <program>` with calls in this one, which is the design of
+// nsjail (user namespace maps and resource limits applied by the launcher itself). A host that refuses either is told with
+// `pid-init: cannot ...` on the standard error and the status 125; the worker falls back to the chain (see process-sandbox.ts).
+//
+// The sequence of the maps and the limits follows nsjail (https://github.com/google/nsjail, commit ec259a3edb34c3b138fbad859c09e0e70259ff8b,
+// Apache License 2.0, Copyright 2014 Google Inc.): user.cc (setGroupsDeny, uidMapSelf, gidMapSelf: deny setgroups, then write the uid_map and the
+// gid_map) and contain.cc (containSetLimits: one setrlimit per resource with the soft and the hard limit given together). The C below is
+// written for this program (nsjail is C++ and writes the maps of a child from its parent), not copied.
+//
 // Exit status: that of the program; 127 when it is not found and 126 when it cannot be run (as a shell and `unshare` say); 125 when the
 // namespace cannot be made or, with `--require`, the files cannot be confined.
 
@@ -65,6 +80,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
@@ -129,6 +145,10 @@
 #define CANNOT_CONFINE_REFUSAL "pid-init: cannot confine: "
 /* How many directories --write and --read take each. */
 #define CONFINE_DIRS_MAX 16
+/* How many --rlimit options are taken. */
+#define RLIMITS_MAX 16
+/* What is said on the standard error of the program when a namespace or a limit that was asked for cannot be had (the status is EXIT_NAMESPACE). */
+#define CANNOT_REFUSAL "pid-init: cannot "
 
 /* Why the last attempt to hide /proc failed, for the notice. */
 static const char *hide_failure = "";
@@ -145,6 +165,17 @@ struct confinement {
 };
 /* The parts of the system a confined program reads and runs from. Anything not listed is not the program's: /shared, /tmp, /home, /app, /root, /srv, /mnt. */
 static const char *const CONFINE_SYSTEM_PATHS[] = {"/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/etc", "/opt", "/sys", "/var/cache", "/var/lib", "/var/spool"};
+/* The resources --rlimit names, and the limits asked for (applied to the program just before it executes). */
+static const struct {
+  const char *name;
+  int resource;
+} RLIMIT_NAMES[] = {{"as", RLIMIT_AS}, {"core", RLIMIT_CORE}, {"cpu", RLIMIT_CPU}, {"fsize", RLIMIT_FSIZE}, {"nproc", RLIMIT_NPROC}};
+static struct {
+  const char *name;
+  int resource;
+  struct rlimit limit;
+} limits[RLIMITS_MAX];
+static int limit_count = 0;
 /* The /proc entries the ruleset names, open: a rule belongs to an inode that /proc makes again once the entry is dropped from the cache. */
 static int pinned[PIN_MAX];
 static int pinned_count = 0;
@@ -274,6 +305,94 @@ static int enforce_ruleset(int ruleset) {
   return result;
 }
 
+/* Reads a limit: digits (no sign, no space, no overflow) or "unlimited". */
+static int parse_limit(const char *text, rlim_t *limit) {
+  if (strcmp(text, "unlimited") == 0) {
+    *limit = RLIM_INFINITY;
+    return 0;
+  }
+  if (*text == '\0') return -1;
+  unsigned long long value = 0;
+  for (; *text; text++) {
+    if (*text < '0' || *text > '9' || value > (ULLONG_MAX - 9) / 10) return -1;
+    value = value * 10 + (unsigned)(*text - '0');
+  }
+  if ((rlim_t)value != value) return -1;
+  *limit = (rlim_t)value;
+  return 0;
+}
+
+/* Takes `<name>=<soft>:<hard>` of an --rlimit option. Returns 0 when it names a resource and two limits, and room is left for it. */
+static int add_limit(const char *spec) {
+  const char *equals = strchr(spec, '=');
+  const char *colon = equals == NULL ? NULL : strchr(equals, ':');
+  if (limit_count >= RLIMITS_MAX || equals == NULL || colon == NULL) return -1;
+  for (size_t i = 0; i < sizeof RLIMIT_NAMES / sizeof RLIMIT_NAMES[0]; i++) {
+    if (strlen(RLIMIT_NAMES[i].name) != (size_t)(equals - spec) || strncmp(spec, RLIMIT_NAMES[i].name, (size_t)(equals - spec)) != 0) continue;
+    char soft[32], hard[32];
+    if ((size_t)(colon - equals - 1) >= sizeof soft || strlen(colon + 1) >= sizeof hard) return -1;
+    memcpy(soft, equals + 1, (size_t)(colon - equals - 1));
+    soft[colon - equals - 1] = '\0';
+    strcpy(hard, colon + 1);
+    struct rlimit limit;
+    if (parse_limit(soft, &limit.rlim_cur) != 0 || parse_limit(hard, &limit.rlim_max) != 0) return -1;
+    limits[limit_count].name = RLIMIT_NAMES[i].name;
+    limits[limit_count].resource = RLIMIT_NAMES[i].resource;
+    limits[limit_count].limit = limit;
+    limit_count++;
+    return 0;
+  }
+  return -1;
+}
+
+/* Puts the limits that --rlimit named on this process. Returns 0 when all are set. */
+static int apply_limits(void) {
+  for (int i = 0; i < limit_count; i++) {
+    if (setrlimit(limits[i].resource, &limits[i].limit) != 0) {
+      fprintf(stderr, CANNOT_REFUSAL "set the %s limit: %s\n", limits[i].name, strerror(errno));
+      return -1;
+    }
+  }
+  return 0;
+}
+
+/* Writes `text` to a file of /proc/self. Returns 0 when all of it was written. */
+static int write_proc_file(const char *path, const char *text) {
+  int fd = open(path, O_WRONLY | O_CLOEXEC);
+  if (fd < 0) return -1;
+  size_t length = strlen(text);
+  ssize_t written;
+  do {
+    written = write(fd, text, length);
+  } while (written < 0 && errno == EINTR);
+  int closed = close(fd);
+  return written == (ssize_t)length && closed == 0 ? 0 : -1;
+}
+
+/* `unshare -r -n`: a user and a network namespace, with the user and the group of this process mapped to root in the first. Returns 0 when this
+   process is in them with the maps written, and -1 (after saying why) when not. */
+static int enter_user_and_net_namespaces(void) {
+  uid_t uid = geteuid();
+  gid_t gid = getegid();
+  if (unshare(CLONE_NEWUSER | CLONE_NEWNET) != 0) {
+    fprintf(stderr, CANNOT_REFUSAL "make a user and network namespace: %s\n", strerror(errno));
+    return -1;
+  }
+  /* The files of /proc/self belong to the user of this process only while it is dumpable, and a process that has just entered a user namespace may not be. */
+  prctl(PR_SET_DUMPABLE, 1, 0, 0, 0);
+  char map[64];
+  /* A user that is not root of the namespace may write the gid_map only after setgroups(2) is given up for good. */
+  if (write_proc_file("/proc/self/setgroups", "deny") != 0) goto failed;
+  snprintf(map, sizeof map, "0 %u 1\n", (unsigned)uid);
+  if (write_proc_file("/proc/self/uid_map", map) != 0) goto failed;
+  snprintf(map, sizeof map, "0 %u 1\n", (unsigned)gid);
+  if (write_proc_file("/proc/self/gid_map", map) != 0) goto failed;
+  return 0;
+failed:
+  fprintf(stderr, CANNOT_REFUSAL "map the user and the group to root: %s\n", strerror(errno));
+  return -1;
+}
+
 /* Ends this process the way the program ended: by the same signal when it died of one, with the same status when it exited. */
 static void end_like(int wstatus) {
   if (WIFSIGNALED(wstatus)) {
@@ -390,6 +509,8 @@ static void exec_program(char *const *argv, int keep_proc, int keeper, const str
     release_pinned();
     close(keeper);
   }
+  /* After the rulesets and as the last step before the exec, as `prlimit` was: it ran under them, and nothing but the program carries the limits. */
+  if (apply_limits() != 0) _exit(EXIT_NAMESPACE);
   execvp(argv[0], argv);
   /* Said the way `unshare` says it, because the callers read the message of a program that cannot be started. */
   fprintf(stderr, "pid-init: failed to execute %s: %s\n", argv[0], strerror(errno));
@@ -436,6 +557,7 @@ int main(int argc, char **argv) {
   int keep_proc = 0;
   int own_namespace = 1;
   int check = 0;
+  int user_and_net = 0;
   struct confinement confine = {0};
   int first = 1;
   for (; first < argc; first++) {
@@ -444,6 +566,13 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[first], "--confine") == 0) confine.enabled = 1;
     else if (strcmp(argv[first], "--require") == 0) confine.required = 1;
     else if (strcmp(argv[first], "--check") == 0) check = 1;
+    else if (strcmp(argv[first], "--userns-net") == 0) user_and_net = 1;
+    else if (strcmp(argv[first], "--rlimit") == 0 && first + 1 < argc) {
+      if (add_limit(argv[++first]) != 0) {
+        fprintf(stderr, "pid-init: --rlimit takes <as|core|cpu|fsize|nproc>=<soft>:<hard> (a number or unlimited), at most %d of them\n", RLIMITS_MAX);
+        return 2;
+      }
+    }
     else if (strcmp(argv[first], "--write") == 0 && first + 1 < argc && confine.write_count < CONFINE_DIRS_MAX) confine.write_dirs[confine.write_count++] = argv[++first];
     else if (strcmp(argv[first], "--sockets") == 0 && first + 1 < argc && confine.socket_count < CONFINE_DIRS_MAX) confine.socket_dirs[confine.socket_count++] = argv[++first];
     else if (strcmp(argv[first], "--read") == 0 && first + 1 < argc && confine.read_count < CONFINE_DIRS_MAX) confine.read_dirs[confine.read_count++] = argv[++first];
@@ -451,19 +580,21 @@ int main(int argc, char **argv) {
   }
   if (check) {
     if (first != argc) {
-      fprintf(stderr, "usage: pid-init --check [--confine]\n");
+      fprintf(stderr, "usage: pid-init --check [--confine] [--userns-net]\n");
       return 2;
     }
+    if (user_and_net && enter_user_and_net_namespaces() != 0) return EXIT_NAMESPACE;
     int ruleset = make_ruleset(confine.enabled ? &confine : NULL, 0);
     if (ruleset >= 0 && enforce_ruleset(ruleset) == 0) return 0;
     fprintf(stderr, "%s%s\n", confine.enabled ? NOT_CONFINED_NOTICE : NOT_HIDDEN_NOTICE, hide_failure);
     return EXIT_NO_LANDLOCK;
   }
   if (first + 1 >= argc || strcmp(argv[first], "--") != 0) {
-    fprintf(stderr, "usage: pid-init [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]...] -- program [argument...]\n");
+    fprintf(stderr, "usage: pid-init [--userns-net] [--rlimit <name>=<soft>:<hard>]... [--keep-proc] [--confine [--require] [--write <dir>]... [--read <dir>]...] -- program [argument...]\n");
     return 2;
   }
   char *const *program_argv = argv + first + 1;
+  if (user_and_net && enter_user_and_net_namespaces() != 0) return EXIT_NAMESPACE;
   if (!own_namespace) exec_program(program_argv, keep_proc, -1, &confine);
   if (unshare(CLONE_NEWPID) != 0) {
     fprintf(stderr, "pid-init: cannot make a PID namespace: %s\n", strerror(errno));

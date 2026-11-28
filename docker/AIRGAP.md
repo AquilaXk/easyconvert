@@ -135,7 +135,7 @@ The child needs the egress rule above. A deployment with no egress for the worke
 
 **Status**: option (a) chosen; option (b) is the fallback. To be confirmed on the target arm64 host with `scripts/verify-worker-container.sh`.
 
-**Context**: the worker container drops all capabilities (no `SYS_ADMIN`), sets `no-new-privileges`, and runs read-only. Each native child still starts through `unshare -r -n -- pid-init --` (user, network and PID namespaces, optionally mount). Creating a user namespace needs no capability, but Docker's default seccomp profile denies `clone`, `unshare` and `setns` with namespace flags unless the container holds `CAP_SYS_ADMIN`. With the default profile and `STRICT_SANDBOX=true`, every native conversion is refused with 503 (`SandboxUnavailableError`); it never runs unsandboxed.
+**Context**: the worker container drops all capabilities (no `SYS_ADMIN`), sets `no-new-privileges`, and runs read-only. Each native child still starts through `pid-init --userns-net` (user, network and PID namespaces; entry 470), or through `unshare -r -n -- pid-init --` where the host's pid-init cannot make the namespaces itself (optionally mount, which always takes `unshare`). Creating a user namespace needs no capability, but Docker's default seccomp profile denies `clone`, `unshare` and `setns` with namespace flags unless the container holds `CAP_SYS_ADMIN`. With the default profile and `STRICT_SANDBOX=true`, every native conversion is refused with 503 (`SandboxUnavailableError`); it never runs unsandboxed.
 
 **Options**:
 

@@ -1119,6 +1119,7 @@
   "tests/phase-6-synthetic-corpus-and-oracle-vrt.test.ts": 1.8,
   "tests/phase-6-zstd-and-archive-parity.test.ts": 0.3,
   "tests/pid-init-confine.test.ts": 0.5,
+  "tests/pid-init-userns-net.test.ts": 1.4,
   "tests/pid-init.test.ts": 6.1,
   "tests/pipeline-task-operation-contract.test.ts": 0.4,
   "tests/plan-file-limit-client.test.ts": 0.1,

@@ -197,9 +197,15 @@ describe('Phase 5: Zero-Trust Container Sandboxing & Worker Lifecycle Drain', ()
         expect(resolved.wrapped).toBe(true);
         // The namespace wrapper, when the host has one, comes first; the rlimits always sit right before the tool.
         const command = [resolved.binary, ...resolved.args];
-        const prlimitAt = command.findIndex((part) => part.endsWith('/prlimit'));
-        expect(prlimitAt).toBeGreaterThanOrEqual(0);
-        expect(command.slice(prlimitAt + 1)).toEqual(['--as=536870912', '--fsize=1048576', '--', '/usr/bin/ffmpeg', '-version']);
+        if (command.includes('--userns-net')) {
+          // pid-init sets the limits itself (--rlimit) and no prlimit stands between it and the tool.
+          expect(command.some((part) => part.endsWith('/prlimit'))).toBe(false);
+          expect(command.slice(command.indexOf('--rlimit'))).toEqual(['--rlimit', 'as=536870912:536870912', '--rlimit', 'fsize=1048576:1048576', '--', '/usr/bin/ffmpeg', '-version']);
+        } else {
+          const prlimitAt = command.findIndex((part) => part.endsWith('/prlimit'));
+          expect(prlimitAt).toBeGreaterThanOrEqual(0);
+          expect(command.slice(prlimitAt + 1)).toEqual(['--as=536870912', '--fsize=1048576', '--', '/usr/bin/ffmpeg', '-version']);
+        }
       } else {
         expect(resolved.args).toEqual(['-version']);
       }

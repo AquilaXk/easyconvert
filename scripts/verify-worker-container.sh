@@ -520,6 +520,19 @@ else
     else
       fail "pid-init did not give the program a PID namespace of its own: $(printf '%s' "$pid_output" | tr '\n' ' ' | head -c 300)"
     fi
+    # The worker starts programs with pid-init making the user and network namespaces and setting the limits itself (`--userns-net`, `--rlimit`), where it can:
+    # one unshare(2) and the writes of /proc/self/{setgroups,uid_map,gid_map} and setrlimit(2) under this container's seccomp profile. The program must be root
+    # of an empty network namespace (the loopback only) with the address-space limit set. A pid-init that predates the options makes the worker keep the
+    # chain above, so only an image that has them is held to this.
+    if pid-init --userns-net --rlimit core=0:0 -- true >/dev/null 2>&1; then
+      folded_output="$(pid-init --userns-net --rlimit as="$ADDRESS_SPACE_LIMIT_BYTES":"$ADDRESS_SPACE_LIMIT_BYTES" -- sh -c 'echo "$(id -u) $$"; exec grep "Max address space" /proc/self/limits' 2>&1 | head -c 400)"
+      folded_net="$(pid-init --userns-net -- sh -c 'exec cat /proc/net/dev' 2>&1 | sed -n '3,$p' | cut -d: -f1 | tr -d ' ' | tr '\n' ' ')"
+      if [ "$(printf '%s' "$folded_output" | head -n 1)" = "0 2" ] && printf '%s' "$folded_output" | grep -q "Max address space *$ADDRESS_SPACE_LIMIT_BYTES *$ADDRESS_SPACE_LIMIT_BYTES" && [ "$folded_net" = "lo " ]; then
+        pass "pid-init made the user and network namespaces and set the address-space limit itself (root, PID 2, only lo) under the container's seccomp profile"
+      else
+        fail "pid-init --userns-net --rlimit did not give the program root, PID 2, only lo and the address-space limit: $(printf '%s | %s' "$folded_output" "$folded_net" | tr '\n' ' ' | head -c 300)"
+      fi
+    fi
     # The namespace hides nothing in /proc (it cannot be mounted again here), so the program is also started under a Landlock ruleset that refuses
     # the files of every process but its own. The program reads the command line of the sibling (the control, with --keep-proc) and then fails to.
     kept_output="$(unshare -r -n -- pid-init --keep-proc -- sh -c "( : < /proc/$sibling_pid/cmdline ) 2>/dev/null && echo cmdline-readable || echo cmdline-hidden" 2>&1)"
