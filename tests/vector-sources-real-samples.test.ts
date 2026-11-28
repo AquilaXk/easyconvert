@@ -63,18 +63,17 @@ const CGM_PAGE_POINTS = { width: 793.7, height: 446.46 };
 const PAGE_TARGETS = ['pdf', 'png', 'svg', 'eps', 'ps'] as const;
 const METAFILE_PAGE_TARGETS = [...PAGE_TARGETS, 'jpg'] as const;
 /**
- * The registry offers DXF, EMF and WMF for Visio drawings. DXF is also offered for CorelDRAW, CGM and WMF files (entry 187: every real file of
- * them converts, a picture being left out with a warning and a clip cut; `tika-testwmf.wmf` is a picture alone on the office suite of the Linux image,
- * which the DXF writer refuses, and is checked on its own below), and EMF and WMF for CorelDRAW, CGM, EMF and WMF files (entry 454: a page the
- * in-process writers refuse, which holds a picture, a dash or a curved clip, is written by the office suite). DXF is not offered for EMF: its pages
- * hold pictures, a curved clip or nothing but a picture, which the DXF writer refuses.
+ * The registry offers DXF, EMF and WMF for Visio drawings. DXF is also offered for CorelDRAW, CGM, EMF and WMF files (entries 187 and 472: every
+ * real file of them converts, a picture being left out with a warning, a clip cut and a page of only a picture written as a drawing of no
+ * entities or of the sheet under it), and EMF and WMF for CorelDRAW, CGM, EMF and WMF files (entry 454: a page the in-process writers refuse,
+ * which holds a picture, a dash or a curved clip, is written by the office suite).
  */
 const VISIO_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 const DXF_TARGETS = [...PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 const METAFILE_DXF_TARGETS = [...METAFILE_PAGE_TARGETS, 'dxf', 'emf', 'wmf'] as const;
 /** The raster pictures an EMF file is written as (entry 187): converted and read back by tests/vector-pairs.test.ts. */
 const EMF_RASTER_TARGETS = ['avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp'] as const;
-const EMF_TARGETS = [...METAFILE_PAGE_TARGETS, 'emf', 'wmf', ...EMF_RASTER_TARGETS] as const;
+const EMF_TARGETS = [...METAFILE_PAGE_TARGETS, 'dxf', 'emf', 'wmf', ...EMF_RASTER_TARGETS] as const;
 const NO_PHRASE: readonly string[] = [];
 /** The DXF extents may differ from the inked pixels by this many points: a stroke has a width the outline does not. */
 const DXF_EXTENT_TOLERANCE_POINTS = 2;
@@ -134,7 +133,7 @@ const SAMPLES: readonly SampleCase[] = [
   { id: 'tika-testemf.emf', extension: 'emf', targets: EMF_TARGETS, pageSize: { width: 154.91, height: 95.98 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'none' },
   { id: 'lo-testroundrect.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 90.23, height: 66.15 }, pages: 1, pagePhrases: [], inkscape: 'alike' },
   { id: 'lo-visio_import_source.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 255.2, height: 106.45 }, pages: 1, pagePhrases: [['dgps rsxx2', 'each input output has individual dcdc converter']], inkscape: 'alike' },
-  { id: 'tika-testwmf.wmf', extension: 'wmf', targets: [...METAFILE_PAGE_TARGETS, 'emf', 'wmf'], pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
+  { id: 'tika-testwmf.wmf', extension: 'wmf', targets: METAFILE_DXF_TARGETS, pageSize: { width: 117, height: 72.75 }, pages: 1, pagePhrases: [], embeddedPictures: 1, inkscape: 'alike' },
   { id: 'lo-binary_corvette.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 1, pagePhrases: [], inkscape: 'none' },
   { id: 'lo-circles.cgm', extension: 'cgm', targets: METAFILE_DXF_TARGETS, pageSize: CGM_PAGE_POINTS, pages: 14, pagePhrases: [], inkscape: 'none' },
   // The file's axis labels share one spot on the page, so the text check below reads the characters, not the order an
@@ -759,26 +758,6 @@ describe.skipIf(toolsMissing)('the DXF of a drawing, drawn again by the office s
       CONVERSION_TIMEOUT_MS
     );
   }
-});
-
-describe.skipIf(toolsMissing)('a WMF file that is a picture and nothing else, written as DXF', () => {
-  it(
-    'tika-testwmf.wmf: the picture is left out with a warning when the page holds a rectangle too, and a page of only a picture is refused with its reason',
-    async (ctx) => {
-      const { bytes } = await requireRealworldSample(ctx, 'tika-testwmf.wmf');
-      const outcome = await dispatchConversion(bytes, 'wmf', 'dxf', {}, 'tika-testwmf.wmf').catch(
-        (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)))
-      );
-      if (outcome instanceof Error) {
-        expect(outcome).toBeInstanceOf(ConversionFailedError);
-        expect(outcome.message).toBe('The page draws no vector geometry, so there is nothing to write as DXF.');
-      } else {
-        const warnings = (outcome.metadata as { warnings?: string[] } | undefined)?.warnings ?? [];
-        expect(warnings.some((warning) => /pictures of page/.test(warning))).toBe(true);
-      }
-    },
-    CONVERSION_TIMEOUT_MS
-  );
 });
 
 describe.skipIf(toolsMissing || ezdxfMissing)('the DXF of a Visio drawing against ezdxf', () => {

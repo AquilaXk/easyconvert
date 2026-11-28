@@ -330,7 +330,6 @@ describe('the pairs left out of entry 187 stay out of the registry', () => {
   const LEFT_OUT: Readonly<Record<string, readonly string[]>> = {
     dwf: ['cgm', 'wmf'],
     // DXF and DWG to CGM and WMF are offered since entries 466 and 468; DWF has no reader.
-    emf: ['dxf'],
     sk: ['emf', 'wmf'],
     sk1: ['emf', 'wmf'],
   };

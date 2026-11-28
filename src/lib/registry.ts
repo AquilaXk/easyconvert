@@ -2606,7 +2606,7 @@ export const FORMAT_REGISTRY: Record<string, FormatDefinition> = Object.assign(O
     mimeType: 'image/emf',
     category: 'vector',
     description: '32-bit Windows GDI vector graphic metafile format.',
-    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp', 'emf', 'wmf'],
+    targetFormats: ['pdf', 'eps', 'jpg', 'png', 'ps', 'svg', 'dxf', 'avif', 'bmp', 'gif', 'ico', 'odd', 'psd', 'tiff', 'webp', 'emf', 'wmf'],
     optionsSchema: {dpi:true},
     available: true,
   },
